@@ -14,6 +14,36 @@ use super::harness::{
 };
 
 #[test_traced]
+fn consensus_parent_converges_without_a_verification_or_build() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let digest = parent.digest();
+        h.marshal.add_block(parent);
+
+        // A rejected header never reaches verify_block, but its consensus
+        // context still selects the parent that the EL should converge onto.
+        h.mailbox
+            .report_pending_head(round(2), (round(1).view(), digest))
+            .unwrap();
+        h.wait_until(|| h.execution.head() == digest).await;
+        assert_eq!(h.execution.new_payloads(), vec![digest]);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (digest, GENESIS, false)]
+        );
+
+        // A late report from an older verification must not move the head back.
+        h.mailbox
+            .report_pending_head(round(1), (round(0).view(), GENESIS))
+            .unwrap();
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.head(), digest);
+        assert_eq!(h.execution.fcus().len(), 2);
+    });
+}
+
+#[test_traced]
 fn build_converges_onto_its_verified_parent() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);

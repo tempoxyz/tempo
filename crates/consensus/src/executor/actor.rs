@@ -1173,6 +1173,9 @@ where
     fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
+            Command::PendingHead { round, parent } => {
+                self.record_convergence_target(round, parent);
+            }
             Command::Build(build) => {
                 self.record_convergence_target(build.context.round, build.context.parent);
                 // Cancellation discards the build work, not its parent target.
@@ -1231,7 +1234,7 @@ where
     }
 
     /// Records the newest observed consensus round and its convergence target.
-    /// Build and verify requests select their parent; finalized-tip reports
+    /// Context reports, build and verify requests select their parent; finalized-tip reports
     /// select the finalized block itself. A later round can select an older
     /// parent after nullifications, so the observed round orders targets.
     ///

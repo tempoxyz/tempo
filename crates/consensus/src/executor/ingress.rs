@@ -1,5 +1,10 @@
 use commonware_actor::Feedback;
-use commonware_consensus::{Reporter, marshal::Update, simplex::types::Context};
+use commonware_consensus::{
+    Reporter,
+    marshal::Update,
+    simplex::types::Context,
+    types::{Round, View},
+};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
@@ -15,6 +20,21 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
+    /// Records consensus's parent before application validation or proposal
+    /// preparation can fail, so the executor can still converge onto it.
+    pub(crate) fn report_pending_head(
+        &self,
+        round: Round,
+        parent: (View, Digest),
+    ) -> eyre::Result<()> {
+        self.inner
+            .unbounded_send(Message::in_current_span(Command::PendingHead {
+                round,
+                parent,
+            }))
+            .wrap_err("failed reporting consensus parent to executor, this means it exited")
+    }
+
     /// Verifies `block` against the execution layer, fetching missing ancestors
     /// as needed. The newest context's parent selects the pending head.
     ///
@@ -91,6 +111,11 @@ impl Message {
 
 #[derive(Debug)]
 pub(super) enum Command {
+    /// Reports consensus's parent independently of a build or verification.
+    PendingHead {
+        round: Round,
+        parent: (View, Digest),
+    },
     /// Requests the agent to canonicalize the head and build a new payload.
     Build(Box<Build>),
     /// Requests the agent to verify a block against the execution layer.
