@@ -29,7 +29,10 @@ class Inventory(unittest.TestCase):
     def test_exact_required_vocabulary_and_bloat_conversion(self):
         source=(ROOT/'bench-e2e.nu').read_text()
         self.assertIn('($bloat_mib)mb',source)
-        self.assertEqual(m.DATASET,'tempo_e2e_102400mb')
+        # Execute the harness conversion instead of repeating the inventory's assumption.
+        conversion = 'def e2e-bloat-gib-to-mib ' + source.split('def e2e-bloat-gib-to-mib ', 1)[1].split('\ndef ', 1)[0]
+        run = subprocess.run(['nu', '--no-config-file', '-c', conversion + '\ne2e-bloat-gib-to-mib 100 | to json'], capture_output=True, text=True, check=True)
+        self.assertEqual(m.DATASET, f'tempo_e2e_{json.loads(run.stdout)}mb')
         self.assertIn('const BENCH_META_SUBDIR = ".bench-meta"',(ROOT/'tempo.nu').read_text())
         for name in m.REQUIRED:
             self.assertIn(name.split('/')[-1],source.split('def e2e-snapshot-required-files',1)[1].split('\ndef ',1)[0])

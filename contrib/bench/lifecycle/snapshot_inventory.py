@@ -14,7 +14,7 @@ REQUIRED = ('.bench-meta/genesis.json', '.bench-meta/trusted-peers.txt',
             'enode.key', 'enode.identity', 'db', 'static_files')
 ROOTS = ((Path('/var/lib/schelk/a.json'), Path('/reth-bench-a')),
          (Path('/var/lib/schelk/b.json'), Path('/reth-bench-b')))
-DATASET = 'tempo_e2e_102400mb'
+DATASET = 'tempo_e2e_100000mb'
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 

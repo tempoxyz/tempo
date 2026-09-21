@@ -18,7 +18,7 @@ jobs:
         slot: [1, 2, 3, 4, 5]
     env:
       INVENTORY_SLOT: ${{ matrix.slot }}
-      INVENTORY_SOURCE_SHA256: 833b4d8a03047c76e8d2c1ce55b58d5983f62a0fe5457670aa25016ff033f1c8
+      INVENTORY_SOURCE_SHA256: c8bb0972453b5273a217957a51435cf3511c0a1a0d741c88e0d836d8504d7d28
     steps:
       # No checkout, existing workspace deletion, snapshot command, or dataset read.
       - name: Read bounded snapshot metadata
