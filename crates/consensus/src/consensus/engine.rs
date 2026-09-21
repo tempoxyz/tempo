@@ -259,9 +259,9 @@ where
         .await
         .wrap_err("failed initializing application actor")?;
 
-        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+        let (epoch_manager, epoch_manager_mailbox) = epoch::init(
             context.child("epoch_manager"),
-            epoch::manager::Config {
+            epoch::Config {
                 application: application_mailbox.clone(),
                 execution_node: execution_node.clone(),
                 blocker: self.blocker.clone(),
@@ -280,9 +280,9 @@ where
             },
         );
 
-        let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
+        let (dkg_manager, dkg_manager_mailbox) = dkg::init(
             context.child("dkg_manager"),
-            dkg::manager::Config {
+            dkg::Config {
                 epoch_manager: epoch_manager_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
@@ -356,8 +356,8 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
-    dkg_manager_mailbox: dkg::manager::Mailbox,
+    dkg_manager: dkg::Actor<TContext>,
+    dkg_manager_mailbox: dkg::Mailbox,
 
     /// Acts as the glue between the consensus and execution layers implementing
     /// the `[commonware_consensus::Automaton]` trait.
@@ -376,7 +376,7 @@ where
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
 
-    epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
+    epoch_manager: epoch::Actor<TContext, TBlocker>,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
     peer_manager_mailbox: peer_manager::Mailbox,

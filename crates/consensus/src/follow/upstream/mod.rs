@@ -18,7 +18,7 @@ pub mod in_process;
 mod ingress;
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 pub(crate) use actor::Actor;
 pub use ingress::Mailbox;
@@ -100,7 +100,7 @@ fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
 }
 
 #[cfg(test)]
-mod tests {
+mod url_tests {
     use super::*;
 
     #[test]

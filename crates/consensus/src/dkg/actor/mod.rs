@@ -118,7 +118,7 @@ pub(crate) struct Actor<
     TContext,
     TExecutionLayer = Arc<tempo_node::TempoFullNode>,
     TMarshal = crate::alias::marshal::Mailbox,
-    TEpochManager = crate::epoch::manager::Mailbox,
+    TEpochManager = crate::epoch::Mailbox,
 > where
     TContext: BufferPooler + Clock + commonware_runtime::Metrics + Storage,
 {
