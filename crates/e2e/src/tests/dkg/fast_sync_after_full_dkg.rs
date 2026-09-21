@@ -26,6 +26,16 @@ use crate::{
 /// 4. The late validator continues progressing after sync
 #[test_traced]
 fn validator_can_fast_sync_after_full_dkg() {
+    fast_sync_after_full_dkg(false);
+}
+
+/// A late joiner can also start with the identity produced by the full DKG ceremony.
+#[test_traced]
+fn validator_can_fast_sync_after_full_dkg_with_updated_network_identity() {
+    fast_sync_after_full_dkg(true);
+}
+
+fn fast_sync_after_full_dkg(update_network_identity: bool) {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 4;
@@ -91,6 +101,13 @@ fn validator_can_fast_sync_after_full_dkg() {
             < blocks_before_late_join
         {
             context.sleep(Duration::from_secs(1)).await;
+        }
+
+        if update_network_identity {
+            late_validator.network_identity = tempo_chainspec::NetworkIdentity {
+                from_epoch: outcome_after.epoch,
+                identity: *outcome_after.network_identity(),
+            };
         }
 
         // start late validator

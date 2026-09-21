@@ -266,7 +266,7 @@ fn test_paused_fee_token_rejected() {
         StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
                 .with_issuer(admin)
-                .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
+                .with_role(admin, tempo_precompiles::tip20::PAUSE_ROLE)
                 .with_mint(fee_payer, fee)
                 .apply()?;
             token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;

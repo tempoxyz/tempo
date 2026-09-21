@@ -78,7 +78,10 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
 
 /// A [`TxFiller`] that populates transactions with expiring nonce fields ([TIP-1009]).
 ///
-/// Sets `nonce_key` to `U256::MAX`, `nonce` to `0`, and `valid_before` to current time + expiry window.
+/// Sets `nonce_key` to `TEMPO_EXPIRING_NONCE_KEY` and defaults an unset `nonce` to `0` and an
+/// unset `valid_before` to current time + expiry window. An explicitly supplied nonce is preserved
+/// as an opaque discriminator for TIP-1106, and an explicitly supplied `valid_before` is left as it
+/// is.
 /// This enables transactions to use the circular buffer replay protection instead of 2D nonce storage.
 ///
 /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
@@ -112,11 +115,11 @@ impl ExpiringNonceFiller {
 
     /// Returns `true` if all expiring nonce fields are properly set:
     /// - `nonce_key` is `TEMPO_EXPIRING_NONCE_KEY`
-    /// - `nonce` is `0`
+    /// - `nonce` is set
     /// - `valid_before` is set
     fn is_filled(tx: &TempoTransactionRequest) -> bool {
         tx.nonce_key == Some(TEMPO_EXPIRING_NONCE_KEY)
-            && tx.nonce() == Some(0)
+            && tx.nonce().is_some()
             && tx.valid_before.is_some()
     }
 
@@ -149,13 +152,18 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
         {
             // Set expiring nonce key (U256::MAX)
             builder.set_nonce_key(TEMPO_EXPIRING_NONCE_KEY);
-            // Nonce must be 0 for expiring nonce transactions
-            builder.set_nonce(0);
-            // Set valid_before to current time + expiry window
-            builder.set_valid_before(
-                NonZeroU64::new(Self::current_timestamp() + self.expiry_secs)
-                    .expect("expiring nonce filler requires a non-zero valid_before"),
-            );
+            // Preserve an explicit TIP-1106 discriminator, defaulting to zero.
+            if builder.nonce().is_none() {
+                builder.set_nonce(0);
+            }
+            // Preserve a caller-supplied validity window, defaulting to current time +
+            // expiry window.
+            if builder.valid_before.is_none() {
+                builder.set_valid_before(
+                    NonZeroU64::new(Self::current_timestamp() + self.expiry_secs)
+                        .expect("expiring nonce filler requires a non-zero valid_before"),
+                );
+            }
         }
     }
 
@@ -188,8 +196,8 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
 ///
 /// Nonce resolution depends on the key:
 /// - `U256::ZERO` (protocol nonce): uses `get_transaction_count`
-/// - `TEMPO_EXPIRING_NONCE_KEY` (U256::MAX): always 0, no caching (use [`ExpiringNonceFiller`]
-///   instead for full expiring nonce support including `valid_before`)
+/// - `TEMPO_EXPIRING_NONCE_KEY` (U256::MAX): defaults an unset nonce to 0, no caching (use
+///   [`ExpiringNonceFiller`] instead for full expiring nonce support including `valid_before`)
 /// - Any other key: queries the `NonceManager` precompile via `eth_call`
 #[derive(Clone, Debug)]
 pub struct NonceKeyFiller {
@@ -267,7 +275,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
             .nonce_key
             .ok_or_else(|| TransportErrorKind::custom_str("missing `nonce_key`"))?;
 
-        // Expiring nonces always use nonce 0
+        // Expiring nonces default to discriminator 0 when the caller did not supply one.
         if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             return Ok(0);
         }
@@ -283,7 +291,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 
         if *nonce == NONCE_NOT_FETCHED || !self.cache_enabled {
             *nonce = if nonce_key.is_zero() {
-                provider.get_transaction_count(from).await?
+                provider.get_transaction_count(from).pending().await?
             } else {
                 let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
                 contract
@@ -314,12 +322,54 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
+    use crate::{
+        TempoNetwork, fillers::Random2DNonceFiller, provider::TempoProviderExt,
+        rpc::TempoTransactionRequest,
+    };
     use alloy::sol_types::SolCall;
+    use alloy_json_rpc::RequestPacket;
     use alloy_network::TransactionBuilder;
     use alloy_primitives::{Bytes, ruint::aliases::U256};
     use alloy_provider::{ProviderBuilder, mock::Asserter};
+    use alloy_rpc_client::RpcClient;
+    use alloy_transport::mock::MockTransport;
     use eyre;
+    use tower::ServiceExt;
+
+    #[test]
+    fn expiring_nonce_filler_preserves_explicit_discriminator() {
+        let filler = ExpiringNonceFiller::default();
+        let mut request = TempoTransactionRequest::default().with_nonce(42);
+        let mut tx = SendableTx::Builder(request.clone());
+
+        TxFiller::<TempoNetwork>::fill_sync(&filler, &mut tx);
+        request = tx
+            .as_builder()
+            .expect("transaction remains a builder")
+            .clone();
+
+        assert_eq!(request.nonce_key, Some(TEMPO_EXPIRING_NONCE_KEY));
+        assert_eq!(request.nonce(), Some(42));
+        assert!(request.valid_before.is_some());
+    }
+
+    #[test]
+    fn expiring_nonce_filler_preserves_explicit_valid_before() {
+        let filler = ExpiringNonceFiller::default();
+        let valid_before = NonZeroU64::new(1_800_000_000).expect("non-zero valid_before");
+        let mut request = TempoTransactionRequest::default().with_valid_before(valid_before);
+        let mut tx = SendableTx::Builder(request.clone());
+
+        TxFiller::<TempoNetwork>::fill_sync(&filler, &mut tx);
+        request = tx
+            .as_builder()
+            .expect("transaction remains a builder")
+            .clone();
+
+        assert_eq!(request.nonce_key, Some(TEMPO_EXPIRING_NONCE_KEY));
+        assert_eq!(request.nonce(), Some(0));
+        assert_eq!(request.valid_before, Some(valid_before));
+    }
 
     #[tokio::test]
     async fn test_random_2d_nonce_filler() -> eyre::Result<()> {
@@ -412,6 +462,49 @@ mod tests {
 
         assert_eq!(first, 10);
         assert_eq!(second, 42);
+
+        Ok(())
+    }
+
+    fn pending_nonce_provider(account: Address) -> impl Provider<TempoNetwork> {
+        let asserter = Asserter::new();
+        asserter.push_success(&"0x5");
+        let transport = MockTransport::new(asserter).map_request(move |packet: RequestPacket| {
+            let request = packet.as_single().expect("expected a single nonce request");
+            assert_eq!(request.method(), "eth_getTransactionCount");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(request.params().unwrap().get()).unwrap(),
+                serde_json::json!([account, "pending"])
+            );
+            packet
+        });
+        ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_client(RpcClient::new(transport, true))
+    }
+
+    #[tokio::test]
+    async fn protocol_nonce_filler_uses_pending_transaction_count() -> eyre::Result<()> {
+        let filler = NonceKeyFiller::default();
+        let account = Address::repeat_byte(0x11);
+        let provider = pending_nonce_provider(account);
+        let mut request = TempoTransactionRequest::default().with_nonce_key(U256::ZERO);
+        request.set_from(account);
+
+        let nonce = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &request).await?;
+        assert_eq!(nonce, 5);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn protocol_nonce_key_query_uses_pending_transaction_count() -> eyre::Result<()> {
+        let account = Address::repeat_byte(0x11);
+        let provider = pending_nonce_provider(account);
+
+        let nonce = provider
+            .get_transaction_count_with_nonce_key(account, U256::ZERO)
+            .await?;
+        assert_eq!(nonce, 5);
 
         Ok(())
     }

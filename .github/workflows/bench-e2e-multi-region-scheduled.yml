@@ -15,7 +15,7 @@ on:
         description: Cloud provider used for disposable benchmark infrastructure.
         type: choice
         required: true
-        default: aws
+        default: gcp
         options:
           - aws
           - gcp
@@ -77,6 +77,7 @@ jobs:
     name: resolve-refs
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       actions: read
       contents: read
     outputs:
@@ -86,6 +87,9 @@ jobs:
       feature-name: ${{ steps.refs.outputs.feature-name }}
       should-run: ${{ steps.refs.outputs.should-run }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Checkout Tempo main
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -156,7 +160,7 @@ jobs:
       id-token: write
       packages: read
     with:
-      cloud: ${{ inputs.cloud || 'aws' }}
+      cloud: ${{ inputs.cloud || 'gcp' }}
       baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature: ${{ needs.resolve-refs.outputs.feature-ref }}
@@ -194,8 +198,12 @@ jobs:
     name: save-state
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+
       - name: Write successful Tempo main ref
         env:
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}

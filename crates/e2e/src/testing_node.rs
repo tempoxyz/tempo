@@ -85,6 +85,8 @@ where
     pub partition_prefix: String,
     /// Initial share used whenever the consensus engine starts.
     pub share: Option<Share>,
+    /// Network identity registered whenever the consensus engine starts.
+    pub network_identity: tempo_chainspec::NetworkIdentity,
     /// Feed state shared by the consensus and execution layers.
     pub feed_state: FeedStateHandle,
     /// Local proposal work budget used whenever the consensus engine starts.
@@ -106,6 +108,7 @@ where
         private_key: PrivateKey,
         oracle: Oracle<PublicKey, TClock>,
         share: Option<Share>,
+        network_identity: tempo_chainspec::NetworkIdentity,
         feed_state: FeedStateHandle,
         proposal_return_budget: Duration,
         execution_runtime: ExecutionRuntimeHandle,
@@ -125,6 +128,7 @@ where
             private_key,
             oracle,
             share,
+            network_identity,
             feed_state,
             proposal_return_budget,
             consensus_handle: None,
@@ -176,6 +180,7 @@ where
         self.private_key = identity_source.private_key;
         self.partition_prefix = identity_source.partition_prefix;
         self.share = identity_source.share;
+        self.network_identity = identity_source.network_identity;
         self.feed_state = identity_source.feed_state;
         self.proposal_return_budget = identity_source.proposal_return_budget;
         self.network_address = identity_source.network_address;
@@ -308,6 +313,7 @@ where
             .into();
         let config = consensus::Builder {
             execution_node: Some(execution_node),
+            network_identity: self.network_identity.clone(),
             gossip,
             blocker: self.oracle.control(self.public_key()),
             peer_manager: self.oracle.socket_manager(),
@@ -322,7 +328,8 @@ where
             time_to_retry_nullify_broadcast: Duration::from_secs(10),
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
-            views_until_leader_skip: 5,
+            // Floor (10s nullify rebroadcast) plus one 2s proposal wait.
+            inactive_time_before_leader_skip: Duration::from_secs(12),
             proposal_return_budget: self.proposal_return_budget,
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state: self.feed_state.clone(),
@@ -665,7 +672,7 @@ mod tests {
                     .linkage(Link {
                         latency: Duration::from_millis(10),
                         jitter: Duration::from_millis(1),
-                        success_rate: 1.0,
+                        success_rate: commonware_utils::probability!(1.0),
                     })
                     .epoch_length(100);
 
