@@ -386,7 +386,7 @@ jobs:
       BENCH_BINARY_MODE: "prebuilt_v1"
       BENCH_RUN_CLEANUP_CONTRACT: "owned_artifacts_v1"
       # Filled only from the authenticated successful producer artifact; zero is deliberately inadmissible.
-      BENCH_PREBUILT_PLAN_SHA256: "b8b80982a50f91f771a67955f18fd7eb19cd565dbba20bcc79c6fdef00095171"
+      BENCH_PREBUILT_PLAN_SHA256: "97df81048164a50fdfbc03949a854c477eadac8a5c03b9e08556c54a6ec084ad"
       BENCH_LIFECYCLE: "true"
       BENCH_LIFECYCLE_SCHEDULER: "false"
       BENCH_KERNEL_FAULT_BASELINE_EMPTY: ${{ inputs.baseline == '' }}
