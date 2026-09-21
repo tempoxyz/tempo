@@ -240,7 +240,14 @@ impl ITIP20::ITIP20Calls {
     }
 }
 
-/// The slot-relevant shape of a TIP-20 payment call.
+/// A [TIP-20 payment] call classified straight from calldata, without ABI decoding.
+///
+/// Carries only the addresses needed to derive the storage slots a payment touches, read
+/// in place from the static ABI head. Amounts and memos are never materialized, which is
+/// why this is cheaper than decoding into [`ITIP20Calls`] just to read one or two addresses.
+///
+/// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+/// [`ITIP20Calls`]: ITIP20::ITIP20Calls
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaymentSlots {
     Empty,
