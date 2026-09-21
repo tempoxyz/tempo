@@ -526,7 +526,7 @@ fn warm_payment_keccak_slots<'a>(
             continue;
         };
 
-        for addr in payment.addresses().into_iter().flatten() {
+        for &addr in payment.addresses() {
             if addr != fee_payer {
                 warmed(addr.mapping_slot(tip20_slots::BALANCES));
             }

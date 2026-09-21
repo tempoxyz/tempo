@@ -206,7 +206,7 @@ impl ITIP20::ITIP20Calls {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        PaymentSlots::classify(input).is_some()
+        payment_slots_kind(input).is_some()
     }
 
     /// Returns addresses whose balance slots are accessed by this call.
@@ -240,6 +240,39 @@ impl ITIP20::ITIP20Calls {
     }
 }
 
+fn is_call<C: SolCall>(input: &[u8]) -> bool {
+    input.first_chunk::<4>() == Some(&C::SELECTOR)
+        && <C::Parameters<'_> as SolType>::ENCODED_SIZE.is_some_and(|size| input.len() == 4 + size)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaymentSlotsKind {
+    Empty,
+    Direct,
+    Delegated,
+}
+
+fn payment_slots_kind(input: &[u8]) -> Option<PaymentSlotsKind> {
+    if is_call::<ITIP20::transferCall>(input)
+        || is_call::<ITIP20::transferWithMemoCall>(input)
+        || is_call::<ITIP20::mintCall>(input)
+        || is_call::<ITIP20::mintWithMemoCall>(input)
+    {
+        Some(PaymentSlotsKind::Direct)
+    } else if is_call::<ITIP20::transferFromCall>(input)
+        || is_call::<ITIP20::transferFromWithMemoCall>(input)
+    {
+        Some(PaymentSlotsKind::Delegated)
+    } else if is_call::<ITIP20::approveCall>(input)
+        || is_call::<ITIP20::burnCall>(input)
+        || is_call::<ITIP20::burnWithMemoCall>(input)
+    {
+        Some(PaymentSlotsKind::Empty)
+    } else {
+        None
+    }
+}
+
 /// A [TIP-20 payment] call classified straight from calldata, without ABI decoding.
 ///
 /// Carries only the addresses needed to derive the storage slots a payment touches, read
@@ -249,72 +282,50 @@ impl ITIP20::ITIP20Calls {
 /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
 /// [`ITIP20Calls`]: ITIP20::ITIP20Calls
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaymentSlots {
-    Empty,
-    Direct { to: Address },
-    Delegated { from: Address, to: Address },
+pub struct PaymentSlots {
+    kind: PaymentSlotsKind,
+    addresses: [Address; 2],
 }
 
 impl PaymentSlots {
     /// Classifies payment calldata and reads only its address arguments.
     pub fn classify(input: &[u8]) -> Option<Self> {
-        fn is<C: SolCall>(input: &[u8]) -> bool {
-            input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && <C::Parameters<'_> as SolType>::ENCODED_SIZE
-                    .is_some_and(|size| input.len() == 4 + size)
-        }
-
         fn address(input: &[u8], index: usize) -> Address {
             let start = 4 + 32 * index + 12;
             Address::from_slice(&input[start..start + Address::len_bytes()])
         }
 
-        Some(
-            if is::<ITIP20::transferCall>(input) || is::<ITIP20::transferWithMemoCall>(input) {
-                Self::Direct {
-                    to: address(input, 0),
-                }
-            } else if is::<ITIP20::transferFromCall>(input)
-                || is::<ITIP20::transferFromWithMemoCall>(input)
-            {
-                Self::Delegated {
-                    from: address(input, 0),
-                    to: address(input, 1),
-                }
-            } else if is::<ITIP20::approveCall>(input) {
-                Self::Empty
-            } else if is::<ITIP20::mintCall>(input) || is::<ITIP20::mintWithMemoCall>(input) {
-                Self::Direct {
-                    to: address(input, 0),
-                }
-            } else if is::<ITIP20::burnCall>(input) || is::<ITIP20::burnWithMemoCall>(input) {
-                Self::Empty
-            } else {
-                return None;
-            },
-        )
+        let kind = payment_slots_kind(input)?;
+        let addresses = match kind {
+            PaymentSlotsKind::Empty => [Address::ZERO; 2],
+            PaymentSlotsKind::Direct => [address(input, 0), Address::ZERO],
+            PaymentSlotsKind::Delegated => [address(input, 0), address(input, 1)],
+        };
+        Some(Self { kind, addresses })
     }
 
-    pub const fn to(self) -> Option<Address> {
-        match self {
-            Self::Direct { to } | Self::Delegated { to, .. } => Some(to),
-            Self::Empty => None,
+    pub const fn to(&self) -> Option<Address> {
+        match self.kind {
+            PaymentSlotsKind::Empty => None,
+            PaymentSlotsKind::Direct => Some(self.addresses[0]),
+            PaymentSlotsKind::Delegated => Some(self.addresses[1]),
         }
     }
 
-    pub const fn from(self) -> Option<Address> {
-        match self {
-            Self::Delegated { from: owner, .. } => Some(owner),
+    pub const fn from(&self) -> Option<Address> {
+        match self.kind {
+            PaymentSlotsKind::Delegated => Some(self.addresses[0]),
             _ => None,
         }
     }
 
-    pub const fn addresses(self) -> [Option<Address>; 2] {
-        match self {
-            Self::Empty => [None, None],
-            Self::Direct { to } => [Some(to), None],
-            Self::Delegated { from: owner, to } => [Some(owner), Some(to)],
-        }
+    pub fn addresses(&self) -> &[Address] {
+        let len = match self.kind {
+            PaymentSlotsKind::Empty => 0,
+            PaymentSlotsKind::Direct => 1,
+            PaymentSlotsKind::Delegated => 2,
+        };
+        &self.addresses[..len]
     }
 }
 
@@ -388,7 +399,14 @@ mod test {
 
             assert_eq!(payment.to(), decoded.to());
             assert_eq!(payment.from(), decoded_from(&decoded));
-            assert_eq!(payment.addresses(), decoded.balance_addresses());
+            assert_eq!(
+                payment.addresses(),
+                decoded
+                    .balance_addresses()
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>(),
+            );
         }
     }
 
