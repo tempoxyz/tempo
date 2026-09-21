@@ -4,6 +4,46 @@ Updated 2026-09-21. Keep benchmark, instrumentation, privacy, cutoff, and
 correctness fixes in their PRs even when an optimization is not adopted.
 An unsuccessful optimization does not invalidate a useful measurement fix.
 
+## Active: execution and proof-read readiness, 2026-09-21
+
+[Deep-dive findings](READ-READINESS-2026-09-21.md): block32's 101.487 ms of
+executor fault blocking comprises 465 sleep intervals. During those waits,
+27.645 of its 32 storage-proof workers are also fault-blocked on average.
+Block11's first-drain backlog of 579 reconciles as 538 queued, 32 in service
+and a nine-result completion/consumption gap. Proof work starts during execution and
+falls behind; final account-root hashing is not the dominant cost.
+
+Next attribution: provider/cache readiness, actual DB cursor classes and
+proof dispatch triggers. Candidate: bounded backlog-aware batching, subject
+to correctness tests and minimal-observation controls. Global chunk32 and
+blanket worker-count changes remain unproven; do not repeat their favorable
+component numbers as whole-node wins. No new node benchmark was launched for
+this deep dive. The separate iterator fix is being tested by run35603103360.
+
+## Deferred: body availability, 2026-09-21
+
+Explicitly parked at the user's request while execution faults and proof-read
+readiness are investigated. Return to this after those investigations; seeded
+proposer decoded-body reuse remains assigned to separate work.
+
+In run35578876523, proposer and receiver decode/validation occupy 80.5% of
+the summed digest-release-to-body-ready interval across 77 eligible blocks.
+They are sequential prerequisites on the path to receiver execution. This is
+80.5% of **body availability**, not of total block latency. Body availability
+p50/p90 is 24.429/34.355 ms; separate proposer and receiver decode medians are
+10.085/9.633 ms (do not add independent percentiles).
+
+On block32, the 21.663 ms interval contains 8.592 ms proposer decode and
+8.811 ms receiver decode. The remaining time includes dispatch/encryption and
+transport; incomplete frame linkage prevents calling it pure network latency.
+The 148 decode spans above 1 ms contain 1.525 s scheduled residency and no
+observed blocking. See [the causal reanalysis](CAUSAL-REANALYSIS-2026-09-21.md#5-most-body-availability-time-is-decodevalidation)
+and its retained `reanalysis/network-analysis.json` and scheduler joins.
+
+On resumption: coordinate proposer reuse with its owner, separate decoding from
+validation CPU on the receiver, and compare the complete critical-path interval
+under matched observation modes before claiming a block-latency improvement.
+
 ## Validated capture and election failure, 2026-09-21
 
 [Detailed findings](EXECUTION-FINDINGS-2026-09-21.md): run35578876523 passed all
