@@ -146,7 +146,7 @@ impl TempoTransactionRequest {
             || self
                 .key_authorization
                 .as_ref()
-                .is_some_and(|auth| auth.signature.is_multisig())
+                .is_some_and(|auth| auth.signature.as_multisig().is_some())
     }
     /// Returns whether this request contains fields that require Tempo AA transaction semantics.
     pub(crate) fn has_aa_fields(&self) -> bool {
