@@ -5,6 +5,8 @@
 # Uses native MPP and explicit setup dependencies (tempoxyz/txgen#214).
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
 # The helper combines fixture setup and expands per-user/portal templates.
+# All workload templates use expiring nonces with a 25-second validity window;
+# setup retains ordered nonces and explicit dependencies.
 include:
   - mpp.yml
   - vault/base.yml

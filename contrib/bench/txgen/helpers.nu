@@ -717,9 +717,15 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     } else { $out_dir | path expand }
     mkdir $output_dir
     let output = ($output_dir | path join public-mix.yml)
+    # Match the other public-mix workloads without account-nonce dependencies.
+    # Setup and standalone vault/zone presets retain their ordered nonce lanes.
+    let templates = ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates
+        | items { |name, template|
+            {name: $name, value: ($template | upsert expiring_nonce true | upsert valid_for_secs 25)}
+        } | transpose -r -d)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
-        templates: ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates),
+        templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output
 }
