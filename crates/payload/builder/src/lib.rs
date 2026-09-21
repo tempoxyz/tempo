@@ -549,8 +549,11 @@ where
 
             let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    // Let pool and prewarming producers run without delaying newly available
+                    // transactions or the next cancellation/budget check by a fixed interval.
+                    let idle_start = Instant::now();
+                    std::thread::yield_now();
+                    normal_transaction_fill_idle_elapsed += idle_start.elapsed();
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= block_gas_limit {
