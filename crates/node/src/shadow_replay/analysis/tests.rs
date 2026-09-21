@@ -1,37 +1,49 @@
 use super::*;
-use crate::shadow_replay::{Failure, ReceiptObservation};
+use crate::shadow_replay::{Failure, ObservedTx, ReceiptObservation};
+use alloy_primitives::B256;
 use reth_revm::{db::states::StorageSlot, state::AccountInfo};
 
 // Synthetic checks exercise the classifier contract; these are NOT TIP-1016 validators.
 const GAS: Expectation = Expectation {
     id: "test.gas",
-    check: |ctx, diff| match diff {
-        Difference::Gas(real, shadow) if real.checked_add(200) == Some(*shadow) => {
-            let Boundary::Transaction(index) = ctx.boundary else {
-                return None;
-            };
-            (ctx.real.txs[index].receipt.success == ctx.shadow.txs[index].receipt.success)
-                .then_some(false)
+    check: |ctx, field| {
+        if field.name != "gas" {
+            return None;
         }
-        _ => None,
+        let Boundary::Transaction(index) = ctx.boundary else {
+            return None;
+        };
+        let (real, shadow) = (&ctx.real.txs[index].receipt, &ctx.shadow.txs[index].receipt);
+        (real.gas_used.checked_add(200) == Some(shadow.gas_used) && real.success == shadow.success)
+            .then_some(false)
     },
 };
 
 const FEE: Expectation = Expectation {
     id: "test.fee",
-    check: |_, diff| match diff {
-        Difference::Storage {
-            slot,
-            real: Some((before, after)),
-            shadow: Some((other_before, other_after)),
-            ..
-        } if *slot == U256::ZERO
-            && before == other_before
-            && after.checked_sub(U256::from(200)) == Some(*other_after) =>
-        {
-            Some(true)
+    check: |ctx, field| {
+        if field.name != "storage" || field.slot != Some(U256::ZERO) {
+            return None;
         }
-        _ => None,
+        let Boundary::Transaction(index) = ctx.boundary else {
+            return None;
+        };
+        let (address, slot) = (field.address?, field.slot?);
+        let real = ctx.real.txs[index]
+            .state
+            .transitions
+            .get(&address)?
+            .storage
+            .get(&slot)?;
+        let shadow = ctx.shadow.txs[index]
+            .state
+            .transitions
+            .get(&address)?
+            .storage
+            .get(&slot)?;
+        (real.original_value() == shadow.original_value()
+            && real.present_value().checked_sub(U256::from(200)) == Some(shadow.present_value()))
+        .then_some(true)
     },
 };
 
@@ -191,13 +203,18 @@ fn fee_provenance_alone_does_not_accept_a_change() {
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.cutoff, Some(Boundary::Transaction(0)));
     assert_eq!(report.boundaries_not_evaluated, 2);
+    let field = report.samples[0].1.field;
+    assert_eq!(field.name, "storage");
+    assert_eq!(field.address, Some(Address::ZERO));
+    assert_eq!(field.slot, Some(U256::ZERO));
+    assert!(field.fee_associated);
 }
 
 #[test]
 fn first_accepting_rule_owns_attribution_and_continuation() {
     let stop = Expectation {
         id: "test.stop-gas",
-        check: |_, diff| matches!(diff, Difference::Gas(..)).then_some(true),
+        check: |_, field| (field.name == "gas").then_some(true),
     };
     let real = evidence(&[21_000, 21_000]);
     let shadow = evidence(&[21_200, 21_000]);
@@ -233,10 +250,9 @@ fn equal_receipt_gas_does_not_hide_block_gas_divergence() {
     let report = Report::analyze(&real, &shadow, &[&GAS]);
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.cutoff, Some(Boundary::Transaction(0)));
-    assert!(matches!(
-        report.samples[0].1,
-        Difference::BlockGas(21_000, 20_000)
-    ));
+    assert_eq!(report.samples[0].1.field.name, "block_gas");
+    assert_eq!(report.samples[0].1.real, "21000");
+    assert_eq!(report.samples[0].1.shadow, "20000");
 }
 
 #[test]
@@ -293,7 +309,7 @@ fn created_code_is_compared_even_when_both_accounts_are_created() {
     }
     let report = Report::analyze(&real, &shadow, &[]);
     assert_eq!(report.unexplained, 1);
-    assert!(matches!(report.samples[0].1, Difference::Code { .. }));
+    assert_eq!(report.samples[0].1.field.name, "code");
     assert_eq!(report.cutoff, Some(Boundary::Transaction(0)));
 }
 
@@ -311,6 +327,48 @@ fn sampling_does_not_truncate_counts() {
 }
 
 #[test]
+fn equal_and_unsampled_values_are_not_formatted() {
+    #[derive(PartialEq, Eq)]
+    struct Unformatted(u8);
+    impl Debug for Unformatted {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("value should not be formatted");
+        }
+    }
+    let real = evidence(&[21_000; MAX_SAMPLES]);
+    let mut shadow = evidence(&[21_000; MAX_SAMPLES]);
+    for tx in &mut shadow.txs {
+        tx.output_hash = B256::repeat_byte(1);
+    }
+    let mut report = Report::analyze(&real, &shadow, &[]);
+    let ctx = Context {
+        boundary: Boundary::Transaction(0),
+        real: &real,
+        shadow: &shadow,
+    };
+    let field = Field {
+        name: "output",
+        address: None,
+        slot: None,
+        fee_associated: false,
+    };
+    report.record(&ctx, field, Unformatted(0), Unformatted(0), &[]);
+    let rule = Expectation {
+        id: "test.unsampled",
+        check: |ctx, field| {
+            assert_eq!(ctx.boundary, Boundary::Transaction(0));
+            assert_eq!(field.name, "output");
+            Some(false)
+        },
+    };
+    // Expected samples rank after the full set of unexplained samples, but still count.
+    report.record(&ctx, field, Unformatted(0), Unformatted(1), &[&rule]);
+    assert_eq!(report.expected[rule.id], 1);
+    assert_eq!(report.unexplained, MAX_SAMPLES);
+    assert_eq!(report.samples.len(), MAX_SAMPLES);
+}
+
+#[test]
 fn accepted_application_logs_do_not_hide_fee_logs() {
     let real = evidence(&[21_000]);
     let mut shadow = evidence(&[21_000]);
@@ -318,12 +376,12 @@ fn accepted_application_logs_do_not_hide_fee_logs() {
     shadow.txs[0].fee_logs_hash = B256::repeat_byte(2);
     let rule = Expectation {
         id: "test.application-logs",
-        check: |_, diff| matches!(diff, Difference::Logs(..)).then_some(false),
+        check: |_, field| (field.name == "logs").then_some(false),
     };
     let report = Report::analyze(&real, &shadow, &[&rule]);
     assert_eq!(report.expected["test.application-logs"], 1);
     assert_eq!(report.unexplained, 1);
-    assert!(matches!(report.samples[0].1, Difference::FeeLogs(..)));
+    assert_eq!(report.samples[0].1.field.name, "fee_logs");
 }
 
 #[test]
@@ -333,7 +391,7 @@ fn receipt_log_order_is_compared_even_when_both_subsequences_match() {
     shadow.txs[0].receipt.logs_hash = B256::repeat_byte(1);
     let report = Report::analyze(&real, &shadow, &[]);
     assert_eq!(report.unexplained, 1);
-    assert!(matches!(report.samples[0].1, Difference::ReceiptLogs(..)));
+    assert_eq!(report.samples[0].1.field.name, "receipt_logs");
 }
 
 #[test]
@@ -351,10 +409,7 @@ fn storage_reset_invalidates_the_suffix_without_enumerated_slots() {
     );
     let report = Report::analyze(&real, &shadow, &[]);
     assert_eq!(report.unexplained, 1);
-    assert!(matches!(
-        report.samples[0].1,
-        Difference::StorageReset { .. }
-    ));
+    assert_eq!(report.samples[0].1.field.name, "storage_reset");
     assert_eq!(report.boundaries_not_evaluated, 2);
 }
 
@@ -375,9 +430,8 @@ fn accepted_post_block_change_has_no_suffix_to_invalidate() {
     );
     let rule = Expectation {
         id: "test.post-block",
-        check: |ctx, diff| {
-            (ctx.boundary == Boundary::PostBlock && matches!(diff, Difference::Balance { .. }))
-                .then_some(true)
+        check: |ctx, field| {
+            (ctx.boundary == Boundary::PostBlock && field.name == "balance").then_some(true)
         },
     };
     let report = Report::analyze(&real, &shadow, &[&rule]);

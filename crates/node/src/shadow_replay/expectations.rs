@@ -5,7 +5,7 @@
 //! return `None`; fee provenance or an affected opcode alone is not an explanation.
 //! The first accepting check owns attribution AND continuation; later checks are not run.
 
-use super::{Boundary, Evidence, analysis::Difference};
+use super::{Boundary, Evidence, analysis::Field};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 #[derive(Debug)]
@@ -13,7 +13,7 @@ pub(super) struct Expectation {
     /// Stable feature/check name, also used as a bounded-cardinality metric label.
     pub id: &'static str,
     /// `None`: unexplained. `Some(invalidates_suffix)`: accepted; true cuts off later comparisons.
-    pub check: fn(&Context<'_>, &Difference) -> Option<bool>,
+    pub check: fn(&Context<'_>, &Field) -> Option<bool>,
 }
 
 /// Evidence is borrowed from the existing executions; checks must not perform another replay.

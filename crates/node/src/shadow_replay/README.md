@@ -2,12 +2,12 @@
 
 `expectations.rs` registers checks at the hardfork introducing a feature. Replay selects
 checks in `(canonical fork, candidate fork]` once per block, after validating the canonical
-control. Each check receives the existing execution evidence and one typed difference:
+control. Each check receives the existing execution evidence and a field/location descriptor:
 
 ```rust,ignore
 struct Expectation {
     id: &'static str,
-    check: fn(&Context<'_>, &Difference) -> Option<bool>,
+    check: fn(&Context<'_>, &Field) -> Option<bool>,
 }
 ```
 
@@ -28,7 +28,8 @@ without an earlier cutoff remains unexplained. Checks do not currently classify 
 1. Implement a feature module beside the registry, with a stable ID per check and a link to
    its TIP. Add a registry entry under the introducing fork, in ascending fork order.
    Omit forks without expectations; the registry starts empty. Rule IDs must be unique.
-2. Check applicability and exact effects from typed evidence. Return `None` when evidence
+2. Use `Field`'s name, optional address and slot to locate typed values in `Context`'s real and
+   shadow evidence at the current boundary; never parse diagnostic strings. Return `None` when evidence
    is insufficient. A changed gas amount or a fee-touched slot alone is insufficient.
 3. Return `Some(true)` for accepted persistent state/context changes unless the check
    establishes comparability. Inspect coupled effects as needed, but accept each difference
@@ -62,7 +63,8 @@ notification deduplication/persistent review queues are outside this draft.
 
 Classification uses both existing executions and the existing state transitions. Recording
 `TempoTxResult::block_gas_used()` adds a scalar per transaction, with no tracing or extra
-replay. Differences stay typed until logging. No overhead percentage is claimed without a
+replay. Equality checks and classification precede formatting; only retained diagnostic samples
+store string values in `Difference`. No overhead percentage is claimed without a
 representative replay benchmark.
 
 The system cannot guarantee zero false positives: incomplete checks leave legitimate changes
