@@ -125,11 +125,17 @@ def read_node(path, role, cutoff=None):
         span = spans.get(event['id'])
         if key and span and not block_key(span['fields']):
             span['fields']['block_hash'] = key
-    payloads = {s['fields']['payload_id']: block_key(s['fields']) for s in spans.values()
-                if s['fields'].get('payload_id') and block_key(s['fields'])}
+    payloads = {}
+    for span in spans.values():
+        payload = span['fields'].get('payload_id')
+        block = block_key(span['fields'])
+        if payload and block:
+            payloads.setdefault(payload, set()).add(block)
     for s in spans.values():
-        if not block_key(s['fields']) and s['fields'].get('payload_id') in payloads:
-            s['fields']['block_hash'] = payloads[s['fields']['payload_id']]
+        if not block_key(s['fields']):
+            owners = payloads.get(s['fields'].get('payload_id'), set())
+            if len(owners) == 1:
+                s['fields']['block_hash'] = next(iter(owners))
 
     # A mailbox span travels with exactly one message; timestamps delimit its queue wait.
     queued = {}
@@ -224,6 +230,13 @@ def active_wall_ns(intervals):
     return duration
 
 
+def valid_load_window(window):
+    if not isinstance(window, dict) or window.get('stop_reason') != 'load_finished':
+        return False
+    start, end = window.get('start_ns'), window.get('end_ns')
+    return (type(start) is int and type(end) is int and 0 <= start < end)
+
+
 def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
@@ -237,6 +250,11 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         events.extend(es)
         pruned = next((q for q in (window or {}).get('pruning', []) if q['node'] == qq['node']), {})
         qq['crossing_aggregates_excluded'] += pruned.get('crossing_aggregates_excluded', 0)
+        window_ok = valid_load_window(window)
+        capture_ok = (qq['header'] and qq['footer'] and not qq['dropped'] and
+                      not qq['io_error'] and not qq['invalid_lines'])
+        qq['post_window_open_spans'] = (sum(s['end'] is None and s['ts'] >= window['end_ns'] for s in ss)
+                                       if window_ok and capture_ok else 0)
         quality.append(qq)
     first = min((x['ts'] for x in spans + events), default=0)
     by_block = {}
@@ -306,7 +324,8 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
     for block in blocks:
         block['prewarm_calls'] = prewarm.summarize(leaves_by_block[block['id']])
     bad_capture = (not prewarm_valid or not detail_valid or not readiness['mode_valid'] or
-                   any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality))
+                   any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or
+                       q['open_spans'] > q['post_window_open_spans'] for q in quality))
     # Unexplained gaps invalidate completeness even when some blocks survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
