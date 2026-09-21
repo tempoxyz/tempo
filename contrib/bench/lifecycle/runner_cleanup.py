@@ -13,6 +13,8 @@ import sys
 import time
 
 STATE_ROOT = Path('/var/lib/schelk')
+SNAPSHOT_ROOTS = tuple(map(Path, ('/reth-bench-a', '/reth-bench-b',
+                                '/mnt/virgin', '/var/lib/schelk')))
 SCHELK_SHA = 'fd7eae0849f8bcf07e8e3e0ca9d21d529529e40c674510c291fffd9a142bf751'
 SCRIPTS = {'bench-e2e.nu', 'contrib/bench/lifecycle/backpressure.py',
            'contrib/bench/lifecycle/progress.py', 'contrib/bench/lifecycle/report.py',
@@ -174,6 +176,24 @@ def no_mounts(workspace):
         need(path != workspace and workspace not in path.parents)
 
 
+def check_workspace(workspace):
+    """Refuse snapshot roots, their ancestors/children, symlinks and mounts.
+
+    Used before the startup reset as well as the final owned-file cleanup.
+    Snapshot recovery is a separate operation; recursive deletion is never
+    allowed to reach the snapshot storage or schelk state directory.
+    """
+    need(workspace.anchor == '/' and '..' not in workspace.parts)
+    for protected in SNAPSHOT_ROOTS:
+        need(workspace != protected and workspace not in protected.parents
+             and protected not in workspace.parents)
+    fd = open_dir(workspace)
+    try:
+        no_mounts(workspace)
+    finally:
+        os.close(fd)
+
+
 def snapshot_cleanup(workspace, root_fd, uid, report):
     try: marker = os.stat('.bench-snapshot-dirty', dir_fd=root_fd, follow_symlinks=False)
     except FileNotFoundError: return 0
@@ -237,6 +257,7 @@ def clear_directory(fd, device, report, deadline, depth=0):
 def cleanup(config, report):
     need(type(config) is dict and set(config) == {'workspace', 'owner', 'capacity_paths'})
     workspace = Path(config['workspace'])
+    check_workspace(workspace)
     fd = open_dir(workspace)
     try:
         root = os.fstat(fd);owner = config['owner']
@@ -278,10 +299,17 @@ def cleanup(config, report):
 
 
 def main():
-    report = dict(schema=1, status=1, processes_stopped=0, snapshots_cleaned=0, removed_entries=0)
+    check_only = len(sys.argv) == 3 and sys.argv[1] == '--check-workspace'
+    report = (dict(schema=1, status=1, workspace_checked=0) if check_only else
+              dict(schema=1, status=1, processes_stopped=0, snapshots_cleaned=0, removed_entries=0))
     try:
-        raw = sys.stdin.buffer.read(65537);need(len(raw) <= 65536)
-        cleanup(json.loads(raw), report)
+        if check_only:
+            check_workspace(Path(sys.argv[2]))
+            report['workspace_checked'] = 1
+        else:
+            need(len(sys.argv) == 1)
+            raw = sys.stdin.buffer.read(65537);need(len(raw) <= 65536)
+            cleanup(json.loads(raw), report)
         report['status'] = 0
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         pass

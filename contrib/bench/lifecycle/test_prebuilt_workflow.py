@@ -14,6 +14,19 @@ from prebuilt_workflow import inputs
 ROOT=Path(__file__).resolve().parents[3]
 
 
+def without_workspace_guard(workflow):
+    guarded_reset = '''        env:
+          CLEANUP_DIRECTORY: ${{ steps.runner-cleanup.outputs.directory }}
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/python3 -I "$CLEANUP_DIRECTORY/cleanup.py" --check-workspace "$GITHUB_WORKSPACE"
+          sudo rm -rf --one-file-system -- "$GITHUB_WORKSPACE"
+'''
+    assert workflow.count(guarded_reset) == 1
+    workflow = workflow.replace(guarded_reset, '        run: |\n          sudo rm -rf "$GITHUB_WORKSPACE"\n')
+    return workflow
+
+
 def without_prebuilt(workflow):
     workflow,count=re.subn(r'      BENCH_BINARY_MODE: "prebuilt_v1"\n      BENCH_RUN_CLEANUP_CONTRACT: "owned_artifacts_v1"\n      # Filled only.*?\n      BENCH_PREBUILT_PLAN_SHA256: "[0-9a-f]{64}"\n','',workflow)
     assert count==1
@@ -34,7 +47,7 @@ class Workflow(unittest.TestCase):
     def test_only_explicit_prebuilt_boundary_changes_workflow(self):
         source=(ROOT/'.github/workflows/bench-e2e.yml').read_text()
         # Frozen workflow including reviewed final cleanup; works in source-only checkouts.
-        self.assertEqual(hashlib.sha256(without_prebuilt(source).encode()).hexdigest(),'b5d893409234ae42d29d9202dfe72085edc23bbb4db1a52d8dfcec533ab3732b')
+        self.assertEqual(hashlib.sha256(without_prebuilt(without_workspace_guard(source)).encode()).hexdigest(),'b5d893409234ae42d29d9202dfe72085edc23bbb4db1a52d8dfcec533ab3732b')
         self.assertIn('prebuilt_workflow.py',source)
         self.assertLess(source.index('id: refs'),source.index('- name: Admit exact prebuilt binaries'))
         self.assertLess(source.index('- name: Admit exact prebuilt binaries'),source.index('- name: Run e2e benchmark'))

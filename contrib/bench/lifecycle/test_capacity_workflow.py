@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import hashlib
 import unittest
-from test_prebuilt_workflow import without_prebuilt
+from test_prebuilt_workflow import without_prebuilt, without_workspace_guard
 
 
 def without_fault_scheduler(workflow):
@@ -18,6 +18,7 @@ def without_fault_scheduler(workflow):
     workflow=workflow.split(marker,1)[0]
     assert workflow.count('        id: workspace-reset\n')==1
     workflow=workflow.replace('        id: workspace-reset\n','')
+    workflow = without_workspace_guard(workflow)
     workflow,count=re.subn(r"          python3 - <<'PYOWNER'\n.*?          PYOWNER\n",'',workflow,flags=re.DOTALL)
     assert count==1
     workflow=workflow.replace('          - lifecycle-kernel-faults\n','')
