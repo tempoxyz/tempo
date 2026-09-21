@@ -3,7 +3,7 @@
 //! A check accepts one difference, not a transaction. Returning `Some(false)` also asserts that
 //! this difference preserves comparability of the remaining execution. Missing evidence must
 //! return `None`; fee provenance or an affected opcode alone is not an explanation.
-//! The first accepting check owns attribution AND continuation; later checks are not run.
+//! The first accepting check owns attribution and continuation; later checks are not run.
 
 use super::{Boundary, Evidence, analysis::Field};
 use tempo_chainspec::hardfork::TempoHardfork;

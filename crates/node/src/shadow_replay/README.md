@@ -14,10 +14,10 @@ struct Expectation {
 `None` means the check cannot explain this difference. `Some(invalidates_suffix)` accepts only
 that difference: `true` cuts off later comparisons; `false` asserts they remain comparable.
 The first accepting check owns attribution and continuation; later checks are not evaluated.
-Checks run in fork order (oldest first), then registration order within each fork. The engine finishes every
-comparison at the current boundary before applying a cutoff. An unexplained state, gas, or
-block-gas difference conservatively cuts off the suffix. Fee-slot provenance does not exempt
-a state change. An accepted difference can also require a cutoff.
+Checks run in fork order (oldest first), then registration order within each fork. The engine
+finishes every comparison at the current boundary before applying a cutoff. An unexplained state,
+gas, or block-gas difference conservatively cuts off the suffix. Fee-slot provenance does not
+exempt a state change. An accepted difference can also require a cutoff.
 
 The next block starts independently at its canonical parent state. A candidate rejection
 after a cutoff contributes to missing coverage, not a second independent finding. A rejection
@@ -29,8 +29,8 @@ without an earlier cutoff remains unexplained. Checks do not currently classify 
    its TIP. Add a registry entry under the introducing fork, in ascending fork order.
    Omit forks without expectations; the registry starts empty. Rule IDs must be unique.
 2. Use `Field`'s name, optional address and slot to locate typed values in `Context`'s real and
-   shadow evidence at the current boundary; never parse diagnostic strings. Return `None` when evidence
-   is insufficient. A changed gas amount or a fee-touched slot alone is insufficient.
+   shadow evidence at the current boundary; never parse diagnostic strings. Return `None` when
+   evidence is insufficient. A changed gas amount or a fee-touched slot alone is insufficient.
 3. Return `Some(true)` for accepted persistent state/context changes unless the check
    establishes comparability. Inspect coupled effects as needed, but accept each difference
    separately. Order overlapping checks deliberately: an earlier `Some(false)` takes precedence
@@ -53,8 +53,9 @@ inconclusive blocks. Logs call findings unexplained, not confirmed regressions.
 - `tempo_shadow_replay_expected_differences_total{rule}` counts accepted differences.
 - `tempo_shadow_replay_unexplained_differences_total` counts unexplained differences.
 - `tempo_shadow_replay_boundaries_total{result="compared"|"inconclusive"}` exposes coverage.
-- `tempo_shadow_replay_findings_total{kind="divergence"|"inconclusive"}` counts review blocks.
-  `divergence` preserves the existing label and means unexplained, not confirmed regression.
+- `tempo_shadow_replay_findings_total{kind="unexplained"|"inconclusive"}` counts review blocks.
+- `tempo_shadow_replay_execution_duration_seconds` records live replay duration per block.
+- `tempo_shadow_replay_latest_completed_block` tracks the latest completed live replay.
 
 Reports retain at most eight deterministic samples, prioritizing unexplained differences.
 Counts are exact for compared boundaries. Rule IDs are static; addresses, slots and block

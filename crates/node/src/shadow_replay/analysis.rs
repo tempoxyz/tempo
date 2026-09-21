@@ -17,6 +17,9 @@ mod tests;
 
 const MAX_SAMPLES: usize = 8;
 
+/// Difference counts, comparison coverage, and bounded diagnostic samples.
+///
+/// Each sample carries the first accepting rule's ID, or `None` for an unexplained difference.
 #[derive(Debug, Default)]
 pub(super) struct Report {
     pub unexplained: usize,
@@ -24,7 +27,6 @@ pub(super) struct Report {
     pub boundaries_evaluated: usize,
     pub boundaries_not_evaluated: usize,
     pub cutoff: Option<Boundary>,
-    /// ID of the first accepting rule, or `None` for an unexplained difference.
     pub samples: Vec<(Boundary, Difference, Option<&'static str>)>,
 }
 
@@ -71,7 +73,7 @@ impl Report {
             diff.record("receipt_logs", |tx| tx.receipt.logs_hash);
             diff.record("gas", |tx| tx.receipt.gas_used);
             diff.record("block_gas", |tx| tx.block_gas_used);
-            // Finish ALL comparisons at this boundary, even if one already caused a cutoff.
+            // Finish all comparisons at this boundary, even if one already caused a cutoff.
             report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
             report.boundaries_evaluated += 1;
         }
@@ -176,12 +178,13 @@ impl Report {
 }
 
 /// Identifies a changed field; rules read its typed values from `Context`.
+///
+/// Fee association records provenance only and is never sufficient to accept a difference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Field {
     pub name: &'static str,
     pub address: Option<Address>,
     pub slot: Option<U256>,
-    /// Provenance only; never sufficient to accept a difference.
     pub fee_associated: bool,
 }
 

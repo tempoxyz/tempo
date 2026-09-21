@@ -20,6 +20,7 @@ use tracing::{info, info_span, warn};
 /// Replay a canonical block range independently under candidate hardfork rules.
 #[derive(Debug, Parser)]
 pub struct ShadowReplay {
+    /// Chain and database environment to replay.
     #[command(flatten)]
     env: EnvironmentArgs<TempoChainSpecParser>,
 

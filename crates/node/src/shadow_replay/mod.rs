@@ -19,8 +19,8 @@
 //! Analysis compares completed pre-block, transaction, and post-block boundaries in order.
 //! It compares net committed effects at each boundary—not complete state equality, write history,
 //! or effects under identical evolving prefixes. Expectations classify individual differences;
-//! a state/context divergence ends analysis after its boundary unless a unique rule establishes
-//! comparability. Expected differences and incomplete coverage are reported separately.
+//! a state/context difference ends analysis after its boundary unless the first accepting rule
+//! establishes comparability. Expected differences and incomplete coverage are reported separately.
 
 mod analysis;
 mod expectations;
@@ -57,11 +57,13 @@ use tokio::sync::broadcast::error::RecvError;
 /// Result of replaying one canonical block under candidate hardfork rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayOutcome {
+    /// All boundaries matched without differences.
     Match,
     /// Every difference was accepted and all boundaries were compared.
     Expected,
     /// No unexplained finding, but subsequent comparisons could not be trusted.
     Inconclusive,
+    /// At least one difference or execution failure remains unexplained.
     Findings,
 }
 
@@ -161,14 +163,14 @@ where
                             )
                         })
                         .await;
-                    metrics::histogram!("shadow_replay_execution_duration_seconds")
+                    metrics::histogram!("tempo_shadow_replay_execution_duration_seconds")
                         .record(started_at.elapsed().as_secs_f64());
 
                     // Entered only after the await so the span never leaks across a yield point.
                     let _guard = span.enter();
                     let err = match result {
                         Ok(Ok(_)) => {
-                            metrics::gauge!("shadow_replay_latest_completed_block").set(number as f64);
+                            metrics::gauge!("tempo_shadow_replay_latest_completed_block").set(number as f64);
                             metrics::counter!("tempo_shadow_replay_blocks_total").increment(1);
                             continue;
                         }
@@ -233,8 +235,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         let kind = if outcome == ReplayOutcome::Inconclusive {
             "inconclusive"
         } else {
-            // Preserve the existing metric label for consumers of the original replayer.
-            "divergence"
+            "unexplained"
         };
         metrics::counter!("tempo_shadow_replay_findings_total", "kind" => kind).increment(1);
         let failure = shadow.failure.as_ref();
@@ -326,10 +327,12 @@ struct ReceiptObservation {
 }
 
 /// Execution evidence retained for one successfully committed transaction.
+///
+/// Section/block gas consumption is tracked separately because it can diverge even when
+/// receipt gas is unchanged.
 #[derive(Debug)]
 struct ObservedTx {
     receipt: ReceiptObservation,
-    /// Section/block gas consumption can diverge even when receipt gas is unchanged.
     block_gas_used: u64,
     output_hash: B256,
     logs_hash: B256,
