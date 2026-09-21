@@ -4,7 +4,8 @@ use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
     primitives::{Address, B256, Bytes, U256},
-    providers::{Provider, ProviderBuilder},
+    providers::{Provider, ProviderBuilder, RootProvider},
+    rpc::client::RpcClient,
     signers::{
         SignerSync,
         local::{MnemonicBuilder, PrivateKeySigner},
@@ -13,8 +14,9 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use alloy_eips::eip2718::Encodable2718;
-use alloy_network::TxSignerSync;
+use alloy_network::{ReceiptResponse, TxSignerSync};
 use reth_primitives_traits::transaction::TxHashRef;
+use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::Call};
@@ -287,30 +289,24 @@ impl TempoCalls {
         let tx_hash = *envelope.tx_hash();
         // Wait on the node's canonical-state notification instead of adding a polling
         // interval to every setup and measured transaction in the gas matrices.
-        let receipt: serde_json::Value = tokio::time::timeout(
+        // Use Tempo's receipt type to decode AA transactions over the existing transport.
+        let client = sender.provider.client();
+        let provider = RootProvider::<TempoNetwork>::new(RpcClient::new(
+            client.transport().clone(),
+            client.is_local(),
+        ));
+        let encoded = envelope.encoded_2718();
+        let receipt = tokio::time::timeout(
             std::time::Duration::from_secs(12),
-            sender.provider.raw_request(
-                "eth_sendRawTransactionSync".into(),
-                [Bytes::from(envelope.encoded_2718())],
-            ),
+            provider.send_raw_transaction_sync(&encoded),
         )
         .await
         .map_err(|_| eyre::eyre!("timed out waiting for tempo calls receipt {tx_hash}"))??;
-        let status = receipt["status"]
-            .as_str()
-            .ok_or_else(|| eyre::eyre!("tempo calls receipt missing status field"))?;
-        eyre::ensure!(status == "0x1", "tempo calls reverted: {receipt}");
-        let gas_used = hex_u64_field(&receipt, "gasUsed")?;
+        eyre::ensure!(receipt.status(), "tempo calls reverted: {receipt:?}");
+        let gas_used = receipt.gas_used;
         sender.nonce += 1;
         Ok(Receipt { tx_hash, gas_used })
     }
-}
-
-fn hex_u64_field(receipt: &serde_json::Value, field: &str) -> eyre::Result<u64> {
-    let value = receipt[field]
-        .as_str()
-        .ok_or_else(|| eyre::eyre!("tempo calls receipt missing {field} field"))?;
-    Ok(u64::from_str_radix(value.trim_start_matches("0x"), 16)?)
 }
 
 pub(crate) fn print_gas_snapshot(title: &str, gas: &GasSnapshot) {
