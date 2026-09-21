@@ -101,17 +101,22 @@ impl Report {
         let accepted = rules
             .iter()
             .find_map(|rule| (rule.check)(ctx, &difference).map(|result| (rule.id, result)));
-        let (rule_id, cutoff) = match accepted {
-            Some((id, continuation)) => {
+        let mut continuation = Continuation::Continue;
+        let rule_id = match accepted {
+            Some((id, result)) => {
                 *self.expected.entry(id).or_default() += 1;
-                (Some(id), continuation == Continuation::InconclusiveSuffix)
+                continuation = result;
+                Some(id)
             }
             None => {
                 self.unexplained += 1;
-                (None, difference.affects_continuation())
+                if difference.affects_continuation() {
+                    continuation = Continuation::InconclusiveSuffix;
+                }
+                None
             }
         };
-        if cutoff {
+        if continuation == Continuation::InconclusiveSuffix {
             self.cutoff.get_or_insert(ctx.boundary);
         }
         self.samples.push((ctx.boundary, difference, rule_id));
