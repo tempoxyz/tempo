@@ -320,11 +320,11 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/secure-runner@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/github-sts@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
@@ -478,18 +478,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Terraform
-        uses: tempoxyz/gh-actions/actions/setup-terraform@68851d67c611dc0050e9f3fcd5bd47f3f899a00e # main
+        uses: tempoxyz/gh-actions/actions/setup-terraform@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           version: 1.14.7
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           toolchain: stable
 
       - name: Configure AWS credentials
         if: env.BENCH_INPUT_CLOUD == 'aws'
-        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
@@ -517,14 +517,14 @@ jobs:
 
       - name: Authenticate to Google Cloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           workload_identity_provider: ${{ env.BENCH_GCP_WIF_PROVIDER }}
           service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
 
       - name: Setup Google Cloud CLI
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
 

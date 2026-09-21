@@ -44,7 +44,7 @@ jobs:
       eligible: ${{ steps.ci.outputs.eligible }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/secure-runner@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
 
       - name: Wait for required CI checks
         id: ci
@@ -140,7 +140,7 @@ jobs:
       packages: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/secure-runner@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
 
       - name: Check current branch head
         id: branch-head
@@ -162,7 +162,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: steps.branch-head.outputs.current == 'true'
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -170,7 +170,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.branch-head.outputs.current == 'true'
-        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@baf48ebcfcb26812085b8351125493b2ef8009ab # 2026-09-21T19-33-30Z-baf48ebc
 
       - name: Resolve and verify immutable image
         if: steps.branch-head.outputs.current == 'true'
