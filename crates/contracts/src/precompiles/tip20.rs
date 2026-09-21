@@ -245,10 +245,14 @@ fn is_call<C: SolCall>(input: &[u8]) -> bool {
         && <C::Parameters<'_> as SolType>::ENCODED_SIZE.is_some_and(|size| input.len() == 4 + size)
 }
 
+/// Shape of the addresses needed to derive a payment call's storage slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaymentSlotsKind {
+    /// No addresses (`approve`, `burn`, `burnWithMemo`).
     Empty,
+    /// Recipient only (`transfer`, `transferWithMemo`, `mint`, `mintWithMemo`).
     Direct,
+    /// Token owner followed by recipient (`transferFrom`, `transferFromWithMemo`).
     Delegated,
 }
 
@@ -276,8 +280,9 @@ fn payment_slots_kind(input: &[u8]) -> Option<PaymentSlotsKind> {
 /// A [TIP-20 payment] call classified straight from calldata, without ABI decoding.
 ///
 /// Carries only the addresses needed to derive the storage slots a payment touches, read
-/// in place from the static ABI head. Amounts and memos are never materialized, which is
-/// why this is cheaper than decoding into [`ITIP20Calls`] just to read one or two addresses.
+/// in place from the static ABI head. Its private array stores only a meaningful zero-to-two-
+/// address prefix. Amounts and memos are never materialized, which is why this is cheaper than
+/// decoding into [`ITIP20Calls`] just to read one or two addresses.
 ///
 /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
 /// [`ITIP20Calls`]: ITIP20::ITIP20Calls
@@ -288,7 +293,7 @@ pub struct PaymentSlots {
 }
 
 impl PaymentSlots {
-    /// Classifies payment calldata and reads only its address arguments.
+    /// Classifies payment calldata by exact selector and length, reading only its addresses.
     pub fn classify(input: &[u8]) -> Option<Self> {
         fn address(input: &[u8], index: usize) -> Address {
             let start = 4 + 32 * index + 12;
@@ -304,6 +309,7 @@ impl PaymentSlots {
         Some(Self { kind, addresses })
     }
 
+    /// Returns the transfer or mint recipient, including memo variants, if any.
     pub const fn to(&self) -> Option<Address> {
         match self.kind {
             PaymentSlotsKind::Empty => None,
@@ -312,6 +318,7 @@ impl PaymentSlots {
         }
     }
 
+    /// Returns the token owner for `transferFrom` and `transferFromWithMemo`, if any.
     pub const fn from(&self) -> Option<Address> {
         match self.kind {
             PaymentSlotsKind::Delegated => Some(self.addresses[0]),
@@ -319,6 +326,7 @@ impl PaymentSlots {
         }
     }
 
+    /// Returns `[to]`, `[from, to]`, or an empty slice according to the payment shape.
     pub fn addresses(&self) -> &[Address] {
         let len = match self.kind {
             PaymentSlotsKind::Empty => 0,
