@@ -246,6 +246,7 @@ where
         });
     }
 
+    #[instrument(skip_all, err)]
     async fn is_state_v1_activated(&self, state: &State) -> eyre::Result<bool> {
         let Some(activation) = self.config.execution_node.t12_activation_timestamp() else {
             return Ok(false);
@@ -269,6 +270,7 @@ where
         Ok(boundary_timestamp >= activation)
     }
 
+    #[instrument(skip_all, fields(epoch = %storage.current().epoch))]
     async fn run_dkg_loop<TStorageContext, TSender, TReceiver>(
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
