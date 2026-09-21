@@ -26,6 +26,29 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_sender_population_and_root_result_success_survive_reporting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            for row in records:
+                if row.get('fields', {}).get('stage') == 'proposal_ready':
+                    row['fields']['height'] = row['id'] + 1000
+            for ident, count in ((1, 3), (2, 200), (3, 0), (4, 300)):
+                records[-1:-1] = [
+                    dict(type='event', id=ident, ts=ident*1_000_000_000+200,
+                         fields=dict(stage='execution_totals', transactions=count)),
+                    dict(type='event', id=ident, ts=ident*1_000_000_000+300,
+                         fields=dict(stage='state_root_result_ready', success=ident%2)),
+                ]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = build([path], warmup=0, workload_blocks={1002:200, 1003:0})
+            self.assertEqual(result['eligible'], 1)
+            self.assertEqual([b['id'] for b in result['blocks'] if b['in_population']], [2])
+            self.assertEqual(result['workload_population']['completed_transactions'], 200)
+            for block in result['blocks'][:4]:
+                ready = [m for m in block['markers'] if m['stage']=='state_root_result_ready']
+                self.assertEqual(ready[0]['success'], block['id']%2)
+
     def test_worker_slice_cpu_uses_exact_node_span_kind_and_retained_completion(self):
         from perfetto import trace_events
         with tempfile.TemporaryDirectory() as directory:

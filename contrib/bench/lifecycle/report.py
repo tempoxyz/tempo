@@ -11,7 +11,7 @@ import read_readiness
 from collections import defaultdict
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
-STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
+STAGES = ('builder_execution_done', 'state_root_result_ready', 'proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
           'verify_start', 'body_ready', 'replay_start', 'replay_done', 'verify_done',
           'notarize_vote_sent', 'notarized', 'finalize_vote_sent', 'finalized', 'finalization_received', 'cancelled', 'proposal_failed')
 
@@ -281,7 +281,7 @@ def shutdown_tail_open_spans(spans, events, quality, window):
     return sum(span['ts'] < window['end_ns'] for span in opened)
 
 
-def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None):
+def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None, workload_blocks=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -311,7 +311,11 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
     readiness = read_readiness.build(events, quality, aliases, first, cutoff)
     blocks = []
     for key in keys:
-        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'])
+        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'],
+                        **({'success': e['fields']['success']} if
+                           e['fields'].get('stage') == 'state_root_result_ready' and
+                           type(e['fields'].get('success')) is int and
+                           e['fields']['success'] in (0, 1) else {}))
                    for e in by_block[key] if e['fields'].get('stage') in STAGES]
         starts = [e['ts'] for e in markers if e['stage'] == 'proposal_start']
         ends = [e['ts'] for e in markers if e['stage'] == 'finalized']
@@ -350,6 +354,10 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         b['warmup'] = True
     eligible = [b for b in completed if not b.get('warmup') and (not window or 'start_ns' not in window or
                 (b['start'] >= (window['start_ns']-first)/1e6 and b['end'] <= (window['end_ns']-first)/1e6))]
+    workload_population = {'source': 'process_window'}
+    if workload_blocks is not None:
+        import workload
+        eligible, workload_population = workload.select(eligible, by_block, aliases, workload_blocks)
     for b in blocks:
         b['in_population'] = b in eligible
     details = {q['detail'] for q in quality}
@@ -443,20 +451,27 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
             'attempt_details':attempt_details, 'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
-            'read_readiness': readiness,
+            'read_readiness': readiness, 'workload_population': workload_population,
             'coverage':sorted({s['name'] for s in rows}), 'stages':list(STAGES), 'bad_capture':bad_capture,
             'definition':('Milestone-only capture: detailed proof, storage, network and poll spans are intentionally disabled. This report measures coarse lifecycle intervals and does not provide complete operation coverage. ' if detail == 'milestones' else '') +
-                'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
+                'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the process window. If workload_population.source is sender_block_range_nonempty, percentiles additionally require a nonempty sender-listed block with matching transaction count; setup and post-load processing blocks are excluded. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None, scheduler_dir=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None, scheduler_dir=None, workload_report=None):
     from progress import emit
     if prune:
         emit('lifecycle_prune', 'begin')
         paths, window = prepare_captures(paths, out, window)
         emit('lifecycle_prune', 'end')
     emit('lifecycle_build', 'begin')
-    data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu)
+    workload_blocks = None
+    if workload_report is not None:
+        import workload
+        if workload_report.is_file():
+            workload_blocks = workload.load(workload_report)
+        elif not (window or {}).get('backpressure'):
+            raise ValueError('workload_report_unavailable')
+    data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu, workload_blocks)
     emit('lifecycle_build', 'end')
     out.mkdir(parents=True, exist_ok=True)
     if scheduler_dir is not None:
@@ -492,6 +507,7 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--window', type=Path)
+    parser.add_argument('--workload-report', type=Path, help='Private sender report; select its complete nonempty workload blocks')
     parser.add_argument('--scheduler-dir', type=Path, help='Require matching private scheduler captures')
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
@@ -500,7 +516,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu, args.scheduler_dir)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu, args.scheduler_dir, args.workload_report)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; invalid capture: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)

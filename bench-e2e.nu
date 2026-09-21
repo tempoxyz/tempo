@@ -1326,7 +1326,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         rm -f $lifecycle_key
         let prewarm_report_args = if $ctx.lifecycle_prewarm_cpu == "compare" { ["--expected-prewarm-cpu" $prewarm_config.expected] } else { [] }
         let scheduler_report_args = if $ctx.lifecycle_scheduler { ["--scheduler-dir" $lifecycle_dir] } else { [] }
-        let report = (^python3 contrib/bench/lifecycle/progress.py ...$scheduler_report_args --prune --expected-detail $capture_detail ...$prewarm_report_args --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" err> /dev/stderr | complete)
+        let report = (^python3 contrib/bench/lifecycle/progress.py ...$scheduler_report_args --prune --expected-detail $capture_detail ...$prewarm_report_args --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --workload-report $"($ctx.results_dir)/report-($phase).json" --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" err> /dev/stderr | complete)
         if $report.exit_code != 0 { $phase_exit = 1 }
         rm -rf $lifecycle_dir
         if $phase_exit == 0 {
