@@ -201,3 +201,61 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
         assert_eq!(queued_rounds(&actor), vec![1, 2, 4]);
     });
 }
+
+#[test]
+fn replacing_a_walk_aborts_its_already_delivered_parent() {
+    deterministic::Runner::default().start(|context| async move {
+        let marshal = FakeMarshal::new();
+        let (mut actor, _mailbox) = crate::executor::init(
+            context,
+            crate::executor::Config {
+                execution_node: FakeExecution::new(),
+                marshal: marshal.clone(),
+                finalized_floor: Height::zero(),
+                finalized_tip: (round(0), Height::zero(), GENESIS),
+                fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
+                public_key: None,
+            },
+        )
+        .unwrap();
+
+        let parent = make_block(1, 1, GENESIS);
+        let candidate = make_block(2, 2, parent.digest());
+        let (response, old_verdict) = futures::channel::oneshot::channel();
+        actor.queue_verification(Verification::new(
+            round(2),
+            tracing::Span::none(),
+            candidate.clone().into(),
+            response,
+        ));
+        actor
+            .apply_verification_outcome(round(2), super::WalkOutcome::NeedsFetch)
+            .unwrap();
+
+        // The parent is buffered in the old receiver when a new request
+        // replaces its owner. It must not advance the replacement walk.
+        assert!(marshal.fulfill_subscription(parent.digest(), parent.clone()));
+        let (response, _new_verdict) = futures::channel::oneshot::channel();
+        actor.queue_verification(Verification::new(
+            round(2),
+            tracing::Span::none(),
+            candidate.clone().into(),
+            response,
+        ));
+        actor
+            .apply_verification_outcome(round(2), super::WalkOutcome::NeedsFetch)
+            .unwrap();
+        assert!(old_verdict.await.is_err());
+        assert!(actor.parent_fetches.next_completed().await.is_err());
+        let walk = &actor.queued_verifications[&round(2)].walk;
+        assert_eq!(walk.cursor.digest(), candidate.digest());
+        assert!(matches!(walk.step, super::WalkStep::FetchParent { .. }));
+
+        assert!(marshal.fulfill_subscription(parent.digest(), parent.clone()));
+        let (owner, block) = actor.parent_fetches.next_completed().await.unwrap();
+        actor.handle_parent_fetched(owner, block);
+        let walk = &actor.queued_verifications[&round(2)].walk;
+        assert_eq!(walk.cursor.digest(), parent.digest());
+        assert!(matches!(walk.step, super::WalkStep::Probe));
+    });
+}

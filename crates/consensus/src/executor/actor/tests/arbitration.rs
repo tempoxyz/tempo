@@ -116,7 +116,7 @@ fn a_newer_verification_leaves_a_queued_build_alone() {
 #[test_traced]
 fn a_newer_verification_waits_for_the_in_flight_probe_then_goes_first() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let old_digest = candidate.digest();
@@ -153,7 +153,6 @@ fn a_newer_verification_waits_for_the_in_flight_probe_then_goes_first() {
             h.marshal
                 .fulfill_subscription(parent.digest(), parent.clone())
         );
-        h.kick();
         old.await.unwrap().unwrap();
         assert_eq!(
             h.execution.new_payloads(),

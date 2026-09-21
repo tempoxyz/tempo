@@ -204,6 +204,62 @@ fn pending_head_syncing_drives_ancestor_fetches_and_deliveries() {
 }
 
 #[test_traced]
+fn advancing_finality_cancels_the_ancestor_fetch_and_reprobes_the_pending_head() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let (d1, d2, d3) = (b1.digest(), b2.digest(), b3.digest());
+        h.marshal.add_block(b3);
+        drop(h.build(round(4), d3));
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(d2, round(2))])
+            .await;
+
+        h.deliver_tip(round(2), 2, d2);
+        h.wait_until(|| {
+            h.marshal.open_subscriptions().is_empty() && h.execution.new_payloads() == vec![d3, d3]
+        })
+        .await;
+        assert_eq!(h.execution.head(), GENESIS);
+        h.deliver_finalized(b1).await.unwrap();
+        assert_eq!(h.execution.new_payloads(), vec![d3, d3, d1]);
+        h.deliver_finalized(b2).await.unwrap();
+        h.wait_until(|| h.execution.head() == d3).await;
+        assert_eq!(h.execution.new_payloads(), vec![d3, d3, d1, d2, d3]);
+        assert_eq!(h.marshal.subscribe_log(), vec![(d2, round(2))]);
+    });
+}
+
+#[test_traced]
+fn advancing_finalized_round_cancels_a_fetch_above_the_finalized_height() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let parent = make_block(2, 2, b1.digest());
+        let target = make_block(3, 3, parent.digest());
+        let finalized = make_block(2, 1, GENESIS);
+        let (p, t) = (parent.digest(), target.digest());
+        h.marshal.add_block(target);
+        drop(h.build(round(4), t));
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(p, round(2))])
+            .await;
+
+        // The head remains above finality, but its ancestry crosses the
+        // round boundary before reaching the finalized height.
+        h.deliver_tip(round(2), 1, finalized.digest());
+        h.wait_until(|| {
+            h.marshal.open_subscriptions().is_empty() && h.execution.new_payloads() == vec![t, t]
+        })
+        .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.new_payloads(), vec![t, t]);
+        assert_eq!(h.marshal.subscribe_log(), vec![(p, round(2))]);
+        assert_eq!(h.execution.head(), GENESIS);
+    });
+}
+
+#[test_traced]
 fn pending_head_walk_uses_execution_layer_bodies_without_marshal() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);

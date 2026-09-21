@@ -43,9 +43,11 @@
 //! locally, in the execution layer and marshal storage, and the walk keeps
 //! the slot for that. If neither has it, the walk subscribes for the parent
 //! with the marshal actor, which fetches it from peers, and gives the slot
-//! up: it waits in the queue, unpolled, until the loop finds the delivered
-//! parent in its channel on a later iteration. A walk waiting for
-//! finalization to deliver an ancestor waits the same way.
+//! up: an abortable pool polls the subscription, while the walk retains its
+//! abort handle. Parent delivery wakes the actor; queued cancellations are
+//! reaped when the loop next reconciles the queue.
+//! A walk waiting for finalization resumes when the finalization pipeline
+//! delivers its ancestor.
 //!
 //! Requesters that go away are dropped without a verdict, and a request for
 //! the same round replaces the pending one.
@@ -87,7 +89,11 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Spawner, spawn_cell,
 };
-use commonware_utils::{Acknowledgement, acknowledgement::Exact};
+use commonware_utils::{
+    Acknowledgement,
+    acknowledgement::Exact,
+    futures::{AbortablePool, Aborter},
+};
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure, eyre};
 use futures::{
     FutureExt as _, StreamExt as _,
@@ -101,10 +107,9 @@ use futures::{
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tokio::{select, sync::oneshot::error::TryRecvError};
+use tokio::select;
 use tracing::{
-    Instrument as _, Level, Span, debug, error, error_span, info, info_span, instrument, trace,
-    warn,
+    Instrument as _, Level, Span, debug, error, error_span, info, info_span, instrument, warn,
 };
 
 use super::{
@@ -184,11 +189,11 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 
     /// Verifications waiting for the slot, by round: fresh candidates, walks
     /// waiting for a subscribed ancestor or for finalization, and walks with
-    /// a fetched ancestor in hand. They are not polled: a subscription that
-    /// has delivered, or a requester that went away, is noticed when the
-    /// queue is next reconciled. A request stays until it has a verdict,
-    /// fails, is found canceled, its round falls at or below the network
-    /// finalized round, or a request for the same round replaces it.
+    /// a fetched ancestor in hand. Parent subscriptions live in the fetch
+    /// pool; canceled requests are reaped when the queue is reconciled.
+    /// A request stays until it has a verdict, fails, is found canceled,
+    /// its round falls at or below the network finalized round, or a request
+    /// for the same round replaces it.
     queued_verifications: BTreeMap<Round, Verification>,
     /// The verification holding the engine slot: the one whose cursor is in
     /// flight, about to be probed, or whose parent is being looked up
@@ -197,12 +202,15 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// actor or for finalization goes back into the queue.
     active_verification: Option<Verification>,
 
+    /// Parent subscriptions for verification and convergence walks. Each
+    /// walk owns the abort handle for its subscription.
+    parent_fetches: AbortablePool<'static, (WalkOwner, Option<Arc<Block>>)>,
+
     /// The walk that delivers the pending head so that a forkchoice update can
     /// select it as HEAD. Starts once the pending head's body is known and is
     /// dropped when the pending head changes or no longer needs delivery.
     convergence: Option<AncestryWalk>,
-    /// Fetches the pending head's body before its walk exists. Ancestor
-    /// fetches live inside the walks' steps.
+    /// Fetches the pending head's body before its walk exists.
     pending_head_fetch: OptionFuture<PendingNotarizedBlock>,
 
     /// The single execution task. A build owns the slot from fetching its parent
@@ -378,6 +386,7 @@ where
             pending_build: None,
             queued_verifications: BTreeMap::new(),
             active_verification: None,
+            parent_fetches: AbortablePool::default(),
             convergence: None,
             pending_head_fetch: OptionFuture::none(),
 
@@ -466,9 +475,15 @@ where
                     }
                 }
 
+                completion = self.parent_fetches.next_completed() => {
+                    if let Ok((owner, block)) = completion {
+                        self.handle_parent_fetched(owner, block);
+                    }
+                }
+
                 outcome = async {
                     match &mut self.convergence {
-                        Some(walk) => walk.next_fetch().await,
+                        Some(walk) => walk.next_lookup().await,
                         None => std::future::pending().await,
                     }
                 } => {
@@ -554,9 +569,8 @@ where
                 // arrive, so every delivery counts toward the next update.
                 self.deliveries_since_forkchoice += 1;
                 // The engine call itself failing is fatal, whoever asked.
-                let (status, duration) = status.wrap_err_with(|| {
-                    format!("failed delivering block `{digest}` for {owner:?}")
-                })?;
+                let (status, duration) = status
+                    .wrap_err_with(|| format!("failed delivering block `{digest}` for {owner}"))?;
                 // An ACCEPTED answer is logged by the handlers and ends the
                 // verification or stops the convergence walk.
                 let _logged = match owner {
@@ -625,15 +639,16 @@ where
             return Ok(());
         }
         active.duration += duration;
-        let finalized = (self.network_finalized_tip.1, self.network_finalized_tip.2);
-        let outcome = active
-            .walk
-            .on_status(status, finalized, self.delivered_finalized.0);
+        let outcome = active.walk.on_status(
+            status,
+            self.network_finalized_tip,
+            self.delivered_finalized.0,
+        );
         self.apply_verification_outcome(round, outcome)
     }
 
     /// Acts on what a verification's walk reported, after an engine answer
-    /// or a parent lookup or fetch. A verdict answers the requester and
+    /// or a local parent lookup. A verdict answers the requester and
     /// drops the verification; a failure drops it without one.
     fn apply_verification_outcome(
         &mut self,
@@ -641,7 +656,11 @@ where
         outcome: WalkOutcome,
     ) -> eyre::Result<()> {
         let (execution_node, marshal) = (self.execution_node.clone(), self.marshal.clone());
-        let Some(verification) = self.verification_mut(round) else {
+        let verification = match &mut self.active_verification {
+            Some(active) if active.round == round => Some(active),
+            _ => self.queued_verifications.get_mut(&round),
+        };
+        let Some(verification) = verification else {
             return Ok(());
         };
         let verdict = match outcome {
@@ -651,16 +670,15 @@ where
                 return Ok(());
             }
             WalkOutcome::NeedsFetch => {
-                verification.walk.fetch_parent(marshal);
+                verification.walk.fetch_parent(
+                    marshal,
+                    WalkOwner::Verification(round),
+                    &mut self.parent_fetches,
+                );
                 return Ok(());
             }
             WalkOutcome::SyncingAtDeliveredFinality => {
                 verification.walk.reprobe();
-                return Ok(());
-            }
-            WalkOutcome::ParentUnavailable => {
-                warn!(%round, "marshal gave up on the verification's ancestor; failing the request");
-                self.remove_verification(round);
                 return Ok(());
             }
             WalkOutcome::TargetValid => Some(verification.duration),
@@ -698,13 +716,16 @@ where
         if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
-        let finalized = (self.network_finalized_tip.1, self.network_finalized_tip.2);
-        let outcome = walk.on_status(status, finalized, self.delivered_finalized.0);
+        let outcome = walk.on_status(
+            status,
+            self.network_finalized_tip,
+            self.delivered_finalized.0,
+        );
         self.apply_convergence_outcome(outcome, finalized_round)
     }
 
     /// Acts on what the convergence walk reported, after an engine answer or
-    /// a parent lookup or fetch. `finalized_round` is the network finalized
+    /// a local parent lookup. `finalized_round` is the network finalized
     /// round the reporting work was scheduled under; a VALID target that
     /// overlapped a newer one is not recorded.
     fn apply_convergence_outcome(
@@ -720,11 +741,11 @@ where
             WalkOutcome::NeedsParent => {
                 walk.look_up_parent(self.execution_node.clone(), self.marshal.clone())
             }
-            WalkOutcome::NeedsFetch => walk.fetch_parent(self.marshal.clone()),
-            WalkOutcome::ParentUnavailable => {
-                warn!("marshal gave up on the ancestor; retrying the fetch");
-                walk.look_up_parent(self.execution_node.clone(), self.marshal.clone());
-            }
+            WalkOutcome::NeedsFetch => walk.fetch_parent(
+                self.marshal.clone(),
+                WalkOwner::Convergence,
+                &mut self.parent_fetches,
+            ),
             WalkOutcome::TargetValid => {
                 let target = (walk.cursor.height(), walk.cursor.digest());
                 self.convergence = None;
@@ -774,6 +795,7 @@ where
             && self.pending_head.executed.is_none()
     }
 
+    #[instrument(skip_all)]
     fn prune_finalized(&mut self) {
         let (round, height, digest) = self.network_finalized_tip;
         debug_assert!(self.local_state.finalized.0 <= height);
@@ -806,6 +828,15 @@ where
                 .is_some_and(|walk| walk.target.digest() != self.pending_head.digest)
         {
             self.convergence = None;
+        }
+
+        // Finalization now owns ancestry at or below the tip. Restart the
+        // surviving walks before consuming any obsolete fetch completions.
+        for verification in self.verifications_mut() {
+            verification.walk.on_finalized_tip(round, height);
+        }
+        if let Some(walk) = &mut self.convergence {
+            walk.on_finalized_tip(round, height);
         }
     }
 
@@ -1221,12 +1252,12 @@ where
         }
     }
 
-    /// Reconciles the queue and hands the engine slot to the newest
-    /// verification ready to probe. The holder keeps it while its cursor is
-    /// in flight or its parent is being looked up locally. Otherwise it goes
-    /// back into the queue, and the pick is made afresh: a walk waiting for
-    /// the marshal actor or for finalization is skipped, a newer candidate
-    /// goes first.
+    /// Applies completed parent fetches, reconciles the queue, and hands the
+    /// engine slot to the newest verification ready to probe. The holder
+    /// keeps it while its cursor is in flight or its parent is being looked
+    /// up locally. Otherwise it goes back into the queue, and the pick is
+    /// made afresh: a walk waiting for the marshal actor or for finalization
+    /// is skipped, a newer candidate goes first.
     #[instrument(
         skip_all,
         fields(
@@ -1235,19 +1266,24 @@ where
         ),
     )]
     fn update_verifications(&mut self) {
-        // Queued walks are not polled. A parent the marshal actor delivered
-        // meanwhile waits in its channel until the loop comes around and is
-        // taken out here.
+        // Make every delivered parent ready before choosing the newest
+        // verification to probe, regardless of pool completion order.
+        //
+        // Reason: the abort-pool inside the select-loop can trigger for one
+        // subscription while in reality several have been resolved.
+        while let Some(completion) = self.parent_fetches.next_completed().now_or_never() {
+            if let Ok((owner, block)) = completion {
+                self.handle_parent_fetched(owner, block);
+            }
+        }
+
+        // Discard canceled requests before selecting a walk to probe.
         self.queued_verifications.retain(|round, queued| {
-            if queued.is_canceled() {
+            let is_cancelled = queued.is_canceled();
+            if is_cancelled {
                 debug!(%round, "dropping verification whose requester went away");
-                return false;
             }
-            let viable = queued.walk.take_delivered_parent();
-            if !viable {
-                warn!(%round, "marshal gave up on the verification's ancestor; failing the request");
-            }
-            viable
+            !is_cancelled
         });
         if let Some(active) = &self.active_verification
             && !matches!(
@@ -1369,8 +1405,7 @@ where
         }
     }
 
-    /// A verification woke the event loop: its requester went away or its
-    /// walk's parent lookup or fetch resolved.
+    /// A requester's cancellation or the active walk's local lookup woke the actor.
     #[instrument(skip_all, fields(%round))]
     fn handle_verification_event(
         &mut self,
@@ -1387,18 +1422,46 @@ where
         }
     }
 
+    /// Applies a subscription result before the actor can replace its owner.
+    /// Dropping or restarting a walk aborts its outstanding fetch, so a
+    /// completion cannot be delivered to a replacement for the same owner.
+    #[instrument(skip_all, fields(%owner))]
+    fn handle_parent_fetched(&mut self, owner: WalkOwner, block: Option<Arc<Block>>) {
+        let walk = match owner {
+            WalkOwner::Verification(round) => match &mut self.active_verification {
+                Some(active) if active.round == round => Some(&mut active.walk),
+                _ => self
+                    .queued_verifications
+                    .get_mut(&round)
+                    .map(|v| &mut v.walk),
+            },
+            WalkOwner::Convergence => self.convergence.as_mut(),
+        };
+        let Some(walk) = walk else {
+            debug!("walk was canceled before the fetched parent could be applied");
+            return;
+        };
+        if let Some(block) = block {
+            walk.on_fetched(block);
+            return;
+        }
+        match owner {
+            WalkOwner::Verification(round) => {
+                warn!(%round, "marshal gave up on the verification's ancestor; failing the request");
+                self.remove_verification(round);
+            }
+            WalkOwner::Convergence => {
+                warn!("marshal gave up on the ancestor; retrying the fetch");
+                walk.look_up_parent(self.execution_node.clone(), self.marshal.clone());
+            }
+        }
+    }
+
     /// Every verification, active first.
     fn verifications_mut(&mut self) -> impl Iterator<Item = &mut Verification> {
         self.active_verification
             .iter_mut()
             .chain(self.queued_verifications.values_mut())
-    }
-
-    fn verification_mut(&mut self, round: Round) -> Option<&mut Verification> {
-        match &mut self.active_verification {
-            Some(active) if active.round == round => Some(active),
-            _ => self.queued_verifications.get_mut(&round),
-        }
     }
 
     /// Drops the verification, wherever it sits; its channel closes.
@@ -1676,10 +1739,11 @@ impl Future for PendingNotarizedBlock {
 
 /// A verification request and its ancestry walk. It holds the engine slot
 /// while its cursor is probed and waits in the queue otherwise, fetching
-/// there if it must. Its requester's cancellation and its walk's fetch are
-/// polled through [`Self::poll_event`]. It stays until the candidate has a
-/// verdict, the request fails or is canceled, its round falls at or below the
-/// network finalized round, or a request for the same round replaces it.
+/// there if it must. The actor polls active requester cancellation, reaps
+/// canceled queued requests, and pools parent subscriptions. It stays until
+/// the candidate has a verdict, the request fails or is canceled, its round
+/// falls at or below the network finalized round, or a request for the same
+/// round replaces it.
 struct Verification {
     round: Round,
     /// The walk toward the candidate, which is its target.
@@ -1718,13 +1782,12 @@ impl Verification {
         }
     }
 
-    /// Polls the requester's cancellation and the walk's lookup or fetch.
-    /// Only the active verification is polled.
+    /// Polls the active requester's cancellation and its local parent lookup.
     fn poll_event(&mut self, cx: &mut std::task::Context<'_>) -> Poll<VerificationEvent> {
         if self.response.poll_canceled(cx).is_ready() {
             return Poll::Ready(VerificationEvent::Canceled);
         }
-        self.walk.poll_fetch(cx).map(VerificationEvent::Walk)
+        self.walk.poll_lookup(cx).map(VerificationEvent::Walk)
     }
 }
 
@@ -1732,7 +1795,7 @@ impl Verification {
 enum VerificationEvent {
     /// Its requester went away.
     Canceled,
-    /// Its walk's parent lookup or fetch resolved.
+    /// Its local parent lookup resolved.
     Walk(WalkOutcome),
 }
 
@@ -1758,8 +1821,8 @@ struct AncestryWalk {
     target: Arc<Block>,
     /// The block the walk probes next, or probed last.
     cursor: Arc<Block>,
-    /// The step owns the parent fetch while one is running. The owner starts
-    /// it, as it holds the execution layer and marshal handles.
+    /// The step owns the local lookup or the abort handle for a pooled
+    /// parent subscription. Changing steps cancels any outstanding fetch.
     step: WalkStep,
 }
 
@@ -1775,7 +1838,7 @@ enum WalkStep {
     /// The parent is not held locally and is subscribed for with the marshal
     /// actor, which may have to fetch it from peers. The receiver closes if
     /// the marshal actor gives up on it.
-    FetchParent(tokio::sync::oneshot::Receiver<Arc<Block>>),
+    FetchParent { _aborter: Aborter },
     /// The cursor's parent is the finalized tip at `height`, which the
     /// finalization pipeline has not delivered yet.
     WaitForFinalized { height: Height },
@@ -1790,15 +1853,15 @@ impl WalkStep {
             Self::Probe => "probe",
             Self::InFlight => "in_flight",
             Self::LookUpParent(_) => "look_up_parent",
-            Self::FetchParent(_) => "fetch_parent",
+            Self::FetchParent { .. } => "fetch_parent",
             Self::WaitForFinalized { .. } => "wait_for_finalized",
             Self::Stopped => "stopped",
         }
     }
 }
 
-/// What the owner must decide after an engine answer or a resolved parent
-/// lookup or fetch. Every outcome other than `Continue` leaves the step as
+/// What the owner must decide after an engine answer or a local parent
+/// lookup. Every outcome other than `Continue` leaves the step as
 /// it was for the owner to end, restart, stop, or fetch for.
 enum WalkOutcome {
     /// The walk moved on by itself.
@@ -1809,8 +1872,6 @@ enum WalkOutcome {
     /// Neither the execution layer nor marshal storage has the parent; the
     /// owner subscribes for it with the marshal actor.
     NeedsFetch,
-    /// The marshal actor gave up on the subscribed parent.
-    ParentUnavailable,
     /// The target itself returned VALID: it is executed and connected to the
     /// canonical chain.
     TargetValid,
@@ -1837,6 +1898,15 @@ enum WalkOwner {
     /// The verification queued under this round.
     Verification(Round),
     Convergence,
+}
+
+impl std::fmt::Display for WalkOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Verification(round) => write!(f, "verification {round}"),
+            Self::Convergence => f.write_str("convergence"),
+        }
+    }
 }
 
 impl AncestryWalk {
@@ -1885,30 +1955,30 @@ impl AncestryWalk {
         self.step = WalkStep::Stopped;
     }
 
-    /// Polls the step's lookup or fetch, if any. A found parent becomes the
+    /// Polls the step's local lookup, if any. A found parent becomes the
     /// cursor; a miss is reported for the owner to act on.
-    fn poll_fetch(&mut self, cx: &mut std::task::Context<'_>) -> Poll<WalkOutcome> {
+    fn poll_lookup(&mut self, cx: &mut std::task::Context<'_>) -> Poll<WalkOutcome> {
         let outcome = match &mut self.step {
             WalkStep::LookUpParent(lookup) => match ready!(lookup.poll_unpin(cx)) {
-                Some(block) => self.on_fetched(block),
+                Some(block) => {
+                    self.on_fetched(block);
+                    WalkOutcome::Continue
+                }
                 None => WalkOutcome::NeedsFetch,
-            },
-            WalkStep::FetchParent(receiver) => match ready!(receiver.poll_unpin(cx)) {
-                Ok(block) => self.on_fetched(block),
-                Err(_closed) => WalkOutcome::ParentUnavailable,
             },
             WalkStep::Probe
             | WalkStep::InFlight
+            | WalkStep::FetchParent { .. }
             | WalkStep::WaitForFinalized { .. }
             | WalkStep::Stopped => return Poll::Pending,
         };
         Poll::Ready(outcome)
     }
 
-    /// Drives the step's lookup or fetch, if any, and resolves with what the
-    /// owner must do when it completes.
-    async fn next_fetch(&mut self) -> WalkOutcome {
-        poll_fn(|cx| self.poll_fetch(cx)).await
+    /// Drives the local lookup, if any, and resolves with what the owner
+    /// must do when it completes.
+    async fn next_lookup(&mut self) -> WalkOutcome {
+        poll_fn(|cx| self.poll_lookup(cx)).await
     }
 
     /// Interprets the engine's answer for the cursor. `finalized` is the
@@ -1917,9 +1987,10 @@ impl AncestryWalk {
     fn on_status(
         &mut self,
         status: PayloadStatusEnum,
-        finalized: (Height, Digest),
+        finalized: (Round, Height, Digest),
         delivered: Height,
     ) -> WalkOutcome {
+        let (finalized_round, finalized_height, finalized_digest) = finalized;
         match status {
             PayloadStatusEnum::Valid if self.at_target() => WalkOutcome::TargetValid,
             PayloadStatusEnum::Valid => {
@@ -1936,17 +2007,19 @@ impl AncestryWalk {
             }
             PayloadStatusEnum::Syncing => {
                 let parent_height = self.parent_height();
-                let parent_digest = self.cursor.parent_digest();
-                if parent_height > finalized.0 {
+                let (parent_round, parent_digest) = self.parent();
+                // A missing parent must be above both finality boundaries;
+                // marshal cannot fetch notarizations at or below its round floor.
+                if parent_height > finalized_height && parent_round > finalized_round {
                     WalkOutcome::NeedsParent
-                } else if parent_digest == finalized.1 {
-                    if delivered >= finalized.0 {
+                } else if parent_digest == finalized_digest {
+                    if delivered >= finalized_height {
                         WalkOutcome::SyncingAtDeliveredFinality
                     } else {
                         // Only the target is needed to restart later.
                         self.cursor = self.target.clone();
                         self.step = WalkStep::WaitForFinalized {
-                            height: finalized.0,
+                            height: finalized_height,
                         };
                         WalkOutcome::Continue
                     }
@@ -1954,8 +2027,10 @@ impl AncestryWalk {
                     info!(
                         %parent_digest,
                         %parent_height,
-                        finalized_digest = %finalized.1,
-                        finalized_height = %finalized.0,
+                        %parent_round,
+                        %finalized_digest,
+                        %finalized_height,
+                        %finalized_round,
                         "ancestry does not reach the finalized tip",
                     );
                     WalkOutcome::ConflictsWithFinality
@@ -1972,51 +2047,44 @@ impl AncestryWalk {
     }
 
     /// Subscribes for the cursor's parent with the marshal actor.
-    fn fetch_parent(&mut self, marshal: impl Marshal) {
+    fn fetch_parent(
+        &mut self,
+        marshal: impl Marshal,
+        owner: WalkOwner,
+        fetches: &mut AbortablePool<'static, (WalkOwner, Option<Arc<Block>>)>,
+    ) {
         let (round, digest) = self.parent();
-        self.step = WalkStep::FetchParent(marshal.subscribe_by_digest(digest, round));
-    }
-
-    /// Checks a parked fetch without polling it. A parent the marshal actor
-    /// has delivered becomes the cursor. Returns false if the marshal actor
-    /// gave up on it.
-    #[instrument(
-        parent = &self.cause,
-        level = Level::DEBUG,
-        skip_all,
-        fields(
-            target.round = %self.target.context().round,
-            target.digest = %self.target.digest(),
-            parent.round = %self.parent().0,
-            parent.digest = %self.parent().1,
-        ),
-    )]
-    fn take_delivered_parent(&mut self) -> bool {
-        let WalkStep::FetchParent(receiver) = &mut self.step else {
-            return true;
+        let receiver = marshal.subscribe_by_digest(digest, round);
+        self.step = WalkStep::FetchParent {
+            _aborter: fetches.push(async move { (owner, receiver.await.ok()) }),
         };
-        match receiver.try_recv() {
-            Ok(block) => {
-                debug!("marshal actor delivered the parent; the walk probes it next");
-                self.on_fetched(block);
-                true
-            }
-            Err(TryRecvError::Empty) => {
-                trace!("parent subscription still open; the walk stays parked");
-                true
-            }
-            Err(TryRecvError::Closed) => {
-                warn!("marshal actor closed the parent subscription without delivering");
-                false
-            }
-        }
     }
 
     /// Makes the found parent the cursor.
-    fn on_fetched(&mut self, block: Arc<Block>) -> WalkOutcome {
+    fn on_fetched(&mut self, block: Arc<Block>) {
         self.cursor = block;
         self.step = WalkStep::Probe;
-        WalkOutcome::Continue
+    }
+
+    /// Restarts when either the finalized height or round covers a pending
+    /// parent lookup, subscription, or an ancestor ready to probe. Reprobing
+    /// cancels that work and finds the new finality boundary from the target.
+    fn on_finalized_tip(&mut self, finalized_round: Round, finalized_height: Height) {
+        let restart = match &self.step {
+            WalkStep::Probe => {
+                !self.at_target()
+                    && (self.cursor.height() <= finalized_height
+                        || self.cursor.context().round <= finalized_round)
+            }
+            WalkStep::LookUpParent(_) | WalkStep::FetchParent { .. } => {
+                self.parent_height() <= finalized_height || self.parent().0 <= finalized_round
+            }
+            WalkStep::InFlight | WalkStep::WaitForFinalized { .. } | WalkStep::Stopped => false,
+        };
+        if restart {
+            debug!(parent: &self.cause, %finalized_round, %finalized_height, "finalized tip covers ancestry work; restarting at target");
+            self.reprobe();
+        }
     }
 
     /// Restarts at the target once finalization delivered the block the walk
@@ -2024,7 +2092,7 @@ impl AncestryWalk {
     fn on_finalized_delivered(&mut self, delivered: Height) {
         let restart = match &self.step {
             WalkStep::Probe => !self.at_target() && self.cursor.height() <= delivered,
-            WalkStep::LookUpParent(_) | WalkStep::FetchParent(_) => {
+            WalkStep::LookUpParent(_) | WalkStep::FetchParent { .. } => {
                 self.parent_height() <= delivered
             }
             WalkStep::WaitForFinalized { height } => *height <= delivered,
@@ -2321,7 +2389,7 @@ async fn execute_finalization(
     skip_all,
     parent = &cause,
     fields(
-        owner = ?owner,
+        %owner,
         block.digest = %block.digest(),
         block.height = %block.height(),
         block.parent_digest = %block.parent_digest(),

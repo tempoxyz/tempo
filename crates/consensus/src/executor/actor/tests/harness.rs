@@ -1139,7 +1139,6 @@ impl HarnessBuilder {
             marshal,
             mailbox,
             actor,
-            tip: options.finalized_tip,
         })
     }
 }
@@ -1151,8 +1150,6 @@ pub(super) struct Harness<TContext = deterministic::Context> {
     pub(super) marshal: FakeMarshal,
     pub(super) mailbox: Mailbox,
     pub(super) actor: Handle<()>,
-    /// The finalized tip last reported to the actor.
-    tip: (Round, u64, Digest),
 }
 
 impl Harness {
@@ -1201,16 +1198,6 @@ where
                 .accepted(),
             "actor should accept the finalized tip",
         );
-        self.tip = (round, height, digest);
-    }
-
-    /// Wakes the actor's event loop without changing its state by reporting
-    /// the current finalized tip again. Queued verifications are not polled;
-    /// a subscription that delivered while the actor was idle is picked up
-    /// on the next iteration, which this provides.
-    pub(super) fn kick(&mut self) {
-        let (round, height, digest) = self.tip;
-        self.deliver_tip(round, height, digest);
     }
 
     /// Delivers a finalized block, returning the acknowledgement waiter.

@@ -45,7 +45,7 @@ fn valid_candidate_leaves_its_parent_for_independent_delivery() {
 #[test_traced]
 fn verification_walk_uses_local_bodies_before_fetching_missing_ancestors() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let b1 = make_block(1, 1, GENESIS);
         let b2 = make_block(2, 2, b1.digest());
         let b3 = make_block(3, 3, b2.digest());
@@ -61,7 +61,6 @@ fn verification_walk_uses_local_bodies_before_fetching_missing_ancestors() {
         // it on its own; both walks share the one fetch for b1.
         assert_eq!(h.execution.new_payloads(), vec![d3, d2, d2]);
         assert!(h.marshal.fulfill_subscription(d1, b1));
-        h.kick();
 
         verify
             .await
@@ -76,7 +75,7 @@ fn verification_walk_uses_local_bodies_before_fetching_missing_ancestors() {
 #[test_traced]
 fn canceling_verification_leaves_its_parent_eligible_for_delivery() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let mut verify = Box::pin(h.verify(round(2), candidate.clone()));
@@ -84,7 +83,6 @@ fn canceling_verification_leaves_its_parent_eligible_for_delivery() {
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(parent.digest(), round(1))])
             .await;
         drop(verify);
-        h.kick();
         // Convergence subscribed for the same parent, the pending head, and
         // keeps the shared fetch open after the verification is gone.
         h.run_for(Duration::from_millis(10)).await;
@@ -97,7 +95,6 @@ fn canceling_verification_leaves_its_parent_eligible_for_delivery() {
             h.marshal
                 .fulfill_subscription(parent.digest(), parent.clone())
         );
-        h.kick();
         h.wait_until(|| h.execution.head() == parent.digest()).await;
         assert_eq!(
             h.execution.new_payloads(),
@@ -170,14 +167,12 @@ fn finalized_tip_takes_over_an_independent_head_walk() {
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(d2, round(2))])
             .await;
         drop(verify);
-        h.kick();
         // Convergence shares the fetch for the pending head b2 and keeps it
         // open after the verification is gone.
         h.run_for(Duration::from_millis(10)).await;
         assert_eq!(h.marshal.open_subscriptions(), vec![(d2, round(2))]);
         assert_eq!(h.marshal.subscribe_log().len(), 1);
         assert!(h.marshal.fulfill_subscription(d2, b2.clone()));
-        h.kick();
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(d1, round(1))])
             .await;
 
@@ -199,7 +194,7 @@ fn finalized_tip_takes_over_an_independent_head_walk() {
 #[test_traced]
 fn a_build_on_another_branch_leaves_a_waiting_verification_alone() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let other_parent = make_block(1, 1, GENESIS);
         let other_digest = other_parent.digest();
         h.execution
@@ -230,7 +225,8 @@ fn a_build_on_another_branch_leaves_a_waiting_verification_alone() {
             "the verification keeps waiting for its ancestor"
         );
         drop(verify);
-        h.kick();
+        // Queued cancellations are reaped on the next actor iteration.
+        drop(h.build_on(round(5), 1, other_digest));
         h.wait_until(|| h.marshal.open_subscriptions().is_empty())
             .await;
     });
@@ -238,7 +234,7 @@ fn a_build_on_another_branch_leaves_a_waiting_verification_alone() {
 #[test_traced]
 fn a_build_keeps_the_execution_slot_while_a_verification_waits_for_its_ancestor() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let candidate_digest = candidate.digest();
@@ -264,7 +260,6 @@ fn a_build_keeps_the_execution_slot_while_a_verification_waits_for_its_ancestor(
             h.marshal
                 .fulfill_subscription(other.digest(), other.clone())
         );
-        h.kick();
         build.await.unwrap();
         h.run_for(Duration::from_millis(20)).await;
         assert_eq!(h.execution.head(), other.digest());
@@ -274,7 +269,6 @@ fn a_build_keeps_the_execution_slot_while_a_verification_waits_for_its_ancestor(
             h.marshal
                 .fulfill_subscription(parent.digest(), parent.clone())
         );
-        h.kick();
         assert!(verify.await.unwrap().is_some());
         assert_eq!(
             h.execution.new_payloads(),
@@ -295,7 +289,7 @@ fn a_build_keeps_the_execution_slot_while_a_verification_waits_for_its_ancestor(
 #[test_traced]
 fn a_newer_verification_probes_while_the_older_walk_waits_for_its_ancestor() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let old_digest = candidate.digest();
@@ -323,7 +317,10 @@ fn a_newer_verification_probes_while_the_older_walk_waits_for_its_ancestor() {
             h.marshal
                 .fulfill_subscription(parent.digest(), parent.clone())
         );
-        h.kick();
+        // Both verifications are queued, and convergence waits on the newer
+        // branch. This parent delivery alone must wake the older walk, well
+        // before the harness's one-hour heartbeat.
+        h.wait_until(|| h.execution.new_payloads().len() == 4).await;
         verify.await.unwrap().unwrap();
         assert_eq!(
             h.execution.new_payloads(),
@@ -334,7 +331,6 @@ fn a_newer_verification_probes_while_the_older_walk_waits_for_its_ancestor() {
             h.marshal
                 .fulfill_subscription(other.digest(), other.clone())
         );
-        h.kick();
         newer.await.unwrap().unwrap();
         h.wait_until(|| h.execution.head() == other.digest()).await;
         assert_eq!(
@@ -355,6 +351,56 @@ fn a_newer_verification_probes_while_the_older_walk_waits_for_its_ancestor() {
         );
     });
 }
+#[test_traced]
+fn simultaneously_fetched_parents_resume_the_newest_verification_first() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let candidate = make_block(2, 2, parent.digest());
+        let old_digest = candidate.digest();
+        let mut older = Box::pin(h.verify(round(2), candidate));
+        assert!(futures::poll!(&mut older).is_pending());
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(parent.digest(), round(1))])
+            .await;
+
+        let other = make_block(3, 1, GENESIS);
+        let candidate = make_block(4, 2, other.digest());
+        let new_digest = candidate.digest();
+        let mut newer = Box::pin(h.verify(round(4), candidate));
+        assert!(futures::poll!(&mut newer).is_pending());
+        h.wait_until(|| {
+            h.marshal.open_subscriptions()
+                == vec![(parent.digest(), round(1)), (other.digest(), round(3))]
+        })
+        .await;
+
+        // Wake the older subscription first, without yielding before the
+        // newer one is ready. Pool completion order must not pick the slot.
+        assert!(
+            h.marshal
+                .fulfill_subscription(parent.digest(), parent.clone())
+        );
+        assert!(
+            h.marshal
+                .fulfill_subscription(other.digest(), other.clone())
+        );
+        h.wait_until(|| h.execution.new_payloads().len() >= 6).await;
+        newer.await.unwrap().unwrap();
+        older.await.unwrap().unwrap();
+        assert_eq!(
+            &h.execution.new_payloads()[..6],
+            &[
+                old_digest,
+                new_digest,
+                other.digest(),
+                new_digest,
+                parent.digest(),
+                old_digest,
+            ],
+        );
+    });
+}
+
 #[test_traced]
 fn each_request_for_the_same_block_gets_its_own_delivery_and_verdict() {
     deterministic::Runner::default().start(|context| async move {
@@ -467,7 +513,7 @@ fn a_waiting_verification_does_not_wake_a_rejected_pending_head_early() {
 #[test_traced]
 fn a_walk_waiting_for_its_parent_yields_the_slot() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
 
         // B's parent is missing: B probes, subscribes for the parent, and
         // leaves the slot while it waits.
@@ -503,14 +549,11 @@ fn a_walk_waiting_for_its_parent_yields_the_slot() {
         // B's parent arrives: B takes the slot back and finishes. A's
         // ancestry then arrives one fetch at a time.
         assert!(h.marshal.fulfill_subscription(pb, parent_b.clone()));
-        h.kick();
         assert!(verify_b.await.unwrap().is_some());
         assert_eq!(h.execution.new_payloads(), vec![b, d3, c, pb, b]);
         assert!(h.marshal.fulfill_subscription(d2, a2.clone()));
-        h.kick();
         h.wait_until(|| h.marshal.fulfill_subscription(d1, a1.clone()))
             .await;
-        h.kick();
         assert!(verify_a.await.unwrap().is_some());
         assert_eq!(
             h.execution.new_payloads(),
@@ -526,31 +569,32 @@ fn a_walk_waiting_for_its_parent_yields_the_slot() {
 fn canceling_the_active_verification_releases_its_ancestor_at_once() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
-        let a1 = make_block(1, 1, GENESIS);
-        let a2 = make_block(2, 2, a1.digest());
+        let finalized = make_block(1, 1, GENESIS);
+        let a1 = make_block(2, 2, finalized.digest());
+        let a2 = make_block(3, 3, a1.digest());
         let (d1, d2) = (a1.digest(), a2.digest());
 
         // The walk waits for its missing parent.
-        let mut verify = Box::pin(h.verify(round(2), a2));
+        let mut verify = Box::pin(h.verify(round(3), a2));
         assert!(futures::poll!(&mut verify).is_pending());
-        h.wait_until(|| h.marshal.open_subscriptions() == vec![(d1, round(1))])
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(d1, round(2))])
             .await;
 
         // A finalization takes the execution slot, so the walk sits on the
-        // fetched ancestor without being able to probe it.
-        let finalized = make_block(3, 1, GENESIS);
+        // fetched ancestor above finality without being able to probe it.
         let f = finalized.digest();
         let release = h
             .execution
             .script_delayed_new_payload(f, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, f);
+        // Keep convergence on finality so only the verification owns the ancestor.
+        drop(h.build_on(round(4), 1, f));
         let acknowledged = h.deliver_finalized(finalized);
         h.wait_until(|| h.execution.new_payloads() == vec![d2, f])
             .await;
         let delivered = Arc::new(a1.clone());
         let weak = Arc::downgrade(&delivered);
         assert!(h.marshal.fulfill_subscription(d1, delivered));
-        h.kick();
         h.run_for(Duration::from_millis(10)).await;
         assert!(
             weak.upgrade().is_some(),
@@ -559,7 +603,6 @@ fn canceling_the_active_verification_releases_its_ancestor_at_once() {
 
         // Its requester going away is noticed without any other event.
         drop(verify);
-        h.kick();
         h.wait_until(|| weak.upgrade().is_none()).await;
 
         release.send(()).unwrap();
@@ -571,7 +614,7 @@ fn canceling_the_active_verification_releases_its_ancestor_at_once() {
 #[test_traced]
 fn syncing_walks_backward_one_response_at_a_time_then_reprobes_the_candidate() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let b1 = make_block(1, 1, GENESIS);
         let b2 = make_block(2, 2, b1.digest());
         let b3 = make_block(3, 3, b2.digest());
@@ -602,7 +645,6 @@ fn syncing_walks_backward_one_response_at_a_time_then_reprobes_the_candidate() {
         assert_eq!(h.marshal.open_subscriptions(), vec![(d2, round(2))]);
         assert_eq!(h.execution.new_payloads(), vec![d3]);
         assert!(h.marshal.fulfill_subscription(d2, b2.clone()));
-        h.kick();
         h.wait_until(|| h.execution.new_payloads() == vec![d3, d2])
             .await;
         assert!(
@@ -614,7 +656,6 @@ fn syncing_walks_backward_one_response_at_a_time_then_reprobes_the_candidate() {
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(d1, round(1))])
             .await;
         assert!(h.marshal.fulfill_subscription(d1, b1));
-        h.kick();
         assert!(verify.await.unwrap().is_some());
         // Convergence received b2 through the shared fetch and probed it
         // once the verification's walk parked; its VALID made b2 HEAD.
@@ -637,13 +678,12 @@ fn valid_ancestor_stops_the_walk_above_the_finalized_tip() {
         let (d2, d3) = (b2.digest(), b3.digest());
         let execution = FakeExecution::new();
         execution.seed_canonical_block(&b1);
-        let mut h = Harness::builder().execution(execution).start(&context);
+        let h = Harness::builder().execution(execution).start(&context);
 
         let mut verify = Box::pin(h.verify(round(3), b3));
         assert!(futures::poll!(&mut verify).is_pending());
         h.wait_until(|| h.marshal.fulfill_subscription(d2, b2.clone()))
             .await;
-        h.kick();
         assert!(verify.await.unwrap().is_some());
         h.wait_until(|| h.execution.head() == d2).await;
         assert_eq!(h.execution.new_payloads(), vec![d3, d2, d3, d2]);
@@ -692,7 +732,6 @@ fn verification_walk_rejects_an_ancestor_on_a_conflicting_branch() {
         assert!(futures::poll!(&mut verify).is_pending());
         h.wait_until(|| h.marshal.fulfill_subscription(p, parent.clone()))
             .await;
-        h.kick();
         assert!(verify.await.unwrap().is_none());
         assert_eq!(h.execution.new_payloads(), vec![c, p]);
         assert_eq!(h.marshal.subscribe_log(), vec![(p, round(3))]);
@@ -723,7 +762,7 @@ fn syncing_redelivers_the_parent_even_if_a_previous_verification_said_valid() {
 #[test_traced]
 fn a_valid_ancestor_leaves_the_verdict_to_the_candidate() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         // Keep independent HEAD convergence out of the verdict check.
         drop(h.build(round(3), GENESIS));
         let parent = make_block(1, 1, GENESIS);
@@ -746,7 +785,6 @@ fn a_valid_ancestor_leaves_the_verdict_to_the_candidate() {
                 .fulfill_subscription(parent_digest, parent.clone())
         })
         .await;
-        h.kick();
         assert!(verify.await.unwrap().is_none());
         assert_eq!(
             h.execution.new_payloads(),
@@ -764,7 +802,7 @@ fn a_valid_ancestor_leaves_the_verdict_to_the_candidate() {
 #[test_traced]
 fn an_invalid_ancestor_is_the_candidates_verdict() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         // Keep independent HEAD convergence out of the verdict check.
         drop(h.build(round(3), GENESIS));
         let parent = make_block(1, 1, GENESIS);
@@ -785,7 +823,6 @@ fn an_invalid_ancestor_is_the_candidates_verdict() {
                 .fulfill_subscription(parent_digest, parent.clone())
         })
         .await;
-        h.kick();
         assert!(verify.await.unwrap().is_none());
         assert_eq!(
             h.execution.new_payloads(),
@@ -804,7 +841,7 @@ fn an_invalid_ancestor_is_the_candidates_verdict() {
 #[test_traced]
 fn syncing_restarts_the_entire_walk_without_retaining_previous_ancestors() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let mut parent = GENESIS;
         let ancestors = (1..=16)
             .map(|height| {
@@ -851,7 +888,6 @@ fn syncing_restarts_the_entire_walk_without_retaining_previous_ancestors() {
                 let block = Arc::new(ancestor.clone());
                 let weak = Arc::downgrade(&block);
                 assert!(h.marshal.fulfill_subscription(digest, block));
-                h.kick();
                 expected.push(digest);
                 h.wait_until(|| h.execution.new_payloads().len() >= expected.len())
                     .await;
@@ -886,7 +922,7 @@ fn syncing_restarts_the_entire_walk_without_retaining_previous_ancestors() {
 #[test_traced]
 fn reaching_a_static_finalized_boundary_restarts_the_walk() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let (p, c) = (parent.digest(), candidate.digest());
@@ -909,7 +945,6 @@ fn reaching_a_static_finalized_boundary_restarts_the_walk() {
         h.run_for(Duration::from_millis(1)).await;
         h.wait_until(|| h.marshal.fulfill_subscription(p, parent.clone()))
             .await;
-        h.kick();
 
         // No finality update arrives. The walk reaches genesis, restarts
         // from the candidate and fetches the parent again after SYNCING.
@@ -917,7 +952,6 @@ fn reaching_a_static_finalized_boundary_restarts_the_walk() {
         assert!(futures::poll!(&mut verify).is_pending());
         assert_eq!(h.execution.new_payloads(), vec![c, p, c]);
         assert!(h.marshal.fulfill_subscription(p, parent));
-        h.kick();
         assert!(verify.await.unwrap().is_some());
         assert_eq!(h.execution.new_payloads(), vec![c, p, c, p, c]);
         assert_eq!(h.marshal.subscribe_log(), vec![(p, round(1)); 2]);
@@ -926,7 +960,7 @@ fn reaching_a_static_finalized_boundary_restarts_the_walk() {
 }
 
 #[test_traced]
-fn advancing_finality_leaves_the_fetch_pending_until_delivery() {
+fn advancing_finality_cancels_the_fetch_and_reprobes_the_candidate() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
         let b1 = make_block(1, 1, GENESIS);
@@ -939,12 +973,16 @@ fn advancing_finality_leaves_the_fetch_pending_until_delivery() {
             .await;
 
         h.deliver_tip(round(2), 2, d2);
-        h.run_for(Duration::from_millis(1)).await;
-        assert_eq!(h.marshal.open_subscriptions(), vec![(d2, round(2))]);
+        h.wait_until(|| {
+            h.marshal.open_subscriptions().is_empty() && h.execution.new_payloads() == vec![d3, d3]
+        })
+        .await;
         assert!(futures::poll!(&mut verify).is_pending());
-        assert_eq!(h.execution.new_payloads(), vec![d3]);
+        // Reprobing reaches the new boundary and waits for its delivery.
+        // Pruning again must not restart that wait on every loop iteration.
         h.deliver_finalized(b1).await.unwrap();
         assert!(futures::poll!(&mut verify).is_pending());
+        assert_eq!(h.execution.new_payloads(), vec![d3, d3, d1]);
         h.deliver_finalized(b2).await.unwrap();
         verify.await.unwrap().unwrap();
         assert_eq!(h.marshal.subscribe_log(), vec![(d2, round(2))]);
@@ -963,9 +1001,127 @@ fn advancing_finality_leaves_the_fetch_pending_until_delivery() {
 }
 
 #[test_traced]
-fn canceling_a_walk_closes_an_obsolete_fetch() {
+fn advancing_finalized_round_cancels_a_fetch_above_the_finalized_height() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let parent = make_block(2, 2, b1.digest());
+        let candidate = make_block(3, 3, parent.digest());
+        let finalized = make_block(2, 1, GENESIS);
+        let (p, c) = (parent.digest(), candidate.digest());
+        let mut verify = Box::pin(h.verify(round(3), candidate));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(p, round(2))])
+            .await;
+
+        // The candidate's round survives, but its missing parent's round
+        // is covered even though that parent's height is above finality.
+        h.deliver_tip(round(2), 1, finalized.digest());
+        h.wait_until(|| {
+            h.marshal.open_subscriptions().is_empty() && h.execution.new_payloads() == vec![c, c]
+        })
+        .await;
+        assert!(verify.await.unwrap().is_none());
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.execution.new_payloads(), vec![c, c]);
+        assert_eq!(h.marshal.subscribe_log(), vec![(p, round(2))]);
+    });
+}
+
+#[test_traced]
+fn advancing_finalized_round_discards_an_ancestor_above_the_finalized_height() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let parent = make_block(3, 3, b2.digest());
+        let candidate = make_block(4, 4, parent.digest());
+        let finalized1 = make_block(2, 1, GENESIS);
+        let finalized2 = make_block(3, 2, finalized1.digest());
+        let (p, c, f) = (parent.digest(), candidate.digest(), finalized1.digest());
+        let mut verify = Box::pin(h.verify(round(4), candidate));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(p, round(3))])
+            .await;
+
+        let release = h
+            .execution
+            .script_delayed_new_payload(f, Ok(PayloadStatusEnum::Valid));
+        h.deliver_tip(round(2), 1, f);
+        let acknowledged = h.deliver_finalized(finalized1);
+        h.wait_until(|| h.execution.new_payloads() == vec![c, f])
+            .await;
+        let parent = Arc::new(parent);
+        let weak = Arc::downgrade(&parent);
+        assert!(h.marshal.fulfill_subscription(p, parent));
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(weak.upgrade().is_some());
+
+        // Finality covers the fetched cursor's round while its height is
+        // still above the tip and finalization holds the engine slot.
+        h.deliver_tip(round(3), 2, finalized2.digest());
+        h.wait_until(|| weak.upgrade().is_none()).await;
+        assert_eq!(h.execution.new_payloads(), vec![c, f]);
+        release.send(()).unwrap();
+        acknowledged.await.unwrap();
+        assert!(verify.await.unwrap().is_none());
+        assert_eq!(h.execution.new_payloads(), vec![c, f, c]);
+        assert_eq!(h.marshal.subscribe_log(), vec![(p, round(3))]);
+    });
+}
+
+#[test_traced]
+fn advancing_finality_discards_an_ancestor_waiting_for_the_engine() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let (d1, d2, d3) = (b1.digest(), b2.digest(), b3.digest());
+        let mut verify = Box::pin(h.verify(round(3), b3));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(d2, round(2))])
+            .await;
+
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        h.deliver_tip(round(1), 1, d1);
+        let acknowledged = h.deliver_finalized(b1);
+        h.wait_until(|| h.execution.new_payloads() == vec![d3, d1])
+            .await;
+
+        // The parent arrives while finalization holds the engine slot.
+        let parent = Arc::new(b2.clone());
+        let weak = Arc::downgrade(&parent);
+        assert!(h.marshal.fulfill_subscription(d2, parent));
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(weak.upgrade().is_some());
+
+        // Finality overtakes the fetched cursor before it can be probed.
+        h.deliver_tip(round(2), 2, d2);
+        h.wait_until(|| weak.upgrade().is_none()).await;
+        assert!(futures::poll!(&mut verify).is_pending());
+        assert_eq!(h.execution.new_payloads(), vec![d3, d1]);
+
+        release
+            .send(())
+            .expect("the engine call must remain in flight");
+        acknowledged.await.unwrap();
+        h.wait_until(|| h.execution.new_payloads() == vec![d3, d1, d3])
+            .await;
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.deliver_finalized(b2).await.unwrap();
+        verify.await.unwrap().unwrap();
+        assert_eq!(h.execution.new_payloads(), vec![d3, d1, d3, d2, d3]);
+        assert_eq!(h.marshal.subscribe_log(), vec![(d2, round(2))]);
+    });
+}
+
+#[test_traced]
+fn canceling_a_walk_closes_an_obsolete_fetch() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let c = candidate.digest();
@@ -982,7 +1138,8 @@ fn canceling_a_walk_closes_an_obsolete_fetch() {
             "the older walk still needs its ancestor until its subscriber cancels",
         );
         drop(verify);
-        h.kick();
+        // Queued cancellations are reaped on the next actor iteration.
+        drop(h.build(round(4), GENESIS));
         h.wait_until(|| h.marshal.open_subscriptions().is_empty())
             .await;
         h.run_for(Duration::from_secs(2)).await;
@@ -993,21 +1150,19 @@ fn canceling_a_walk_closes_an_obsolete_fetch() {
 #[test_traced]
 fn dropped_ancestor_fetch_fails_verification() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let p = parent.digest();
         let mut verify = Box::pin(h.verify(round(2), candidate));
         assert!(futures::poll!(&mut verify).is_pending());
         h.wait_until(|| h.marshal.drop_subscription(p)).await;
-        h.kick();
         let _ = verify
             .await
             .expect_err("a dropped fetch fails the request without retrying");
         // Its pending HEAD can still converge independently.
         h.wait_until(|| h.marshal.fulfill_subscription(p, parent.clone()))
             .await;
-        h.kick();
         h.wait_until(|| h.execution.head() == p).await;
     });
 }
@@ -1015,7 +1170,7 @@ fn dropped_ancestor_fetch_fails_verification() {
 #[test_traced]
 fn an_ancestor_engine_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
+        let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let candidate = make_block(2, 2, parent.digest());
         let p = parent.digest();
@@ -1025,7 +1180,6 @@ fn an_ancestor_engine_error_is_fatal() {
         assert!(futures::poll!(&mut verify).is_pending());
         h.wait_until(|| h.marshal.fulfill_subscription(p, parent.clone()))
             .await;
-        h.kick();
         let _ = verify
             .await
             .expect_err("a failed engine call must not produce a verdict");

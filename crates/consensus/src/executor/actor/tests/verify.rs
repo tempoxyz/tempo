@@ -422,12 +422,13 @@ fn verifications_at_or_below_the_finalized_round_are_dropped() {
 
         // Both candidates wait for their missing parents. Finality then
         // passes the older one's round:
-        // its request is dropped and its fetch released; the newer one keeps
-        // waiting.
+        // its request is dropped and its fetch released; the newer one's
+        // missing parent stays above finality, so it keeps waiting.
         let parent_a = make_block(1, 1, GENESIS);
         let candidate_a = make_block(2, 2, parent_a.digest());
-        let parent_b = make_block(3, 1, GENESIS);
-        let candidate_b = make_block(4, 2, parent_b.digest());
+        let finalized = make_block(2, 1, GENESIS);
+        let parent_b = make_block(3, 2, finalized.digest());
+        let candidate_b = make_block(4, 3, parent_b.digest());
         let (pa, pb) = (parent_a.digest(), parent_b.digest());
         let mut verify_a = Box::pin(h.verify(round(2), candidate_a));
         let mut verify_b = Box::pin(h.verify(round(4), candidate_b));
@@ -436,7 +437,6 @@ fn verifications_at_or_below_the_finalized_round_are_dropped() {
         h.wait_until(|| h.marshal.open_subscriptions() == vec![(pa, round(1)), (pb, round(3))])
             .await;
 
-        let finalized = make_block(2, 1, GENESIS);
         h.deliver_tip(round(2), 1, finalized.digest());
         let _ = verify_a
             .await
