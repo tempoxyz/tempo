@@ -57,9 +57,7 @@ async fn approve<P: Provider + Clone>(
 ) -> eyre::Result<()> {
     let receipt = ITIP20::new(token, provider)
         .approve(spender, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "approve failed");
     Ok(())
@@ -87,9 +85,7 @@ where
             B256::with_last_byte(salt),
         )
         .gas(5_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "token creation failed");
 
@@ -104,9 +100,7 @@ where
     let receipt = roles
         .grantRole(ISSUER_ROLE, caller)
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "grant issuer role failed");
 
@@ -132,6 +126,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
 
     let setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(hardfork))
+        .with_instant_mining()
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -204,7 +199,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
     macro_rules! record_tx {
         ($name:literal, $call:expr, $message:literal) => {{
             let pooled_before = pooled_credits!();
-            let receipt = $call.send().await?.get_receipt().await?;
+            let receipt = $call.send_sync().await?;
             assert!(receipt.status(), $message);
             let pooled_after = pooled_credits!();
             gas.insert(
@@ -225,7 +220,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         ($name:literal, $credit_user:expr, $call:expr, $message:literal) => {{
             let before = credits!($credit_user);
             let pooled_before = pooled_credits!();
-            let receipt = $call.send().await?.get_receipt().await?;
+            let receipt = $call.send_sync().await?;
             assert!(receipt.status(), $message);
             let after = credits!($credit_user);
             let pooled_after = pooled_credits!();
@@ -248,7 +243,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
             let before = credits!($credit_user);
             let owner_before = credits!($owner);
             let pooled_before = pooled_credits!();
-            let receipt = $call.send().await?.get_receipt().await?;
+            let receipt = $call.send_sync().await?;
             assert!(receipt.status(), $message);
             let after = credits!($credit_user);
             let owner_after = credits!($owner);
@@ -272,7 +267,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
 
     macro_rules! send_tx {
         ($call:expr, $message:literal) => {{
-            let receipt = $call.send().await?.get_receipt().await?;
+            let receipt = $call.send_sync().await?;
             assert!(receipt.status(), $message);
             receipt
         }};
@@ -500,10 +495,14 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
 async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_genesis(make_genesis_at(hardfork))
-        .build_http_only()
-        .await?;
+    let builder = TestNodeBuilder::new().with_genesis(make_genesis_at(hardfork));
+    // Pre-T4 local mining needs interval retries when a payload is rejected.
+    let builder = if hardfork.is_t4() {
+        builder.with_instant_mining()
+    } else {
+        builder
+    };
+    let setup = builder.build_http_only().await?;
     let signers = (0..=6).map(signer).collect::<eyre::Result<Vec<_>>>()?;
     let providers = signers
         .iter()
@@ -558,9 +557,7 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
         let receipt = exchange(index)
             .place(*ask_base.address(), amount, false, MAX_TICK)
             .gas(5_000_000)
-            .send()
-            .await?
-            .get_receipt()
+            .send_sync()
             .await?;
         assert!(receipt.status(), "overflow ask setup failed");
     }
@@ -574,9 +571,7 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
     let receipt = exchange(3)
         .swapExactAmountOut(PATH_USD_ADDRESS, *ask_base.address(), u128::MAX, u128::MAX)
         .gas(10_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(!receipt.status(), "overflow swap unexpectedly succeeded");
     gas.insert(
@@ -615,9 +610,7 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
         let user = index + 4;
         let receipt = bid_quote
             .mint(signers[user].address(), U256::from(amount))
-            .send()
-            .await?
-            .get_receipt()
+            .send_sync()
             .await?;
         assert!(receipt.status(), "overflow quote mint failed");
         approve(
@@ -631,18 +624,14 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
         let receipt = exchange(index)
             .place(*bid_base.address(), amount, true, MIN_TICK)
             .gas(5_000_000)
-            .send()
-            .await?
-            .get_receipt()
+            .send_sync()
             .await?;
         assert!(receipt.status(), "overflow bid setup failed");
     }
     let receipt = exchange(6)
         .place(*bid_base.address(), MIN_ORDER_AMOUNT, true, MIN_TICK)
         .gas(5_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     gas.insert(
         "place_aggregate_overflow",
