@@ -1,67 +1,67 @@
 """Fail closed if a later workflow edit lets a nonselected slot run a step."""
 from pathlib import Path
 import re
-import hashlib
 import unittest
-from test_prebuilt_workflow import without_prebuilt, without_workspace_guard
-
-
-def without_fault_scheduler(workflow):
-    """Reverse only explicit opt-ins, preserving historical capacity hashes."""
-    workflow=without_prebuilt(workflow)
-    # Reverse only the separately reviewed cleanup follow-up; retain original capacity hashes.
-    for name in ('Prepare runner cleanup', 'Prepare owned benchmark scratch'):
-        workflow,count=re.subn(r'      - name: '+name+r'\n.*?(?=      - (?:name:|uses:))','',workflow,flags=re.DOTALL)
-        assert count==1
-    marker='\n      # Run after artifact upload/reporting even when the benchmark failed or was cancelled.\n'
-    assert workflow.count(marker)==1
-    workflow=workflow.split(marker,1)[0]
-    assert workflow.count('        id: workspace-reset\n')==1
-    workflow=workflow.replace('        id: workspace-reset\n','')
-    workflow = without_workspace_guard(workflow)
-    workflow,count=re.subn(r"          python3 - <<'PYOWNER'\n.*?          PYOWNER\n",'',workflow,flags=re.DOTALL)
-    assert count==1
-    workflow=workflow.replace('          - lifecycle-kernel-faults\n','')
-    workflow=workflow.replace(" || inputs.profiling == 'lifecycle-kernel-faults'",'')
-    workflow=workflow.replace("inputs.profiling != 'lifecycle-kernel-faults' && ",'')
-    workflow=re.sub(r'^      BENCH_(?:LIFECYCLE_SCHEDULER|KERNEL_FAULT_BASELINE_EMPTY|KERNEL_FAULT_FEATURE):.*\n','',workflow,flags=re.MULTILINE)
-    workflow,count=re.subn(r'      - name: Provision kernel fault diagnostic dependencies\n.*?(?=      - name: Check lifecycle report)','',workflow,flags=re.DOTALL)
-    assert count==1
-    workflow,count=re.subn(r'          if \[ "\$BENCH_LIFECYCLE_SCHEDULER" = "true" \]; then\n.*?^          fi\n','',workflow,flags=re.MULTILINE|re.DOTALL)
-    assert count==1
-    workflow=workflow.replace("        run: |\n          python3 -m unittest discover -s contrib/bench/lifecycle -p 'test_*.py'\n          python3 -m unittest discover -s contrib/bench/lifecycle/scheduler", "        run: python3 -m unittest discover -s contrib/bench/lifecycle -p 'test_*.py'")
-    return workflow
 
 
 class CapacityWorkflowTests(unittest.TestCase):
-    def test_five_slot_workflow_preserves_entire_reviewed_setup_policy(self):
+    def test_single_diagnostic_workflow_has_one_reserved_slot(self):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
-        workflow = without_fault_scheduler(workflow)
-        for old, new in [('max-parallel: 4', 'max-parallel: 5'),
-                         ('slot: [1, 2, 3, 4]', 'slot: [1, 2, 3, 4, 5]'),
-                         ('BENCH_CAPACITY_SLOTS: "4"', 'BENCH_CAPACITY_SLOTS: "5"')]:
-            self.assertEqual(workflow.count(new), 1)
-            workflow = workflow.replace(new, old)
-        self.assertEqual(hashlib.sha256(workflow.encode()).hexdigest(), 'd57b1802b22a1a802d7fe7c1eb7165ee1d0e86b47fe7a2812822a0d977e41e73')
+        self.assertEqual(workflow.count('      max-parallel: 1\n'), 1)
+        self.assertEqual(workflow.count('        slot: [1]\n'), 1)
+        self.assertEqual(workflow.count('      BENCH_CAPACITY_SLOTS: "1"\n'), 1)
+        self.assertNotIn('slot: [1, 2', workflow)
 
-    def test_only_matrix_size_changes_from_reviewed_three_slot_workflow(self):
+    def test_single_diagnostic_constants_are_closed(self):
         workflow = (Path(__file__).resolve().parents[3] /
                     '.github/workflows/bench-e2e.yml').read_text()
-        workflow = without_fault_scheduler(workflow)
-        self.assertEqual(workflow.count('      BENCH_CAPACITY_POLICY: "setup_failure_v2"\n'), 1)
-        workflow = workflow.replace('      BENCH_CAPACITY_POLICY: "setup_failure_v2"\n', '')
-        workflow, count = re.subn(r'      - name: Publish capacity admission receipt\n.*?(?=      - name: Reset workspace directory)', '', workflow, flags=re.DOTALL)
-        self.assertEqual(count, 1)
-        for old, new in [('max-parallel: 3', 'max-parallel: 5'),
-                         ('slot: [1, 2, 3]', 'slot: [1, 2, 3, 4, 5]'),
-                         ('BENCH_CAPACITY_SLOTS: "3"', 'BENCH_CAPACITY_SLOTS: "5"')]:
-            self.assertEqual(workflow.count(new), 1)
-            workflow = workflow.replace(new, old)
-        # Frozen ecb workflow: all 38 original steps and their exact gates,
-        # permissions, runner labels and benchmark arguments remain unchanged.
-        self.assertEqual(hashlib.sha256(workflow.encode()).hexdigest(),
-                         '8dee2903c5a843d4d755b4e2762fbb13278a7b2eb37e31d6b4200a1ca9c434b8')
+        for line in (
+                '      BENCH_CAPACITY_POLICY: "single_diagnostic_v1"\n',
+                '      BENCH_BINARY_MODE: "prebuilt_v1"\n',
+                '      BENCH_LIFECYCLE: "true"\n',
+                '      BENCH_LIFECYCLE_SCHEDULER: "false"\n',
+                '      BENCH_LIFECYCLE_DETAIL: "milestones"\n',
+                '      BENCH_DURATION: "30"\n',
+                '      BENCH_NO_SLACK: "true"\n',
+                '      BENCH_SAMPLY: "false"\n',
+                '      BENCH_TRACY: "off"\n',
+                '      BENCH_OTLP: "false"\n',
+                '      BENCH_VALSCOPE: "false"\n',
+                '      BENCH_METRICS: "false"\n',
+                '      BENCH_FEATURE_ENV: ""\n',
+                '      BENCH_READ_READINESS: "true"\n',
+                '      BENCH_RUN_PAIRS: "1"\n',
+                '      BENCH_RUN_SIDE: "feature"\n'):
+            self.assertEqual(workflow.count(line), 1, line)
+
+    def test_read_readiness_is_forwarded_to_both_feature_validators(self):
+        harness = (Path(__file__).resolve().parents[3] / 'bench-e2e.nu').read_text()
+        self.assertEqual(harness.count('"TEMPO_READ_READINESS=1 "'), 1)
+        self.assertIn(
+            'let a_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)'
+            '($readiness_env)RETH_LIFECYCLE_FILE=', harness)
+        self.assertIn(
+            'let b_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)'
+            '($readiness_env)RETH_LIFECYCLE_FILE=', harness)
+        self.assertIn('$"($env_prefix)($a_capture)"', harness)
+        self.assertIn('$"($env_prefix)($b_capture)"', harness)
+
+    def test_read_readiness_guard_fails_closed_before_phase_setup(self):
+        harness = (Path(__file__).resolve().parents[3] / 'bench-e2e.nu').read_text()
+        guard = harness.split(
+            'let readiness_mode = ($env.BENCH_READ_READINESS? | default "false")', 1)[1]
+        guard = guard.split('if $lifecycle_scheduler and', 1)[0]
+        for requirement in (
+                '$readiness_mode not-in ["false" "true"]', 'not $prebuilt',
+                'not $lifecycle', '$lifecycle_detail != "milestones"',
+                '$run_side != "feature"', '$run_pairs != 1', '$duration != 30',
+                '$lifecycle_scheduler', '$lifecycle_prewarm_cpu != "disabled"'):
+            self.assertIn(requirement, guard)
+        self.assertIn(
+            'Read-readiness requires one 30-second prebuilt feature milestone capture', guard)
+        self.assertLess(harness.index('let readiness_mode ='),
+                        harness.index('let preset_spec =', harness.index('let readiness_mode =')))
 
     def test_setup_policy_receipt_is_uploaded_before_workspace_reset(self):
         workflow = (Path(__file__).resolve().parents[3] /
@@ -114,10 +114,10 @@ class CapacityWorkflowTests(unittest.TestCase):
             self.assertIn('retries: 0', step)
             self.assertIn('signal: AbortSignal.timeout(10000)', step)
             self.assertNotIn('require(process.cwd()', step)
-        self.assertIn('max-parallel: 5', workflow)
-        self.assertIn('slot: [1, 2, 3, 4, 5]', workflow)
+        self.assertIn('max-parallel: 1', workflow)
+        self.assertIn('slot: [1]', workflow)
         self.assertIn('fail-fast: false', workflow)
-        self.assertIn('BENCH_CAPACITY_SLOTS: "5"', workflow)
+        self.assertIn('BENCH_CAPACITY_SLOTS: "1"', workflow)
 
 
 if __name__ == '__main__':

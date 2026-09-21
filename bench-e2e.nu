@@ -1163,10 +1163,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
         ^python3 -c 'import os,sys,time; f=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,os.urandom(32)); os.close(f); print(time.monotonic_ns())' $lifecycle_key | str trim
     } else { "" }
     let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
+    let readiness_env = if ($env.BENCH_READ_READINESS? | default "false") == "true" {
+        if not $ctx.lifecycle or $capture_detail != "milestones" or $run_type != "feature" {
+            error make {msg: "Read-readiness capture requires feature milestone lifecycle"}
+        }
+        "TEMPO_READ_READINESS=1 "
+    } else { "" }
     let scheduler_env = if $ctx.lifecycle_scheduler { "TEMPO_LIFECYCLE_SCHEDULER=registered_threads_v1 TEMPO_LIFECYCLE_KERNEL_WAITS=2 TEMPO_LIFECYCLE_PREWARM_CPU=disabled TEMPO_LIFECYCLE_PROCESS_CPU=disabled " } else { "" }
     let prewarm_config = (lifecycle-prewarm-config $ctx.lifecycle_prewarm_cpu $run.side)
-    let a_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
-    let b_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let a_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)($readiness_env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
+    let b_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)($readiness_env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/b.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
@@ -1574,6 +1580,14 @@ def "main e2e" [
     }
     if $prebuilt and (not $lifecycle or $profile != "profiling" or not $no_default_features or $force_bloat or $init_only or $no_cache or $samply or $tracy != "off" or $valscope_static_report or $baseline_env != "" or $feature_env != "" or $bench_env != "" or $baseline_features != "" or $feature_features != "") {
         error make {msg: "Unsupported prebuilt execution inputs"}
+    }
+    let readiness_mode = ($env.BENCH_READ_READINESS? | default "false")
+    if $readiness_mode not-in ["false" "true"] or ($readiness_mode == "true" and (
+        not $prebuilt or not $lifecycle or $lifecycle_detail != "milestones" or
+        $run_side != "feature" or $run_pairs != 1 or $duration != 30 or
+        $lifecycle_scheduler or $lifecycle_prewarm_cpu != "disabled"
+    )) {
+        error make {msg: "Read-readiness requires one 30-second prebuilt feature milestone capture"}
     }
     if $lifecycle_scheduler and (not $lifecycle or $lifecycle_detail != "full" or $lifecycle_prewarm_cpu != "disabled" or $samply or $tracy != "off") {
         error make {msg: "Kernel fault diagnostic requires full lifecycle and no other observer"}

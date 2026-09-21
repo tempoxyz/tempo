@@ -9,6 +9,7 @@ MAX_INTEGER = (1 << 53) - 1
 MIB = 1 << 20
 REQUIRED_MIB = 65536
 SETUP_FAILURE_POLICY = 'setup_failure_v2'
+SINGLE_DIAGNOSTIC_POLICY = 'single_diagnostic_v1'
 # Exact vocabulary of capacity_preflight.py at f360; this module never probes paths.
 ROLES = ('root', 'workspace', 'runner_temp', 'optional_scratch')
 ROW_FIELDS = {'role', 'exists', 'filesystem', 'total_bytes', 'free_bytes',
@@ -96,20 +97,30 @@ def capacity(report):
     return rows[0], rows[1]
 
 
-def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2, setup_failed_slots=None, prebuilt_plan=None):
+def elect(receipts, *, workflow_sha, run_id, run_attempt, slots=2,
+          policy='strict_v1', setup_failed_slots=None, prebuilt_plan=None):
     expected = binding(workflow_sha, run_id, run_attempt)
+    # Preserve the established library API; the CLI still requires the policy flag.
+    if policy == 'strict_v1' and setup_failed_slots is not None:
+        policy = SETUP_FAILURE_POLICY
+    require(policy in ('strict_v1', SETUP_FAILURE_POLICY, SINGLE_DIAGNOSTIC_POLICY))
     proof = None
     if prebuilt_plan is not None:
         from prebuilt import budget
         require(type(prebuilt_plan) is str)
         proof = budget(prebuilt_plan.encode('utf-8'))
     required_bytes = REQUIRED_MIB * MIB if proof is None else proof['required_bytes']
-    integer(slots, 2, 5)
-    if proof is not None: require(slots == 5 and setup_failed_slots is not None)
+    integer(slots, 1, 5)
+    if policy == 'strict_v1':
+        require(2 <= slots <= 5 and setup_failed_slots is None and proof is None)
+    elif policy == SETUP_FAILURE_POLICY:
+        require(slots in (4, 5) and setup_failed_slots is not None)
+        if proof is not None:
+            require(slots == 5)
+    else:
+        require(slots == 1 and setup_failed_slots is None and proof is not None)
     failures = [] if setup_failed_slots is None else setup_failed_slots
     require(type(failures) is list)
-    if setup_failed_slots is not None:
-        require(slots in (4, 5))
     require(all(integer(slot, 1, slots) for slot in failures))
     require(len(failures) == len(set(failures)) < slots)
     require(type(receipts) is list and len(receipts) + len(failures) == slots)
@@ -167,8 +178,9 @@ def main(argv=None, stdin=None):
         parser.add_argument('--workflow-sha', required=True)
         parser.add_argument('--run-id', required=True)
         parser.add_argument('--run-attempt', required=True)
-        parser.add_argument('--slots', choices=('2', '3', '4', '5'), default='2')
-        parser.add_argument('--policy', choices=('strict_v1', SETUP_FAILURE_POLICY), default='strict_v1')
+        parser.add_argument('--slots', choices=('1', '2', '3', '4', '5'), default='2')
+        parser.add_argument('--policy', choices=('strict_v1', SETUP_FAILURE_POLICY,
+                                                 SINGLE_DIAGNOSTIC_POLICY), default='strict_v1')
         parser.add_argument('--binary-mode', choices=('build_v1','prebuilt_v1'), default='build_v1')
         parser.add_argument('paths', nargs='*')
         args = parser.parse_args(argv)
@@ -191,9 +203,16 @@ def main(argv=None, stdin=None):
         failures = None
         prebuilt_plan = None
         if args.binary_mode == 'prebuilt_v1':
-            require(not args.paths and args.policy == SETUP_FAILURE_POLICY)
-            keys(inputs, {'schema','receipts','setup_failed_slots','prebuilt_plan'})
+            require(not args.paths and args.policy in
+                    (SETUP_FAILURE_POLICY, SINGLE_DIAGNOSTIC_POLICY))
+            if args.policy == SINGLE_DIAGNOSTIC_POLICY:
+                keys(inputs, {'schema', 'receipts', 'prebuilt_plan'})
+                require(integer(inputs['schema']) == 3)
+            else:
+                keys(inputs, {'schema', 'receipts', 'setup_failed_slots', 'prebuilt_plan'})
             prebuilt_plan = inputs.pop('prebuilt_plan')
+            if args.policy == SINGLE_DIAGNOSTIC_POLICY:
+                inputs = inputs['receipts']
         if args.policy == SETUP_FAILURE_POLICY:
             keys(inputs, {'schema', 'receipts', 'setup_failed_slots'})
             require(integer(inputs['schema']) == 2)
@@ -201,7 +220,8 @@ def main(argv=None, stdin=None):
             inputs = inputs['receipts']
         result = elect(inputs, workflow_sha=args.workflow_sha,
                        run_id=int(args.run_id), run_attempt=int(args.run_attempt),
-                       slots=int(args.slots), setup_failed_slots=failures, prebuilt_plan=prebuilt_plan)
+                       slots=int(args.slots), policy=args.policy,
+                       setup_failed_slots=failures, prebuilt_plan=prebuilt_plan)
         print(json.dumps(result, separators=(',', ':')))
         return 0 if result['status'] == 0 else 3
     except (InvalidReceipt, ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):

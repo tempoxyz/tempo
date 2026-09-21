@@ -374,30 +374,30 @@ jobs:
     name: bench-e2e (reserved slot ${{ matrix.slot }})
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 1
       matrix:
-        slot: [1, 2, 3, 4, 5]
+        slot: [1]
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
       BENCH_CAPACITY_SLOT: ${{ matrix.slot }}
-      BENCH_CAPACITY_SLOTS: "5"
-      BENCH_CAPACITY_POLICY: "setup_failure_v2"
+      BENCH_CAPACITY_SLOTS: "1"
+      BENCH_CAPACITY_POLICY: "single_diagnostic_v1"
       BENCH_BINARY_MODE: "prebuilt_v1"
       BENCH_RUN_CLEANUP_CONTRACT: "owned_artifacts_v1"
       # Filled only from the authenticated successful producer artifact; zero is deliberately inadmissible.
-      BENCH_PREBUILT_PLAN_SHA256: "8bb7486358e9546ab2d7b9b07045c7be667e2bfb8f9909cc1aee0fe537cba49e"
-      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') }}
-      BENCH_LIFECYCLE_SCHEDULER: ${{ inputs.profiling == 'lifecycle-kernel-faults' }}
+      BENCH_PREBUILT_PLAN_SHA256: "3f1e4dd19468a795123047ae6098d33067c6f9b9f77e6c2baf8334ae5e60e1ce"
+      BENCH_LIFECYCLE: "true"
+      BENCH_LIFECYCLE_SCHEDULER: "false"
       BENCH_KERNEL_FAULT_BASELINE_EMPTY: ${{ inputs.baseline == '' }}
       BENCH_KERNEL_FAULT_FEATURE: ${{ inputs.feature }}
-      BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && 'milestones' || 'full' }}
-      BENCH_LIFECYCLE_PREWARM_CPU: ${{ inputs.profiling == 'lifecycle-compare-prewarm-cpu' && 'compare' || 'disabled' }}
+      BENCH_LIFECYCLE_DETAIL: "milestones"
+      BENCH_LIFECYCLE_PREWARM_CPU: "disabled"
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_MODE: ${{ inputs.mode || 'e2e' }}
       BENCH_PRESET: ${{ inputs.preset }}
-      BENCH_DURATION: ${{ inputs.duration }}
+      BENCH_DURATION: "30"
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
@@ -406,12 +406,12 @@ jobs:
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
-      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
+      BENCH_SAMPLY: "false"
+      BENCH_TRACY: "off"
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
-      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-kernel-faults' && inputs.otlp != false && inputs.otlp != 'false' }}
-      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-kernel-faults' && (inputs.valscope == true || inputs.valscope == 'true') }}
+      BENCH_OTLP: "false"
+      BENCH_VALSCOPE: "false"
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
@@ -423,15 +423,16 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ inputs.no-slack }}
-      BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
+      BENCH_NO_SLACK: "true"
+      BENCH_METRICS: "false"
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
-      BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
-      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
+      BENCH_FEATURE_ENV: ""
+      BENCH_READ_READINESS: "true"
+      BENCH_RUN_PAIRS: "1"
       # An explicit instrumented baseline enables a same-runner lifecycle pair.
-      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}
+      BENCH_RUN_SIDE: "feature"
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}

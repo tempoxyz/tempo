@@ -9,6 +9,7 @@ const { createHash } = require('node:crypto');
 const MAX_BYTES = 65536;
 const PREFIX = 'bench-capacity-reservation-';
 const SETUP_FAILURE_POLICY = 'setup_failure_v2';
+const SINGLE_DIAGNOSTIC_POLICY = 'single_diagnostic_v1';
 const silentLog = { debug() {}, info() {}, warn() {}, error() {} };
 
 function requestOptions(timeout) {
@@ -28,15 +29,29 @@ function binding(context, env) {
   requireValue(/^[0-9a-f]{40}$/.test(context.sha) && uint(context.runId));
   requireValue(/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ATTEMPT || ''));
   const attempt = Number(env.GITHUB_RUN_ATTEMPT);
-  requireValue(/^[2345]$/.test(env.BENCH_CAPACITY_SLOTS || ''));
+  requireValue(/^[12345]$/.test(env.BENCH_CAPACITY_SLOTS || ''));
   const slots = Number(env.BENCH_CAPACITY_SLOTS);
   requireValue(/^[12345]$/.test(env.BENCH_CAPACITY_SLOT || ''));
   const slot = Number(env.BENCH_CAPACITY_SLOT);
   requireValue(uint(attempt) && slot <= slots);
   const policy = env.BENCH_CAPACITY_POLICY ?? 'strict_v1';
-  requireValue(['strict_v1', SETUP_FAILURE_POLICY].includes(policy));
+  requireValue(['strict_v1', SETUP_FAILURE_POLICY, SINGLE_DIAGNOSTIC_POLICY].includes(policy));
+  requireValue(policy !== 'strict_v1' || [2, 3, 4, 5].includes(slots));
   requireValue(policy !== SETUP_FAILURE_POLICY || [4, 5].includes(slots));
   requireValue(env.BENCH_LIFECYCLE === 'true' && env.BENCH_NO_SLACK === 'true');
+  if (policy === SINGLE_DIAGNOSTIC_POLICY) {
+    requireValue(slots === 1 && slot === 1);
+    requireValue(env.BENCH_BINARY_MODE === 'prebuilt_v1');
+    requireValue(env.BENCH_LIFECYCLE_DETAIL === 'milestones');
+    requireValue(env.BENCH_RUN_SIDE === 'feature' && env.BENCH_RUN_PAIRS === '1');
+    requireValue(env.BENCH_DURATION === '30');
+    requireValue(env.BENCH_READ_READINESS === 'true');
+    requireValue(!env.BENCH_FEATURE_ENV && !env.BENCH_BASELINE_ENV && !env.BENCH_BENCH_ENV);
+    requireValue(env.BENCH_LIFECYCLE_SCHEDULER === 'false');
+    requireValue(env.BENCH_SAMPLY === 'false' && env.BENCH_TRACY === 'off');
+    requireValue(env.BENCH_OTLP === 'false' && env.BENCH_VALSCOPE === 'false');
+    requireValue(env.BENCH_METRICS === 'false');
+  }
   return { workflow_sha: context.sha, run_id: context.runId, run_attempt: attempt, slot, slots, policy };
 }
 
@@ -90,7 +105,10 @@ async function prebuilt(github, context, env, execute, timeout = 10000) {
     requireValue(!env.BENCH_PREBUILT_PLAN_SHA256);
     return null;
   }
-  requireValue(env.BENCH_CAPACITY_POLICY === SETUP_FAILURE_POLICY && env.BENCH_CAPACITY_SLOTS === '5');
+  requireValue(
+    (env.BENCH_CAPACITY_POLICY === SETUP_FAILURE_POLICY && env.BENCH_CAPACITY_SLOTS === '5') ||
+    (env.BENCH_CAPACITY_POLICY === SINGLE_DIAGNOSTIC_POLICY && env.BENCH_CAPACITY_SLOTS === '1')
+  );
   requireValue(/^[0-9a-f]{64}$/.test(env.BENCH_PREBUILT_PLAN_SHA256 || ''));
   const plan = await source(github, context, 'contrib/bench/lifecycle/prebuilt-plan.json', allowance());
   requireValue(createHash('sha256').update(plan).digest('hex') === env.BENCH_PREBUILT_PLAN_SHA256);
@@ -278,9 +296,12 @@ async function elect({ github, context, core, env = process.env, execute = spawn
       '--workflow-sha', bound.workflow_sha, '--run-id', String(bound.run_id),
       '--run-attempt', String(bound.run_attempt), '--slots', String(bound.slots),
     ];
-    if (accounted) electionArgs.push('--policy', SETUP_FAILURE_POLICY);
+    if (bound.policy !== 'strict_v1') electionArgs.push('--policy', bound.policy);
     if (portable) electionArgs.push('--binary-mode', 'prebuilt_v1');
-    const input = portable ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)},"prebuilt_plan":${JSON.stringify(portable.plan)}}` : accounted ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)}}` : `[${receipts.join(',')}]`;
+    const input = portable && bound.policy === SINGLE_DIAGNOSTIC_POLICY ?
+      `{"schema":3,"receipts":[${receipts.join(',')}],"prebuilt_plan":${JSON.stringify(portable.plan)}}` :
+      portable ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)},"prebuilt_plan":${JSON.stringify(portable.plan)}}` :
+      accounted ? `{"schema":2,"receipts":[${receipts.join(',')}],"setup_failed_slots":${JSON.stringify(failed)}}` : `[${receipts.join(',')}]`;
     const elected = JSON.parse(python(script, electionArgs, input, env, execute, [0, 2, 3], budget(60000)));
     budget(10000);
     const fields = ['schema', 'status', 'selected_slot', 'root_free_mib', 'workspace_free_mib', 'minimum_free_mib'];
@@ -312,4 +333,4 @@ async function elect({ github, context, core, env = process.env, execute = spawn
   }
 }
 
-module.exports = { probe, elect, binding, artifactName, EXTRACT_RECEIPT, validateCapacity, setupFailures, admissionReceipt, SETUP_FAILURE_POLICY, prebuilt, withPrebuilt };
+module.exports = { probe, elect, binding, artifactName, EXTRACT_RECEIPT, validateCapacity, setupFailures, admissionReceipt, SETUP_FAILURE_POLICY, SINGLE_DIAGNOSTIC_POLICY, prebuilt, withPrebuilt };

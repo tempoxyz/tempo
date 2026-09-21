@@ -1,4 +1,5 @@
 import copy
+import base64
 import io
 import itertools
 import json
@@ -9,6 +10,8 @@ import tempfile
 import unittest
 
 import capacity_election as election
+import prebuilt
+from test_prebuilt import encoded as encoded_prebuilt, fixture as prebuilt_fixture
 
 SHA = 'a' * 40
 BINDING = dict(workflow_sha=SHA, run_id=35197245767, run_attempt=2)
@@ -37,6 +40,48 @@ class ElectionTests(unittest.TestCase):
     def rejected(self, pair, slots=2):
         with self.assertRaises(election.InvalidReceipt):
             election.elect(pair, **BINDING, slots=slots)
+
+    def test_single_diagnostic_requires_one_prebuilt_receipt_without_setup_fallback(self):
+        plan, _ = prebuilt_fixture()
+        raw = encoded_prebuilt(plan)
+        proof = prebuilt.budget(raw)
+        value = receipt(1)
+        value['prebuilt'] = proof
+        elected = election.elect(
+            [value], **BINDING, slots=1, policy=election.SINGLE_DIAGNOSTIC_POLICY,
+            prebuilt_plan=raw.decode())
+        self.assertEqual(elected['selected_slot'], 1)
+
+        prebuilt_source = Path(prebuilt.__file__).read_bytes()
+        election_source = Path(election.__file__).read_text()
+        bootstrap = (
+            "import base64,types,sys\n"
+            "m=types.ModuleType('prebuilt')\n"
+            f"exec(base64.b64decode('{base64.b64encode(prebuilt_source).decode()}'),m.__dict__)\n"
+            "sys.modules['prebuilt']=m\n" + election_source)
+        args = [sys.executable, '-I', '-c', bootstrap, '--workflow-sha', SHA,
+                '--run-id', str(BINDING['run_id']), '--run-attempt', '2', '--slots', '1',
+                '--policy', election.SINGLE_DIAGNOSTIC_POLICY,
+                '--binary-mode', 'prebuilt_v1']
+        envelope = dict(schema=3, receipts=[value], prebuilt_plan=raw.decode())
+        result = subprocess.run(args, input=json.dumps(envelope).encode(), capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['selected_slot'], 1)
+        for mutation in (
+                {**envelope, 'schema': 2},
+                {**envelope, 'setup_failed_slots': []},
+                {'schema': 3, 'receipts': [value]}):
+            result = subprocess.run(args, input=json.dumps(mutation).encode(), capture_output=True)
+            self.assertEqual(result.returncode, 2, result.stderr)
+
+        for policy, slots, failures, plan_value in (
+                (election.SINGLE_DIAGNOSTIC_POLICY, 2, None, raw.decode()),
+                (election.SINGLE_DIAGNOSTIC_POLICY, 1, [], raw.decode()),
+                (election.SINGLE_DIAGNOSTIC_POLICY, 1, None, None),
+                ('strict_v1', 1, None, None)):
+            with self.assertRaises(election.InvalidReceipt):
+                election.elect([value], **BINDING, slots=slots, policy=policy,
+                               setup_failed_slots=failures, prebuilt_plan=plan_value)
 
     def test_five_slots_all_120_orders_ties_and_exact_accounted_union(self):
         for capacities, winner in [([70000]*5, 1), ([1,70000,71000,72000,80000], 5)]:
