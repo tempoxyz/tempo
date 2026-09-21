@@ -26,8 +26,8 @@ without an earlier cutoff remains unexplained. Checks do not currently classify 
 ## Adding a feature
 
 1. Implement a feature module beside the registry, with a stable ID per check and a link to
-   its TIP. Register its checks under the introducing fork; a compile-time length assertion
-   and a uniqueness test require one registry entry per fork.
+   its TIP. Add a registry entry under the introducing fork, in ascending fork order.
+   Omit forks without expectations; the registry starts empty. Rule IDs must be unique.
 2. Check applicability and exact effects from typed evidence. Return `None` when evidence
    is insufficient. A changed gas amount or a fee-touched slot alone is insufficient.
 3. Return `Some(true)` for accepted persistent state/context changes unless the check

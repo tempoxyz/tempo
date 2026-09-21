@@ -23,34 +23,12 @@ pub(super) struct Context<'a> {
     pub shadow: &'a Evidence,
 }
 
-/// Keep an explicit entry per fork so adding a fork requires reviewing its expectations.
+/// Register only forks with expectations, in ascending fork order.
 ///
 /// No production exceptions are established yet. In particular, TIP-1016 needs independently
 /// checked gas/fee accounting before its differences can be accepted. Empty means unexplained,
 /// not equal, safe, or ignored. Add each feature's checks and fixtures together.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
-    (TempoHardfork::Genesis, &[]),
-    (TempoHardfork::T0, &[]),
-    (TempoHardfork::T1, &[]),
-    (TempoHardfork::T1A, &[]),
-    (TempoHardfork::T1B, &[]),
-    (TempoHardfork::T1C, &[]),
-    (TempoHardfork::T2, &[]),
-    (TempoHardfork::T3, &[]),
-    (TempoHardfork::T4, &[]),
-    (TempoHardfork::T5, &[]),
-    (TempoHardfork::T6, &[]),
-    (TempoHardfork::T7, &[]),
-    (TempoHardfork::T8, &[]),
-    (TempoHardfork::T9, &[]),
-    (TempoHardfork::T10, &[]),
-    (TempoHardfork::T11, &[]),
-    (TempoHardfork::T12, &[]),
-    (TempoHardfork::T13, &[]),
-];
-
-// TempoHardfork is non_exhaustive across crates, so a match cannot enforce this.
-const _: () = assert!(REGISTRY.len() == TempoHardfork::VARIANTS.len());
+const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[];
 
 /// Select once per block, including every newly active fork and excluding canonical features.
 /// Forks run in registry order (oldest first), then checks in slice order.
@@ -58,16 +36,17 @@ pub(super) fn between(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> Vec<&'static Expectation> {
-    newly_active(canonical, candidate)
+    newly_active(REGISTRY, canonical, candidate)
         .flat_map(|(_, rules)| *rules)
         .collect()
 }
 
 fn newly_active(
+    registry: &'static [(TempoHardfork, &'static [Expectation])],
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> impl Iterator<Item = &'static (TempoHardfork, &'static [Expectation])> {
-    REGISTRY
+    registry
         .iter()
         .filter(move |(fork, _)| *fork > canonical && *fork <= candidate)
 }
@@ -79,22 +58,25 @@ mod tests {
     #[test]
     fn selects_only_newly_active_forks() {
         use TempoHardfork::*;
+        const SPARSE: &[(TempoHardfork, &[Expectation])] = &[(T11, &[]), (T13, &[])];
         let forks = |a, b| {
-            newly_active(a, b)
+            newly_active(SPARSE, a, b)
                 .map(|(fork, _)| *fork)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(forks(T10, T13), [T11, T12, T13]);
+        assert_eq!(forks(T10, T13), [T11, T13]);
         assert_eq!(forks(T12, T13), [T13]);
-        assert_eq!(newly_active(T13, T13).count(), 0);
-        assert_eq!(newly_active(T13, T12).count(), 0);
+        assert!(forks(T11, T12).is_empty());
+        assert!(forks(T13, T13).is_empty());
+        assert!(forks(T13, T12).is_empty());
+        assert_eq!(newly_active(&[], T10, T13).count(), 0);
     }
 
     #[test]
-    fn rule_ids_are_unique_across_forks() {
+    fn registry_is_ordered_and_rule_ids_are_unique() {
+        assert!(REGISTRY.windows(2).all(|pair| pair[0].0 < pair[1].0));
         let mut ids = std::collections::HashSet::new();
-        for ((fork, rules), expected) in REGISTRY.iter().zip(TempoHardfork::VARIANTS) {
-            assert_eq!(fork, expected);
+        for (_, rules) in REGISTRY {
             for rule in *rules {
                 assert!(!rule.id.is_empty());
                 assert!(ids.insert(rule.id), "duplicate expectation {}", rule.id);
