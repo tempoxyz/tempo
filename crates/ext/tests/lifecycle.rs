@@ -1036,7 +1036,8 @@ fn corrupt_registry_blocks_update_all() {
 
     fs::write(fix.home.join("extensions.json"), "<<<").unwrap();
 
-    let err = fix.run(&["tempo", "update"]).unwrap_err();
+    // Validate the registry without invoking the real tempoup installer.
+    let err = fix.run(&["tempo", "update", "--dry-run"]).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("registry corrupt"), "got: {msg}");
 }
@@ -1090,7 +1091,8 @@ fn missing_registry_allows_all_commands() {
 
     // No extensions.json exists — all commands should succeed.
     assert_eq!(fix.run(&["tempo", "list"]).unwrap(), 0);
-    assert_eq!(fix.run(&["tempo", "update"]).unwrap(), 0);
+    // Validate the registry without invoking the real tempoup installer.
+    assert_eq!(fix.run(&["tempo", "update", "--dry-run"]).unwrap(), 0);
 
     // Add should work fine with no prior registry.
     fix.publish_extension("testpkg", "1.0.0");
