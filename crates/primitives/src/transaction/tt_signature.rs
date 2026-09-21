@@ -90,7 +90,31 @@ pub struct WebAuthnSignature {
     pub pub_key_x: B256,
     pub pub_key_y: B256,
     /// authenticatorData || clientDataJSON (variable length)
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "deserialize_bounded_webauthn_data")
+    )]
     pub webauthn_data: Bytes,
+}
+
+/// Longest `webauthn_data` that fits in a WebAuthn signature of
+/// [`MAX_WEBAUTHN_SIGNATURE_LENGTH`] bytes once the four fixed 32-byte fields are counted.
+pub const MAX_WEBAUTHN_DATA_LENGTH: usize = MAX_WEBAUTHN_SIGNATURE_LENGTH - 128;
+
+/// Deserializes `webauthn_data` with the same bound [`PrimitiveSignature::from_bytes`] applies
+/// on the wire, so a JSON-RPC request cannot carry a payload the encoded form would reject.
+#[cfg(feature = "serde")]
+fn deserialize_bounded_webauthn_data<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let data: Bytes = serde::Deserialize::deserialize(deserializer)?;
+    if data.len() > MAX_WEBAUTHN_DATA_LENGTH {
+        return Err(serde::de::Error::custom(format!(
+            "webauthnData exceeds {MAX_WEBAUTHN_DATA_LENGTH} bytes"
+        )));
+    }
+    Ok(data)
 }
 
 fn split_p256_signature_fields(
@@ -1663,6 +1687,39 @@ mod tests {
         // Verify roundtrip
         let decoded3 = TempoSignature::from_bytes(&encoded3).unwrap();
         assert_eq!(sig3, decoded3);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_webauthn_serde_rejects_oversized_data() {
+        let signature = |len| {
+            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                r: B256::from([5u8; 32]),
+                s: B256::from([6u8; 32]),
+                pub_key_x: B256::from([7u8; 32]),
+                pub_key_y: B256::from([8u8; 32]),
+                webauthn_data: Bytes::from(vec![9u8; len]),
+            }))
+        };
+
+        let at_bound = signature(MAX_WEBAUTHN_DATA_LENGTH);
+        let json = serde_json::to_string(&at_bound).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TempoSignature>(&json).unwrap(),
+            at_bound
+        );
+        assert!(PrimitiveSignature::from_bytes(&at_bound.to_bytes()).is_ok());
+
+        let oversized = signature(MAX_WEBAUTHN_DATA_LENGTH + 1);
+        let json = serde_json::to_string(&oversized).unwrap();
+        assert!(serde_json::from_str::<TempoSignature>(&json).is_err());
+        let TempoSignature::Primitive(primitive) = &oversized else {
+            unreachable!()
+        };
+        let json = serde_json::to_string(primitive).unwrap();
+        let err = serde_json::from_str::<PrimitiveSignature>(&json).unwrap_err();
+        assert!(err.to_string().contains("webauthnData exceeds"), "{err}");
+        assert!(PrimitiveSignature::from_bytes(&oversized.to_bytes()).is_err());
     }
 
     #[test]
