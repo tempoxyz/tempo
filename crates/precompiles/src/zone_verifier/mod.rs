@@ -19,7 +19,7 @@ use tempo_contracts::precompiles::{IZoneVerifier, ZONE_VERIFIER_ADDRESS};
 use tempo_precompiles_macros::contract;
 use tempo_zone_verifier::AWS_NITRO_ROOT_DER;
 #[cfg(test)]
-use tempo_zone_verifier::{CONFIG_V1, batch_commitment};
+use tempo_zone_verifier::{CONFIG_V1, MAX_FUTURE_SKEW_MILLIS, batch_commitment};
 
 /// Production measurements remain deliberately unset until the reproducible T13 EIF is finalized.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;

@@ -3,10 +3,8 @@
 use crate::storage::StorageCtx;
 use tempo_nitro_attestation::NitroAttestation;
 #[cfg(test)]
-use tempo_nitro_attestation::{MAX_DOCUMENT_SIZE, parse_attestation};
+use tempo_nitro_attestation::parse_attestation;
 pub(super) use tempo_zone_verifier::AWS_NITRO_ROOT_DER;
-#[cfg(test)]
-use tempo_zone_verifier::{BASE_GAS, SIGNATURE_GAS};
 
 pub(super) fn verify_attestation_with_root(
     document: &[u8],

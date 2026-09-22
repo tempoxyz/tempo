@@ -16,7 +16,8 @@ pub use tempo_contracts::precompiles::{
 pub type ApprovedPcrs = [[u8; 48]; 3];
 /// The supported Nitro proof configuration.
 pub const CONFIG_V1: &[u8] = &[1];
-const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
+/// Maximum future skew accepted by the native verifier.
+pub const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
 /// Verify using the AWS trust root and an explicit measurement policy.
 ///
