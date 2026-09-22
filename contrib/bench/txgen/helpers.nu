@@ -815,12 +815,14 @@ def txgen-run-preset-pipeline [
         "--rpc" $generate_rpc_url
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
+    # Controlled diagnostic: test RPC capacity independently of worker count.
+    let sender_concurrent = if ($benchmark_run | str starts-with "feature-") { 500 } else { $max_concurrent_requests }
     let bench_send_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
-        "--max-concurrent" $max_concurrent_requests
+        "--max-concurrent" $sender_concurrent
         "--retries" 0
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
     ]
@@ -841,7 +843,7 @@ def txgen-run-preset-pipeline [
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
         "-m" $"accounts=($total_accounts)"
-        "-m" $"total_connections=($max_concurrent_requests)"
+        "-m" $"total_connections=($sender_concurrent)"
         "-m" $"bloat_mib=($bloat_mib)"
         "-m" $"tip20_token_count=($tx_token_count)"
         "-m" $"bloat_token_count=($bloat_token_count)"
@@ -868,15 +870,12 @@ def txgen-run-preset-pipeline [
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    # Controlled diagnostic: vary only the sender runtime, not node workers or
-    # generation/signing. Keep baseline at the runner's default worker count.
-    let sender_runtime = if ($benchmark_run | str starts-with "feature-") { ["env" "TOKIO_WORKER_THREADS=4"] } else { [] }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
     let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
-    let bench_cmd_str = (txgen-shell-join ($sender_runtime | append $bench_cmd | append "--collect-latencies"))
+    let bench_cmd_str = (txgen-shell-join ($bench_cmd | append "--collect-latencies"))
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
     if $use_two_phase_setup {
