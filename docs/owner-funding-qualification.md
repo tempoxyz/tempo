@@ -27,10 +27,10 @@ Measured with Rust 1.95.0 on the T13 fixture above. The standalone demo and E2E 
 | First owner transaction, direct transfer | 290,954 | 250,000 |
 | Subsequent direct transfer | 40,954 | 0 |
 | Requirement already covered | 44,137 | 3,183 |
-| One source, 50 units, omitted slippage | 619,417 | 578,463 |
-| Two sources, 30 + 20 units, 100 bps | 724,145 | 683,191 |
-| Funding succeeds, payment reverts | 465,789 | — |
-| First source supplies 30, requirement remains unmet | 394,364 | — |
+| One source, 50 units, omitted slippage | 621,183 | 580,229 |
+| Two sources, 30 + 20 units, 100 bps | 766,677 | 725,723 |
+| Funding succeeds, payment reverts | 508,321 | — |
+| First source supplies 30, requirement remains unmet | 435,130 | — |
 
 The first transaction's 250,000-gas nonce-initialization charge is unrelated to funding. Both failure rows retain normal fees while reverting source inputs, DEX credits, output transfers, and funding events. These numbers do not establish worst-case gas bounds for fragmented books.
 
@@ -40,12 +40,13 @@ The first transaction's 250,000-gas nonce-initialization charge is unrelated to 
 | --- | --- | --- |
 | Authorization | Native permission, callback, and owner state-machine tests; signed node rejection of access keys. | Only the transaction handler initiates funding. The owner trusts the selected source and its declared input valuation; signatures authorize source addresses and data. |
 | Input authority | TIP-20/DEX tests for wrong assets, existing allowances, cumulative caps, refunds, nested reverts, and cleanup. | Temporary authority belongs to one account/source callback and cannot survive it. |
+| Public quotes | Native DEX/EVM and RPC tests for ceilings, cost and input caps, account balances, liquidity, and rejected direct funding. | Quotes are read-only estimates with no input authority. Execution obtains its own quote and rechecks availability. |
 | Shared cost | Arithmetic/property tests and multi-source DEX integration. | One budget uses the initial shortfall; actual gross inputs consume it. Currency metadata is not an oracle. |
 | Delivery and rollback | Owner integration, signed node RPC, and four-validator scenarios. | Funding and application calls share rollback. Every required balance is rechecked before calls. |
 | Activation and addresses | T12 rejection/T13 execution tests and the fixed system-address table. | The proposed `0x1120…0000` and `0x1120…0001` assignments still need protocol review. No network fork dates are assigned here. |
 | Signing and compatibility | Fixed RLP vectors, sender/sponsor mutation tests, legacy/empty-extension compatibility. | Both signatures cover funding. Access key funding remains disabled. |
 | RPC and scheduling | Signed RPC simulation, estimation, tracing, address-filter tests, payment classification tests. | Funding uses the general gas lane and cannot use payment replay shortcuts. |
-| Resource use | Intrinsic/floor-byte tests, metered native reads/writes, callback gas and out-of-gas tests. | Partial sizing performs at most 129 quote probes per source. Transaction gas bounds execution; fragmented books need separate load qualification. |
+| Resource use | Intrinsic/floor-byte tests, metered native reads/writes, callback gas and out-of-gas tests. | Partial sizing performs at most 129 quote probes during each of quoting and execution. Transaction gas bounds execution; fragmented books need separate load qualification. |
 
 The E2E module is included by the existing `tempo-e2e` CI job. The signed RPC module is included by the ordinary node integration job. Neither suite requires a new workflow or test exclusion.
 

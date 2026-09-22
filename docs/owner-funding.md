@@ -7,13 +7,15 @@ The protocol defines two fixed addresses in `tempo-contracts`:
 | Constant | Address | Purpose |
 | --- | --- | --- |
 | `TIP20_FUNDER_ADDRESS` | `0x1120000000000000000000000000000000000000` | Protocol funding caller and accounting identity. Solidity cannot initiate funding. |
-| `NATIVE_DEX_FUNDING_SOURCE_ADDRESS` | `0x1120000000000000000000000000000000000001` | Native DEX source implementing `prepare` and `fund`. |
+| `NATIVE_DEX_FUNDING_SOURCE_ADDRESS` | `0x1120000000000000000000000000000000000001` | Native DEX source implementing `quote` and `fund`. |
 
 The native source requires initialized, unpaused TIP-20 tokens with matching currency metadata across the input, output, and every intermediate route token. The DEX currently supports USD pairs only. Newly created USD tokens need no funding allowlist entry, but must have a supported route and available liquidity.
 
 Matching currency metadata establishes the protocol's 1:1 reference assumption, not market-price equivalence. Metadata is issuer-declared and does not detect depegs. The aggregate slippage budget measures execution against that reference.
 
 Sign the full funding array with the owner key. Access key funding remains disabled, including requirements whose balances are already satisfied. The native source's `data` is ABI `(address assetIn, uint256 maxAmountIn)`; use `uint256.max` for an uncapped caller request. The protocol still applies the aggregate shortfall budget.
+
+Anyone can call the native source's read-only `quote` to estimate one invocation. It accounts for the requested ceiling, wallet and DEX balances, liquidity, input caps, and cost budget. Quotes grant no spending authority. The handler obtains a fresh quote before `fund` and independently verifies actual delivery and cost.
 
 Funding runs before application calls under the same rollback checkpoint. A funding or application failure reverts swaps, token movements, and funding events. Fees and nonces follow normal transaction behavior. Fees require existing funds or a sponsor. Application calls must remain nonempty under the existing transaction rules.
 
