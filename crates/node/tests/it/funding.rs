@@ -13,8 +13,8 @@ use alloy::{
 use alloy_eips::{Decodable2718, Encodable2718};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::{
-    IRolesAuth, IStablecoinDEX, ITIP20, ITIP20Factory, PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
-    TIP20_FACTORY_ADDRESS,
+    IFundingSource, IRolesAuth, IStablecoinDEX, ITIP20, ITIP20Factory, PATH_USD_ADDRESS,
+    STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{tip20::ISSUER_ROLE, tip20_factory::TIP20Factory};
 use tempo_primitives::{
@@ -129,6 +129,41 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                     .status()
             );
         }
+        let source = IFundingSource::new(SOURCE, provider.clone());
+        let quote = source
+            .quote(
+                owner.address(),
+                PATH_USD_ADDRESS,
+                U256::from(50 * UNIT),
+                U256::from(50 * UNIT),
+                (assets[0], U256::from(30 * UNIT)).abi_encode().into(),
+                Default::default(),
+                true,
+            )
+            .call()
+            .await?;
+        assert_eq!(quote.amountOut, U256::from(30 * UNIT));
+        assert_eq!(quote.maxAmountIn, U256::from(30 * UNIT));
+        assert!(
+            source
+                .fund(
+                    owner.address(),
+                    PATH_USD_ADDRESS,
+                    quote.amountOut,
+                    quote.data
+                )
+                .call()
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            ITIP20::new(assets[0], provider.clone())
+                .balanceOf(owner.address())
+                .call()
+                .await?,
+            U256::from(200 * UNIT)
+        );
+        assert!(output.balanceOf(owner.address()).call().await?.is_zero());
         let requirement = FundingRequirement {
             token: PATH_USD_ADDRESS,
             amount: U256::from(50 * UNIT),
