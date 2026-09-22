@@ -1,13 +1,12 @@
-pub use IFundingPolicyRegistry::{
-    IFundingPolicyRegistryErrors as FundingPolicyRegistryError,
-    IFundingPolicyRegistryEvents as FundingPolicyRegistryEvent,
+pub use IFundingPolicy::{
+    IFundingPolicyErrors as FundingPolicyError, IFundingPolicyEvents as FundingPolicyEvent,
 };
 
 crate::sol! {
     /// TIP-1120 shared funding policy interface; registry execution is activated separately.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-interface IFundingPolicyRegistry {
+interface IFundingPolicy {
     struct Source {
         address target;
         bytes data;
@@ -69,21 +68,21 @@ mod tests {
 
     #[test]
     fn policy_encoding_binds_routes_tokens_and_source_rules() {
-        let route = IFundingPolicyRegistry::Route {
+        let route = IFundingPolicy::Route {
             token: Address::repeat_byte(2),
-            sources: vec![IFundingPolicyRegistry::Source {
+            sources: vec![IFundingPolicy::Source {
                 target: Address::repeat_byte(4),
                 data: Bytes::from_static(&[0xaa]),
             }],
         };
-        let policy = IFundingPolicyRegistry::Policy {
+        let policy = IFundingPolicy::Policy {
             admins: vec![Address::repeat_byte(1)],
             slippageBps: 100,
             routes: vec![
                 route,
-                IFundingPolicyRegistry::Route {
+                IFundingPolicy::Route {
                     token: Address::repeat_byte(5),
-                    sources: vec![IFundingPolicyRegistry::Source {
+                    sources: vec![IFundingPolicy::Source {
                         target: Address::repeat_byte(4),
                         data: Bytes::from_static(&[0xbb]),
                     }],
@@ -95,16 +94,15 @@ mod tests {
         assert_eq!(&encoded[32..64], &U256::from(100).to_be_bytes::<32>());
         assert_eq!(&encoded[64..96], &U256::from(160).to_be_bytes::<32>());
         assert_eq!(&encoded[160..192], &U256::from(2).to_be_bytes::<32>());
-        let call = IFundingPolicyRegistry::createPolicyCall {
+        let call = IFundingPolicy::createPolicyCall {
             policy: policy.clone(),
         };
         assert_eq!(
-            IFundingPolicyRegistry::createPolicyCall::SIGNATURE,
+            IFundingPolicy::createPolicyCall::SIGNATURE,
             "createPolicy((address[],uint16,(address,(address,bytes)[])[]))"
         );
         assert_eq!(
-            IFundingPolicyRegistry::createPolicyCall::abi_decode_validate(&call.abi_encode())
-                .unwrap(),
+            IFundingPolicy::createPolicyCall::abi_decode_validate(&call.abi_encode()).unwrap(),
             call
         );
         for change in 0..4 {
@@ -117,10 +115,8 @@ mod tests {
             }
             assert_ne!(encoded, changed.abi_encode_params());
             assert_eq!(
-                IFundingPolicyRegistry::Policy::abi_decode_params_validate(
-                    &changed.abi_encode_params()
-                )
-                .unwrap(),
+                IFundingPolicy::Policy::abi_decode_params_validate(&changed.abi_encode_params())
+                    .unwrap(),
                 changed
             );
         }
@@ -128,34 +124,33 @@ mod tests {
 
     #[test]
     fn modify_policy_replaces_routes_without_admins() {
-        let call = IFundingPolicyRegistry::modifyPolicyCall {
+        let call = IFundingPolicy::modifyPolicyCall {
             policyId: 7,
             slippageBps: 100,
             routes: vec![],
         };
         assert_eq!(
-            IFundingPolicyRegistry::modifyPolicyCall::SIGNATURE,
+            IFundingPolicy::modifyPolicyCall::SIGNATURE,
             "modifyPolicy(uint64,uint16,(address,(address,bytes)[])[])"
         );
         assert_eq!(
-            IFundingPolicyRegistry::modifyPolicyCall::abi_decode_validate(&call.abi_encode())
-                .unwrap(),
+            IFundingPolicy::modifyPolicyCall::abi_decode_validate(&call.abi_encode()).unwrap(),
             call
         );
     }
     #[test]
     fn discovery_preserves_target_and_independent_estimates() {
-        let result = IFundingPolicyRegistry::Discovery {
+        let result = IFundingPolicy::Discovery {
             token: Address::repeat_byte(1),
             amount: U256::from(50),
             slippageBps: 100,
             sources: vec![
-                IFundingPolicyRegistry::Candidate {
+                IFundingPolicy::Candidate {
                     target: Address::repeat_byte(2),
                     data: Bytes::from_static(&[1]),
                     availableAmount: U256::from(30),
                 },
-                IFundingPolicyRegistry::Candidate {
+                IFundingPolicy::Candidate {
                     target: Address::repeat_byte(2),
                     data: Bytes::from_static(&[2]),
                     availableAmount: U256::from(40),
@@ -163,11 +158,11 @@ mod tests {
             ],
         };
         assert_eq!(
-            IFundingPolicyRegistry::discoverCall::SIGNATURE,
+            IFundingPolicy::discoverCall::SIGNATURE,
             "discover(uint64,address,address,uint256)"
         );
         assert_eq!(
-            IFundingPolicyRegistry::discoverCall::abi_decode_returns_validate(&result.abi_encode())
+            IFundingPolicy::discoverCall::abi_decode_returns_validate(&result.abi_encode())
                 .unwrap(),
             result
         );
