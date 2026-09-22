@@ -102,7 +102,10 @@ impl BestTransactionsPrewarming {
                           in_flight: &mut usize| {
                 while *in_flight < lookahead {
                     let Some(tx) = ctx.best_txs.next() else {
-                        let _ = ctx.transactions_tx.send(None);
+                        // Prewarming still in progress is work, not an idle pool wait.
+                        if *in_flight == 0 {
+                            let _ = ctx.transactions_tx.send(None);
+                        }
                         return;
                     };
                     *in_flight += 1;
@@ -1040,10 +1043,16 @@ mod tests {
 
     #[test]
     fn idle_prewarming_refills_the_entire_bounded_worker_window() {
-        for parallel in [false, true] {
+        for (parallel, partial) in [(false, false), (true, false), (true, true)] {
             let executor = TaskExecutor::test();
             let workers = executor.prewarming_pool().current_num_threads();
             let lookahead = workers * 2;
+            let incoming_count = if partial {
+                lookahead - 1
+            } else {
+                lookahead + 4
+            };
+            let expected = incoming_count.min(lookahead);
             let log = Arc::new(Mutex::new(TestLog::default()));
             let (incoming, incoming_rx) = mpsc::channel();
             let mut source = TestBestTransactions::new(Vec::new(), log.clone());
@@ -1072,7 +1081,7 @@ mod tests {
                 }
             });
             started.wait();
-            for nonce in 0..lookahead + 4 {
+            for nonce in 0..incoming_count {
                 incoming
                     .send(test_tx(Address::random(), nonce as u64))
                     .unwrap();
@@ -1081,13 +1090,15 @@ mod tests {
             waiter.set_deadline(Instant::now() + Duration::from_millis(100));
             let _ = prewarming.next_with_waiter(Some(&mut waiter));
             let deadline = Instant::now() + Duration::from_secs(1);
-            while log.lock().unwrap().yielded < lookahead && Instant::now() < deadline {
+            while log.lock().unwrap().yielded < expected && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(1));
             }
             let scheduled = log.lock().unwrap().yielded;
+            let idle_elapsed = waiter.take_idle_elapsed();
             release.wait();
             blocker.join().unwrap();
-            assert_eq!(scheduled, lookahead);
+            assert_eq!(scheduled, expected);
+            assert_eq!(idle_elapsed, Duration::ZERO);
         }
     }
 
