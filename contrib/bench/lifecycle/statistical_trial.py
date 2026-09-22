@@ -255,7 +255,7 @@ def sanitize(root):
                      f"{clean_results['feature'][field]} | {clean_results['deltas'][field]:+.2f}% |")
     lines += ['', '## Trial configuration', '',
               'Six feature/control pairs; 15 seconds per phase; five warmup blocks excluded. '
-              'Preset: default; target: 15,000 TPS; state: 100 GiB. Workers: 32 storage, 32 account, '
+              'Preset: default; target: 15,000 TPS; state: 100,000 MiB (100 preset). Workers: 32 storage, 32 account, '
               '16 prewarming. Read-readiness instrumentation disabled.', '',
               '| Phase | Blocks | Transactions | Gas | Success |', '|---|---:|---:|---:|---:|']
     for row in clean_rows:
