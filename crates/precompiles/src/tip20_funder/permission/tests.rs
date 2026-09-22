@@ -22,7 +22,7 @@ fn permission(asset: Address, rate: U256, cap: u64, cost: u64) -> FundingPermiss
             rate,
             maxAmountIn: U256::from(cap),
             amountOut: U256::ZERO,
-            data: Default::default(),
+            requestData: Default::default(),
         },
         U256::from(cost),
     )
