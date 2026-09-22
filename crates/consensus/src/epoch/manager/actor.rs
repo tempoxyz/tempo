@@ -41,7 +41,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
-    types::{Epoch, EpochDelta, Epocher as _},
+    types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -55,11 +55,13 @@ use commonware_runtime::{
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
 use commonware_utils::{NZUsize, vec::NonEmptyVec};
-use eyre::{ensure, eyre};
+use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
+use reth_provider::HeaderProvider as _;
 use tempo_chainspec::TempoHardforks as _;
+use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -241,6 +243,20 @@ where
         }
     }
 
+    /// Read a finalized header, falling back to EL headers if the block body is unavailable.
+    async fn get_header(&mut self, height: Height) -> eyre::Result<TempoHeader> {
+        if let Some(block) = self.config.marshal.get_block(height).await {
+            return Ok(block.header().clone());
+        }
+
+        self.config
+            .execution_node
+            .provider
+            .header_by_number(height.get())
+            .wrap_err_with(|| format!("failed reading finalized header at height `{height}`"))?
+            .ok_or_eyre(format!("missing finalized header at height `{height}`"))
+    }
+
     #[instrument(
         parent = &cause,
         skip_all,
@@ -303,10 +319,10 @@ where
                 .expect("epoch strategy valid for all epochs and heights")
         }) {
             Some(boundary_height) => {
-                let block = self
+                let (_, digest) = self
                     .config
                     .marshal
-                    .get_block(boundary_height)
+                    .get_info(boundary_height)
                     .await
                     .ok_or_else(|| {
                         eyre!(
@@ -317,7 +333,8 @@ where
                         )
                     })?;
 
-                (Floor::Genesis(block.digest()), block.header().timestamp())
+                let header = self.get_header(boundary_height).await?;
+                (Floor::Genesis(digest), header.timestamp())
             }
             None => {
                 let chain_spec = self.config.execution_node.chain_spec();
