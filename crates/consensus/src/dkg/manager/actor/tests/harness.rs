@@ -50,8 +50,9 @@ use commonware_utils::{
 use futures::{StreamExt as _, channel::mpsc};
 use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
+use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_core::primitives::SealedBlock;
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{BlockBody, TempoHeader};
 
@@ -158,6 +159,17 @@ impl HarnessBuilder {
             InitialState::Epoch(epoch) => Some(dkg_state(&mut self.context, epoch, 4, false).0),
             InitialState::State(state) => Some(*state),
         };
+        if let Some(state) = &initial_state {
+            let boundary = state.epoch.previous().map_or(Height::zero(), |epoch| {
+                self.epoch_strategy.last(epoch).unwrap()
+            });
+            self.execution
+                .headers
+                .lock()
+                .unwrap()
+                .entry(boundary)
+                .or_insert_with(|| outcome_header(boundary, state));
+        }
         let (network_identity, finalized_tip) = if let Some(identity) = self.network_identity {
             (identity, self.finalized_tip)
         } else {
@@ -302,6 +314,7 @@ impl Harness {
     }
 
     pub(super) async fn report_finalized_header(&mut self, header: TempoHeader) {
+        self.execution.add_header(header.clone());
         let (acknowledgement, waiter) = Exact::handle();
         assert!(
             self.mailbox
@@ -557,9 +570,9 @@ impl CheckedSender for RecordingCheckedSender {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct StubExecutionProvider {
-    pub(super) t12_activation: Option<u64>,
+    pub(super) chain_spec: Arc<TempoChainSpec>,
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
     next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
@@ -567,7 +580,38 @@ pub(super) struct StubExecutionProvider {
     fail_next_full_dkg_epoch: Arc<AtomicBool>,
 }
 
+impl Default for StubExecutionProvider {
+    fn default() -> Self {
+        Self {
+            chain_spec: DEV.clone(),
+            headers: Default::default(),
+            reads: Default::default(),
+            next_players: Default::default(),
+            fail_next_players: Default::default(),
+            fail_next_full_dkg_epoch: Default::default(),
+        }
+    }
+}
+
 impl StubExecutionProvider {
+    pub(super) fn set_t12_activation(&mut self, activation: Option<u64>) {
+        let mut genesis = DEV.genesis().clone();
+        for &fork in TempoHardfork::VARIANTS {
+            if fork > TempoHardfork::T12 {
+                genesis
+                    .config
+                    .extra_fields
+                    .remove(&format!("{}Time", fork.name().to_lowercase()));
+            }
+        }
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t12Time".into(), activation)
+            .unwrap();
+        self.chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis));
+    }
+
     pub(super) fn add_header(&self, header: TempoHeader) {
         self.headers
             .lock()
@@ -593,8 +637,8 @@ impl StubExecutionProvider {
 }
 
 impl ExecutionLayer for StubExecutionProvider {
-    fn t12_activation_timestamp(&self) -> Option<u64> {
-        self.t12_activation
+    fn chain_spec(&self) -> Arc<TempoChainSpec> {
+        self.chain_spec.clone()
     }
 
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {

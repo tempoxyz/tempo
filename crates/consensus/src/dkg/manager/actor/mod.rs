@@ -43,6 +43,7 @@ use futures::{
     stream::{FusedStream, FuturesOrdered},
 };
 use rand_core::CryptoRng;
+use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
 use tokio::select;
@@ -248,9 +249,7 @@ where
 
     #[instrument(skip_all, err)]
     async fn is_state_v1_activated(&self, state: &State) -> eyre::Result<bool> {
-        let Some(activation) = self.config.execution_node.t12_activation_timestamp() else {
-            return Ok(false);
-        };
+        let chain_spec = self.config.execution_node.chain_spec();
 
         // Reveal versions bind ACKs and dealer logs to different round transcripts, so the
         // version must stay fixed throughout the ceremony. The entire epoch must be activated,
@@ -267,7 +266,7 @@ where
                 .await?
                 .timestamp();
 
-        Ok(boundary_timestamp >= activation)
+        Ok(chain_spec.tempo_hardfork_at(boundary_timestamp).is_t12())
     }
 
     #[instrument(skip_all, fields(epoch = %storage.current().epoch))]

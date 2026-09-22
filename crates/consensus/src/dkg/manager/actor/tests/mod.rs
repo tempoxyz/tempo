@@ -38,7 +38,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
         );
         runner.start(|mut context| async move {
             let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
-            let round = Round::from_state(&state, crate::config::NAMESPACE, false);
+            let round = Round::from_state(&state, crate::config::NAMESPACE, true);
             let (_, public, private) = dkg::Dealer::start::<commonware_utils::N3f1>(
                 &mut context,
                 round.info().clone(),
@@ -204,7 +204,7 @@ fn local_share_storage_failures_panic_and_allow_recovery() {
                 .await;
 
             if seed_dealing {
-                let round = Round::from_state(&state, crate::config::NAMESPACE, false);
+                let round = Round::from_state(&state, crate::config::NAMESPACE, true);
                 let storage = harness.storage_mut();
                 let dealer = storage
                     .create_dealer_for_round(
@@ -383,7 +383,7 @@ fn startup_discards_stale_state_on_startup() {
         );
         assert_eq!(
             harness.execution.reads(),
-            vec![Height::new(19)],
+            vec![Height::new(19); 3],
             "healing should replace stale state from the latest boundary"
         );
     });
@@ -422,7 +422,7 @@ fn assert_startup_recovers_revealed_share(activation: Option<u64>) {
 
         fixture.populate_execution(&harness.execution, &harness.epoch_strategy);
 
-        harness.execution.t12_activation = activation;
+        harness.execution.set_t12_activation(activation);
         // Recovery must use epoch 1's starting boundary (timestamp 0), even when
         // T12 is active at the boundary that starts the current epoch.
         let mut current_boundary = outcome_header(Height::new(19), &fixture.recovered_state);
@@ -489,7 +489,12 @@ fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
         );
         assert_eq!(
             harness.execution.reads(),
-            vec![last_finalized_height, ceremony_boundary],
+            vec![
+                last_finalized_height,
+                ceremony_boundary,
+                last_finalized_height,
+                last_finalized_height
+            ],
             "a carried-forward output must skip dealer-log recovery"
         );
     });
@@ -629,7 +634,14 @@ fn startup_prepopulates_to_a_non_boundary_finalized_floor() {
 
         assert_eq!(
             harness.execution.reads(),
-            [boundary, Height::new(20), Height::new(21), Height::new(22)]
+            [
+                boundary,
+                boundary,
+                Height::new(20),
+                Height::new(21),
+                Height::new(22),
+                boundary
+            ]
         );
     });
 }
@@ -663,7 +675,13 @@ fn prepopulation_replays_only_missing_headers() {
         );
         assert_eq!(
             harness.execution.reads(),
-            vec![Height::new(10), Height::new(11), Height::new(12)]
+            vec![
+                Height::new(9),
+                Height::new(10),
+                Height::new(11),
+                Height::new(12),
+                Height::new(9)
+            ]
         );
         assert_eq!(harness.marshal.reads(), vec![Height::new(12)]);
 
@@ -672,8 +690,16 @@ fn prepopulation_replays_only_missing_headers() {
 
         assert_eq!(
             harness.execution.reads(),
-            vec![Height::new(10), Height::new(11), Height::new(12)],
-            "already-populated headers must not be read again"
+            vec![
+                Height::new(9),
+                Height::new(10),
+                Height::new(11),
+                Height::new(12),
+                Height::new(9),
+                Height::new(9),
+                Height::new(9)
+            ],
+            "only the ceremony boundary should be read again"
         );
     });
 }
@@ -694,8 +720,8 @@ fn prepopulation_skips_replay_when_dkg_state_is_ahead() {
 
         assert!(!harness.has_dealer_log(state.epoch).await);
 
-        // Harness populates initial state for Epoch 1. Thus nothing to read for Epoch 0.
-        assert!(harness.execution.reads().is_empty());
+        // No replay is needed; only the ceremony boundary is read for version selection.
+        assert_eq!(harness.execution.reads(), vec![Height::new(9)]);
         assert!(harness.marshal.reads().is_empty());
         assert_eq!(
             harness.epoch_manager.events(),
@@ -721,10 +747,13 @@ fn prepopulation_fails_when_required_header_is_unavailable() {
 
         harness.start().await;
 
-        // Since storage has no finalized headers for epoch 1, it tries to read [10] which fails
+        // After reading the ceremony boundary, replay fails on the missing header at 10.
         harness.wait_for_exit().await;
 
-        assert_eq!(harness.execution.reads(), vec![Height::new(10)]);
+        assert_eq!(
+            harness.execution.reads(),
+            vec![Height::new(9), Height::new(10)]
+        );
     });
 }
 
@@ -937,7 +966,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
             .identity(PrivateKey::from_seed(100))
             .build()
             .await;
-        harness.execution.t12_activation = activation;
+        harness.execution.set_t12_activation(activation);
         harness.execution.set_next_players(state.players().clone());
         let mut previous = outcome_header(Height::new(9), &state);
         previous.inner.timestamp = boundary_timestamp;
