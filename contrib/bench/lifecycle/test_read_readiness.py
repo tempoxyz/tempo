@@ -8,6 +8,24 @@ def event(stage, ts=100, block='a', ident=1, **fields):
     return {'type':'event','ts':ts,'id':ident,'node':'Validator A','block':block,'fields':{'stage':stage,**fields}}
 
 class ReadinessTests(unittest.TestCase):
+    def test_progress_totals_round_trip_privacy_association_and_cutoff(self):
+        from read_readiness import PROGRESS_FIELDS
+        numeric = {name: 1 for name in PROGRESS_FIELDS}
+        numeric['phase'] = 4
+        numeric['cpu_missing_calls'] = 0
+        events = [
+            event('proof_progress_totals', ts=90, **numeric,
+                  address='private', target_hash='private', private_counter=999),
+            event('proof_progress_totals', ts=95, phase=9, calls=1),
+            event('proof_progress_totals', ts=100, **numeric),
+            event('proof_progress_totals', ts=110, **numeric),
+        ]
+        result = build(events, [{'read_readiness':'v1'}], {'a':7}, 0, cutoff=100)
+        self.assertEqual(len(result['events']), 1)
+        self.assertEqual(result['events'][0]['stage'], 'proof_progress_totals')
+        self.assertEqual(result['events'][0]['block'], 7)
+        self.assertEqual(result['events'][0]['fields'], numeric)
+
     def test_overlap_root_tail_and_grouping_fields_are_numeric_and_pruned(self):
         from read_readiness import CACHE_FIELDS, ROOT_FIELDS, PROOF_FIELDS
         for stage, fields in [('execution_cache_readiness', CACHE_FIELDS),
