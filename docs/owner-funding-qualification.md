@@ -12,7 +12,9 @@ cargo test -p tempo-node --test it funding:: --locked
 
 The example starts four local validators with consensus and execution running inside the existing E2E runtime. It uses disposable test identities and the test genesis. It does not connect to a deployed network or launch production binaries.
 
-The example seeds the recipient with one pathUSD to avoid charging only the baseline for a new recipient balance. It creates two USD TIP-20 inputs and liquid tick-zero DEX books. An owner with no output tokens signs a sponsored requirement for 50 pathUSD, using at most 30 units of the first input and the second input for the remainder. The example's encoder signs both the sender and sponsor payloads and submits raw transaction bytes over HTTP RPC.
+The example seeds the recipient with one pathUSD to avoid charging only the baseline for a new recipient balance. It creates two USD TIP-20 inputs and liquid tick-zero DEX books. An owner with no output tokens signs a sponsored requirement for 50 pathUSD, using at most 30 units of the first input and the second input for the remainder.
+
+The example discovers native DEX candidates through RPC and uses the second candidate's request data in the signed payment. The example's encoder signs both the sender and sponsor payloads and submits raw transaction bytes over HTTP RPC.
 
 Each scenario waits for all four validators to finalize the receipt's height. It compares the block hash, state root, complete receipt, historical token balances, DEX input credits, and absent source/DEX allowances. Failures must leave no funding events or input consumption. Normal fees and nonce consumption still apply.
 

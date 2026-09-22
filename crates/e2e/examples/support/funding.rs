@@ -10,8 +10,8 @@ use alloy::{
 use std::time::Duration;
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::{
-    IRolesAuth, IStablecoinDEX, ITIP20, ITIP20Factory, PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
-    TIP20_FACTORY_ADDRESS,
+    IFundingSource, IRolesAuth, IStablecoinDEX, ITIP20, ITIP20Factory, PATH_USD_ADDRESS,
+    STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{tip20::ISSUER_ROLE, tip20_factory::TIP20Factory};
 use tempo_primitives::{
@@ -122,6 +122,31 @@ pub(super) async fn run_demo(
                 .status()
         );
     }
+    let candidates = IFundingSource::new(SOURCE, provider.clone())
+        .discover(
+            owner.address(),
+            PATH_USD_ADDRESS,
+            U256::from(50 * UNIT),
+            U256::from(50 * UNIT),
+            assets.to_vec().abi_encode().into(),
+        )
+        .call()
+        .await?;
+    assert_eq!(candidates.len(), 2);
+    for (candidate, asset) in candidates.iter().zip(assets) {
+        assert_eq!(candidate.availableAmount, U256::from(50 * UNIT));
+        assert_eq!(
+            <(Address, U256)>::abi_decode_validate(&candidate.requestData)?,
+            (asset, U256::from(50 * UNIT))
+        );
+        assert_eq!(
+            ITIP20::new(asset, provider.clone())
+                .balanceOf(owner.address())
+                .call()
+                .await?,
+            U256::from(500 * UNIT)
+        );
+    }
     let requirement = FundingRequirement {
         token: PATH_USD_ADDRESS,
         amount: U256::from(50 * UNIT),
@@ -133,7 +158,7 @@ pub(super) async fn run_demo(
             },
             FundingSource {
                 address: SOURCE,
-                data: (assets[1], U256::MAX).abi_encode().into(),
+                data: candidates[1].requestData.clone(),
             },
         ],
     };
