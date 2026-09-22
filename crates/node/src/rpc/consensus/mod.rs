@@ -40,13 +40,13 @@ impl<T> From<types::Response<T>> for RpcResult<T> {
         match value {
             types::Response::Success(val) => Ok(val),
             types::Response::NotReady => Err(ErrorObject::owned(
-                ErrorCode::NoContent as i32,
-                ErrorCode::NoContent.msg(),
+                ErrorCode::ServiceUnavailable as i32,
+                ErrorCode::ServiceUnavailable.msg(),
                 None::<()>,
             )),
             types::Response::Missing(msg) => Err(ErrorObject::owned(
-                ErrorCode::ServiceUnavailable as i32,
-                ErrorCode::ServiceUnavailable.msg(),
+                ErrorCode::NoContent as i32,
+                ErrorCode::NoContent.msg(),
                 Some(msg),
             )),
         }
