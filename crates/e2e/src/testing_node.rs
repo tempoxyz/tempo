@@ -91,6 +91,9 @@ where
     pub feed_state: FeedStateHandle,
     /// Local proposal work budget used whenever the consensus engine starts.
     pub proposal_return_budget: Duration,
+    /// Proposal budget estimator shared by this node's builder and consensus
+    /// engine. Pinned to `proposal_return_budget` so tests stay deterministic.
+    pub estimator: Arc<tempo_node::Estimator>,
     n_starts: u32,
 }
 
@@ -112,12 +115,18 @@ where
         feed_state: FeedStateHandle,
         proposal_return_budget: Duration,
         execution_runtime: ExecutionRuntimeHandle,
-        execution_config: ExecutionNodeConfig,
+        mut execution_config: ExecutionNodeConfig,
         network_address: SocketAddr,
         chain_address: Address,
     ) -> Self {
         let public_key = private_key.public_key();
         let partition_prefix = uid.clone();
+        // Fixed network reservation: tests pin the return budget instead of
+        // learning it from the simulated network.
+        let estimator = Arc::new(tempo_node::Estimator::new(
+            tempo_node::EstimatorConfig::fixed(proposal_return_budget, Duration::from_millis(50)),
+        ));
+        execution_config.estimator = Some(estimator.clone());
         let execution_node_datadir = execution_runtime
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
@@ -131,6 +140,7 @@ where
             network_identity,
             feed_state,
             proposal_return_budget,
+            estimator,
             consensus_handle: None,
             execution_node: None,
             execution_node_datadir,
@@ -183,6 +193,8 @@ where
         self.network_identity = identity_source.network_identity;
         self.feed_state = identity_source.feed_state;
         self.proposal_return_budget = identity_source.proposal_return_budget;
+        self.estimator = identity_source.estimator;
+        self.execution_config.estimator = Some(self.estimator.clone());
         self.network_address = identity_source.network_address;
         self.chain_address = identity_source.chain_address;
     }
@@ -330,7 +342,7 @@ where
             views_to_track: 10,
             // Floor (10s nullify rebroadcast) plus one 2s proposal wait.
             inactive_time_before_leader_skip: Duration::from_secs(12),
-            proposal_return_budget: self.proposal_return_budget,
+            estimator: self.estimator.clone(),
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state: self.feed_state.clone(),
             // Plenty of headroom for any test; the marshal will fall back to

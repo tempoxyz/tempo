@@ -267,6 +267,8 @@ pub struct ExecutionNodeConfig {
     /// The protocol is registered before the network starts because `RLPx`
     /// negotiates capabilities during the handshake.
     pub gossip: Option<tempo_node::gossip::Config>,
+    /// Proposal budget estimator shared with this node's consensus engine.
+    pub estimator: Option<Arc<tempo_node::Estimator>>,
 }
 
 impl ExecutionNodeConfig {
@@ -282,6 +284,7 @@ impl ExecutionNodeConfig {
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
             gossip: None,
+            estimator: None,
         }
     }
 }
@@ -917,6 +920,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         feed_state,
         share_sparse_trie_with_payload_builder,
         gossip,
+        estimator,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
@@ -957,6 +961,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     };
 
     let tempo_node = TempoNode::default().with_validator_key(validator_key);
+    let tempo_node = match estimator {
+        Some(estimator) => tempo_node.with_estimator(estimator),
+        None => tempo_node,
+    };
     let tempo_node = match gossip_protocol {
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,

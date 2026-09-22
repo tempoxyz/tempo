@@ -255,6 +255,7 @@ impl FollowerBuilder {
             // A follower is the only mode with a driver that can verify an
             // inbound certificate, so it is also the only one that ingests.
             gossip: with_gossip.then(|| crate::execution_runtime::gossip_config(true)),
+            estimator: None,
         };
 
         let (spawn_name, db, rocksdb) = if let Some(donor) = donor {

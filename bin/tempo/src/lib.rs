@@ -305,6 +305,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         TempoFullNode,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
+        Arc<tempo_node::Estimator>,
     )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
@@ -320,10 +321,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args, gossip_transport) = consensus_startup_rx.blocking_recv().wrap_err(
-            "channel closed before consensus-relevant command line args \
+        let (node, args, gossip_transport, estimator) =
+            consensus_startup_rx.blocking_recv().wrap_err(
+                "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
-        )?;
+            )?;
 
         let datadir = node
             .config
@@ -420,6 +422,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     Arc::new(node),
                     cl_feed_state_clone,
                     gossip_transport,
+                    estimator,
                 ))
             };
 
@@ -534,12 +537,19 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        // One proposal budget estimator is shared by the payload builder and
+        // the consensus engine so both pace against the same learned window.
+        let estimator = Arc::new(tempo_node::Estimator::new(
+            args.consensus
+                .estimator_config(args.node_args.builder_build_time_multiplier),
+        ));
         let NodeHandle {
             node,
             node_exit_future,
         } = builder
             .node(overrides.apply_tempo_node({
-                let node = TempoNode::new(&args.node_args, validator_key);
+                let node = TempoNode::new(&args.node_args, validator_key)
+                    .with_estimator(estimator.clone());
                 match gossip_protocol_handler {
                     Some(protocol_handler) => {
                         node.with_finalization_cert_gossip(protocol_handler)
@@ -639,7 +649,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = consensus_startup_tx.send((node, args, gossip_transport));
+        let _ = consensus_startup_tx.send((node, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
         tokio::select! {
@@ -1121,7 +1131,11 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
-        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
+        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.15);
+        assert_eq!(
+            node_cmd.ext.consensus.network_budget_max.into_duration(),
+            Duration::from_millis(250)
+        );
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",

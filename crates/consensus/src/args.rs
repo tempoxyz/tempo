@@ -171,6 +171,16 @@ pub struct Args {
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
+    /// Largest network reservation the proposal budget estimator may learn.
+    ///
+    /// The estimator measures how long its own proposals take from return to
+    /// notarization, subtracts the validators' expected validation and
+    /// persistence work, and reserves the recent 75th percentile of the rest:
+    /// never less than `--consensus.network-budget`, never more than this.
+    /// Set it equal to `--consensus.network-budget` for a fixed reservation.
+    #[arg(long = "consensus.network-budget-max", default_value = "250ms")]
+    pub network_budget_max: PositiveDuration,
+
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
@@ -407,6 +417,20 @@ impl Args {
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
     /// would panic on when the first epoch is entered, so a misconfiguration
     /// fails at startup with a descriptive error instead.
+    /// Builds the shared proposal budget estimator configuration from the
+    /// consensus timing flags and the payload builder's initial multiplier.
+    pub fn estimator_config(
+        &self,
+        build_time_multiplier: f64,
+    ) -> tempo_payload_types::EstimatorConfig {
+        tempo_payload_types::EstimatorConfig {
+            target_block_time: self.target_block_time.into_duration(),
+            network_budget: self.network_budget.into_duration(),
+            network_budget_max: self.network_budget_max.into_duration(),
+            build_time_multiplier,
+        }
+    }
+
     pub fn validate_simplex_timing(&self) -> eyre::Result<()> {
         let wait_for_proposal = self.wait_for_proposal.into_duration();
         let wait_for_notarizations = self.wait_for_notarizations.into_duration();
@@ -419,6 +443,9 @@ impl Args {
             self.views_to_track > 0,
             "`--consensus.views-to-track` must be greater than zero",
         );
+        self.estimator_config(tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER)
+            .validate()
+            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?;
         let inactive_time_before_leader_skip =
             self.inactive_time_before_leader_skip.into_duration();
         let wait_to_rebroadcast_nullify = self.wait_to_rebroadcast_nullify.into_duration();

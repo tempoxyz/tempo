@@ -11,7 +11,7 @@
 //! layer calls to complete.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -30,7 +30,7 @@ use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_runtime::{
     ContextCell, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
-    telemetry::metrics::{Counter, MetricsExt as _},
+    telemetry::metrics::{Counter, Gauge, MetricsExt as _},
 };
 
 use commonware_utils::SystemTimeExt;
@@ -43,8 +43,8 @@ use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
-    marshal_persist_estimate, observe_marshal_persist,
+    Estimator, EstimatorSnapshot, ProposalExpectation, TempoPayloadAttributes,
+    ValidationLatencyWorkload,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, instrument, warn};
@@ -79,11 +79,13 @@ struct ProposalReturn {
     /// After the proposal is persisted locally, the actor sleeps until this time
     /// so early builds still respect the proposal pacing budget.
     return_at: SystemTime,
-    /// Approximate encoded proposal size used for marshal-persist pacing.
+    /// What validators are expected to spend on this proposal.
     ///
-    /// This is a reasonably close estimate derived during payload building, not the exact final
-    /// encoded block size.
-    block_size_estimate_bytes: usize,
+    /// Handed to the estimator when the proposal is returned so the network
+    /// sample completed by the notarization only measures propagation and
+    /// votes. The block size is an estimate derived during payload building,
+    /// not the exact final encoded size.
+    expectation: ProposalExpectation,
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -116,15 +118,13 @@ where
                 public_key: config.public_key,
                 epoch_strategy: config.epoch_strategy,
 
-                proposal_return_budget: config.proposal_return_budget,
+                estimator: config.estimator,
 
                 my_mailbox,
                 marshal: config.marshal,
 
                 execution_node: config.execution_node,
                 executor: config.executor,
-
-                validation_latency_estimator: Default::default(),
 
                 metrics,
 
@@ -216,8 +216,9 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    // Local proposal window after reserving network propagation time.
-    proposal_return_budget: Duration,
+    /// Shared proposal budget estimator: owns the network reservation and
+    /// the validation, persistence and build feedback.
+    estimator: Arc<Estimator>,
 
     my_mailbox: Mailbox,
 
@@ -225,7 +226,6 @@ struct Inner<TState> {
 
     execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
-    validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
     metrics: Metrics,
 
@@ -343,17 +343,27 @@ impl Inner<Init> {
                 };
 
                 if let Some(proposal_return) = proposal_return {
+                    let block_size_bytes = block.encode_size();
                     let persist_start = Instant::now();
                     if !self.marshal.verified(round, block.clone()).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
-                    observe_marshal_persist(
-                        proposal_return.block_size_estimate_bytes,
+                    self.estimator.on_marshal_persist(
+                        Instant::now(),
+                        block_size_bytes,
                         persist_start.elapsed(),
                     );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.return_at).await;
+                    // The proposal leaves this node now; the notarization of
+                    // this round completes the network sample.
+                    self.estimator.on_proposal_returned(
+                        Instant::now(),
+                        (round.epoch().get(), round.view().get()),
+                        proposal_return.expectation,
+                    );
+                    self.metrics.observe_estimator(&self.estimator.snapshot());
                 }
 
                 eyre::Ok(block)
@@ -569,18 +579,16 @@ impl Inner<Init> {
         });
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
-        let marshal_persist = marshal_persist_estimate();
-        // Give the builder only the proposal window that remains when payload
-        // construction is requested. This accounts for a late `handle_propose`
-        // start instead of resetting the budget at builder entry.
-        let build_budget = self
-            .proposal_return_budget
+        let marshal_persist = self.estimator.marshal_persist();
+        // The proposal window is the target block time minus the learned
+        // network reservation. Give the builder only what remains of it when
+        // payload construction is requested, accounting for a late
+        // `handle_propose` start instead of resetting the budget at builder entry.
+        let proposal_budget = self.estimator.proposal_budget();
+        let build_budget = proposal_budget
+            .return_budget
             .saturating_sub(propose_start.elapsed());
-        let validation_latency_estimate = self
-            .validation_latency_estimator
-            .lock()
-            .ok()
-            .and_then(|estimator| estimator.estimate());
+        let validation_latency_estimate = self.estimator.validation_latency_estimate();
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -627,12 +635,14 @@ impl Inner<Init> {
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
         // room for those costs before returning the proposal.
-        let return_delay = self
-            .proposal_return_budget
+        let return_delay = proposal_budget
+            .return_budget
             .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed)
             .saturating_sub(validator_marshal_persist);
         debug!(
+            return_budget = %display_duration(proposal_budget.return_budget),
+            network_reserve = %display_duration(proposal_budget.network_reserve),
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
@@ -649,7 +659,11 @@ impl Inner<Init> {
             proposal,
             Some(ProposalReturn {
                 return_at,
-                block_size_estimate_bytes,
+                expectation: ProposalExpectation {
+                    block_size_bytes: block_size_estimate_bytes,
+                    validator_work: validation_latency_elapsed,
+                    validator_persist: validator_marshal_persist,
+                },
             }),
         ))
     }
@@ -735,10 +749,8 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
-        if let Some(duration) = validation_duration
-            && let Ok(mut estimator) = self.validation_latency_estimator.lock()
-        {
-            estimator.observe(
+        if let Some(duration) = validation_duration {
+            self.estimator.on_block_verified(
                 block.height().get(),
                 ValidationLatencyWorkload::new(
                     block.block().gas_used(),
@@ -750,10 +762,19 @@ impl Inner<Init> {
         let is_good = validation_duration.is_some();
 
         if is_good {
-            // Persist the verified block in the marshal actor.
+            // Persist the verified block in the marshal actor. Validators
+            // persist every block, so most persistence samples come from here.
+            let block_size_bytes = block.encode_size();
+            let persist_start = Instant::now();
             if !self.marshal.verified(round, block).await {
                 bail!("marshal actor refused to persist verified block");
             }
+            self.estimator.on_marshal_persist(
+                Instant::now(),
+                block_size_bytes,
+                persist_start.elapsed(),
+            );
+            self.metrics.observe_estimator(&self.estimator.snapshot());
 
             return Ok(VerifyResult {
                 result: true,
@@ -783,7 +804,7 @@ impl Inner<Uninit> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
-            proposal_return_budget: self.proposal_return_budget,
+            estimator: self.estimator,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
@@ -792,7 +813,6 @@ impl Inner<Uninit> {
                 dkg_manager,
                 executor: self.executor.clone(),
             },
-            validation_latency_estimator: self.validation_latency_estimator,
             metrics: self.metrics,
         };
 
@@ -975,6 +995,18 @@ async fn subscribe(
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    /// Network reservation currently subtracted from the target block time.
+    estimator_network_reserve_ms: Gauge,
+    /// Learned network time before clamping, zero until a proposal completed.
+    estimator_network_observed_ms: Gauge,
+    /// Proposal return budget handed to the next proposal.
+    estimator_proposal_return_budget_ms: Gauge,
+    /// Recent P90 execution-layer validation time.
+    estimator_validation_latency_p90_ms: Gauge,
+    /// Marshal persistence cost per encoded byte.
+    estimator_marshal_persist_ns_per_byte: Gauge,
+    /// Build time multiplier in thousandths.
+    estimator_build_time_multiplier_permille: Gauge,
 }
 
 impl Metrics {
@@ -989,6 +1021,46 @@ impl Metrics {
 
         Self {
             parent_ahead_of_local_time,
+            estimator_network_reserve_ms: context.gauge(
+                "estimator_network_reserve_ms",
+                "time reserved for proposal propagation and votes, in milliseconds",
+            ),
+            estimator_network_observed_ms: context.gauge(
+                "estimator_network_observed_ms",
+                "learned proposal propagation and vote time before clamping, in milliseconds",
+            ),
+            estimator_proposal_return_budget_ms: context.gauge(
+                "estimator_proposal_return_budget_ms",
+                "local proposal return budget for the next proposal, in milliseconds",
+            ),
+            estimator_validation_latency_p90_ms: context.gauge(
+                "estimator_validation_latency_p90_ms",
+                "recent p90 execution-layer block validation time, in milliseconds",
+            ),
+            estimator_marshal_persist_ns_per_byte: context.gauge(
+                "estimator_marshal_persist_ns_per_byte",
+                "learned marshal persistence cost per encoded block byte, in nanoseconds",
+            ),
+            estimator_build_time_multiplier_permille: context.gauge(
+                "estimator_build_time_multiplier_permille",
+                "payload build time multiplier in use, in thousandths",
+            ),
         }
+    }
+
+    fn observe_estimator(&self, snapshot: &EstimatorSnapshot) {
+        let millis = |duration: Duration| duration.as_millis().min(i64::MAX as u128) as i64;
+        self.estimator_network_reserve_ms
+            .set(millis(snapshot.network_reserve));
+        self.estimator_network_observed_ms
+            .set(snapshot.network_observed.map_or(0, millis));
+        self.estimator_proposal_return_budget_ms
+            .set(millis(snapshot.proposal_return_budget));
+        self.estimator_validation_latency_p90_ms
+            .set(snapshot.validation_latency_p90.map_or(0, millis));
+        self.estimator_marshal_persist_ns_per_byte
+            .set(snapshot.marshal_persist_ns_per_byte.min(i64::MAX as u64) as i64);
+        self.estimator_build_time_multiplier_permille
+            .set((snapshot.build_time_multiplier * 1000.0).round() as i64);
     }
 }
