@@ -145,7 +145,8 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
 
     /// Returns `true` if the given Tempo hardfork is active on the connected chain.
     ///
-    /// Queries the node's `tempo_forkSchedule` RPC to determine the currently active hardfork.
+    /// Queries the node's `tempo_forkSchedule` RPC to determine the currently active hardfork. If
+    /// the node is already on a fork this SDK does not know, the schedule's per-fork flags decide.
     async fn is_hardfork_active(
         &self,
         hardfork: TempoHardfork,
@@ -154,16 +155,31 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
         Self: Sized,
     {
         #[derive(Debug, serde::Deserialize)]
+        struct Fork {
+            name: String,
+            active: bool,
+        }
+
+        #[derive(Debug, serde::Deserialize)]
         struct Response {
+            schedule: Vec<Fork>,
             active: String,
         }
 
         let resp: Response = self.raw_request("tempo_forkSchedule".into(), ()).await?;
 
-        Ok(resp
-            .active
-            .parse::<TempoHardfork>()
-            .is_ok_and(|h| h >= hardfork))
+        Ok(match resp.active.parse::<TempoHardfork>() {
+            Ok(active) => active >= hardfork,
+            // The node runs a newer fork than this SDK knows, so read the requested fork's own
+            // flag. Genesis is never listed in the schedule and is always active.
+            Err(_) => {
+                hardfork == TempoHardfork::Genesis
+                    || resp
+                        .schedule
+                        .iter()
+                        .any(|fork| fork.active && fork.name == hardfork.name())
+            }
+        })
     }
 }
 
@@ -393,6 +409,7 @@ mod tests {
     use alloy::sol_types::SolCall;
     use alloy_primitives::{Address, Bytes, U64, U256};
     use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IAccountKeychain::{
             CallScope as AbiCallScope, KeyInfo, SelectorRule as AbiSelectorRule, SignatureType,
@@ -464,6 +481,32 @@ mod tests {
             .expect("key info call succeeds");
 
         assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_is_hardfork_active_on_a_node_ahead_of_the_sdk() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        // The node has activated every fork this SDK knows plus one it cannot parse.
+        let schedule: Vec<_> = TempoHardfork::VARIANTS
+            .iter()
+            .filter(|fork| **fork != TempoHardfork::Genesis)
+            .map(|fork| fork.name())
+            .chain(["TFuture"])
+            .map(|name| serde_json::json!({ "name": name, "activationTime": 0, "active": true }))
+            .collect();
+        let response = serde_json::json!({ "schedule": schedule, "active": "TFuture" });
+
+        for fork in TempoHardfork::VARIANTS {
+            asserter.push_success(&response);
+            assert!(
+                provider
+                    .is_hardfork_active(*fork)
+                    .await
+                    .expect("fork schedule query succeeds"),
+                "{fork:?} should be active on a node ahead of the SDK",
+            );
+        }
     }
 
     #[tokio::test]
