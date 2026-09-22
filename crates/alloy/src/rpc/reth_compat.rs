@@ -94,7 +94,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
-    fn try_into_tx_env(self, evm_env: &TempoEvmEnv) -> Result<Recovered<TempoTxEnv>, Self::Err> {
+    fn try_into_tx_env(
+        mut self,
+        evm_env: &TempoEvmEnv,
+    ) -> Result<Recovered<TempoTxEnv>, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
         let is_aa = self.output_tx_type() == TempoTxType::AA;
         if !is_aa {
@@ -107,6 +110,13 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
                     env.with_simulation_overrides(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, None, None)
                 })
                 .map(|env| Recovered::new_unchecked(env, caller_addr));
+        }
+
+        reth_rpc_convert::normalize_transaction_request(&mut self.inner, evm_env)?;
+        if let Some(gas_price) = self.inner.gas_price.take() {
+            // AA only supports EIP-1559 fees. Equal caps preserve a flat gas price.
+            self.inner.max_fee_per_gas = Some(gas_price);
+            self.inner.max_priority_fee_per_gas = Some(gas_price);
         }
 
         let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
@@ -252,6 +262,7 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_consensus::Transaction;
     use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
@@ -315,6 +326,123 @@ mod tests {
         assert_eq!(
             env.channel_open_context_hash(),
             RPC_SIMULATION_UNIQUE_TX_IDENTIFIER
+        );
+    }
+
+    #[test]
+    fn aa_request_uses_simulation_defaults() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0xcccccccccccccccccccccccccccccccccccccccc"
+                ))),
+                ..Default::default()
+            },
+            fee_token: Some(address!("0x20c0000000000000000000000000000000000000")),
+            ..Default::default()
+        };
+        let mut evm_env = TempoEvmEnv::default();
+        evm_env.version.chain_id = 42;
+        evm_env.block.gas_limit = U256::from(123_456);
+
+        let env = request
+            .try_into_tx_env(&evm_env)
+            .expect("valid simulation request");
+        let tx = env.as_aa().expect("AA simulation env").inner().tx();
+
+        assert_eq!(tx.chain_id, 42);
+        assert_eq!(tx.nonce, 0);
+        assert_eq!(tx.gas_limit, 123_456);
+        assert_eq!(tx.max_fee_per_gas, 0);
+        assert_eq!(tx.max_priority_fee_per_gas, 0);
+    }
+
+    #[test]
+    fn aa_request_converts_gas_price() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0xcccccccccccccccccccccccccccccccccccccccc"
+                ))),
+                gas_price: Some(7),
+                nonce: Some(0),
+                gas: Some(100_000),
+                ..Default::default()
+            },
+            fee_token: Some(address!("0x20c0000000000000000000000000000000000000")),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tx_env(&TempoEvmEnv::default())
+            .expect("valid simulation request");
+        let tx = env.as_aa().expect("AA simulation env").inner().tx();
+
+        assert_eq!(tx.max_fee_per_gas, 7);
+        assert_eq!(tx.max_priority_fee_per_gas, 7);
+        assert_eq!(tx.effective_gas_price(Some(0)), 7);
+        assert_eq!(tx.effective_gas_price(Some(3)), 7);
+    }
+
+    #[test]
+    fn aa_request_preserves_fee_caps() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                max_fee_per_gas: Some(100),
+                max_priority_fee_per_gas: Some(2),
+                ..Default::default()
+            },
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x22)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let expected_calls = request.calls.clone();
+        let mut evm_env = TempoEvmEnv::default();
+        evm_env.block.basefee = U256::from(10);
+        let env = request.try_into_tx_env(&evm_env).unwrap();
+        let tx = env.as_aa().unwrap().inner().tx();
+
+        assert_eq!(tx.max_fee_per_gas, 100);
+        assert_eq!(tx.max_priority_fee_per_gas, 2);
+        assert_eq!(tx.effective_gas_price(Some(10)), 12);
+        assert_eq!(
+            tx.calls, expected_calls,
+            "normalization must not append a CREATE call"
+        );
+    }
+
+    #[test]
+    fn simulation_normalization_preserves_request_fee_semantics() {
+        let mut evm_env = TempoEvmEnv::default();
+        evm_env.block.basefee = U256::from(10);
+        let mut request = TransactionRequest {
+            max_fee_per_gas: Some(100),
+            max_priority_fee_per_gas: Some(2),
+            ..Default::default()
+        };
+        let fees = reth_rpc_convert::normalize_transaction_request(&mut request, &evm_env)
+            .expect("valid simulation fees");
+        assert_eq!(fees.gas_price, U256::from(12));
+        assert_eq!(request.max_fee_per_gas, Some(100));
+        assert_eq!(request.to, None);
+
+        let normalized = request.clone();
+        let fees_again = reth_rpc_convert::normalize_transaction_request(&mut request, &evm_env)
+            .expect("normalization is idempotent");
+        assert_eq!(request, normalized);
+        assert_eq!(fees_again.gas_price, fees.gas_price);
+
+        request.gas_price = Some(7);
+        let conflicting = request.clone();
+        assert!(reth_rpc_convert::normalize_transaction_request(&mut request, &evm_env).is_err());
+        assert_eq!(
+            request, conflicting,
+            "invalid fees must not partly normalize the request"
         );
     }
 
