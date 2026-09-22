@@ -498,12 +498,9 @@ where
         "storage history",
         |address, key, _| {
             let history_key = StorageShardedKey::last(address, key);
-            if batch
-                .get::<tables::StoragesHistory>(history_key.clone())?
-                .is_none()
-            {
-                batch.put::<tables::StoragesHistory>(history_key, &block_zero_history)?;
-            }
+            // This import requires block zero, excludes genesis storage keys, and
+            // deduplicates the ETL stream. Existing imported entries also contain [0].
+            batch.put::<tables::StoragesHistory>(history_key, &block_zero_history)?;
             Ok(())
         },
     )?;

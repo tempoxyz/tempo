@@ -347,12 +347,33 @@ def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int
 
     if $bloat > 0 {
         print $"Loading state bloat into ($datadir)..."
-        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
-        if $bloat_result.stdout != "" { print $bloat_result.stdout }
-        if $bloat_result.stderr != "" { print $bloat_result.stderr }
-        if $bloat_result.exit_code != 0 {
-            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
-            exit $bloat_result.exit_code
+        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file
+        let bloat_exit_code = $env.LAST_EXIT_CODE
+        if $bloat_exit_code != 0 {
+            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_exit_code)"
+            exit $bloat_exit_code
+        }
+    }
+}
+
+# The source must be closed after initialization; copy storage, never node identities.
+def copy-e2e-db [source_dir: string, datadir: string] {
+    if ($source_dir | path expand) == ($datadir | path expand) {
+        error make { msg: "e2e database source and destination must differ" }
+    }
+    let storage_dirs = [db static_files rocksdb]
+    for subdir in $storage_dirs {
+        if not ($"($source_dir)/($subdir)" | path exists) {
+            error make { msg: $"e2e database source is missing ($subdir): ($source_dir)" }
+        }
+    }
+    bench-clean-datadir $datadir
+    mkdir $datadir
+    print $"Copying initialized database from ($source_dir) to ($datadir)..."
+    for subdir in $storage_dirs {
+        let result = (^cp -a --reflink=auto --sparse=always $"($source_dir)/($subdir)" $datadir | complete)
+        if $result.exit_code != 0 {
+            error make { msg: $"Failed to copy ($subdir): ($result.stderr)" }
         }
     }
 }
@@ -949,15 +970,24 @@ def init-local-e2e-side [
     tempo_bin: string,
     marker: record,
     consensus_keys: bool,
+    --copy-db-from: string = "",
 ] {
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let generated_trusted_peers = $"($LOCALNET_DIR)/e2e-local-init/trusted-peers.txt"
 
-    bench-clean-datadir $datadir
-    mkdir $datadir
+    rm -f $"($meta_dir)/marker.json"
+    if $copy_db_from == "" {
+        bench-clean-datadir $datadir
+        mkdir $datadir
+        init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
+    } else {
+        copy-e2e-db $copy_db_from $datadir
+    }
     mkdir $node_dir
 
-    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
+    if not $consensus_keys {
+        rm -f $"($node_dir)/signing.key" $"($node_dir)/signing.share"
+    }
     let node_files = ["enode.key" "enode.identity"]
         | append (if $consensus_keys { ["signing.key" "signing.share"] } else { [] })
     for file in $node_files {
@@ -1684,7 +1714,7 @@ def "main e2e" [
             bloat_address_mode: (if $state_access_bloat { "state-access-raw-storage" } else if $bloat_keccak_signable_shared { "keccak-signable-shared" } else { "legacy" })
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator) true
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator) (not $isolated_roles)
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator) (not $isolated_roles) --copy-db-from $a_db
         if ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
         }
