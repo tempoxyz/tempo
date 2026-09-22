@@ -2812,7 +2812,7 @@ mod keychain {
     fn funding_policy_authorization_is_rejected_until_binding_is_active() {
         use core::num::NonZeroU64;
         use tempo_primitives::transaction::FundingPolicyAuthorization;
-        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for spec in [TempoHardfork::T12] {
             let (signer, user) = generate_keypair();
             let key = Address::random();
             let signed = sign_key_auth(
@@ -4570,5 +4570,36 @@ fn funding_source_survives_inspector_and_storage_action_changes() {
             .precompiles
             .get(&tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
             .is_some()
+    );
+}
+
+#[test]
+fn inline_policy_intrinsic_prices_persisted_tuple_and_binding() {
+    use tempo_primitives::transaction::{
+        FundingPolicy, FundingPolicyAuthorization, KeyAuthorization, SignatureType,
+    };
+    let base = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(1))
+        .into_signed(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::new(U256::ONE, U256::ONE, false),
+        ));
+    let mut inline = base.clone();
+    inline.authorization.funding_policy = Some(FundingPolicyAuthorization::Inline(FundingPolicy {
+        admins: vec![Address::repeat_byte(2)],
+        slippage_bps: 0,
+        routes: vec![],
+    }));
+    let params = crate::gas_params::tempo_gas_params(TempoHardfork::T13);
+    let (base_gas, base_state) =
+        calculate_key_authorization_gas(&base, &params, TempoHardfork::T13);
+    let (gas, state) = calculate_key_authorization_gas(&inline, &params, TempoHardfork::T13);
+    // Seven ABI words, one bytes-length slot, one counter slot, and one key binding.
+    let slots = 10;
+    assert_eq!(
+        state - base_state,
+        slots * params.get(GasId::sstore_set_state_gas())
+    );
+    assert!(
+        gas - base_gas
+            >= slots * (params.get(GasId::sstore_set_without_load_cost()) + STORAGE_CREDIT_VALUE)
     );
 }

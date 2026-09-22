@@ -124,6 +124,9 @@ pub struct AccountKeychain {
     // key_authorization_witnesses[account][witness] -> true once manually burned.
     key_authorization_witnesses: Mapping<Address, Mapping<B256, bool>>,
 
+    // Immutable policy binding installed with the signed key authorization.
+    funding_policy_ids: Mapping<Address, Mapping<Address, u64>>,
+
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
@@ -5555,3 +5558,5 @@ mod tests {
         })
     }
 }
+
+mod funding;

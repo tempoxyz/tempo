@@ -113,6 +113,15 @@ impl FundingPolicy {
         policy: IFundingPolicy::Policy,
     ) -> Result<u64> {
         self.require_owner_context(sender)?;
+        self.install_policy(sender, policy)
+    }
+
+    /// Native signed-key installation bypasses transaction-key guards, never policy validation.
+    pub fn install_policy(
+        &mut self,
+        sender: Address,
+        policy: IFundingPolicy::Policy,
+    ) -> Result<u64> {
         self.validate_admins(&policy.admins)?;
         self.validate_routes(policy.slippageBps, &policy.routes)?;
         let id = self.policy_id_counter()?;
