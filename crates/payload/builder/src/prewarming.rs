@@ -911,7 +911,7 @@ mod tests {
         let sender = Address::random();
         let tx = TempoTransaction {
             nonce_key: U256::MAX,
-            valid_before: Some(25),
+            valid_before: Some(25.try_into().unwrap()),
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
