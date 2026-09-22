@@ -1008,6 +1008,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    mark-schelk-dirty-at $ctx.a.state_path
+    mark-schelk-dirty-at $ctx.b.state_path
 
     # Restore the pristine layout cache without ever replacing the v2 source in
     # the virgin snapshot. Uncached comparisons retain the offline conversion path.
@@ -1098,8 +1100,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
-    mark-schelk-dirty-at $ctx.a.state_path
-    mark-schelk-dirty-at $ctx.b.state_path
 
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
     start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
@@ -1697,6 +1697,8 @@ def "main e2e" [
         }
         if ($feature_help.stdout | str contains "bench-shard-storage") and not ($baseline_help.stdout | str contains "bench-shard-storage") {
             $storage_layout_cache_key = $"($benchmark_id):($timestamp):($baseline):($feature)"
+            mark-schelk-dirty-at $E2E_A_STATE_PATH
+            mark-schelk-dirty-at $E2E_B_STATE_PATH
             for datadir in [$a_db $b_db] {
                 bash scripts/bench-cache-storage-layout.sh prepare $feature_tempo $datadir $storage_layout_cache_key
                 if $env.LAST_EXIT_CODE != 0 { error make {msg: "could not prepare pristine sharded snapshot"} }
