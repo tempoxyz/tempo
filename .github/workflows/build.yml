@@ -19,6 +19,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
@@ -28,17 +30,21 @@ jobs:
     name: Build
     runs-on: depot-ubuntu-latest-16
     permissions:
+      id-token: write
       contents: read
     strategy:
       matrix:
         binary: [tempo, tempo-sidecar]
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+      - uses: tempoxyz/gh-actions/actions/setup-mold@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
       - name: Build
         run: cargo build --bin ${{ matrix.binary }} --profile ${{ inputs.profile || 'dev' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

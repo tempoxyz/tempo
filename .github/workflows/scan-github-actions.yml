@@ -19,8 +19,12 @@ jobs:
   benchmark-helpers:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
@@ -32,8 +36,10 @@ jobs:
           node --test .github/scripts/docker-pr-status.test.js
 
   scan:
+    name: Scan GitHub Actions
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@5d3a903b51ce8d1f6d363d1c59d7243ecf80f026
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
     permissions:
+      id-token: write
       actions: read
       contents: read

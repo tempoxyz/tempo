@@ -28,6 +28,8 @@ on:
         type: boolean
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
 
@@ -35,10 +37,14 @@ jobs:
   get-version:
     name: Get Version
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      id-token: write
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - name: Get version from tag or branch
         id: get_version
         env:
@@ -59,12 +65,16 @@ jobs:
     needs: get-version
     if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && github.event.inputs.dry_run != 'true' }}
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
@@ -105,18 +115,21 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
         with:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: tempoxyz/gh-actions/actions/setup-mold@a65420ff2c90fcc46fe778c044aa7998ae9f246c
+        uses: tempoxyz/gh-actions/actions/setup-mold@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
 
       - name: Get build profile
         id: profile
@@ -195,7 +208,7 @@ jobs:
           printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "$ARCHIVE_PATH"
 
       - name: Generate SBOM (SPDX-JSON) for archive
-        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
         with:
           file: ${{ steps.prepare.outputs.archive_path }}
           format: spdx-json
@@ -245,11 +258,15 @@ jobs:
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
     permissions:
+      id-token: write
       contents: write
       actions: read
     steps:
       # This is necessary for generating the changelog.
       # It has to come before "Download Artifacts" or else it deletes the artifacts.
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -290,9 +307,12 @@ jobs:
     permissions:
       id-token: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
         with:
           policy: release-pr
 
@@ -304,7 +324,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
 
       - name: Open Cargo version bump PR
         env:
@@ -386,9 +406,13 @@ jobs:
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
     permissions:
+      id-token: write
       contents: read
       actions: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -420,7 +444,7 @@ jobs:
             echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
         with:
           aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
           aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}
