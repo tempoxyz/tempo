@@ -18,10 +18,9 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
-use tokio::sync::mpsc as async_mpsc;
 use tracing::{instrument, trace};
 
-use crate::wait::{TransactionWaiter, WaitResult};
+use crate::wait::TransactionWaiter;
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -37,7 +36,7 @@ thread_local! {
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
-    transactions_rx: async_mpsc::UnboundedReceiver<Option<PrewarmedTransaction>>,
+    transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
     /// Keep a timed-out consumer from queuing advances before a reply arrives.
@@ -54,7 +53,7 @@ impl BestTransactionsPrewarming {
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let (transactions_tx, transactions_rx) = async_mpsc::unbounded_channel();
+        let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let this = Self {
             transactions_rx,
@@ -152,13 +151,13 @@ impl BestTransactionsPrewarming {
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
-                        mut old_rx,
+                        old_rx,
                         new_tx,
                     } => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
-                        while let Some(tx) = old_rx.blocking_recv() {
+                        for tx in old_rx {
                             if let Some(tx) = tx
                                 && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
                             {
@@ -278,7 +277,7 @@ impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
-        let (_drain_tx, replacement_rx) = async_mpsc::unbounded_channel();
+        let (_drain_tx, replacement_rx) = mpsc::channel();
         let drain_rx = core::mem::replace(&mut self.transactions_rx, replacement_rx);
         let _ = self
             .commands_tx
@@ -308,7 +307,7 @@ impl BestTransactionsPrewarming {
         Some(())
     }
 
-    /// Use the existing request/reply protocol, waiting on pool arrivals only after an empty reply.
+    /// A timeout preserves the outstanding request for the next call.
     pub(crate) fn next_with_waiter(
         &mut self,
         waiter: Option<&mut TransactionWaiter>,
@@ -317,24 +316,12 @@ impl BestTransactionsPrewarming {
             return Some(tx);
         }
         self.request_advance()?;
-        let Some(waiter) = waiter else {
-            let tx = self.transactions_rx.blocking_recv()?;
-            self.advance_pending = false;
-            return tx.or_else(|| self.try_next());
+        let tx = match waiter {
+            Some(waiter) => waiter.recv(&self.transactions_rx)?,
+            None => self.transactions_rx.recv().ok()?,
         };
-
-        loop {
-            match waiter.wait(self.transactions_rx.recv(), !self.advance_pending) {
-                WaitResult::Ready(Some(tx)) => {
-                    self.advance_pending = false;
-                    if tx.is_some() {
-                        return tx;
-                    }
-                }
-                WaitResult::PoolChanged => self.request_advance()?,
-                WaitResult::Ready(None) | WaitResult::TimedOut => return None,
-            }
-        }
+        self.advance_pending = false;
+        tx.or_else(|| self.try_next())
     }
 }
 
@@ -349,7 +336,7 @@ impl Iterator for BestTransactionsPrewarming {
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         self.advance_pending = false;
-        let (new_tx, new_rx) = async_mpsc::unbounded_channel();
+        let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
@@ -375,7 +362,7 @@ impl BestTransactions for BestTransactionsPrewarming {
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
-    transactions_tx: async_mpsc::UnboundedSender<Option<PrewarmedTransaction>>,
+    transactions_tx: Sender<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
@@ -508,14 +495,14 @@ enum BestTransactionsCommand {
     Prewarmed,
     Invalid {
         invalid: InvalidTransaction,
-        old_rx: async_mpsc::UnboundedReceiver<Option<PrewarmedTransaction>>,
-        new_tx: async_mpsc::UnboundedSender<Option<PrewarmedTransaction>>,
+        old_rx: Receiver<Option<PrewarmedTransaction>>,
+        new_tx: Sender<Option<PrewarmedTransaction>>,
     },
     NoUpdates,
     SkipBlobs(bool),
     Stop {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
-        drain_rx: async_mpsc::UnboundedReceiver<Option<PrewarmedTransaction>>,
+        drain_rx: Receiver<Option<PrewarmedTransaction>>,
     },
 }
 
@@ -810,10 +797,10 @@ mod tests {
 
     fn prewarming_channels() -> (
         BestTransactionsPrewarming,
-        async_mpsc::UnboundedSender<Option<PrewarmedTransaction>>,
+        Sender<Option<PrewarmedTransaction>>,
         Receiver<BestTransactionsCommand>,
     ) {
-        let (transactions_tx, transactions_rx) = async_mpsc::unbounded_channel();
+        let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         (
             BestTransactionsPrewarming {
@@ -827,14 +814,10 @@ mod tests {
         )
     }
 
-    fn test_waiter(
-        executor: &TaskExecutor,
-        parallel: bool,
-    ) -> (TransactionWaiter, async_mpsc::Sender<B256>) {
-        let (pending_tx, pending_rx) = async_mpsc::channel(1);
-        let mut waiter = TransactionWaiter::new(executor, pending_rx, parallel);
+    fn test_waiter(parallel: bool) -> TransactionWaiter {
+        let mut waiter = TransactionWaiter::new(parallel);
         waiter.set_deadline(Instant::now() + Duration::from_secs(5));
-        (waiter, pending_tx)
+        waiter
     }
 
     fn expect_advance(commands: &Receiver<BestTransactionsCommand>) {
@@ -871,39 +854,8 @@ mod tests {
     }
 
     #[test]
-    fn budgeted_wait_retries_on_pool_arrival_then_receives_ready_work() {
-        let executor = TaskExecutor::test();
-        let (mut waiter, pending_tx) = test_waiter(&executor, true);
-        let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
-        let tx = test_tx(Address::random(), 0);
-        let expected = *tx.hash();
-        let coordinator = thread::spawn(move || {
-            expect_advance(&commands_rx);
-            transactions_tx.send(None).unwrap();
-            // The builder must wait for this notification before asking for more work.
-            assert!(commands_rx.recv_timeout(Duration::from_millis(10)).is_err());
-            pending_tx.try_send(B256::ZERO).unwrap();
-            expect_advance(&commands_rx);
-            transactions_tx
-                .send(Some(PrewarmedTransaction::without_replay(tx)))
-                .unwrap();
-        });
-        assert_eq!(
-            *prewarming
-                .next_with_waiter(Some(&mut waiter))
-                .unwrap()
-                .tx
-                .hash(),
-            expected
-        );
-        assert!(waiter.take_idle_elapsed() > Duration::ZERO);
-        coordinator.join().unwrap();
-    }
-
-    #[test]
     fn budgeted_wait_does_not_queue_advances_on_timeout() {
-        let executor = TaskExecutor::test();
-        let (mut waiter, _pending_tx) = test_waiter(&executor, true);
+        let mut waiter = test_waiter(true);
         let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         for _ in 0..3 {
             waiter.set_deadline(Instant::now() + Duration::from_millis(1));
@@ -933,14 +885,12 @@ mod tests {
 
     #[test]
     fn ready_prewarm_wakes_an_idle_builder_without_a_pool_arrival() {
-        let executor = TaskExecutor::test();
-        let (mut waiter, _pending_tx) = test_waiter(&executor, true);
+        let mut waiter = test_waiter(true);
         let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
         let coordinator = thread::spawn(move || {
             expect_advance(&commands_rx);
-            transactions_tx.send(None).unwrap();
             thread::sleep(Duration::from_millis(10));
             transactions_tx
                 .send(Some(PrewarmedTransaction::without_replay(tx)))
@@ -961,7 +911,7 @@ mod tests {
     fn budgeted_wait_resumes_after_idle_in_both_prewarming_modes() {
         for parallel in [false, true] {
             let executor = TaskExecutor::test();
-            let (mut waiter, pending_tx) = test_waiter(&executor, parallel);
+            let mut waiter = test_waiter(parallel);
             let (incoming, incoming_rx) = mpsc::channel();
             let mut source = TestBestTransactions::new(Vec::new(), Arc::default());
             source.incoming = Some(incoming_rx);
@@ -978,22 +928,23 @@ mod tests {
                     .collect::<Vec<_>>();
                 let mut expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
                 let incoming = incoming.clone();
-                let pending_tx = pending_tx.clone();
                 let producer = thread::spawn(move || {
                     thread::sleep(Duration::from_millis(10));
                     for tx in txs {
                         incoming.send(tx).unwrap();
                     }
-                    pending_tx.try_send(B256::ZERO).unwrap();
                 });
-                waiter.set_deadline(Instant::now() + Duration::from_secs(5));
+                let deadline = Instant::now() + Duration::from_secs(5);
                 let mut actual = (0..expected.len())
                     .map(|_| {
-                        *prewarming
-                            .next_with_waiter(Some(&mut waiter))
-                            .unwrap()
-                            .tx
-                            .hash()
+                        loop {
+                            waiter.set_deadline(Instant::now() + Duration::from_millis(1));
+                            if let Some(tx) = prewarming.next_with_waiter(Some(&mut waiter)) {
+                                break *tx.tx.hash();
+                            }
+                            assert!(Instant::now() < deadline);
+                            waiter.wait_for_deadline();
+                        }
                     })
                     .collect::<Vec<_>>();
                 if parallel {
@@ -1008,8 +959,7 @@ mod tests {
 
     #[test]
     fn invalidation_replaces_an_outstanding_advance() {
-        let executor = TaskExecutor::test();
-        let (mut waiter, _pending_tx) = test_waiter(&executor, true);
+        let mut waiter = test_waiter(true);
         let (mut prewarming, old_tx, commands_rx) = prewarming_channels();
         waiter.set_deadline(Instant::now() + Duration::from_millis(1));
         assert!(prewarming.next_with_waiter(Some(&mut waiter)).is_none());
@@ -1067,7 +1017,7 @@ mod tests {
                 )),
                 executor: executor.clone(),
             };
-            wait_until(|| !prewarming.transactions_rx.is_empty());
+            wait_until(|| prewarming.transactions_rx.try_recv().is_ok());
 
             // Hold all workers so only the consumer's refill can schedule this burst.
             let started = Arc::new(Barrier::new(workers + 1));
@@ -1089,7 +1039,7 @@ mod tests {
                     .send(test_tx(Address::random(), nonce as u64))
                     .unwrap();
             }
-            let (mut waiter, _pending_tx) = test_waiter(&executor, parallel);
+            let mut waiter = test_waiter(parallel);
             waiter.set_deadline(Instant::now() + Duration::from_millis(100));
             let _ = prewarming.next_with_waiter(Some(&mut waiter));
             let deadline = Instant::now() + Duration::from_secs(1);
