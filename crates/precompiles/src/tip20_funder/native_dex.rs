@@ -96,15 +96,14 @@ impl NativeDexFundingSource {
             if asset_in == call.assetOut {
                 continue;
             }
-            let quote = self.quote(IFundingSource::quoteCall {
-                account: call.account,
-                assetOut: call.assetOut,
-                amountOut: call.amountOut,
-                maxCost: call.maxCost,
-                requestData: (asset_in, U256::MAX).abi_encode().into(),
-                policyData: call.config.clone(),
-                ownerAuthorized: false,
-            })?;
+            let quote = self.quote_input(
+                call.account,
+                call.assetOut,
+                call.amountOut,
+                call.maxCost,
+                asset_in,
+                U256::MAX,
+            )?;
             if !quote.amountOut.is_zero() {
                 candidates.push(IFundingSource::Candidate {
                     requestData: quote.requestData,
@@ -132,20 +131,35 @@ impl NativeDexFundingSource {
             )
             .into());
         }
-        self.validate_route(asset_in, call.assetOut)?;
+        self.quote_input(
+            call.account,
+            call.assetOut,
+            call.amountOut,
+            call.maxCost,
+            asset_in,
+            cap,
+        )
+    }
+
+    fn quote_input(
+        &self,
+        account: Address,
+        asset_out: Address,
+        amount_out: U256,
+        max_cost: U256,
+        asset_in: Address,
+        cap: U256,
+    ) -> Result<IFundingSource::Quote> {
+        self.validate_route(asset_in, asset_out)?;
         // All native TIP-20 tokens have six decimals; approved parity therefore uses rate 1e18.
-        let cap = cap.min(call.maxCost).min(U256::from(u128::MAX));
+        let cap = cap.min(max_cost).min(U256::from(u128::MAX));
         Ok(IFundingSource::Quote {
             assetIn: asset_in,
             rate: RATE_SCALE,
             maxAmountIn: cap,
-            amountOut: U256::from(self.available_output(
-                call.account,
-                asset_in,
-                call.assetOut,
-                call.amountOut,
-                cap,
-            )?),
+            amountOut: U256::from(
+                self.available_output(account, asset_in, asset_out, amount_out, cap)?,
+            ),
             requestData: (asset_in, cap).abi_encode().into(),
         })
     }
