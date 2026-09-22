@@ -123,7 +123,9 @@ fn run_batch(
                 caller: FUNDER,
                 source: SOURCE,
                 is_static: true,
-                data: IFundingSource::prepareCall {
+                data: IFundingSource::quoteCall {
+                    account: ACCOUNT,
+                    amountOut: U256::from(50),
                     assetOut: ASSET,
                     maxCost: U256::from(50),
                     data: U256::from(mode).abi_encode().into(),
@@ -137,7 +139,7 @@ fn run_batch(
         )
         .unwrap();
     if result.instruction_result().is_ok() {
-        match IFundingSource::prepareCall::abi_decode_returns_validate(result.output().data()) {
+        match IFundingSource::quoteCall::abi_decode_returns_validate(result.output().data()) {
             Ok(plan) => {
                 result = handler
                     .execute_funding_call_with(
@@ -166,7 +168,7 @@ fn run_batch(
                     InterpreterResult {
                         result: InstructionResult::Revert,
                         gas: *result.gas(),
-                        output: ITIP20Funder::InvalidFundingPlan { source: SOURCE }
+                        output: ITIP20Funder::InvalidFundingQuote { source: SOURCE }
                             .abi_encode()
                             .into(),
                     },
@@ -214,7 +216,7 @@ fn slot(evm: &TempoEvm<CacheDB<EmptyDB>, Trace>, index: u64) -> U256 {
 }
 
 #[test]
-fn prepares_and_funds_with_native_caller() {
+fn quotes_and_funds_with_native_caller() {
     let mut evm = evm(TempoHardfork::T3);
     let result = run(&mut evm, 0, 2_000_000, true);
     assert!(result.is_success(), "{result:?}");
@@ -261,7 +263,7 @@ fn rejects_static_writes_and_malformed_plans() {
             }
             3 => assert_eq!(
                 result.output().unwrap().as_ref(),
-                ITIP20Funder::InvalidFundingPlan { source: SOURCE }.abi_encode()
+                ITIP20Funder::InvalidFundingQuote { source: SOURCE }.abi_encode()
             ),
             _ => unreachable!(),
         }
@@ -415,10 +417,12 @@ fn solidity_calls_cannot_start_funding() {
 }
 
 #[test]
-fn user_calls_cannot_impersonate_protocol_callbacks() {
+fn public_quotes_grant_no_funding_authority() {
     for inspect in [false, true] {
         let mut evm = evm(TempoHardfork::T3);
-        let data = IFundingSource::prepareCall {
+        let data = IFundingSource::quoteCall {
+            account: ACCOUNT,
+            amountOut: U256::from(50),
             assetOut: ASSET,
             maxCost: U256::from(50),
             data: U256::ZERO.abi_encode().into(),
@@ -431,6 +435,26 @@ fn user_calls_cannot_impersonate_protocol_callbacks() {
         tx.gas_limit = 2_000_000;
         evm.inner.ctx.set_tx(tx.into());
         let mut handler = TempoEvmHandler::new();
+        let result = if inspect {
+            handler.inspect_run_system_call(&mut evm)
+        } else {
+            handler.run_system_call(&mut evm)
+        }
+        .unwrap();
+        assert!(result.is_success());
+        let data = IFundingSource::fundCall {
+            account: ACCOUNT,
+            assetOut: ASSET,
+            amountOut: U256::from(50),
+            data: IFundingSource::quoteCall::abi_decode_returns_validate(result.output().unwrap())
+                .unwrap()
+                .data,
+        }
+        .abi_encode()
+        .into();
+        let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, SOURCE, data);
+        tx.gas_limit = 2_000_000;
+        evm.inner.ctx.set_tx(tx.into());
         let result = if inspect {
             handler.inspect_run_system_call(&mut evm)
         } else {
@@ -464,10 +488,11 @@ fn funded_callbacks_meter_real_tip20_debits_and_clear_authority() {
                     .apply()
                     .unwrap();
             });
-            let plan = IFundingSource::Plan {
+            let plan = IFundingSource::Quote {
                 assetIn: PATH_USD_ADDRESS,
                 rate: RATE_SCALE,
                 maxAmountIn: U256::from(30),
+                amountOut: U256::ZERO,
                 data: Default::default(),
             };
             let make_permission =
@@ -587,10 +612,11 @@ fn input_permission_rejects_static_or_mismatched_callbacks() {
             FUNDER,
             if case == 3 { SOURCE } else { ACCOUNT },
             SOURCE,
-            &IFundingSource::Plan {
+            &IFundingSource::Quote {
                 assetIn: ASSET,
                 rate: RATE_SCALE,
                 maxAmountIn: U256::ONE,
+                amountOut: U256::ZERO,
                 data: Bytes::new(),
             },
             U256::ONE,
