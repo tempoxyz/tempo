@@ -609,7 +609,7 @@ fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
         assetOut: PATH_USD_ADDRESS,
         amountOut: U256::from(50 * UNIT),
         maxCost: U256::from(40 * UNIT),
-        config: vec![b, a, b].abi_encode().into(),
+        policyData: vec![b, a, b].abi_encode().into(),
     };
     let result = TempoEvmHandler::new()
         .execute_funding_call_with(
@@ -666,4 +666,56 @@ fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
         balance(&mut evm, PATH_USD_ADDRESS, RECIPIENT),
         U256::from(50 * UNIT)
     );
+}
+
+#[test]
+fn token_support_is_public_and_grants_no_input_permission() {
+    let (mut evm, a, _) = setup_dex();
+    let call = IFundingSource::supportsTokenCall {
+        token: PATH_USD_ADDRESS,
+        policyData: vec![a].abi_encode().into(),
+    };
+    let result = TempoEvmHandler::new()
+        .execute_funding_call_with(
+            &mut evm,
+            &mut GasTracker::new(30_000_000, 30_000_000, 0),
+            crate::handler::funding::FundingCall {
+                caller: RECIPIENT,
+                source: SOURCE,
+                is_static: true,
+                permission: None,
+                data: call.abi_encode().into(),
+            },
+            TempoEvmHandler::run_exec_loop,
+        )
+        .unwrap();
+    assert!(result.instruction_result().is_ok(), "{result:?}");
+    assert!(
+        IFundingSource::supportsTokenCall::abi_decode_returns_validate(result.output().data())
+            .unwrap()
+    );
+    assert_eq!(balance(&mut evm, a, ACCOUNT), U256::from(200 * UNIT));
+    assert_eq!(dex_balance(&mut evm, ACCOUNT, a), 0);
+    assert!(evm.inner.ctx.journaled_state.logs.is_empty());
+    let call = IFundingSource::fundCall {
+        account: ACCOUNT,
+        assetOut: PATH_USD_ADDRESS,
+        amountOut: U256::from(UNIT),
+        requestData: (a, U256::from(UNIT)).abi_encode().into(),
+    };
+    let result = TempoEvmHandler::new()
+        .execute_funding_call_with(
+            &mut evm,
+            &mut GasTracker::new(30_000_000, 30_000_000, 0),
+            crate::handler::funding::FundingCall {
+                caller: RECIPIENT,
+                source: SOURCE,
+                is_static: false,
+                permission: None,
+                data: call.abi_encode().into(),
+            },
+            TempoEvmHandler::run_exec_loop,
+        )
+        .unwrap();
+    assert!(!result.instruction_result().is_ok(), "{result:?}");
 }
