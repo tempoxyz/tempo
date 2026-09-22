@@ -103,6 +103,7 @@ reth-storage-api.workspace = true
 reth-static-file-types.workspace = true
 reth-trie.workspace = true
 reth-trie-db.workspace = true
+revm.workspace = true
 clap.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
@@ -141,6 +142,7 @@ asm-keccak = [
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
 	"reth-ethereum-cli/asm-keccak",
+	"revm/asm-keccak",
 ]
 keccak-cache-global = [
 	"alloy-primitives/keccak-cache-global",

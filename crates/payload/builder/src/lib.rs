@@ -39,7 +39,7 @@ use reth_engine_tree::tree::{
 use reth_errors::ConsensusError;
 use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, ConfigureEvm,
-    Database, NextBlockEnvAttributes, database::StateProviderDatabase,
+    Database, NextBlockEnvAttributes, OnStateHook, database::StateProviderDatabase,
     execute::BlockAssemblerInput,
 };
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -752,7 +752,7 @@ where
 
         let (execution_output, raw_block_access_list) = executor.finish_with_block_access_list()?;
         let execution_result = &execution_output.result;
-        let execution_state = execution_output.state.inner();
+        let execution_state = &execution_output.state;
 
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
