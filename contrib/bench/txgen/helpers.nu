@@ -710,6 +710,7 @@ def txgen-run-preset-pipeline [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
+    --samply                                        # Profile the generator and sender pipeline
     --bench-args: string = ""
     --bench-env: string = ""
     --git-ref: string = ""
@@ -906,7 +907,9 @@ def txgen-run-preset-pipeline [
     let vault_start_block = if $is_vault {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
-    let result = (bash -lc $pipeline | complete)
+    let profile_path = ($report_path | path dirname | path join $"profile-($benchmark_run)-txgen.json.gz")
+    let pipeline_cmd = (wrap-samply ["bash" "-lc" $pipeline] $samply ["--save-only" "--presymbolicate" "--output" $profile_path])
+    let result = (^$pipeline_cmd.0 ...($pipeline_cmd | skip 1) | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
 

@@ -1156,6 +1156,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --duration $ctx.duration
                 --accounts $ctx.accounts
                 --max-concurrent-requests $ctx.max_concurrent_requests
+                --samply=$ctx.samply
                 --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
@@ -1796,7 +1797,7 @@ def "main e2e" [
     if $e2e_exit == 0 and $samply {
         print "\nUploading local e2e samply profiles to Firefox Profiler..."
         for run in $runs {
-            for role in ["a" "b"] {
+            for role in ["a" "b" "txgen"] {
                 let profile_label = $"($run.phase)-($role)"
                 let profile = $"($results_dir)/profile-($profile_label).json.gz"
                 let url = (upload-samply-profile $profile)

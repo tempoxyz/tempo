@@ -634,6 +634,10 @@ jobs:
             install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
           fi
 
+          if [ "$BENCH_SAMPLY" = "true" ]; then
+            export CARGO_PROFILE_RELEASE_DEBUG=1
+            install_args+=(--force)
+          fi
           cargo install "${install_args[@]}" txgen-tempo bench-cli
           echo "TXGEN_TEMPO_BIN=$CARGO_BIN_DIR/txgen-tempo" >> "$GITHUB_ENV"
           echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
@@ -1183,7 +1187,7 @@ jobs:
             if (process.env.BENCH_SAMPLY === 'true') {
               const links = [];
               for (const run of runs) {
-                for (const role of ['a', 'b']) {
+                for (const role of ['a', 'b', 'txgen']) {
                   try {
                     const url = fs.readFileSync(`${resultsDir}/profile-${run}-${role}-url.txt`, 'utf8').trim();
                     if (url) links.push(`- **${run} / ${role}**: [Firefox Profiler](${url})`);
