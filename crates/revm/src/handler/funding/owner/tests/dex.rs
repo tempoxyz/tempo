@@ -390,7 +390,7 @@ fn cost_budget_includes_execution_loss() {
         });
         evm.inner.ctx.journaled_state.logs.clear();
         let mut req = requirement(PATH_USD_ADDRESS, 50 * UNIT, vec![request(a, U256::MAX)]);
-        req.slippage_bps = slippage;
+        req.slippage_bps = Some(slippage);
         let result = run(
             &mut evm,
             &[req],

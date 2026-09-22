@@ -1903,9 +1903,6 @@ where
             if !evm.ctx.cfg.spec.is_t13() {
                 return Err(TempoInvalidTransaction::FundingNotActivated.into());
             }
-            if tx.signature.is_keychain() || tx.override_key_id.is_some() {
-                return Err(TempoInvalidTransaction::DelegatedFundingNotActivated.into());
-            }
             if tx
                 .require_funds
                 .iter()

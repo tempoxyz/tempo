@@ -24,8 +24,8 @@ contract OwnerFundingSource {
     function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
         external returns (Quote memory)
     {
-        require(ownerAuthorized && policyData.length == 0, "context");
         Request memory r = abi.decode(data, (Request));
+        require(ownerAuthorized ? policyData.length == 0 : abi.decode(policyData, (address)) == r.assetIn, "policy");
         require(r.expectedCost == 0 || r.expectedCost == maxCost, "cost");
         if (r.mode == 8) assembly { return(0, 1) }
         if (r.mode == 9) calls++;

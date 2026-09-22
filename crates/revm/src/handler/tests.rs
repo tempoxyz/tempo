@@ -4527,18 +4527,19 @@ fn funding_activation_and_simulated_access_keys() {
         (
             TempoHardfork::T12,
             None,
-            TempoInvalidTransaction::FundingNotActivated,
+            Some(TempoInvalidTransaction::FundingNotActivated),
         ),
-        (
-            TempoHardfork::T13,
-            Some(Address::repeat_byte(1)),
-            TempoInvalidTransaction::DelegatedFundingNotActivated,
-        ),
+        (TempoHardfork::T13, Some(Address::repeat_byte(1)), None),
     ] {
         let mut test = TestHandlerEvm::aa(
             spec,
             TempoBatchCallEnv {
                 require_funds: vec![FundingRequirement::default()],
+                aa_calls: vec![Call {
+                    to: TxKind::Call(Address::repeat_byte(2)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
                 override_key_id: key,
                 ..Default::default()
             },
@@ -4552,9 +4553,12 @@ fn funding_activation_and_simulated_access_keys() {
                 .is_some(),
             spec.is_t13()
         );
-        assert!(
-            matches!(test.validate_env(), Err(EVMError::Transaction(error)) if error == expected)
-        );
+        let result = test.validate_env();
+        if let Some(expected) = expected {
+            assert!(matches!(result, Err(EVMError::Transaction(error)) if error == expected));
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
     }
 }
 
