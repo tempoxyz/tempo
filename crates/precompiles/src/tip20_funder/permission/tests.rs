@@ -17,10 +17,11 @@ fn permission(asset: Address, rate: U256, cap: u64, cost: u64) -> FundingPermiss
         FUNDER,
         OWNER,
         SOURCE,
-        &IFundingSource::Plan {
+        &IFundingSource::Quote {
             assetIn: asset,
             rate,
             maxAmountIn: U256::from(cap),
+            amountOut: U256::ZERO,
             data: Default::default(),
         },
         U256::from(cost),

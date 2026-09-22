@@ -28,8 +28,10 @@ fn setup() -> (HashMapStorageProvider, NativeDexFundingSource, Address) {
     )
 }
 
-fn prepare(input: Address, cap: U256, budget: U256) -> IFundingSource::prepareCall {
-    IFundingSource::prepareCall {
+fn quote(input: Address, cap: U256, budget: U256) -> IFundingSource::quoteCall {
+    IFundingSource::quoteCall {
+        account: ACCOUNT,
+        amountOut: U256::from(50),
         assetOut: PATH_USD_ADDRESS,
         maxCost: budget,
         data: (input, cap).abi_encode().into(),
@@ -53,7 +55,7 @@ fn caps_omission_zero_and_native_width_without_truncation() {
                 U256::from(u128::MAX),
             ),
         ] {
-            let plan = source.prepare(FUNDER, prepare(input, cap, budget)).unwrap();
+            let plan = source.quote(quote(input, cap, budget)).unwrap();
             assert_eq!(
                 (plan.assetIn, plan.rate, plan.maxAmountIn),
                 (input, RATE_SCALE, expected)
@@ -64,29 +66,25 @@ fn caps_omission_zero_and_native_width_without_truncation() {
 }
 
 #[test]
-fn preparation_rejects_forged_context_and_malformed_data() {
+fn quoting_rejects_unsupported_policy_and_malformed_data() {
     let (mut storage, source, input) = setup();
     StorageCtx::enter(&mut storage, || {
-        for mode in 0..4 {
-            let mut call = prepare(input, U256::MAX, U256::from(50));
+        for mode in 1..4 {
+            let mut call = quote(input, U256::MAX, U256::from(50));
             match mode {
                 1 => call.ownerAuthorized = false,
                 2 => call.policyData = Bytes::from_static(b"policy"),
                 3 => call.data = Bytes::from_static(b"invalid"),
                 _ => {}
             }
-            assert!(
-                source
-                    .prepare(if mode == 0 { ACCOUNT } else { FUNDER }, call)
-                    .is_err()
-            );
+            assert!(source.quote(call).is_err());
         }
     });
     storage.set_spec(TempoHardfork::T11);
     StorageCtx::enter(&mut storage, || {
         assert!(
             source
-                .prepare(FUNDER, prepare(input, U256::MAX, U256::from(50)))
+                .quote(quote(input, U256::MAX, U256::from(50)))
                 .is_err()
         );
     });
@@ -97,7 +95,7 @@ fn fund_requires_matching_native_scope_even_when_no_input_available() {
     let (mut storage, source, input) = setup();
     StorageCtx::enter(&mut storage, || {
         let plan = source
-            .prepare(FUNDER, prepare(input, U256::MAX, U256::from(50)))
+            .quote(quote(input, U256::MAX, U256::from(50)))
             .unwrap();
         let call = IFundingSource::fundCall {
             account: ACCOUNT,
@@ -134,14 +132,14 @@ fn all_route_assets_require_explicit_parity_approval() {
             .unwrap()
             .address();
         StablecoinDEX::new().create_pair(output).unwrap();
-        let mut call = prepare(input, U256::MAX, U256::from(50));
+        let mut call = quote(input, U256::MAX, U256::from(50));
         call.assetOut = output;
-        assert!(source.prepare(FUNDER, call.clone()).is_err());
+        assert!(source.quote(call.clone()).is_err());
         // Both endpoints are allowed, but the common quote token is not.
         let endpoints_only = NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, output]);
-        assert!(endpoints_only.prepare(FUNDER, call.clone()).is_err());
+        assert!(endpoints_only.quote(call.clone()).is_err());
         let all =
             NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, output, PATH_USD_ADDRESS]);
-        assert!(all.prepare(FUNDER, call).is_ok());
+        assert!(all.quote(call).is_ok());
     });
 }

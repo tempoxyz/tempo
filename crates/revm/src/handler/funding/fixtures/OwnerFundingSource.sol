@@ -9,7 +9,7 @@ interface Token {
 // Compile deployed bytecode with solc 0.8.30, optimizer runs=200, evmVersion=cancun.
 contract OwnerFundingSource {
     address constant FUNDER = 0xFfFfFFfFfFffffFFFffFfFFfFFFfFffFffff1120;
-    struct Plan { address assetIn; uint256 rate; uint256 maxAmountIn; bytes data; }
+    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes data; }
     struct Request {
         address assetIn;
         uint256 rate;
@@ -21,10 +21,10 @@ contract OwnerFundingSource {
     }
     uint256 public calls;
 
-    function prepare(address, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
-        external returns (Plan memory)
+    function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
+        external returns (Quote memory)
     {
-        require(msg.sender == FUNDER && ownerAuthorized && policyData.length == 0, "context");
+        require(ownerAuthorized && policyData.length == 0, "context");
         Request memory r = abi.decode(data, (Request));
         require(r.expectedCost == 0 || r.expectedCost == maxCost, "cost");
         if (r.mode == 8) assembly { return(0, 1) }
@@ -34,7 +34,7 @@ contract OwnerFundingSource {
             uint256 capacity = maxCost * 1e18 / r.rate;
             if (cap > capacity) cap = capacity;
         }
-        return Plan(r.assetIn, r.rate, cap, data);
+        return Quote(r.assetIn, r.rate, cap, r.mode == 10 ? amountOut + 1 : (r.deliver < amountOut ? r.deliver : amountOut), data);
     }
 
     function fund(address account, address assetOut, uint256 amountOut, bytes calldata data) external {

@@ -38,12 +38,12 @@ impl FundingPermission {
         funder: Address,
         account: Address,
         source: Address,
-        plan: &IFundingSource::Plan,
+        plan: &IFundingSource::Quote,
         max_cost: U256,
     ) -> Result<Self> {
         let invalid = || {
-            crate::error::TempoPrecompileError::from(TIP20FunderError::InvalidFundingPlan(
-                ITIP20Funder::InvalidFundingPlan { source },
+            crate::error::TempoPrecompileError::from(TIP20FunderError::InvalidFundingQuote(
+                ITIP20Funder::InvalidFundingQuote { source },
             ))
         };
         if funder.is_zero() || account.is_zero() || source.is_zero() {
