@@ -7,13 +7,14 @@ use commonware_consensus::types::Height;
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tempo_node::rpc::consensus::{
-    CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query,
-    types::{MISSING_BLOCK, MISSING_CERTIFICATE, Response},
+    CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, types::Response,
 };
 use tokio::sync::broadcast;
 use tracing::{Level, instrument};
 
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
+const MISSING_CERTIFICATE: &str = "certificate";
+const MISSING_BLOCK: &str = "block";
 
 /// Internal shared state for the feed.
 pub(super) struct FeedState {

@@ -137,8 +137,8 @@ mod tests {
     fn consensus_error_json() {
         let errors = [
             types::Response::<()>::NotReady,
-            types::Response::Missing(types::MISSING_BLOCK),
-            types::Response::Missing(types::MISSING_CERTIFICATE),
+            types::Response::Missing("block"),
+            types::Response::Missing("certificate"),
         ]
         .map(|response| RpcResult::<()>::from(response).unwrap_err());
 
