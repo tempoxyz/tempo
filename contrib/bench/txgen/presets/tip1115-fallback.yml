@@ -4,7 +4,7 @@ include:
   - tip20/base.yml
   - tip20/fee-amm-liquidity.yml
   - tip20/auth-direct.yml
-  - tip20/nonce-expiring.yml
+  - tip20/nonce-protocol.yml
 merge:
   accounts:
     users:

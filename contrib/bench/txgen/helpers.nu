@@ -810,7 +810,7 @@ def txgen-run-preset-pipeline [
         "-n" $tx_count
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    ] | append (if $is_vault or $preset_name in ["zones" "tip1115-fallback"] { [] } else { ["--duration" $txgen_duration] })
     # Zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
@@ -880,7 +880,27 @@ def txgen-run-preset-pipeline [
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
-    let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+    mut pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+    if $preset_name == "tip1115-fallback" {
+        # Protocol nonces allow an identical, non-expiring signed input on every fresh chain.
+        # Generate outside the timed sender, and reject differing transactions or initial nonces.
+        let input_path = ($spec_path | path dirname | path join input.ndjson)
+        let generate_cmd = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args | append ["--output" $input_path]))
+        let generated = (bash -lc $generate_cmd | complete)
+        if $generated.exit_code != 0 { error make {msg: $"Fixed workload generation failed: ($generated.stderr)"} }
+        let count = (^wc -l $input_path | str trim | split row --regex '\s+' | first | into int)
+        if $count != $tx_count { error make {msg: "Fixed workload transaction count mismatch"} }
+        let digest = (^sha256sum $input_path | split row ' ' | first)
+        let digest_path = ($report_path | path dirname | path join fallback-workload.sha256)
+        if ($digest_path | path exists) {
+            if (open --raw $digest_path | str trim) != $digest { error make {msg: "Signed fallback workload differs between trials"} }
+        } else { $digest | save $digest_path }
+        let evidence = {phase: $benchmark_run, transactions: $count, sha256: $digest, nonce_mode: protocol, expiring: false}
+        $evidence | to json | save -f $"($report_path).workload-proof.json"
+        print $"WORKLOAD_PROOF ($evidence | to json -r)"
+        let send_cmd = (txgen-shell-join ($bench_cmd | append ["--input" $input_path "--drain-timeout" "300"]))
+        $pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($send_cmd)"
+    }
 
     if $use_two_phase_setup {
         let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
@@ -929,6 +949,11 @@ def txgen-run-preset-pipeline [
     }
 
     if $preset_name == "tip1115-fallback" {
+        let report = (open $report_path)
+        if $report.sent != $tx_count or $report.failed != 0 or $report.run_stats.total_txs != $tx_count {
+            error make {msg: $"Incomplete fixed workload: expected=($tx_count), sent=($report.sent), included=($report.run_stats.total_txs), failed=($report.failed)"}
+        }
+        fallback-verify-receipts $generate_rpc_url $fallback_start_block $tx_count $report_path
         let expected = "0x20c0000000000000000000000000000000000001"
         let proof = (fallback-proof $generate_rpc_url $fallback_start_block $expected)
         $proof | to json | save -f $"($report_path).measured-fallback-proof.json"

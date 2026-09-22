@@ -68,6 +68,26 @@ def fallback-proof [rpc: string, start: int, expected_token: string] {
     error make {msg: "No successful fallback probe receipt found"}
 }
 
+def fallback-verify-receipts [rpc: string, start: int, expected_count: int, report_path: string] {
+    let last = (fallback-rpc $rpc eth_blockNumber [] | into int)
+    mut included = 0
+    mut reverted = 0
+    mut wrong_fee_token = 0
+    for height in ($start + 1)..$last {
+        let block = ($height | format number | get lowerhex)
+        let receipts = (fallback-rpc $rpc eth_getBlockReceipts [$block] | where type == "0x76")
+        $included = $included + ($receipts | length)
+        $reverted = $reverted + ($receipts | where status != "0x1" | length)
+        $wrong_fee_token = $wrong_fee_token + ($receipts | where {|r| ($r.feeToken | str downcase) != "0x20c0000000000000000000000000000000000001"} | length)
+    }
+    let evidence = {expected: $expected_count, included: $included, reverted: $reverted, wrong_fee_token: $wrong_fee_token}
+    $evidence | to json | save -f $"($report_path).receipt-proof.json"
+    print $"RECEIPT_PROOF ($evidence | to json -r)"
+    if $included != $expected_count or $reverted != 0 or $wrong_fee_token != 0 {
+        error make {msg: "Fallback workload did not include every transaction successfully using alphaUSD"}
+    }
+}
+
 def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc: string, accounts: int, phase: string, report_path: string] {
     if (fallback-rpc $rpc eth_chainId [] | into int) != 1337 { error make {msg: "Fallback fixture requires local chain 1337"} }
     let alpha = "0x20c0000000000000000000000000000000000001"
@@ -101,7 +121,8 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
     $workload | insert setup {steps: $steps} | to yaml | save -f $setup_path
     fallback-send $txgen $bench $setup_path $rpc 0
 
-    # Both sides have identical balances and FeeAMM routes; only the candidate list differs.
+    # Both sides must start with identical balances and FeeAMM reserves.
+    mut balances = []
     for address in $addresses {
         let preference = (fallback-read $rpc $fee_manager "ed498fa8" $address)
         let path_balance = (fallback-read $rpc $pathusd "70a08231" $address)
@@ -113,13 +134,24 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
         if not ($preference =~ '^0x0+$') or not ($path_balance =~ '^0x0+$') or not $funded {
             error make {msg: $"Fallback preconditions failed for ($address): preference=($preference), pathUSD=($path_balance), selected=($selected_balance)"}
         }
+        $balances = ($balances | append {address: $address, alpha: $selected_balance, pathusd: $path_balance, preference: $preference})
     }
+    let alpha_word = ($alpha | str substring 2.. | fill -a right -c '0' -w 64)
+    let path_word = ($pathusd | str substring 2.. | fill -a right -c '0' -w 64)
+    let pool = (fallback-rpc $rpc eth_call [{to: $fee_manager, data: $"0x531aa03e($alpha_word)($path_word)"} latest])
+    let initial_state = {payers: $balances, alpha_pathusd_pool: $pool}
+    let state_digest = ($initial_state | to json -r | hash sha256)
+    let state_digest_path = ($report_path | path dirname | path join fallback-state.sha256)
+    if ($state_digest_path | path exists) {
+        if (open --raw $state_digest_path | str trim) != $state_digest { error make {msg: "Fallback payer balances or FeeAMM reserves differ between trials"} }
+    } else { $state_digest | save $state_digest_path }
+    $initial_state | to json | save -f $"($report_path).initial-state.json"
     let workload_path = [$dir workload.yml] | path join
     $workload | to yaml | save -f $workload_path
     let start = (fallback-rpc $rpc eth_blockNumber [] | into int)
     fallback-send $txgen $bench $workload_path $rpc 1
     let proof = (fallback-proof $rpc $start $expected)
-    let evidence = {phase: $phase, accounts_checked: $accounts, stored_preferences: 0, all_payer_pathusd_zero: true, probe: $proof}
+    let evidence = {phase: $phase, accounts_checked: $accounts, stored_preferences: 0, all_payer_pathusd_zero: true, initial_state_sha256: $state_digest, alpha_pathusd_pool: $pool, probe: $proof}
     $evidence | to json | save -f $"($report_path).fallback-proof.json"
     print $"FALLBACK_PROOF ($evidence | to json -r)"
     $workload_path
