@@ -3,9 +3,8 @@
 Shadow replay runs on a follower node and evaluates a candidate hardfork against blocks already
 accepted by the canonical chain. It is a pre-activation safety tool: operators can observe how
 historical or newly canonical traffic behaves under future rules before those rules become
-consensus-critical. It reports expected fork changes, unexplained differences, and places where an
-early difference prevents a trustworthy comparison of the rest of the block. It does not decide
-consensus validity or modify the canonical chain.
+consensus-critical. It reports expected fork changes, unexplained differences, and incomplete
+execution coverage. It does not decide consensus validity or modify the canonical chain.
 
 The live replayer subscribes to canonical-state notifications and processes newly committed blocks.
 It reports notification gaps rather than backfilling them; the `shadow-replay` command can instead
@@ -14,63 +13,60 @@ are skipped.
 
 ## Execution model
 
-For each selected canonical block, replay opens the canonical parent state and performs two
-independent executions of the exact block transactions:
+For each selected canonical block, replay opens the canonical parent state and creates two
+executors:
 
 - the **control** uses the hardfork active for the canonical block.
 - the **shadow** uses the selected candidate hardfork and its hardfork schedule.
 
-Both executions include pre-block changes, transactions in canonical order, and post-block changes.
-They use isolated in-memory overlays and may run concurrently. Their state is never persisted,
-shared with block production, submitted to fork choice, or carried into the next block. Every block
-therefore starts independently from its own canonical parent, even if the previous shadow block
-diverged.
+Transactions execute in canonical order under both rule sets. A control thread and persistent
+shadow worker are pipelined through a one-entry result queue: replay records both results but commits
+the control result into both executors. Every shadow transaction therefore receives the same
+canonical prestate and accumulated block context as its control, so an early candidate difference
+cannot cause derivative mismatches in later transactions. Candidate pre-block and post-block
+behavior is still observed, with transaction probes and candidate post-block execution based on
+canonical state.
+
+All execution uses isolated in-memory overlays. State is never persisted, shared with block
+production, submitted to fork choice, or carried into the next block. Every block starts
+independently from its own canonical parent.
 
 The control also acts as a live re-execution test for the shipped binary: it continuously checks
 that the binary can execute canonical blocks successfully and reproduce their receipts under the
 active rules, catching STF-breaking changes before shadow differences are interpreted. A control
 failure terminates live replay because an unverified baseline cannot be attributed to the candidate
-rules. This validates receipt reproduction rather than full canonical state equality. A shadow
-failure is retained as a finding or as inconclusive coverage when it occurs after an earlier cutoff.
+rules. This validates receipt reproduction rather than full canonical state equality. A rejected
+shadow transaction is recorded as a finding; replay still commits the control result and probes
+later transactions. A failed pre- or post-block boundary is retained as a finding, and boundaries
+that could not execute are reported as incomplete coverage.
 
 ## Comparison model
 
-After both executions finish, analysis compares their pre-block changes, completed transactions,
-and post-block changes in order. Transaction comparisons cover success, output, application and
-fee logs, receipt log order, receipt and block gas, and net account and storage transitions. This
-compares observable effects at completed boundaries, not opcode traces, internal write history, or
-transactions re-executed one-by-one from identical canonical intermediate states.
+After execution finishes, analysis compares pre-block changes, transaction probes, and post-block
+changes in order. Transaction comparisons cover success, output, application and fee logs, receipt
+log order, receipt and block gas, and net account and storage transitions. This compares observable
+effects at completed boundaries, not opcode traces or internal write history.
 
-An unexplained state or gas difference creates a cutoff because later shadow transactions may have
-run from a different state or execution context. Analysis still finishes every comparison at the
-current boundary, but later boundaries are reported as inconclusive rather than independent
-findings. The next block starts independently from its canonical parent. Fee provenance is recorded
-for classification but does not by itself exempt a state difference.
+Because every transaction probe starts from the same canonical prefix, findings at later
+transactions remain independent and are all compared. Fee provenance is recorded for classification
+but does not by itself exempt a state difference.
 
 ## Expectations
 
 `analysis/expectations.rs` registers checks at the hardfork introducing a feature. For each block,
 replay selects checks in `(canonical fork, candidate fork]` after validating the control.
 
-A check receives existing execution evidence and a changed field descriptor. It returns:
-
-- `None` when it cannot explain the difference;
-- `Some(false)` when it accepts the difference and later boundaries remain comparable;
-- `Some(true)` when it accepts the difference but invalidates later comparisons.
-
-The first accepting check owns attribution and continuation. Checks run in fork order, then
-registration order, and all fields at the current boundary are compared before a cutoff takes
-effect. Unexplained state or gas differences conservatively invalidate the suffix. Fee-slot
-provenance alone never accepts a difference.
+A check receives existing execution evidence and a changed field descriptor. It returns `None` when
+it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns
+attribution. Checks run in fork order, then registration order. Fee-slot provenance alone never
+accepts a difference.
 
 ## Adding an expectation
 
 1. Add a stable, unique rule ID under the introducing fork, keeping registry entries ordered.
 2. Match `Field` metadata and read typed values from `Context`; do not parse diagnostic strings.
-3. Return `None` when evidence is insufficient. Use `Some(true)` for persistent state or context
-   changes unless the rule establishes that later boundaries remain comparable.
-4. Test accepted effects, nearby incorrect effects, unrelated differences at the same boundary,
-   and continuation behavior.
+3. Return `None` when evidence is insufficient.
+4. Test accepted effects, nearby incorrect effects, and unrelated differences at the same boundary.
 
 ## Reporting and observability
 

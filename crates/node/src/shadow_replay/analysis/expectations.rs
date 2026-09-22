@@ -1,7 +1,7 @@
 //! Reviewed expectations registered at the fork introducing a feature.
 //!
-//! Checks receive one difference, not a transaction. `None` means unexplained;
-//! `Some(invalidates_suffix)` accepts it and optionally stops comparison.
+//! Checks receive one difference, not a transaction. `None` means unexplained and `Some(())`
+//! accepts it.
 
 use super::Field;
 use crate::shadow_replay::{Boundary, Evidence};
@@ -10,7 +10,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 #[derive(Debug)]
 pub(crate) struct Expectation {
     pub id: &'static str,
-    pub check: fn(&Context<'_>, &Field) -> Option<bool>,
+    pub check: fn(&Context<'_>, &Field) -> Option<()>,
 }
 
 pub(crate) struct Context<'a> {

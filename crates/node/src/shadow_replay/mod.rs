@@ -1,26 +1,20 @@
 //! Counterfactual replay of canonical blocks under shadow (candidate) Tempo hardfork rules.
 //!
-//! The node follows and persists the canonical chain. For each newly canonical block, executes
-//! its exact transactions independently under real (control) and shadow (candidate) rules:
+//! The node follows and persists the canonical chain. For each newly canonical block, it executes
+//! every transaction under both the canonical (control) and candidate rules from the same canonical
+//! prefix. The candidate result is observed, then discarded; the control result advances both
+//! executors before the next transaction. This isolates differences to the transaction that caused
+//! them instead of cascading candidate state through the rest of the block.
 //!
-//! ```text
-//! real[N]   = CanonicalHardforkRules(CanonicalState[N - 1], CanonicalBlock[N])
-//! shadow[N] = CandidateHardforkRules(CanonicalState[N - 1], CanonicalBlock[N])
-//! ```
-//!
-//! Each execution opens its own parent-state provider and keeps writes in a private in-memory
-//! overlay. Overlays are discarded after collecting receipt observations, outputs, fee provenance,
-//! and net state transitions. They are never persisted, submitted to forkchoice, shared between
-//! executions, or reused by later blocks.
+//! Execution uses private in-memory overlays. Candidate writes are never persisted, submitted to
+//! forkchoice, or used as prestate for another transaction or block.
 //!
 //! Control re-execution must reproduce canonical receipts. Failure or divergence indicates a
 //! non-canonical STF and terminates live replay. Shadow findings never stop replay.
 //!
-//! Analysis compares completed pre-block, transaction, and post-block boundaries in order.
-//! It compares net committed effects at each boundary—not complete state equality, write history,
-//! or effects under identical evolving prefixes. Expectations classify individual differences;
-//! a state/context difference ends analysis after its boundary unless the first accepting rule
-//! establishes comparability. Expected differences and incomplete coverage are reported separately.
+//! Analysis compares completed pre-block, transaction, and post-block boundaries in order. It
+//! compares net effects at each boundary—not complete state equality or write history. Expectations
+//! classify individual differences, and incomplete coverage is reported separately.
 
 mod analysis;
 mod fees;
@@ -41,7 +35,9 @@ use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{CanonStateSubscriptions, ChainSpecProvider, StateProviderFactory};
 use reth_revm::{
     database::StateProviderDatabase,
-    db::{State, TransitionState},
+    database_interface::bal::BalState,
+    db::{CacheState, State, TransitionState},
+    state::EvmState,
 };
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
 use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Instant};
@@ -192,13 +188,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
     ) -> Result<ReplayOutcome, String> {
-        let (real, shadow) = std::thread::scope(|scope| {
-            let shadow = scope.spawn(|| self.execute(&self.shadow_config, block));
-            let real = self.execute(&self.real_config, block);
-            (real, shadow.join())
-        });
-        let real = real?;
-        let shadow = shadow.map_err(|_| "shadow execution panicked".to_string())??;
+        let (real, shadow) = self.execute(block)?;
         if let Some(f) = &real.failure {
             return Err(format!(
                 "re-execution failed at {:?}: {}",
@@ -238,9 +228,6 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         };
         metrics::counter!("tempo_shadow_replay_findings_total", "kind" => kind).increment(1);
         let failure = shadow.failure.as_ref();
-        let after_cutoff = failure
-            .zip(report.cutoff)
-            .is_some_and(|(failure, cutoff)| failure.boundary > cutoff);
         warn!(
             target: "shadow_replay",
             block_number = block.number(),
@@ -248,32 +235,20 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             findings = ?report,
             shadow_failure_boundary = ?failure.map(|f| f.boundary),
             shadow_failure = failure.map(|f| f.error.as_str()).unwrap_or(""),
-            failure_after_cutoff = after_cutoff,
             ?outcome,
-            real_completed_txs = real.txs.len(),
-            shadow_completed_txs = shadow.txs.len(),
+            real_processed_txs = real.txs.len(),
+            shadow_processed_txs = shadow.txs.len(),
             "Shadow replay needs review; differences are not confirmed regressions"
         );
         Ok(outcome)
     }
 
-    /// Executes `block` on top of its canonical parent in an isolated, disposable overlay.
+    /// Executes each transaction under both rule sets from the same canonical prefix.
     ///
-    /// Completed boundary transitions are drained immediately. A failed boundary is recorded but
-    /// never exposed as a completed state effect, and execution never resumes after a rejected
-    /// transaction.
-    fn execute(
-        &self,
-        config: &TempoEvmConfig,
-        block: &RecoveredBlock<Block>,
-    ) -> Result<Evidence, String> {
-        let drain = |db: &mut State<_>| {
-            db.transition_state
-                .as_mut()
-                .expect("bundle updates enabled")
-                .take()
-        };
-
+    /// The candidate result is observed but never committed. Committing the control result into
+    /// both executors gives the next candidate transaction the exact same prestate and block
+    /// execution context as the control, so one difference cannot cascade through the block.
+    fn execute(&self, block: &RecoveredBlock<Block>) -> Result<(Evidence, Evidence), String> {
         let provider = self
             .provider
             .state_by_block_hash(block.parent_hash())
@@ -283,38 +258,171 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .with_bundle_update()
             .build();
         let writes = Rc::new(RefCell::new(FeeWrites::default()));
-        let evm = config
+        let evm = self
+            .real_config
             .evm_for_block(&mut db, block.header())
-            .map_err(|e| format!("failed to configure EVM: {e}"))?
+            .map_err(|e| format!("failed to configure control EVM: {e}"))?
             .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
-        let context = config
+        let context = self
+            .real_config
             .context_for_block(block.sealed_block())
-            .map_err(|e| format!("failed to configure executor: {e}"))?;
-        let mut executor = config.create_executor(evm, context);
-        let mut evidence = Evidence::default();
+            .map_err(|e| format!("failed to configure control executor: {e}"))?;
+        let mut executor = self.real_config.create_executor(evm, context);
+        let mut real = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
-            return Ok(evidence.fail(Boundary::PreBlock, e.to_string()));
+            return Ok((
+                real.fail(Boundary::PreBlock, e.to_string()),
+                Evidence::default(),
+            ));
         }
-        evidence.pre_block = Some(drain(executor.evm_mut().db_mut()));
-        for (index, tx) in block.transactions_recovered().enumerate() {
-            let result = match executor.execute_transaction_without_commit(tx) {
-                Ok(r) => r,
-                Err(e) => return Ok(evidence.fail(Boundary::Transaction(index), e.to_string())),
-            };
-            let scratch = std::mem::take(&mut *writes.borrow_mut());
-            let observed = ObservedTx::from_result(&result, scratch);
-            executor.commit_transaction(result);
-            evidence.txs.push(ObservedTx {
-                state: drain(executor.evm_mut().db_mut()),
-                ..observed
+        real.pre_block = Some(drain(executor.evm_mut().db_mut()));
+
+        // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
+        // control results when one arm runs ahead.
+        let (results, canonical_results) = std::sync::mpsc::sync_channel(1);
+        let canonical_cache = executor.evm().db().cache.clone();
+        let canonical_bal = executor.evm().db().bal_state.clone();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                self.execute_shadow(block, canonical_cache, canonical_bal, canonical_results)
             });
-        }
-        match executor.finish() {
-            Ok((mut evm, _)) => evidence.post_block = Some(drain(evm.db_mut())),
-            Err(e) => return Ok(evidence.fail(Boundary::PostBlock, e.to_string())),
-        }
-        Ok(evidence)
+            let mut results = Some(results);
+            for (index, tx) in block.transactions_recovered().enumerate() {
+                let result = match executor.execute_transaction_without_commit(tx) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        real = real.fail(Boundary::Transaction(index), e.to_string());
+                        break;
+                    }
+                };
+                let observed =
+                    ObservedTx::from_result(&result, std::mem::take(&mut *writes.borrow_mut()));
+                if results
+                    .as_ref()
+                    .is_some_and(|sender| sender.send(result.clone()).is_err())
+                {
+                    results = None;
+                }
+                executor.commit_transaction(result);
+                real.txs.push(Ok(ObservedTx {
+                    state: drain(executor.evm_mut().db_mut()),
+                    ..observed
+                }));
+            }
+            drop(results);
+            if real.failure.is_none() {
+                match executor.finish() {
+                    Ok((mut evm, _)) => real.post_block = Some(drain(evm.db_mut())),
+                    Err(e) => real = real.fail(Boundary::PostBlock, e.to_string()),
+                }
+            }
+            let shadow = worker
+                .join()
+                .map_err(|_| "shadow execution panicked".to_string())??;
+            Ok((real, shadow))
+        })
     }
+
+    fn execute_shadow(
+        &self,
+        block: &RecoveredBlock<Block>,
+        canonical_cache: CacheState,
+        canonical_bal: BalState,
+        canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
+    ) -> Result<Evidence, String> {
+        let provider = self
+            .provider
+            .state_by_block_hash(block.parent_hash())
+            .map_err(|e| {
+                format!(
+                    "failed to open shadow parent state {}: {e}",
+                    block.parent_hash()
+                )
+            })?;
+        let mut db = State::builder()
+            .with_database(StateProviderDatabase::new(&provider))
+            .with_bundle_update()
+            .build();
+        let writes = Rc::new(RefCell::new(FeeWrites::default()));
+        let evm = self
+            .shadow_config
+            .evm_for_block(&mut db, block.header())
+            .map_err(|e| format!("failed to configure shadow EVM: {e}"))?
+            .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
+        let context = self
+            .shadow_config
+            .context_for_block(block.sealed_block())
+            .map_err(|e| format!("failed to configure shadow executor: {e}"))?;
+        let mut executor = self.shadow_config.create_executor(evm, context);
+        let mut shadow = Evidence::default();
+        if let Err(e) = executor.apply_pre_execution_changes() {
+            return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
+        }
+        shadow.pre_block = Some(drain(executor.evm_mut().db_mut()));
+
+        // Candidate pre-block changes are evidence, not input to transaction probes.
+        executor.evm_mut().db_mut().cache = canonical_cache;
+        executor.evm_mut().db_mut().bal_state = canonical_bal;
+
+        for tx in block.transactions_recovered() {
+            match executor.execute_transaction_without_commit(tx) {
+                Ok(result) => {
+                    let observed =
+                        ObservedTx::from_result(&result, std::mem::take(&mut *writes.borrow_mut()));
+                    shadow.txs.push(Ok(ObservedTx {
+                        state: transition(result.into_result().state),
+                        ..observed
+                    }));
+                }
+                Err(e) => {
+                    let _ = std::mem::take(&mut *writes.borrow_mut());
+                    shadow.txs.push(Err(e.to_string()));
+                }
+            }
+            let Ok(canonical) = canonical_results.recv() else {
+                return Ok(shadow);
+            };
+            executor.commit_transaction(canonical);
+            // The canonical commit is prestate for the next probe, not shadow evidence.
+            let _ = drain(executor.evm_mut().db_mut());
+        }
+
+        match executor.finish() {
+            Ok((mut evm, _)) => shadow.post_block = Some(drain(evm.db_mut())),
+            Err(e) => shadow = shadow.fail(Boundary::PostBlock, e.to_string()),
+        }
+        Ok(shadow)
+    }
+}
+
+fn drain<DB>(db: &mut State<DB>) -> TransitionState {
+    db.transition_state
+        .as_mut()
+        .expect("bundle updates enabled")
+        .take()
+}
+
+fn transition(state: EvmState) -> TransitionState {
+    let mut cache = CacheState::new();
+    for (&address, account) in &state {
+        if account.is_loaded_as_not_existing() {
+            cache.insert_not_existing(address);
+        } else {
+            cache.insert_account_with_storage(
+                address,
+                account.original_info(),
+                account
+                    .storage
+                    .iter()
+                    .map(|(&slot, value)| (slot, value.original_value))
+                    .collect(),
+            );
+        }
+    }
+    let transitions = cache.apply_evm_state(state, |_, _| {});
+    let mut evidence = TransitionState::default();
+    evidence.add_transitions(transitions);
+    evidence
 }
 
 /// Receipt-derivable transaction fields used for canonical validation and replay comparison.
@@ -368,6 +476,8 @@ impl ObservedTx {
     }
 }
 
+type TxEvidence = Result<ObservedTx, String>;
+
 /// A logical execution boundary whose committed effects can be compared independently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Boundary {
@@ -390,7 +500,7 @@ struct Failure {
 #[derive(Debug, Default)]
 struct Evidence {
     pre_block: Option<TransitionState>,
-    txs: Vec<ObservedTx>,
+    txs: Vec<TxEvidence>,
     post_block: Option<TransitionState>,
     failure: Option<Failure>,
 }
@@ -402,13 +512,16 @@ impl Evidence {
     }
 }
 
-fn matches_receipts(txs: &[ObservedTx], receipts: &[TempoReceipt]) -> bool {
+fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
     if txs.len() != receipts.len() {
         return false;
     }
 
     let mut previous_gas = 0;
     txs.iter().zip(receipts).all(|(tx, receipt)| {
+        let Ok(tx) = tx else {
+            return false;
+        };
         let gas_used = receipt.cumulative_gas_used - previous_gas;
         previous_gas = receipt.cumulative_gas_used;
         tx.receipt
@@ -440,6 +553,12 @@ fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChai
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{Address, U256};
+    use reth_revm::{
+        DatabaseCommit,
+        state::{Account, AccountInfo, EvmStorageSlot, TransactionId},
+    };
+
     #[test]
     fn shadow_schedule_activates_prefix_without_mutating_canonical() {
         let canonical = TempoChainSpec::mainnet();
@@ -450,5 +569,48 @@ mod tests {
             canonical.tempo_fork_activation(TempoHardfork::T13),
             activation
         );
+    }
+
+    #[test]
+    fn transaction_transition_does_not_require_the_accumulated_cache() {
+        let address = Address::ZERO;
+        let created_address = Address::repeat_byte(1);
+        let destroyed_address = Address::repeat_byte(2);
+        let slot = U256::from(1);
+        let original = AccountInfo {
+            balance: U256::from(10),
+            ..Default::default()
+        };
+        let mut account = Account::from(original.clone());
+        account.info.balance = U256::from(9);
+        account.storage.insert(
+            slot,
+            EvmStorageSlot::new_changed(U256::from(2), U256::from(3), TransactionId::ZERO),
+        );
+        account.mark_touch();
+        let mut created = Account::new_not_existing(TransactionId::ZERO);
+        created.info.balance = U256::from(1);
+        created.mark_touch();
+        created.mark_created();
+        let mut destroyed = Account::from(original.clone());
+        destroyed.mark_touch();
+        destroyed.mark_selfdestruct();
+        let state = EvmState::from_iter([
+            (address, account),
+            (created_address, created),
+            (destroyed_address, destroyed),
+        ]);
+
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            address,
+            original.clone(),
+            [(slot, U256::from(2))].into_iter().collect(),
+        );
+        db.insert_not_existing(created_address);
+        db.insert_account(destroyed_address, original);
+        db.commit(state.clone());
+
+        assert_eq!(transition(state), drain(&mut db));
     }
 }

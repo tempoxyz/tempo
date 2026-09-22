@@ -1,5 +1,4 @@
-//! Classify field differences before formatting bounded samples. Expectedness and continuation
-//! are independent: even an accepted fee balance change may invalidate the remaining comparisons.
+//! Classify independent boundary differences before formatting bounded samples.
 
 use self::expectations::{Context, Expectation};
 use super::{Boundary, Evidence, ReplayOutcome};
@@ -27,17 +26,12 @@ pub(super) struct Report {
     pub expected: BTreeMap<&'static str, usize>,
     pub boundaries_evaluated: usize,
     pub boundaries_not_evaluated: usize,
-    pub cutoff: Option<Boundary>,
     pub samples: Vec<(Boundary, Difference, Option<&'static str>)>,
 }
 
 impl Report {
     pub(super) fn outcome(&self, shadow: &Evidence) -> ReplayOutcome {
-        let unexplained_failure = shadow
-            .failure
-            .as_ref()
-            .is_some_and(|failure| self.cutoff.is_none_or(|cutoff| failure.boundary <= cutoff));
-        if self.unexplained > 0 || unexplained_failure {
+        if self.unexplained > 0 || shadow.failure.is_some() {
             ReplayOutcome::Findings
         } else if self.boundaries_not_evaluated > 0 {
             ReplayOutcome::Inconclusive
@@ -60,27 +54,40 @@ impl Report {
             report.boundaries_evaluated += 1;
         }
         for index in 0..real.txs.len().min(shadow.txs.len()) {
-            if report.cutoff.is_some() {
-                break;
-            }
             let ctx = context(Boundary::Transaction(index));
-            let (real, shadow) = (&ctx.real.txs[index], &ctx.shadow.txs[index]);
-            let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
-            diff.record("success", |tx| tx.receipt.success);
-            diff.record("output", |tx| tx.output_hash);
-            diff.record("logs", |tx| tx.logs_hash);
-            diff.record("fee_logs", |tx| tx.fee_logs_hash);
-            // Preserve ordering between fee and application logs.
-            diff.record("receipt_logs", |tx| tx.receipt.logs_hash);
-            diff.record("gas", |tx| tx.receipt.gas_used);
-            diff.record("block_gas", |tx| tx.block_gas_used);
-            // Finish all comparisons at this boundary, even if one already caused a cutoff.
-            report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
+            let (Ok(real), shadow) = (&ctx.real.txs[index], &ctx.shadow.txs[index]) else {
+                // A control failure terminates execution and is handled by `Evidence::failure`.
+                break;
+            };
+            match shadow {
+                Ok(shadow) => {
+                    let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
+                    diff.record("success", |tx| tx.receipt.success);
+                    diff.record("output", |tx| tx.output_hash);
+                    diff.record("logs", |tx| tx.logs_hash);
+                    diff.record("fee_logs", |tx| tx.fee_logs_hash);
+                    // Preserve ordering between fee and application logs.
+                    diff.record("receipt_logs", |tx| tx.receipt.logs_hash);
+                    diff.record("gas", |tx| tx.receipt.gas_used);
+                    diff.record("block_gas", |tx| tx.block_gas_used);
+                    report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
+                }
+                Err(error) => report.record(
+                    &ctx,
+                    Field {
+                        name: "execution",
+                        address: None,
+                        slot: None,
+                        fee_associated: false,
+                    },
+                    Ok::<(), &str>(()),
+                    Err(error.as_str()),
+                    &[],
+                ),
+            }
             report.boundaries_evaluated += 1;
         }
-        if report.cutoff.is_none()
-            && let Some((real, shadow)) = real.post_block.as_ref().zip(shadow.post_block.as_ref())
-        {
+        if let Some((real, shadow)) = real.post_block.as_ref().zip(shadow.post_block.as_ref()) {
             report.record_state_diffs(&context(Boundary::PostBlock), real, shadow, rules);
             report.boundaries_evaluated += 1;
         }
@@ -106,28 +113,26 @@ impl Report {
         if let (Boundary::Transaction(index), Some(address), Some(slot)) =
             (ctx.boundary, field.address, field.slot)
         {
-            field.fee_associated = ctx.real.txs[index].fee_slots.contains(&(address, slot))
-                || ctx.shadow.txs[index].fee_slots.contains(&(address, slot));
+            field.fee_associated = ctx.real.txs[index]
+                .as_ref()
+                .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)))
+                || ctx.shadow.txs[index]
+                    .as_ref()
+                    .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)));
         }
         let accepted = rules
             .iter()
-            .find_map(|rule| (rule.check)(ctx, &field).map(|result| (rule.id, result)));
-        let (rule_id, invalidates_suffix) = match accepted {
-            Some((id, invalidates_suffix)) => {
+            .find_map(|rule| (rule.check)(ctx, &field).map(|()| rule.id));
+        let rule_id = match accepted {
+            Some(id) => {
                 *self.expected.entry(id).or_default() += 1;
-                (Some(id), invalidates_suffix)
+                Some(id)
             }
             None => {
                 self.unexplained += 1;
-                (
-                    None,
-                    field.address.is_some() || matches!(field.name, "gas" | "block_gas"),
-                )
+                None
             }
         };
-        if invalidates_suffix {
-            self.cutoff.get_or_insert(ctx.boundary);
-        }
         // Rank by metadata before formatting: only retained samples allocate strings.
         let key = (rule_id.is_some(), ctx.boundary, field);
         let index = self.samples.partition_point(|(boundary, diff, rule)| {
