@@ -411,6 +411,7 @@ pub enum KeychainVersionError {
 
 /// Keychain signature wrapping another signature with a user address.
 /// This allows an access key to sign on behalf of a root account.
+/// V1 accepts only primitive signatures; V2 also accepts multisig.
 ///
 /// No `Compact` impl — always wrapped in [`TempoSignature`] whose `Compact` delegates
 /// to `to_bytes()`/`from_bytes()` which encodes the version via the wire type byte
