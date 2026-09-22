@@ -11,6 +11,8 @@ case "$mode" in prepare|activate) ;; *) echo "invalid cache mode" >&2; exit 2;; 
 [[ ${bench_datadir##*/} == tempo_e2e_* ]] || { echo "cache requires a disposable tempo_e2e_* datadir" >&2; exit 1; }
 [[ -n "$cache_key" && -d "$bench_datadir/db" && ! -L "$bench_datadir/db" ]] || exit 1
 [[ $(<"$bench_datadir/db/database.version") == 2 ]] || { echo "cache requires the untouched v2 baseline" >&2; exit 1; }
+help_output=$("$tempo_binary" --help)
+[[ "$help_output" == *bench-shard-storage* ]] || { echo "binary does not support the sharded layout" >&2; exit 1; }
 cache="$bench_datadir/.bench-sharded-storage"
 owner=tempo-bench-shard-cache-v1
 if [[ -e "$cache" || -L "$cache" ]]; then

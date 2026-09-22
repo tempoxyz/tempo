@@ -2,7 +2,7 @@
 set -euo pipefail
 # Re-enter this script as a tiny fake Tempo binary when the helper probes it.
 if [[ ${1:-} == --help ]]; then
-  echo 'bench-shard-storage'
+  if [[ ${TEMPO_BENCH_TEST_UNSHARDED:-0} == 1 ]]; then echo 'normal-tempo'; else echo 'bench-shard-storage'; fi
   exit 0
 elif [[ ${1:-} == bench-shard-storage ]]; then
   [[ $2 == --database ]]
@@ -30,6 +30,8 @@ bash "$helper" prepare "$script_path" "$datadir" job-key
 cp -a "$datadir" "$test_root/virgin"
 
 if bash "$helper" activate "$script_path" "$datadir" wrong-key; then exit 1; fi
+[[ $(<"$datadir/db/database.version") == 2 ]]
+if TEMPO_BENCH_TEST_UNSHARDED=1 bash "$helper" activate "$script_path" "$datadir" job-key; then exit 1; fi
 [[ $(<"$datadir/db/database.version") == 2 ]]
 bash "$helper" activate "$script_path" "$datadir" job-key
 [[ $(<"$datadir/db/database.version") == 3 ]]
