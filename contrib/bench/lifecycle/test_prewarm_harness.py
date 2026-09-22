@@ -30,7 +30,7 @@ class PrewarmHarness(unittest.TestCase):
         workflow=(ROOT/'.github/workflows/bench-e2e.yml').read_text()
         for setting in ('BENCH_LIFECYCLE: "true"', 'BENCH_LIFECYCLE_DETAIL: "milestones"',
                         'BENCH_LIFECYCLE_PREWARM_CPU: "disabled"',
-                        'BENCH_READ_READINESS: "true"', 'BENCH_RUN_SIDE: "feature"'):
+                        'BENCH_READ_READINESS: "true"', 'BENCH_RUN_SIDE: "comparison"'):
             self.assertIn(setting, workflow)
         snippet=workflow.split('          cmd=(nu bench-e2e.nu e2e)',1)[1].split('          quote_arg()',1)[0]
         script='set -e\ncmd=(nu bench-e2e.nu e2e)\n'+snippet+'\nprintf "%s\\0" "${cmd[@]}"\n'
@@ -57,14 +57,14 @@ class PrewarmHarness(unittest.TestCase):
             self.assertEqual(subprocess.run(['nu','-c',command],capture_output=True).returncode,0)
             b.write_bytes(b'different');self.assertNotEqual(subprocess.run(['nu','-c',command],capture_output=True).returncode,0)
         for args in (['--lifecycle-prewarm-cpu','compare'],['--lifecycle','--lifecycle-prewarm-cpu','compare','--run-side','feature'],['--lifecycle','--lifecycle-detail','full','--lifecycle-prewarm-cpu','compare']):
-            result=subprocess.run(['nu','bench-e2e.nu','e2e',*args],cwd=ROOT,text=True,capture_output=True,env={**os.environ,'BENCH_BINARY_MODE':'build_v1','BENCH_RUN_CLEANUP':'false','BENCH_READ_READINESS':'false'})
+            result=subprocess.run(['nu','bench-e2e.nu','e2e',*args],cwd=ROOT,text=True,capture_output=True,env={**os.environ,'BENCH_BINARY_MODE':'build_v1','BENCH_RUN_CLEANUP':'false','BENCH_READ_READINESS':'false','BENCH_PROOF_GROUPING_TRIAL':''})
             self.assertNotEqual(result.returncode,0);self.assertIn('Prewarm CPU comparison requires milestone lifecycle',result.stderr)
     @unittest.skipUnless(shutil.which('nu'),'Nushell required')
     def test_immutable_same_inputs_and_no_environment_override(self):
         base=['nu','bench-e2e.nu','e2e','--lifecycle','--lifecycle-detail','milestones','--lifecycle-prewarm-cpu','compare']
         sha='1'*40
         for extra in ([],['--baseline',sha,'--feature','2'*40],['--baseline',sha,'--feature',sha,'--baseline-env','CUSTOM=1'],['--baseline',sha,'--feature',sha,'--feature-args=--engine.prewarm-threads 32']):
-            result=subprocess.run(base+extra,cwd=ROOT,text=True,capture_output=True,env={**os.environ,'BENCH_BINARY_MODE':'build_v1','BENCH_RUN_CLEANUP':'false','BENCH_READ_READINESS':'false'})
+            result=subprocess.run(base+extra,cwd=ROOT,text=True,capture_output=True,env={**os.environ,'BENCH_BINARY_MODE':'build_v1','BENCH_RUN_CLEANUP':'false','BENCH_READ_READINESS':'false','BENCH_PROOF_GROUPING_TRIAL':''})
             self.assertNotEqual(result.returncode,0)
             self.assertIn('identical immutable refs and node inputs',result.stderr)
 if __name__=='__main__':unittest.main()

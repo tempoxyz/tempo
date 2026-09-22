@@ -16,6 +16,14 @@ ROOT=Path(__file__).resolve().parents[3]
 
 def without_single_diagnostic(workflow):
     """Reverse only the reviewed single-slot readiness diagnostic job settings."""
+    assert workflow.count('      BENCH_DURATION: "15"\n') == 1
+    workflow = workflow.replace('      BENCH_DURATION: "15"\n',
+                                '      BENCH_DURATION: "30"\n')
+    trial = '      BENCH_PROOF_GROUPING_TRIAL: "true"\n      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1"\n'
+    assert workflow.count(trial) == 1
+    workflow = workflow.replace(trial, '      BENCH_FEATURE_ENV: ""\n')
+    assert workflow.count('      BENCH_RUN_SIDE: "comparison"\n') == 1
+    workflow = workflow.replace('      BENCH_RUN_SIDE: "comparison"\n', '      BENCH_RUN_SIDE: "feature"\n')
     replacements = [
         ('      max-parallel: 1\n', '      max-parallel: 5\n'),
         ('        slot: [1]\n', '        slot: [1, 2, 3, 4, 5]\n'),
@@ -106,8 +114,69 @@ class Workflow(unittest.TestCase):
     def test_inputs_reject_all_compile_or_unverified_environment_routes(self):
         env=dict(BENCH_BINARY_MODE='prebuilt_v1',BENCH_LIFECYCLE='true',BENCH_NO_SLACK='true',BENCH_FORCE_BLOAT='false',BENCH_NO_CACHE='false',BENCH_SAMPLY='false',BENCH_OTLP='false',BENCH_VALSCOPE='false',BENCH_TRACY='off',BENCH_TXGEN_REF=TOOLS,BENCH_FEATURES='jemalloc,asm-keccak,keccak-cache-global',BENCH_RUN_SIDE='feature')
         self.assertEqual(inputs(env),['feature'])
+        trial = {**env, 'BENCH_PROOF_GROUPING_TRIAL':'true',
+                 'BENCH_FEATURE_ENV':'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1',
+                 'BENCH_RUN_SIDE':'comparison', 'BENCH_RUN_PAIRS':'1',
+                 'BENCH_DURATION':'15', 'BENCH_READ_READINESS':'true',
+                 'PREBUILT_BASELINE_REF':'a'*40, 'PREBUILT_FEATURE_REF':'a'*40}
+        self.assertEqual(inputs(trial), ['baseline', 'feature'])
+        for key, value in [('BENCH_PROOF_GROUPING_TRIAL','false'),
+                           ('BENCH_FEATURE_ENV','RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=0'),
+                           ('BENCH_FEATURE_ENV','RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1 PRIVATE=1'),
+                           ('BENCH_BASELINE_ENV','RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1'),
+                           ('PREBUILT_BASELINE_REF','b'*40), ('PREBUILT_FEATURE_REF',''),
+                           ('BENCH_RUN_SIDE','feature'), ('BENCH_RUN_PAIRS','2'),
+                           ('BENCH_DURATION','30'), ('BENCH_DURATION','90'),
+                           ('BENCH_READ_READINESS','false')]:
+            with self.subTest(key=key, value=value), self.assertRaises(Rejected):
+                inputs({**trial, key:value})
         for key,value in [('BENCH_FORCE_BLOAT','true'),('BENCH_NO_CACHE','true'),('BENCH_TRACY','tracy'),('BENCH_LIFECYCLE','false'),('BENCH_VALSCOPE','true'),('BENCH_FEATURE_FEATURES','otlp'),('BENCH_FEATURE_ENV','RUSTFLAGS=native'),('BENCH_TXGEN_REF','main')]:
             with self.subTest(key=key),self.assertRaises(Rejected):inputs({**env,key:value})
+
+    @unittest.skipUnless(shutil.which('nu'), 'Nu required for phase guard regression')
+    def test_actual_readiness_phase_guard_accepts_both_trial_sides(self):
+        import json
+        source=(ROOT/'bench-e2e.nu').read_text()
+        guard='let readiness_env ='+source.split('    let readiness_env =',1)[1].split('    let scheduler_env =',1)[0]
+        for mode, side, detail, lifecycle, accepted in [
+                ('true','feature','milestones',True,True),
+                ('true','baseline','milestones',True,True),
+                ('','feature','milestones',True,True),
+                ('','baseline','milestones',True,False),
+                ('true','other','milestones',True,False),
+                ('true','baseline','full',True,False),
+                ('true','baseline','milestones',False,False)]:
+            script='let ctx = {lifecycle: '+str(lifecycle).lower()+'}; let capture_detail = '+json.dumps(detail)+'; let run_type = '+json.dumps(side)+'; '+guard+'\nprint $readiness_env'
+            run=subprocess.run(['nu','--no-config-file','-c',script],capture_output=True,text=True,
+                env={**os.environ, 'BENCH_READ_READINESS':'true', 'BENCH_PROOF_GROUPING_TRIAL':mode})
+            self.assertEqual(run.returncode==0, accepted, (mode,side,detail,lifecycle))
+            if accepted:self.assertEqual(run.stdout.strip(), 'TEMPO_READ_READINESS=1')
+
+    @unittest.skipUnless(shutil.which('nu'), 'Nu required for trial guard regression')
+    def test_actual_trial_guard_only_admits_identical_short_comparison(self):
+        import json
+        source=(ROOT/'bench-e2e.nu').read_text()
+        guard='    let prebuilt ='+source.split('    let prebuilt =',1)[1].split('    if $lifecycle_scheduler and',1)[0]
+        values=dict(prebuilt_directory='/verified', lifecycle=True, profile='profiling',
+                    no_default_features=True, force_bloat=False, init_only=False, no_cache=False,
+                    samply=False, tracy='off', valscope_static_report=False, baseline_env='',
+                    feature_env='RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1', bench_env='',
+                    baseline_features='', feature_features='', baseline='a'*40, feature='a'*40,
+                    baseline_args='--engine.prewarming-threads 16', feature_args='--engine.prewarming-threads 16',
+                    baseline_hardfork='', feature_hardfork='', run_side='comparison', run_pairs=1,
+                    duration=15, lifecycle_detail='milestones', lifecycle_scheduler=False,
+                    lifecycle_prewarm_cpu='disabled')
+        mutations=[{}, {'feature':'b'*40}, {'feature_args':'--engine.prewarming-threads 0'},
+                   {'feature_env':''}, {'baseline_env':'PRIVATE=1'}, {'duration':30},
+                   {'duration':90},
+                   {'run_pairs':2}, {'run_side':'feature'}, {'lifecycle':False}]
+        for mutation in mutations:
+            declarations='\n'.join('let '+key+' = ('+json.dumps(json.dumps(value))+' | from json)' for key,value in {**values,**mutation}.items())
+            script=declarations+'\n'+guard+'\nprint "admitted"'
+            run=subprocess.run(['nu','--no-config-file','-c',script],capture_output=True,text=True,
+                env={**os.environ, 'BENCH_BINARY_MODE':'prebuilt_v1', 'BENCH_PROOF_GROUPING_TRIAL':'true',
+                     'BENCH_READ_READINESS':'true', 'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING':'1'})
+            self.assertEqual(run.returncode==0, not mutation, mutation)
 
     @unittest.skipUnless(shutil.which('nu'),'Nu required for actual helper regression')
     def test_actual_snapshot_guard_never_calls_generation(self):

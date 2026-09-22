@@ -526,6 +526,14 @@ test('single diagnostic policy admits one exact prebuilt receipt without setup f
   const f = fixture(options);
   try {
     assert.equal(adapter.binding(context, f.env).policy, adapter.SINGLE_DIAGNOSTIC_POLICY);
+    const trial = { ...f.env, BENCH_PROOF_GROUPING_TRIAL: 'true', BENCH_RUN_SIDE: 'comparison', BENCH_DURATION: '15', BENCH_FEATURE_ENV: 'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1' };
+    assert.equal(adapter.binding(context, trial).policy, adapter.SINGLE_DIAGNOSTIC_POLICY);
+    for (const [field, value] of [
+      ['BENCH_PROOF_GROUPING_TRIAL', 'false'], ['BENCH_RUN_SIDE', 'feature'],
+      ['BENCH_FEATURE_ENV', ''], ['BENCH_FEATURE_ENV', 'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1 PRIVATE=1'],
+      ['BENCH_BASELINE_ENV', 'PRIVATE=1'], ['BENCH_DURATION', '30'], ['BENCH_DURATION', '90'], ['BENCH_RUN_PAIRS', '2'],
+    ]) assert.throws(() => adapter.binding(context, { ...trial, [field]: value }));
+
     for (const [field, value] of [
       ['BENCH_CAPACITY_SLOTS', '2'], ['BENCH_CAPACITY_SLOT', '2'],
       ['BENCH_BINARY_MODE', 'build_v1'], ['BENCH_LIFECYCLE_DETAIL', 'full'],
