@@ -11,6 +11,24 @@ def event(stage, ts=100, block='a', ident=1, **fields):
     return {'type':'event','ts':ts,'id':ident,'node':'Validator A','block':block,'fields':{'stage':stage,**fields}}
 
 class ReadinessTests(unittest.TestCase):
+    def test_progress_totals_round_trip_privacy_association_and_cutoff(self):
+        from read_readiness import PROGRESS_FIELDS
+        numeric = {name: 1 for name in PROGRESS_FIELDS}
+        numeric['phase'] = 4
+        numeric['cpu_missing_calls'] = 0
+        events = [
+            event('proof_progress_totals', ts=90, **numeric,
+                  address='private', target_hash='private', private_counter=999),
+            event('proof_progress_totals', ts=95, phase=9, calls=1),
+            event('proof_progress_totals', ts=100, **numeric),
+            event('proof_progress_totals', ts=110, **numeric),
+        ]
+        result = build(events, [{'read_readiness':'v1'}], {'a':7}, 0, cutoff=100)
+        self.assertEqual(len(result['events']), 1)
+        self.assertEqual(result['events'][0]['stage'], 'proof_progress_totals')
+        self.assertEqual(result['events'][0]['block'], 7)
+        self.assertEqual(result['events'][0]['fields'], numeric)
+
     def test_overlap_root_tail_and_grouping_fields_are_numeric_and_pruned(self):
         from read_readiness import CACHE_FIELDS, ROOT_FIELDS, PROOF_FIELDS
         for stage, fields in [('execution_cache_readiness', CACHE_FIELDS),
@@ -89,6 +107,20 @@ class ReadinessTests(unittest.TestCase):
             {'type':'event', 'id':1, 'ts':95, 'fields':{
                 'stage':'execution_cache_readiness', 'block_hash':block,
                 'cache_checkout_reason':2}},
+            {'type':'event', 'id':1, 'ts':92, 'fields':{
+                'stage':'proof_progress_totals', 'block_hash':block, 'phase':4,
+                'wall_ns':10, 'cpu_measured_wall_ns':9, 'caller_cpu_ns':8,
+                'cpu_measured_calls':1, 'cpu_missing_calls':0, 'calls':1,
+                'failures':0, 'work_items':2, 'work_outputs':1,
+                'work_items_max':2, 'minor_faults':0, 'major_faults':0,
+                'voluntary_context_switches':0, 'involuntary_context_switches':0,
+                'secret':'private-progress-before'}},
+            {'type':'event', 'id':1, 'ts':cutoff, 'fields':{
+                'stage':'proof_progress_totals', 'block_hash':block, 'phase':4,
+                'calls':999, 'secret':'private-progress-at-cutoff'}},
+            {'type':'event', 'id':1, 'ts':cutoff + 10, 'fields':{
+                'stage':'proof_progress_totals', 'block_hash':block, 'phase':4,
+                'calls':999, 'secret':'private-progress-after-cutoff'}},
             {'type':'event', 'id':1, 'ts':cutoff, 'fields':{
                 'stage':'read_sample', 'block_hash':block, 'read_role':1,
                 'read_class':2, 'read_begin_ns':80, 'read_end_ns':90,
@@ -121,9 +153,14 @@ class ReadinessTests(unittest.TestCase):
             self.assertNotIn('private-at-cutoff', derived)
             self.assertNotIn('private-after-cutoff', derived)
             self.assertNotIn('private-before', derived)
+            self.assertNotIn('private-progress-before', derived)
+            self.assertNotIn('private-progress-at-cutoff', published)
+            self.assertNotIn('private-progress-after-cutoff', published)
+            self.assertNotIn('private-progress-at-cutoff', derived)
+            self.assertNotIn('private-progress-after-cutoff', derived)
             self.assertEqual(result['read_readiness']['mode'], 'v1')
             self.assertEqual(result['read_readiness']['read_samples_retained'], 1)
             self.assertEqual([event['ts_ns'] for event in result['read_readiness']['events']],
-                             [90, 95])
+                             [90, 95, 92])
 
 if __name__ == '__main__': unittest.main()

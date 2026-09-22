@@ -1,6 +1,6 @@
 """Privacy-bounded parsing for Reth's read-readiness lifecycle events."""
 
-READINESS_STAGES = {'read_totals', 'read_samples', 'read_sample', 'read_coverage', 'execution_cache_readiness', 'proof_dispatch_totals', 'proof_state_at_updates_finished', 'proof_root_tail_totals'}
+READINESS_STAGES = {'read_totals', 'read_samples', 'read_sample', 'read_coverage', 'execution_cache_readiness', 'proof_dispatch_totals', 'proof_state_at_updates_finished', 'proof_progress_totals', 'proof_root_tail_totals'}
 U64 = (1 << 64) - 1
 READ_FIELDS = {'read_role','read_class','read_calls','read_ns','read_max_ns','read_lt_10us','read_lt_100us','read_lt_1ms','read_lt_10ms','read_ge_10ms','read_samples_retained','read_samples_omitted','read_sample_cap','read_begin_ns','read_end_ns','read_thread','read_execution_mode'}
 CACHE_FIELDS = {'prewarm_queue_delay_count', 'prewarm_queue_delay_ns', 'prewarm_queue_delay_max_ns', 'prewarm_queue_delay_lt_10us', 'prewarm_queue_delay_lt_100us', 'prewarm_queue_delay_lt_1ms', 'prewarm_queue_delay_lt_10ms', 'prewarm_queue_delay_ge_10ms', 'prewarm_start_behind', 'prewarm_start_current', 'prewarm_start_ahead_1_16', 'prewarm_start_ahead_17_64', 'prewarm_start_ahead_gt_64', 'prewarm_queued_max', 'prewarm_running_max', 'prewarm_outstanding_max', 'storage_backing_inflight_count', 'storage_backing_inflight_ns', 'storage_backing_inflight_max_ns', 'storage_backing_completed_count', 'storage_backing_completed_ns', 'storage_backing_completed_max_ns', 'storage_backing_never_count', 'storage_backing_never_ns', 'storage_backing_never_max_ns', 'storage_backing_unknown_count', 'storage_backing_unknown_ns', 'storage_backing_unknown_max_ns', 'storage_backing_failed_count', 'storage_backing_failed_ns', 'storage_backing_failed_max_ns', 'cache_checkout_reason','cache_diag_keys_tracked','cache_diag_key_capacity','cache_diag_cap_reached','cache_diag_lock_contention','account_miss_prewarm_inflight','account_miss_prewarm_completed','account_miss_prewarm_never_observed','account_miss_prewarm_unknown_due_cap','account_miss_prewarm_unknown_contention','account_miss_prewarm_failed','storage_miss_prewarm_inflight','storage_miss_prewarm_completed','storage_miss_prewarm_never_observed','storage_miss_prewarm_unknown_due_cap','storage_miss_prewarm_unknown_contention','storage_miss_prewarm_failed','code_miss_prewarm_inflight','code_miss_prewarm_completed','code_miss_prewarm_never_observed','code_miss_prewarm_unknown_due_cap','code_miss_prewarm_unknown_contention','code_miss_prewarm_failed'}
@@ -9,12 +9,13 @@ ROOT_FIELDS = {'result_messages_consumed', 'phase_accounted_ns', 'progress_ns', 
 PROOF_FIELDS = {'in_flight','pending_targets','pending_account_targets','pending_storage_targets','account_queue_depth','storage_queue_depth','result_queue_depth','dispatches','targets','chunks','reason_unsplit','reason_force','reason_account_idle','reason_storage_idle','queue_samples','account_queue_high_water','storage_queue_high_water','account_queue_depth_0','account_queue_depth_1_8','account_queue_depth_9_32','account_queue_depth_33_plus','storage_queue_depth_0','storage_queue_depth_1_8','storage_queue_depth_9_32','storage_queue_depth_33_plus','split_when_queue_nonempty','split_when_storage_queue_nonempty','split_force_account_queue_nonempty','split_account_idle_account_queue_nonempty','split_storage_idle_account_queue_nonempty','split_force_storage_queue_nonempty','split_account_idle_storage_queue_nonempty','split_storage_idle_storage_queue_nonempty','outstanding_max'}
 
 PROOF_FIELDS |= {'grouped_chunks', 'grouped_dispatches', 'grouping_enabled', 'grouped_targets', 'effective_group_size_max'}
+PROGRESS_FIELDS = {'phase', 'wall_ns', 'cpu_measured_wall_ns', 'caller_cpu_ns', 'cpu_measured_calls', 'cpu_missing_calls', 'calls', 'failures', 'work_items', 'work_outputs', 'work_items_max', 'minor_faults', 'major_faults', 'voluntary_context_switches', 'involuntary_context_switches'}
 
 def _u64(value):
     return type(value) is int and 0 <= value <= U64
 
 def _fields(stage, fields):
-    allowed = READ_FIELDS if stage in ('read_totals','read_samples','read_sample','read_coverage') else CACHE_FIELDS if stage == 'execution_cache_readiness' else ROOT_FIELDS if stage == 'proof_root_tail_totals' else PROOF_FIELDS
+    allowed = READ_FIELDS if stage in ('read_totals','read_samples','read_sample','read_coverage') else CACHE_FIELDS if stage == 'execution_cache_readiness' else ROOT_FIELDS if stage == 'proof_root_tail_totals' else PROGRESS_FIELDS if stage == 'proof_progress_totals' else PROOF_FIELDS
     return {key: value for key, value in fields.items() if key in allowed and _u64(value)}
 
 def build(events, headers, aliases, first, cutoff=None):
@@ -33,6 +34,8 @@ def build(events, headers, aliases, first, cutoff=None):
         if ('read_role' in clean and not 1 <= clean['read_role'] <= 5) or ('read_class' in clean and not 0 <= clean['read_class'] <= 9):
             continue
         if 'read_execution_mode' in clean and clean['read_execution_mode'] not in (1, 2):
+            continue
+        if stage == 'proof_progress_totals' and clean.get('phase') not in range(1, 9):
             continue
         if stage == 'read_sample':
             begin, end = clean.get('read_begin_ns'), clean.get('read_end_ns')
