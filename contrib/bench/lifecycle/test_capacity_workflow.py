@@ -22,17 +22,21 @@ class CapacityWorkflowTests(unittest.TestCase):
                 '      BENCH_LIFECYCLE: "true"\n',
                 '      BENCH_LIFECYCLE_SCHEDULER: "false"\n',
                 '      BENCH_LIFECYCLE_DETAIL: "milestones"\n',
-                '      BENCH_DURATION: "30"\n',
+                '      BENCH_DURATION: "15"\n',
                 '      BENCH_NO_SLACK: "true"\n',
                 '      BENCH_SAMPLY: "false"\n',
                 '      BENCH_TRACY: "off"\n',
                 '      BENCH_OTLP: "false"\n',
                 '      BENCH_VALSCOPE: "false"\n',
                 '      BENCH_METRICS: "false"\n',
-                '      BENCH_FEATURE_ENV: ""\n',
+                '      BENCH_BASELINE_ARGS: "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16"\n',
+                '      BENCH_FEATURE_ARGS: "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16"\n',
+                '      BENCH_BASELINE_ENV: ""\n',
+                '      BENCH_SELECTIVE_RETRY_TRIAL: "true"\n',
+                '      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1"\n',
                 '      BENCH_READ_READINESS: "true"\n',
-                '      BENCH_RUN_PAIRS: "1"\n',
-                '      BENCH_RUN_SIDE: "feature"\n'):
+                '      BENCH_RUN_PAIRS: "2"\n',
+                '      BENCH_RUN_SIDE: "comparison"\n'):
             self.assertEqual(workflow.count(line), 1, line)
 
     def test_read_readiness_is_forwarded_to_both_feature_validators(self):
@@ -55,11 +59,15 @@ class CapacityWorkflowTests(unittest.TestCase):
         for requirement in (
                 '$readiness_mode not-in ["false" "true"]', 'not $prebuilt',
                 'not $lifecycle', '$lifecycle_detail != "milestones"',
-                '$run_side != "feature"', '$run_pairs != 1', '$duration != 30',
+                '$run_side != "feature"',
+                '$selective_retry_trial and $run_pairs != 2',
+                '(not $selective_retry_trial) and $run_pairs != 1',
+                '$selective_retry_trial and $duration != 15',
+                '(not $selective_retry_trial) and $duration != 30',
                 '$lifecycle_scheduler', '$lifecycle_prewarm_cpu != "disabled"'):
             self.assertIn(requirement, guard)
         self.assertIn(
-            'Read-readiness requires one 30-second prebuilt feature milestone capture', guard)
+            'Read-readiness requires a 15-second selective storage retry trial or 30-second feature diagnostic', guard)
         self.assertLess(harness.index('let readiness_mode ='),
                         harness.index('let preset_spec =', harness.index('let readiness_mode =')))
 

@@ -397,7 +397,7 @@ jobs:
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_MODE: ${{ inputs.mode || 'e2e' }}
       BENCH_PRESET: ${{ inputs.preset }}
-      BENCH_DURATION: "30"
+      BENCH_DURATION: "15"
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
@@ -415,8 +415,8 @@ jobs:
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
-      BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
-      BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
+      BENCH_BASELINE_ARGS: "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16"
+      BENCH_FEATURE_ARGS: "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16"
       BENCH_SKIP_STATE_ROOT: ${{ inputs.skip-state-root == true || inputs.skip-state-root == 'true' }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
       BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit || '1000000000000' }}
@@ -427,12 +427,13 @@ jobs:
       BENCH_METRICS: "false"
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
-      BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
-      BENCH_FEATURE_ENV: ""
+      BENCH_BASELINE_ENV: ""
+      BENCH_SELECTIVE_RETRY_TRIAL: "true"
+      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1"
       BENCH_READ_READINESS: "true"
-      BENCH_RUN_PAIRS: "1"
+      BENCH_RUN_PAIRS: "2"
       # An explicit instrumented baseline enables a same-runner lifecycle pair.
-      BENCH_RUN_SIDE: "feature"
+      BENCH_RUN_SIDE: "comparison"
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}

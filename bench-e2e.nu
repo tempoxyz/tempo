@@ -1164,8 +1164,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else { "" }
     let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
     let readiness_env = if ($env.BENCH_READ_READINESS? | default "false") == "true" {
-        if not $ctx.lifecycle or $capture_detail != "milestones" or $run_type != "feature" {
-            error make {msg: "Read-readiness capture requires feature milestone lifecycle"}
+        let trial_baseline = ($env.BENCH_SELECTIVE_RETRY_TRIAL? | default "") == "true" and $run_type == "baseline"
+        if not $ctx.lifecycle or $capture_detail != "milestones" or ($run_type != "feature" and not $trial_baseline) {
+            error make {msg: "Read-readiness capture requires an admitted milestone phase"}
         }
         "TEMPO_READ_READINESS=1 "
     } else { "" }
@@ -1578,16 +1579,32 @@ def "main e2e" [
     if $prebuilt != (($env.BENCH_BINARY_MODE? | default "build_v1") == "prebuilt_v1") {
         error make {msg: "Prebuilt workflow and binary route must agree"}
     }
-    if $prebuilt and (not $lifecycle or $profile != "profiling" or not $no_default_features or $force_bloat or $init_only or $no_cache or $samply or $tracy != "off" or $valscope_static_report or $baseline_env != "" or $feature_env != "" or $bench_env != "" or $baseline_features != "" or $feature_features != "") {
+    let selective_retry_mode = ($env.BENCH_SELECTIVE_RETRY_TRIAL? | default "")
+    let selective_retry_trial = $selective_retry_mode == "true"
+    if $selective_retry_mode not-in ["" "true"] or ($selective_retry_trial and (
+        not $prebuilt or ($env.BENCH_READ_READINESS? | default "false") != "true" or
+        ($baseline | default "") !~ '^[0-9a-f]{40}$' or $baseline != $feature or
+        $baseline_args != "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16" or
+        $feature_args != $baseline_args or $baseline_hardfork != $feature_hardfork or
+        $run_side != "comparison" or $run_pairs != 2 or $duration != 15 or
+        $baseline_env != "" or $feature_env != "RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1"
+    )) {
+        error make {msg: "Selective storage retry trial requires identical immutable inputs and the exact feature toggle"}
+    }
+    if $selective_retry_trial { hide-env -i RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES }
+    if $prebuilt and (not $lifecycle or $profile != "profiling" or not $no_default_features or $force_bloat or $init_only or $no_cache or $samply or $tracy != "off" or $valscope_static_report or $baseline_env != "" or ($feature_env != "" and not $selective_retry_trial) or $bench_env != "" or $baseline_features != "" or $feature_features != "") {
         error make {msg: "Unsupported prebuilt execution inputs"}
     }
     let readiness_mode = ($env.BENCH_READ_READINESS? | default "false")
     if $readiness_mode not-in ["false" "true"] or ($readiness_mode == "true" and (
         not $prebuilt or not $lifecycle or $lifecycle_detail != "milestones" or
-        $run_side != "feature" or $run_pairs != 1 or $duration != 30 or
+        ($run_side != "feature" and not $selective_retry_trial) or
+        ($selective_retry_trial and $run_pairs != 2) or
+        ((not $selective_retry_trial) and $run_pairs != 1) or
+        ($selective_retry_trial and $duration != 15) or ((not $selective_retry_trial) and $duration != 30) or
         $lifecycle_scheduler or $lifecycle_prewarm_cpu != "disabled"
     )) {
-        error make {msg: "Read-readiness requires one 30-second prebuilt feature milestone capture"}
+        error make {msg: "Read-readiness requires a 15-second selective storage retry trial or 30-second feature diagnostic"}
     }
     if $lifecycle_scheduler and (not $lifecycle or $lifecycle_detail != "full" or $lifecycle_prewarm_cpu != "disabled" or $samply or $tracy != "off") {
         error make {msg: "Kernel fault diagnostic requires full lifecycle and no other observer"}
