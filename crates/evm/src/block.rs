@@ -841,6 +841,65 @@ mod tests {
     }
 
     #[test]
+    fn test_system_calls_history_respects_prague_gate() {
+        let mut chainspec = (*system_calls_chainspec()).clone();
+        chainspec
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Prague, ForkCondition::Never);
+        let chainspec = Arc::new(chainspec);
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account(
+            HISTORY_STORAGE_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_legacy(HISTORY_STORAGE_CODE.clone())),
+        );
+        let mut executor = TestExecutorBuilder {
+            parent_hash: B256::repeat_byte(0x42),
+            ..Default::default()
+        }
+        .with_epoch_length(5)
+        .with_spec(TempoHardfork::T13)
+        .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        executor.finish().unwrap();
+        assert_eq!(
+            db.storage(HISTORY_STORAGE_ADDRESS, U256::ZERO).unwrap(),
+            U256::ZERO
+        );
+    }
+
+    #[test]
+    fn test_system_calls_history_revert_and_halt_are_not_block_errors() {
+        let chainspec = system_calls_chainspec();
+        // Write slot zero, then revert or halt with an invalid opcode.
+        for code in [
+            alloy_primitives::bytes!("600160005560006000fd"),
+            alloy_primitives::bytes!("6001600055fe"),
+        ] {
+            let mut db = State::builder().with_bundle_update().build();
+            db.insert_account(
+                HISTORY_STORAGE_ADDRESS,
+                AccountInfo::default().with_code(Bytecode::new_legacy(code)),
+            );
+            let mut executor = TestExecutorBuilder::default()
+                .with_epoch_length(5)
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
+
+            executor.apply_pre_execution_changes().unwrap();
+            let (_, result) = executor.finish().unwrap();
+            assert!(result.receipts.is_empty());
+            assert!(result.requests.is_empty());
+            assert_eq!(result.gas_used, 0);
+            assert_eq!(
+                db.storage(HISTORY_STORAGE_ADDRESS, U256::ZERO).unwrap(),
+                U256::ZERO
+            );
+        }
+    }
+
+    #[test]
     fn test_system_calls_finish_preserves_receipts_and_gas() {
         let chainspec = system_calls_chainspec();
         for enabled in [false, true] {
@@ -873,29 +932,43 @@ mod tests {
     #[test]
     fn test_system_calls_finish_preserves_committee_update() {
         let chainspec = system_calls_chainspec();
-        let outcome = create_dkg_outcome(42, 3);
-        let expected_keys = outcome
-            .players()
-            .iter()
-            .map(|key| B256::from_slice(key.as_ref()))
-            .collect::<Vec<_>>();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_block_number(4)
-            .with_epoch_length(5)
-            .with_extra_data(outcome.encode().into())
-            .with_spec(TempoHardfork::T13)
-            .build(&mut db, &chainspec);
+        let mut previous_keys = Vec::new();
+        for epoch in [1, 2] {
+            let outcome = create_dkg_outcome(epoch, 3);
+            let expected_keys = outcome
+                .players()
+                .iter()
+                .map(|key| B256::from_slice(key.as_ref()))
+                .collect::<Vec<_>>();
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(epoch * 5 - 1)
+                .with_epoch_length(5)
+                .with_extra_data(outcome.encode().into())
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
 
-        executor.apply_pre_execution_changes().unwrap();
-        let (_, result) = executor.finish().unwrap();
-        assert!(result.receipts.is_empty());
-        let mut reader = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T13)
-            .build(&mut db, &chainspec);
-        let committee = read_current_committee(&mut reader);
-        assert_eq!(committee.epoch, outcome.epoch);
-        assert_eq!(committee.publicKeys, expected_keys);
+            executor.apply_pre_execution_changes().unwrap();
+            let committee = read_current_committee(&mut executor);
+            assert_eq!(committee.epoch, epoch - 1);
+            assert_eq!(committee.publicKeys, previous_keys);
+
+            let (_, result) = executor.finish().unwrap();
+            assert!(result.receipts.is_empty());
+            assert!(result.requests.is_empty());
+            assert_eq!(result.gas_used, 0);
+            let mut reader = TestExecutorBuilder::default()
+                .with_block_number(epoch * 5)
+                .with_epoch_length(5)
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
+            reader.apply_pre_execution_changes().unwrap();
+            let committee = read_current_committee(&mut reader);
+            assert_eq!(committee.epoch, outcome.epoch);
+            assert_eq!(committee.publicKeys, expected_keys);
+            reader.finish().unwrap();
+            previous_keys = expected_keys;
+        }
     }
 
     #[test]
@@ -946,6 +1019,7 @@ mod tests {
         let chainspec = system_calls_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
             .with_epoch_length(5)
             .with_spec(TempoHardfork::T13)
             .build(&mut db, &chainspec);
@@ -1467,20 +1541,20 @@ mod tests {
     #[test]
     fn test_current_committee_system_call_rejects_invalid_boundary_extra_data() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_block_number(4)
-            .with_epoch_length(5)
-            .with_extra_data(Bytes::from_static(&[0xff]))
-            .with_spec(TempoHardfork::T8)
-            .build(&mut db, &chainspec);
+        for fork in [TempoHardfork::T8, TempoHardfork::T13] {
+            let mut db = State::builder().with_bundle_update().build();
+            let executor = TestExecutorBuilder::default()
+                .with_block_number(4)
+                .with_epoch_length(5)
+                .with_extra_data(Bytes::from_static(&[0xff]))
+                .with_spec(fork)
+                .build(&mut db, &chainspec);
 
-        let err = executor.apply_current_committee_system_call().unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("failed decoding boundary block extra data as DKG outcome"),
-            "unexpected error: {err}"
-        );
+            let err = executor.finish().err().unwrap();
+            insta::allow_duplicates! {
+                insta::assert_snapshot!(err.to_string(), @"failed decoding boundary block extra data as DKG outcome: Unexpected End-of-Buffer: Not enough bytes remaining to read data");
+            }
+        }
     }
 
     #[test]
