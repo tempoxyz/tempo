@@ -1,5 +1,9 @@
+import gzip
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -7,18 +11,29 @@ from statistical_trial import CORE, LABELS, METRICS, admit, sanitize, unavailabl
 
 
 class StatisticalTrialTests(unittest.TestCase):
-    def fixture(self, root):
+    def fixture(self, root, compressed=False):
         root.joinpath('run-order.txt').write_text('\n'.join(LABELS) + '\n')
+        root.joinpath('summary-config.json').write_text(json.dumps({
+            'baseline_label':'a'*40,'feature_label':'a'*40,'bloat_mib':102400,
+            'token_count':4,'preset':'default','tps':15000,'duration':15,
+            'summary_warmup_blocks':5,'run_side':'comparison','benchmark_id':'',
+            'reference_epoch':0,'baseline_hardfork':'','feature_hardfork':'',
+            'baseline_removed_args':'','feature_removed_args':''}))
         rows = []
         for index, label in enumerate(LABELS):
             root.joinpath(f'phase-range-{label}.json').write_text(json.dumps({
                 'schema': 1, 'phase': label, 'started_ms': 10 + index,
                 'finished_ms': 20 + index, 'stop_reason': 'load_finished'}))
             blocks = [{'number': n, 'timestamp': 1000 * n, 'tx_count': 10, 'ok_count': 10,
-                       'err_count': 0, 'gas_used': 100, 'block_time_ms': 1000} for n in range(1, 8)]
+                       'err_count': 0, 'gas_used': 100_000_000, 'block_time_ms': 1000} for n in range(1, 8)]
             root.joinpath(f'report-{label}.json').write_text(json.dumps({'blocks': blocks}))
-            root.joinpath(f'report-{label}.samples.ndjson').write_text(''.join(
-                json.dumps({'name': name, 'value': 1, 'labels': {}}) + '\n' for name in METRICS))
+            samples = ''.join(json.dumps({'name': name, 'value': value, 'unix_ms': unix_ms,
+                'labels': {'private': 'SECRET'}}) + '\n'
+                for name in METRICS for unix_ms,value in ((6000,1),(7000,3)))
+            path = root.joinpath(f'report-{label}.samples.ndjson' + ('.gz' if compressed else ''))
+            if compressed:
+                with gzip.open(path,'wt') as target: target.write(samples)
+            else: path.write_text(samples)
             rows.append({'label': label, **{field: 1 for field in CORE},
                          'summary_warmup_blocks': 5, 'blocks': 2, 'total_tx': 20,
                          'ok': 20, 'err': 0, 'total_gas': 200, 'success_rate': 100})
@@ -45,6 +60,30 @@ class StatisticalTrialTests(unittest.TestCase):
             self.assertIn('| mgas_s | Mgas/s |', text)
             self.assertIn('15 seconds per phase', text)
             self.assertIn('| feature-1 | 2 | 20 | 200 | 100.0% |', text)
+            with gzip.open(root/'lifecycle/summary-inputs.ndjson.gz','rt') as source:
+                retained=source.read()
+            self.assertNotIn('SECRET',retained)
+            self.assertIn('"series":0',retained)
+
+    def test_admits_compressed_txgen_samples_and_rejects_truncation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.fixture(root,compressed=True)
+            admit(root)
+            sample=root/f'report-{LABELS[0]}.samples.ndjson.gz'
+            sample.write_bytes(sample.read_bytes()[:10])
+            with self.assertRaises(Exception) as rejected: admit(root)
+            self.assertEqual(str(rejected.exception),'sample_format')
+
+    @unittest.skipUnless(shutil.which('nu'),'Nu required for compressed summary regression')
+    def test_compressed_inputs_complete_real_nu_summary_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.fixture(root,compressed=True)
+            admit(root)
+            run=subprocess.run(['nu','bench-e2e.nu','summarize',str(root)],
+                cwd=Path(__file__).resolve().parents[3],capture_output=True,text=True)
+            self.assertEqual(run.returncode,0,run.stderr)
+            sanitize(root)
+            self.assertEqual(json.loads((root/'summary.json').read_text())['status'],'complete')
 
     def test_rejects_missing_truncated_cutoff_and_missing_metric(self):
         for mutation in ('missing', 'truncated', 'cutoff', 'metric'):
@@ -57,6 +96,15 @@ class StatisticalTrialTests(unittest.TestCase):
                     (root / f'phase-range-{label}.json').write_text(json.dumps(row))
                 else: (root / f'report-{label}.samples.ndjson').write_text('')
                 with self.assertRaises(Exception): admit(root)
+                if mutation == 'metric':
+                    self.assertTrue((root/'lifecycle/summary-inputs.ndjson.gz').is_file())
+
+    def test_cli_reports_only_bounded_rejection_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run=subprocess.run([sys.executable,Path(__file__).with_name('statistical_trial.py'),
+                'admit',directory],capture_output=True,text=True)
+            self.assertNotEqual(run.returncode,0)
+            self.assertEqual(run.stderr.strip(),'statistical_trial_rejected:run_order')
 
     def test_missing_standard_core_metric_is_not_zero(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed phase admission for the selective-retry statistical trial."""
 import argparse
+import gzip
 import json
 import math
 from pathlib import Path
@@ -21,48 +22,138 @@ PER_RUN = CORE + ('summary_warmup_blocks', 'blocks', 'total_tx', 'ok', 'err', 't
                   'success_rate')
 
 
-def need(value):
+class Rejected(Exception):
+    pass
+
+
+def need(value, reason='contract'):
     if not value:
-        raise ValueError('statistical_trial_rejected')
+        raise Rejected(reason)
 
 
-def load(path, limit):
-    need(path.is_file() and not path.is_symlink() and path.stat().st_size <= limit)
-    return json.loads(path.read_text())
+def load(path, limit, reason='json'):
+    need(path.is_file() and not path.is_symlink() and path.stat().st_size <= limit, reason)
+    try:
+        return json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise Rejected(reason) from None
+
+
+def sample_paths(root):
+    selected = {}
+    actual = {path.name for path in root.glob('report-*.samples.ndjson*')}
+    for label in LABELS:
+        plain = root / f'report-{label}.samples.ndjson'
+        compressed = root / f'report-{label}.samples.ndjson.gz'
+        need(plain.is_file() != compressed.is_file(), 'sample_set')
+        selected[label] = compressed if compressed.is_file() else plain
+    need(actual == {path.name for path in selected.values()}, 'sample_set')
+    return selected
+
+
+def sample_rows(path):
+    need(not path.is_symlink() and path.stat().st_size <= 1024**3, 'sample_size')
+    opener = gzip.open if path.suffix == '.gz' else open
+    total = 0
+    try:
+        with opener(path, 'rt') as source:
+            while line := source.readline(1024 * 1024 + 1):
+                total += len(line)
+                need(len(line) <= 1024 * 1024 and total <= 2 * 1024**3, 'sample_size')
+                if any(name in line for name in METRICS):
+                    yield json.loads(line)
+    except (OSError, UnicodeError, json.JSONDecodeError, EOFError):
+        raise Rejected('sample_format') from None
 
 
 def finite(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def retain_inputs(root, samples_by_label):
+    public = root / 'lifecycle'
+    public.mkdir(exist_ok=True)
+    destination = public / 'summary-inputs.ndjson.gz'
+    temporary = public / '.summary-inputs.ndjson.gz.tmp'
+    metric_ids = {name: index for index, name in enumerate(sorted(METRICS))}
+    coverage = {}
+    try:
+        with temporary.open('wb') as raw, gzip.GzipFile(fileobj=raw, mode='wb', mtime=0) as zipped:
+            def write(row):
+                zipped.write((json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n').encode())
+            config = load(root / 'summary-config.json', 64 * 1024, 'config')
+            safe_config = {key: config.get(key) for key in ('bloat_mib', 'token_count', 'preset', 'tps',
+                           'duration', 'summary_warmup_blocks', 'run_side')}
+            need(safe_config == {'bloat_mib': 102400, 'token_count': 4, 'preset': 'default',
+                 'tps': 15000, 'duration': 15, 'summary_warmup_blocks': 5,
+                 'run_side': 'comparison'}, 'config')
+            refs = [config.get(key) for key in ('baseline_label', 'feature_label')]
+            need(refs[0] == refs[1] and type(refs[0]) is str and len(refs[0]) == 40 and
+                 all(char in '0123456789abcdef' for char in refs[0]), 'config')
+            write({'type': 'config', 'schema': 1, **safe_config, 'source_sha': refs[0],
+                   'metrics': sorted(METRICS)})
+            for phase_id, label in enumerate(LABELS):
+                receipt = load(root / f'phase-range-{label}.json', 4096, 'receipt')
+                write({'type': 'phase', 'phase': phase_id, 'side': 1 if label.startswith('feature') else 0,
+                       'started_ms': receipt['started_ms'], 'finished_ms': receipt['finished_ms']})
+                report = load(root / f'report-{label}.json', 64 * 1024 * 1024, 'report')
+                for block in report['blocks']:
+                    kept = {key: block.get(key) for key in ('number', 'timestamp', 'timestamp_ms',
+                            'tx_count', 'ok_count', 'err_count', 'gas_used', 'block_time_ms')}
+                    need(all(value is None or finite(value) for value in kept.values()), 'report')
+                    write({'type': 'block', 'phase': phase_id, **kept})
+                series = {}
+                retained = 0
+                found = set()
+                for row in sample_rows(samples_by_label[label]):
+                    name = row.get('name')
+                    if name not in METRICS:
+                        continue
+                    labels = row.get('labels')
+                    need(type(labels) is dict and finite(row.get('value')) and finite(row.get('unix_ms')),
+                         'sample_core')
+                    signature = json.dumps(labels, sort_keys=True, separators=(',', ':'))
+                    need(len(signature) <= 8192, 'sample_core')
+                    series_id = series.setdefault(signature, len(series))
+                    need(len(series) <= 1024, 'snapshot_bound')
+                    output = {'type': 'metric', 'phase': phase_id, 'metric': metric_ids[name],
+                              'series': series_id, 'unix_ms': row['unix_ms'], 'value': row['value']}
+                    if finite(row.get('offset_ms')):
+                        output['offset_ms'] = row['offset_ms']
+                    write(output)
+                    found.add(name)
+                    retained += 1
+                    need(retained <= 200_000, 'snapshot_bound')
+                coverage[label] = found
+        temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return coverage
+
+
 def admit(root):
-    need((root / 'run-order.txt').read_text().splitlines() == LABELS)
-    need({p.name for p in root.glob('report-*.json')} == {f'report-{x}.json' for x in LABELS})
-    need({p.name for p in root.glob('report-*.samples.ndjson')} ==
-         {f'report-{x}.samples.ndjson' for x in LABELS})
+    try:
+        need((root / 'run-order.txt').read_text().splitlines() == LABELS, 'run_order')
+    except OSError:
+        raise Rejected('run_order') from None
+    need({p.name for p in root.glob('report-*.json')} == {f'report-{x}.json' for x in LABELS},
+         'report_set')
+    samples_by_label = sample_paths(root)
     need({p.name for p in root.glob('phase-range-*.json')} ==
-         {f'phase-range-{x}.json' for x in LABELS})
+         {f'phase-range-{x}.json' for x in LABELS}, 'receipt_set')
     for label in LABELS:
-        receipt = load(root / f'phase-range-{label}.json', 4096)
+        receipt = load(root / f'phase-range-{label}.json', 4096, 'receipt')
         need(set(receipt) == {'schema', 'phase', 'started_ms', 'finished_ms', 'stop_reason'} and
              receipt['schema'] == 1 and receipt['phase'] == label and
              receipt['stop_reason'] == 'load_finished' and
              type(receipt['started_ms']) is int and type(receipt['finished_ms']) is int and
-             0 < receipt['started_ms'] <= receipt['finished_ms'])
-        report = load(root / f'report-{label}.json', 64 * 1024 * 1024)
+             0 < receipt['started_ms'] <= receipt['finished_ms'], 'receipt')
+        report = load(root / f'report-{label}.json', 64 * 1024 * 1024, 'report')
         blocks = report.get('blocks')
-        need(type(blocks) is list and 6 <= len(blocks) <= 100_000)
-        found = set()
-        samples = root / f'report-{label}.samples.ndjson'
-        need(samples.is_file() and not samples.is_symlink() and samples.stat().st_size <= 1024**3)
-        with samples.open() as source:
-            for line in source:
-                need(len(line) <= 1024 * 1024)
-                if any(name in line for name in METRICS):
-                    row = json.loads(line)
-                    if row.get('name') in METRICS and finite(row.get('value')):
-                        found.add(row['name'])
-        need(found == METRICS)
+        need(type(blocks) is list and 6 <= len(blocks) <= 100_000, 'report')
+    coverage = retain_inputs(root, samples_by_label)
+    need(all(coverage[label] == METRICS for label in LABELS), 'metric_coverage')
 
 
 def unavailable(root, attempted, reason='backpressure'):
@@ -194,5 +285,7 @@ if __name__ == '__main__':
             sanitize(args.root)
         else:
             unavailable(args.root, args.attempted, args.reason)
+    except Rejected as error:
+        raise SystemExit(f'statistical_trial_rejected:{error}') from None
     except Exception:
-        raise SystemExit('statistical_trial_rejected') from None
+        raise SystemExit('statistical_trial_rejected:internal') from None
