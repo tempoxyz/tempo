@@ -182,7 +182,7 @@ mod tests {
         );
         assert_eq!(
             portal_address(u32::MAX),
-            alloy_primitives::address!("5ad0000000000000000000000000000ffffffff")
+            alloy_primitives::address!("5ad00000000000000000000000000000ffffffff")
         );
     }
 }
