@@ -8,13 +8,17 @@ crate::sol! {
             uint256 availableAmount;
         }
 
+        /// Whether a configured path supports the token, independent of balances and liquidity.
+        /// @param policyData Source-specific rules or owner-selected configuration; malformed data reverts.
+        function supportsToken(address token, bytes calldata policyData) external view returns (bool);
+
         /// Discovers independent funding candidates in configuration order without granting authority.
         function discover(
             address account,
             address assetOut,
             uint256 amountOut,
             uint256 maxCost,
-            bytes calldata config
+            bytes calldata policyData
         ) external view returns (Candidate[] memory candidates);
 
         struct Quote {
