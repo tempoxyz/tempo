@@ -173,14 +173,42 @@ fn discovery_omits_zero_capacity_and_rejects_invalid_configuration() {
             assetOut: PATH_USD_ADDRESS,
             amountOut: U256::from(50),
             maxCost: U256::from(50),
-            config: vec![input].abi_encode().into(),
+            policyData: vec![input].abi_encode().into(),
         };
         assert!(source.discover(call.clone()).unwrap().is_empty());
-        call.config = Vec::<Address>::new().abi_encode().into();
+        call.policyData = Vec::<Address>::new().abi_encode().into();
         assert!(source.discover(call.clone()).unwrap().is_empty());
-        call.config = Bytes::new();
+        call.policyData = Bytes::new();
         assert!(source.discover(call.clone()).is_err());
-        call.config = vec![Address::ZERO].abi_encode().into();
+        call.policyData = vec![Address::ZERO].abi_encode().into();
         assert!(source.discover(call).is_err());
+    });
+}
+
+#[test]
+fn token_support_is_independent_of_balances_and_liquidity() {
+    let (mut storage, source, input) = setup();
+    StorageCtx::enter(&mut storage, || {
+        let mut call = IFundingSource::supportsTokenCall {
+            token: PATH_USD_ADDRESS,
+            policyData: vec![Address::ZERO, input].abi_encode().into(),
+        };
+        assert!(source.supports_token(call.clone()).unwrap());
+        assert_eq!(
+            source
+                .quote(quote(input, U256::MAX, U256::MAX))
+                .unwrap()
+                .amountOut,
+            U256::ZERO
+        );
+        for inputs in [vec![], vec![PATH_USD_ADDRESS], vec![Address::ZERO]] {
+            call.policyData = inputs.abi_encode().into();
+            assert!(!source.supports_token(call.clone()).unwrap());
+        }
+        call.policyData = vec![input].abi_encode().into();
+        call.token = Address::ZERO;
+        assert!(!source.supports_token(call.clone()).unwrap());
+        call.policyData = Bytes::from_static(b"malformed");
+        assert!(source.supports_token(call).is_err());
     });
 }

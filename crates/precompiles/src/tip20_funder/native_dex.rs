@@ -7,7 +7,7 @@ use crate::{
     mutate_void, preserve_storage_credits,
     stablecoin_dex::{StablecoinDEX, StablecoinDEXError},
     storage::{ContractStorage, StorageCtx},
-    tip20::TIP20Token,
+    tip20::{TIP20Error, TIP20Token},
     view,
 };
 use alloy::sol_types::SolValue;
@@ -80,8 +80,8 @@ impl NativeDexFundingSource {
         })
     }
 
-    fn decode_config(&self, config: &[u8]) -> Result<Vec<Address>> {
-        Vec::<Address>::abi_decode_validate(config).map_err(|_| {
+    fn decode_policy_data(&self, policy_data: &[u8]) -> Result<Vec<Address>> {
+        Vec::<Address>::abi_decode_validate(policy_data).map_err(|_| {
             TIP20FunderError::InvalidFundingQuote(ITIP20Funder::InvalidFundingQuote {
                 source: self.address,
             })
@@ -89,14 +89,36 @@ impl NativeDexFundingSource {
         })
     }
 
-    /// Config is ABI `address[] inputTokens`; estimates do not consume shared liquidity or inputs.
+    /// Checks configured routes without reading account balances or orderbook liquidity.
+    pub fn supports_token(&self, call: IFundingSource::supportsTokenCall) -> Result<bool> {
+        self.validate_context()?;
+        let inputs = self.decode_policy_data(&call.policyData)?;
+        for input in inputs {
+            match self.validate_route(input, call.token) {
+                Ok(()) => return Ok(true),
+                Err(TempoPrecompileError::TIP20Funder(TIP20FunderError::InvalidAsset(_)))
+                | Err(TempoPrecompileError::TIP20(
+                    TIP20Error::InvalidToken(_) | TIP20Error::ContractPaused(_),
+                ))
+                | Err(TempoPrecompileError::StablecoinDEX(
+                    StablecoinDEXError::IdenticalTokens(_)
+                    | StablecoinDEXError::InvalidToken(_)
+                    | StablecoinDEXError::PairDoesNotExist(_),
+                )) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(false)
+    }
+
+    /// Policy data is ABI `address[] inputTokens`; estimates do not consume shared liquidity or inputs.
     pub fn discover(
         &self,
         call: IFundingSource::discoverCall,
     ) -> Result<Vec<IFundingSource::Candidate>> {
         self.validate_context()?;
         self.validate_asset(call.assetOut)?;
-        let inputs = self.decode_config(&call.config)?;
+        let inputs = self.decode_policy_data(&call.policyData)?;
         let mut candidates = Vec::new();
         for asset_in in inputs {
             if asset_in == call.assetOut {
@@ -127,7 +149,8 @@ impl NativeDexFundingSource {
         let authorized = if call.ownerAuthorized {
             call.policyData.is_empty()
         } else {
-            self.decode_config(&call.policyData)?.contains(&asset_in)
+            self.decode_policy_data(&call.policyData)?
+                .contains(&asset_in)
         };
         if !authorized {
             return Err(TIP20FunderError::FundingNotAuthorized(
@@ -262,6 +285,7 @@ impl Precompile for NativeDexFundingSource {
         }
         dispatch!(calldata, |call| match call {
             IFundingSource::IFundingSourceCalls {
+                supportsToken(call) => view(call, |call| self.supports_token(call)),
                 discover(call) => view(call, |call| self.discover(call)),
                 quote(call) => view(call, |call| self.quote(call)),
                 fund(call) => mutate_void(call, caller, |caller, call| self.fund(caller, call)),
