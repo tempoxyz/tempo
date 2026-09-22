@@ -212,7 +212,7 @@ def analyze(summary: dict[str, Any]) -> dict[str, Any]:
             "Standard pooled percentile point estimates are not reused: this report averages each phase's p50/p90/p99 scalar so its point estimate matches the run-level bootstrap unit.",
             "Builder and validator latency phase quantiles are derived upstream from scrape-interval sum/count means, not raw event latencies.",
             "Block-time phase quantiles originate from raw block intervals, but this report estimates the mean of six phase-level quantiles rather than a pooled block percentile.",
-            "TPS and Mgas/s are accepted as sanitized upstream run scalars; interval-aligned rates cannot be recomputed from summary.json.",
+            "TPS and Mgas/s use sanitized upstream run scalars; an interval-aligned sensitivity analysis requires retained per-phase timestamp spans and first-block contributions.",
             "Six pairs give bounded run-level screening evidence; paired direction counts are descriptive and the confidence interval uses independent arm resampling.",
             "Each interval is a nominal per-axis 95% interval with no multiple-comparison adjustment across the 14 axes.",
             "The percent interval scales the absolute-delta interval by the observed baseline mean; it is not a separately bootstrapped ratio interval.",
