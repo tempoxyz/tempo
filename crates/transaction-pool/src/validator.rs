@@ -796,9 +796,9 @@ where
     DB: Database<Error = ProviderError>,
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
-        Ok(Some(Bytecode(
-            self.db.borrow_mut().get_code_by_hash(code_hash)?,
-        )))
+        Ok(Some(Bytecode(reth_execution_types::revm_bytecode(
+            &self.db.borrow_mut().get_code_by_hash(code_hash)?,
+        ))))
     }
 }
 
@@ -956,11 +956,11 @@ mod tests {
 
         assert_eq!(
             cached.bytecode_by_hash(&code_hash).unwrap(),
-            Some(Bytecode(bytecode.clone()))
+            Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
         );
         assert_eq!(
             cached.bytecode_by_hash(&code_hash).unwrap(),
-            Some(Bytecode(bytecode))
+            Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
         );
         assert_eq!(bytecode_reads.load(Ordering::Relaxed), 1);
     }

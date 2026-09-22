@@ -211,6 +211,8 @@ reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "ec7798df10" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "ec7798df10" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "ec7798df10" }
 
+revm = { version = "43.0.0", features = ["optional_fee_charge"], default-features = false }
+
 alloy-json-abi = { version = "1.7.3", default-features = false }
 alloy-primitives = { version = "1.7.3", default-features = false }
 alloy-sol-types = { version = "1.7.3", default-features = false }

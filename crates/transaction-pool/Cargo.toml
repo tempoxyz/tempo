@@ -34,6 +34,8 @@ reth-eth-wire-types.workspace = true
 reth-tracing.workspace = true
 reth-metrics.workspace = true
 
+revm.workspace = true
+
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true

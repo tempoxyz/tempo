@@ -191,25 +191,32 @@ impl AmmLiquidityCache {
         let mut inner = self.inner.write();
 
         // Process FeeManager slot changes: update pool reserves and validator preferences.
-        for (slot, value) in execution_outcome.storage_changes_for(TIP_FEE_MANAGER_ADDRESS) {
-            if let Some(pool) = inner.slot_to_pool.get(&slot).copied() {
-                // Update AMM pools
-                let validator_reserve =
-                    U256::from(Pool::decode_from_slot(value).reserve_validator_token);
-                inner.pool_cache.insert(pool, validator_reserve);
-            } else if let Some(validator) = inner.slot_to_validator.get(&slot).copied() {
-                // Update validator fee token preferences
-                inner
-                    .validator_preferences
-                    .insert(validator, Address::from_word(value.into()));
+        if let Some(storage) = execution_outcome
+            .account_state(&TIP_FEE_MANAGER_ADDRESS)
+            .map(|acc| &acc.storage)
+        {
+            for (slot, value) in storage.iter() {
+                if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
+                    // Update AMM pools
+                    let validator_reserve = U256::from(
+                        Pool::decode_from_slot(value.present_value).reserve_validator_token,
+                    );
+                    inner.pool_cache.insert(pool, validator_reserve);
+                } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
+                    // Update validator fee token preferences
+                    inner
+                        .validator_preferences
+                        .insert(validator, Address::from_word(value.present_value.into()));
+                }
             }
         }
 
         // Process TIP-20 quote token updates: invalidate stale entries.
         inner.quote_token_cache.retain(|token, _| {
-            !execution_outcome
-                .storage_changes_for(*token)
-                .any(|(slot, _)| slot == tip20::slots::QUOTE_TOKEN)
+            execution_outcome
+                .account_state(token)
+                .and_then(|acc| acc.storage.get(&tip20::slots::QUOTE_TOKEN))
+                .is_none()
         });
     }
 
@@ -637,8 +644,8 @@ mod tests {
 
     #[test]
     fn test_on_new_state_invalidates_stale_quote_token_cache() {
-        use evm2::evm::{StateChangeSink, StorageChange};
         use reth_provider::ExecutionOutcome;
+        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
         use tempo_primitives::TempoReceipt;
 
         // TIP-20-prefixed addresses so `from_address_unchecked`'s debug_assert holds.
@@ -659,21 +666,25 @@ mod tests {
             })),
         };
 
-        // Build an execution state where `user_token`'s `quoteToken` slot was rewritten to
-        // `hop_new`.
-        let mut state = reth_execution_types::EvmState::default();
-        StateChangeSink::storage(
-            &mut state,
-            StorageChange {
-                address: user_token,
-                key: tip20::slots::QUOTE_TOKEN,
-                original: hop_old.into_word().into(),
-                current: hop_new.into_word().into(),
-            },
-        )
-        .unwrap();
-        let execution_outcome: ExecutionOutcome<TempoReceipt> =
-            ExecutionOutcome::from_state_and_reverts(state, Vec::new(), Vec::new(), 0, Vec::new());
+        // Build a bundle where `user_token`'s `quoteToken` slot was rewritten to `hop_new`.
+        let mut storage = HashMap::default();
+        storage.insert(
+            tip20::slots::QUOTE_TOKEN,
+            StorageSlot::new_changed(hop_old.into_word().into(), hop_new.into_word().into()),
+        );
+        let mut bundle_state = AddressMap::default();
+        bundle_state.insert(
+            user_token,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+        let bundle = BundleState {
+            state: bundle_state,
+            ..Default::default()
+        };
+        let execution_outcome: ExecutionOutcome<TempoReceipt> = ExecutionOutcome {
+            bundle,
+            ..Default::default()
+        };
 
         cache.on_new_state(&execution_outcome);
 

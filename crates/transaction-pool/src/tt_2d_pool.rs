@@ -7,7 +7,6 @@ use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
 };
-use reth_execution_types::EvmState;
 use reth_primitives_traits::{InMemorySize, transaction::error::InvalidTransactionError};
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
@@ -20,6 +19,7 @@ use reth_transaction_pool::{
         size::SizeTracker,
     },
 };
+use revm::database::BundleAccount;
 use std::{
     borrow::Borrow,
     collections::{
@@ -1456,32 +1456,30 @@ impl AA2dPool {
     }
 
     /// Processes nonce-precompile storage updates and updates internal state accordingly.
-    pub(crate) fn on_state_updates(&mut self, state: &EvmState) -> StateUpdateResult {
+    pub(crate) fn on_state_updates(
+        &mut self,
+        state: &AddressMap<BundleAccount>,
+    ) -> StateUpdateResult {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
 
-        let mut nonce_storage = state
-            .storage()
-            .filter(|(key, _)| key.address() == NONCE_PRECOMPILE_ADDRESS)
-            .peekable();
-        if nonce_storage.peek().is_none() {
+        let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
             return (Vec::new(), Vec::new(), Vec::new());
-        }
+        };
 
         let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
         let mut included_expiring_nonce_hashes =
             std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
 
         // Process known 2D nonce slot changes.
-        for (key, value) in nonce_storage {
-            let slot = key.key();
-            if let Some(seq_id) = self.slot_to_seq_id.get(&slot) {
-                changes.insert(*seq_id, value.current.saturating_to());
+        for (slot, value) in nonce_state.storage.iter() {
+            if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
+                changes.insert(*seq_id, value.present_value.saturating_to());
             }
             // Detect included expiring nonce transactions via their
             // `expiring_nonce_seen` slot being set to a non-zero value.
-            if !value.current.is_zero()
-                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(&slot)
+            if !value.present_value.is_zero()
+                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
             {
                 included_expiring_nonce_hashes.push(*expiring_nonce_hash);
             }
@@ -2531,7 +2529,6 @@ mod tests {
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
-    use evm2::evm::{StateChangeSink, StorageChange};
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
@@ -6381,7 +6378,7 @@ mod tests {
         pool.state_update_included_expiring_nonce_hashes
             .push(B256::random());
 
-        let state = EvmState::default();
+        let state = AddressMap::default();
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
         assert!(promoted.is_empty());
@@ -6393,6 +6390,8 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_with_nonce_precompile_slot() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::from(1);
@@ -6427,17 +6426,16 @@ mod tests {
         assert_eq!(pending, 3);
         assert_eq!(queued, 0);
 
-        let mut state = EvmState::default();
-        StateChangeSink::storage(
-            &mut state,
-            StorageChange {
-                address: NONCE_PRECOMPILE_ADDRESS,
-                key: nonce_slot,
-                original: U256::ZERO,
-                current: U256::from(2u64),
-            },
-        )
-        .unwrap();
+        let mut storage = HashMap::default();
+        storage.insert(
+            nonce_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(2u64)),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
@@ -6456,6 +6454,8 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_creates_gap_demotion() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::from(1);
@@ -6490,17 +6490,16 @@ mod tests {
         assert_eq!(pending, 2);
         assert_eq!(queued, 1);
 
-        let mut state = EvmState::default();
-        StateChangeSink::storage(
-            &mut state,
-            StorageChange {
-                address: NONCE_PRECOMPILE_ADDRESS,
-                key: nonce_slot,
-                original: U256::ZERO,
-                current: U256::from(2u64),
-            },
-        )
-        .unwrap();
+        let mut storage = HashMap::default();
+        storage.insert(
+            nonce_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(2u64)),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
@@ -6517,6 +6516,8 @@ mod tests {
 
     #[test]
     fn on_state_updates_returns_promotions_before_discard() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+
         let mut pool = AA2dPool::new(AA2dPoolConfig {
             pending_limit: SubPoolLimit {
                 max_txs: 1,
@@ -6552,17 +6553,16 @@ mod tests {
             .unwrap();
         }
 
-        let mut state = EvmState::default();
-        StateChangeSink::storage(
-            &mut state,
-            StorageChange {
-                address: NONCE_PRECOMPILE_ADDRESS,
-                key: nonce_slot,
-                original: U256::ZERO,
-                current: U256::from(2u64),
-            },
-        )
-        .unwrap();
+        let mut storage = HashMap::default();
+        storage.insert(
+            nonce_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(2u64)),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
@@ -7185,6 +7185,8 @@ mod tests {
 
     #[test]
     fn on_state_updates_removes_included_expiring_nonce_from_eviction_index() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
@@ -7211,17 +7213,16 @@ mod tests {
         assert_expiring_eviction_index_len(&pool, 1);
         assert_expiring_eviction_index_contains(&pool, expiring_hash);
 
-        let mut state = EvmState::default();
-        StateChangeSink::storage(
-            &mut state,
-            StorageChange {
-                address: NONCE_PRECOMPILE_ADDRESS,
-                key: slot,
-                original: U256::ZERO,
-                current: U256::from(123u64),
-            },
-        )
-        .unwrap();
+        let mut storage = HashMap::default();
+        storage.insert(
+            slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(123u64)),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 

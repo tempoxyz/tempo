@@ -76,6 +76,7 @@ rand.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
+revm.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }

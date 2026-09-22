@@ -108,11 +108,12 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
     use evm2::env::BlockEnvExt;
     use reth_chainspec::EthChainSpec;
-    use reth_evm::{EvmState, execute::BlockAssembler};
+    use reth_evm::execute::BlockAssembler;
     use reth_evm_ethereum::EthBlockExecutionCtx;
     use reth_execution_types::BlockExecutionResult;
     use reth_primitives_traits::SealedHeader;
     use reth_storage_api::noop::NoopProvider;
+    use revm::database::BundleState;
     use tempo_chainspec::spec::MODERATO;
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -208,7 +209,7 @@ mod tests {
             blob_gas_used: 0,
         };
 
-        let bundle_state = EvmState::default();
+        let bundle_state = BundleState::default();
         let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
         let state_root = B256::ZERO;
 
@@ -310,7 +311,7 @@ mod tests {
             blob_gas_used: 0,
         };
 
-        let bundle_state = EvmState::default();
+        let bundle_state = BundleState::default();
         let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
 
         let input = BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
@@ -386,7 +387,7 @@ mod tests {
             blob_gas_used: 0,
         };
 
-        let bundle_state = EvmState::default();
+        let bundle_state = BundleState::default();
         let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
         let input = BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
             evm_env,

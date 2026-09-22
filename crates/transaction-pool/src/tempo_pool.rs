@@ -18,7 +18,6 @@ use alloy_primitives::{
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
-use reth_execution_types::EvmState;
 use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
@@ -31,6 +30,7 @@ use reth_transaction_pool::{
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
+use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoStateAccess};
@@ -117,7 +117,7 @@ where
     /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
-        state: &EvmState,
+        state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates

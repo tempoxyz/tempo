@@ -1718,8 +1718,13 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0].accounts().any(|(address, _)| address == addr),
+            calls[0].contains_key(&addr),
             "state hook should contain the deployed address"
+        );
+        assert_eq!(
+            calls[0][&addr].original_info(),
+            Default::default(),
+            "state hook account should preserve original_info"
         );
     }
 
@@ -1749,17 +1754,11 @@ mod tests {
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
-        assert!(
-            calls[0].accounts().any(|(address, _)| address == addr),
-            "state hook should contain the deployed address"
+        assert_eq!(
+            calls[0][&addr].original_info(),
+            reth_execution_types::revm_account(&original_info),
+            "state hook account should preserve existing original_info"
         );
-        let (_, tracked) = executor
-            .inner
-            .block_state()
-            .accounts()
-            .find(|(address, _)| *address == addr)
-            .unwrap();
-        assert_eq!(tracked.original, Some(original_info));
     }
 
     #[test]
@@ -1878,26 +1877,18 @@ mod tests {
             3,
             "T10 installation and T13 replacement must each dispatch an update"
         );
-        assert!(
-            calls[0]
-                .accounts()
-                .any(|(address, _)| address == ZONE_FACTORY_ADDRESS)
-        );
+        assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                calls[1]
-                    .accounts()
-                    .any(|(changed_address, _)| changed_address == address),
+                calls[1].contains_key(&address),
                 "shared runtime must be installed in the runtime state hook"
             );
             assert!(
-                calls[2]
-                    .accounts()
-                    .any(|(changed_address, _)| changed_address == address),
+                calls[2].contains_key(&address),
                 "T13 runtime must be installed in the runtime state hook"
             );
         }
