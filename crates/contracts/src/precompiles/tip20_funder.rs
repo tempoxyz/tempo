@@ -17,7 +17,7 @@ crate::sol! {
         error TokenNotAllowed(address token);
         error FundingNotAuthorized(address source);
         error InvalidSourceOrder();
-        error InvalidFundingPlan(address source);
+        error InvalidFundingQuote(address source);
         error InputLimitExceeded(address source, uint256 limit, uint256 attempted);
         error UnexpectedFundingAmount(address source, uint256 maximum, uint256 received);
         error InsufficientFunding(uint256 required, uint256 available);
