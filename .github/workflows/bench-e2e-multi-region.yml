@@ -534,6 +534,7 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage fetch-tempo-binaries \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
@@ -588,6 +589,7 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage generate-initial-validator-state \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
@@ -635,6 +637,7 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage initialize-validator-state \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
@@ -675,13 +678,14 @@ jobs:
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
-      - name: Run benchmarks (${{ env.BENCH_INPUT_RUN_PAIRS }} run-pairs)
+      - name: Run feature-only benchmarks (${{ env.BENCH_INPUT_RUN_PAIRS }} runs, no baseline)
         id: benchmark
         if: steps.generate_initial_validator_state.outcome == 'success' && steps.initialize_validator_state.outcome == 'success'
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage run-benchmarks \
+            --run-side feature \
             --cloud "$BENCH_INPUT_CLOUD" \
             --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
