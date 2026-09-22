@@ -243,6 +243,64 @@ impl ValidationLatencyEstimator {
         );
     }
 
+    /// Estimates validation time for `workload` from the observed per-unit
+    /// rates, scaling down for smaller blocks as well as up for larger ones.
+    ///
+    /// The estimate is the larger of the median nanoseconds-per-gas and
+    /// nanoseconds-per-transaction rates applied to `workload`, capped at the
+    /// pacing estimate from [`Self::estimate`] so it never exceeds the
+    /// conservative figure. Returns `None` without samples or for an empty
+    /// workload.
+    pub fn workload_estimate(&self, workload: ValidationLatencyWorkload) -> Option<Duration> {
+        if self.sample_window.is_empty()
+            || (workload.gas_used == 0 && workload.transaction_count == 0)
+        {
+            return None;
+        }
+        fn median(mut values: Vec<u128>) -> Option<u128> {
+            if values.is_empty() {
+                return None;
+            }
+            values.sort_unstable();
+            Some(values[(values.len() - 1) / 2])
+        }
+        let per_gas = median(
+            self.sample_window
+                .iter()
+                .filter(|(_, sample)| sample.workload.gas_used > 0)
+                .map(|(_, sample)| {
+                    sample.elapsed.as_nanos() * VALIDATION_LATENCY_WORKLOAD_SCALE
+                        / u128::from(sample.workload.gas_used)
+                })
+                .collect(),
+        )
+        .map(|rate| {
+            rate.saturating_mul(u128::from(workload.gas_used)) / VALIDATION_LATENCY_WORKLOAD_SCALE
+        });
+        let per_tx = median(
+            self.sample_window
+                .iter()
+                .filter(|(_, sample)| sample.workload.transaction_count > 0)
+                .map(|(_, sample)| {
+                    sample.elapsed.as_nanos() * VALIDATION_LATENCY_WORKLOAD_SCALE
+                        / sample.workload.transaction_count as u128
+                })
+                .collect(),
+        )
+        .map(|rate| {
+            rate.saturating_mul(workload.transaction_count as u128)
+                / VALIDATION_LATENCY_WORKLOAD_SCALE
+        });
+        let nanos = per_gas.into_iter().chain(per_tx).max()?;
+        let estimate = Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64);
+        Some(
+            match self.estimate().and_then(|floor| floor.estimate(workload)) {
+                Some(ceiling) => estimate.min(ceiling),
+                None => estimate,
+            },
+        )
+    }
+
     /// Returns the current estimate for execution-layer block validation work.
     ///
     /// `None` means this node has not yet observed any successful validations.
@@ -355,6 +413,42 @@ mod tests {
         assert_eq!(
             estimate_with_sample(sample, ValidationLatencyWorkload::new(1_000, 15)),
             Some(Duration::from_millis(150))
+        );
+    }
+
+    #[test]
+    fn workload_estimate_scales_down_for_smaller_blocks() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(1_000, 10)),
+            None
+        );
+        // Ten blocks of 10k transactions and 1 Ggas validate in 180 ms.
+        for id in 0..10 {
+            estimator.observe(
+                id,
+                ValidationLatencyWorkload::new(1_000_000_000, 10_000),
+                Duration::from_millis(180),
+            );
+        }
+        // A block half the size is credited half the time.
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(500_000_000, 5_000)),
+            Some(Duration::from_millis(90))
+        );
+        // Whichever unit is the larger share drives the estimate.
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(250_000_000, 5_000)),
+            Some(Duration::from_millis(90))
+        );
+        // Larger blocks never exceed the pacing estimate, which scales up too.
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(2_000_000_000, 20_000)),
+            Some(Duration::from_millis(360))
+        );
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(0, 0)),
+            None
         );
     }
 

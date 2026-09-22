@@ -8,7 +8,8 @@
 //! 2. persisting the encoded block through the consensus marshal, once on the
 //!    proposer and once on every validator,
 //! 3. the validators replaying the block through their execution layer,
-//! 4. the network: shipping the proposal to a quorum and collecting votes.
+//! 4. the network: shipping the proposal to a quorum and getting the next
+//!    leader started on top of it.
 //!
 //! Each of those was previously estimated in a different place (a process-wide
 //! static, a builder-local atomic, an actor-local sample window and a fixed CLI
@@ -109,6 +110,10 @@ const RESERVE_PERCENTILE: (usize, usize) = (3, 4);
 
 /// Identifies a proposal across epochs: `(epoch, view)`.
 pub type ProposalKey = (u64, u64);
+
+/// Network samples longer than this are discarded as clock skew or a stall
+/// unrelated to propagation.
+const MAX_NETWORK_SAMPLE: Duration = Duration::from_secs(5);
 
 /// Static configuration of the [`Estimator`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -378,8 +383,9 @@ impl BuildTimeTracker {
 
 /// What a proposer expects its validators to spend on a proposal.
 ///
-/// These are subtracted from the observed proposal round trip so the network
-/// tracker only learns propagation and vote time.
+/// These are subtracted from the time between returning the proposal and the
+/// next leader building on it, so the network tracker only learns propagation
+/// and vote time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProposalExpectation {
     /// Approximate encoded size of the proposal.
@@ -394,10 +400,24 @@ pub struct ProposalExpectation {
 struct PendingProposal {
     key: ProposalKey,
     returned_at: Instant,
+    /// Wall-clock time of the return, on the same clock the child block's
+    /// header timestamp is taken from.
+    returned_unix_ms: u64,
     expected_remote: Duration,
 }
 
-/// Learns how long the network needs to notarize the node's own proposals.
+/// Learns how long the network needs between this node returning a proposal
+/// and the next leader starting to build on it.
+///
+/// The sample is `child header timestamp - own return time - expected remote
+/// work`. The child's timestamp is the next leader's build start on a
+/// clock-synchronised network, and its propose path waits for the parent body,
+/// so the difference is exactly the time the chain waited on propagation and
+/// votes: the outbound leg to the quorum plus the vote leg to the next leader.
+/// Measuring the notarization at the proposer instead would add the vote leg
+/// back to the proposer, which the chain never waits for unless the proposer
+/// is also the next leader; on a ten validator network with two far-away
+/// proposers that over-reserved by roughly 90 ms for them.
 #[derive(Clone, Debug)]
 struct NetworkTracker {
     samples: SampleWindow<u64>,
@@ -419,6 +439,7 @@ impl NetworkTracker {
     fn proposal_returned(
         &mut self,
         now: Instant,
+        returned_unix_ms: u64,
         key: ProposalKey,
         expectation: ProposalExpectation,
     ) {
@@ -432,21 +453,40 @@ impl NetworkTracker {
         self.pending.push_back(PendingProposal {
             key,
             returned_at: now,
+            returned_unix_ms,
             expected_remote: expectation
                 .validator_work
                 .saturating_add(expectation.validator_persist),
         });
     }
 
-    /// Completes a pending proposal. Returns the learned network time.
-    fn notarized(&mut self, now: Instant, key: ProposalKey) -> Option<Duration> {
-        let index = self.pending.iter().position(|pending| pending.key == key)?;
+    /// Completes a pending proposal with the header timestamp of the block
+    /// built on top of it. Returns the learned network time.
+    ///
+    /// A child that is not the very next view means a leader timed out in
+    /// between; the chain waited on that, not on propagation, so no sample is
+    /// taken.
+    fn child_built(
+        &mut self,
+        now: Instant,
+        parent: ProposalKey,
+        child_view: u64,
+        child_timestamp_ms: u64,
+    ) -> Option<Duration> {
+        let index = self
+            .pending
+            .iter()
+            .position(|pending| pending.key == parent)?;
         let pending = self.pending.remove(index)?;
-        let round_trip = now.saturating_duration_since(pending.returned_at);
-        if round_trip > PENDING_PROPOSAL_TTL {
+        if child_view != parent.1.saturating_add(1) {
             return None;
         }
-        let network = round_trip.saturating_sub(pending.expected_remote);
+        let elapsed =
+            Duration::from_millis(child_timestamp_ms.saturating_sub(pending.returned_unix_ms));
+        if elapsed > MAX_NETWORK_SAMPLE {
+            return None;
+        }
+        let network = elapsed.saturating_sub(pending.expected_remote);
         self.samples
             .push(now, network.as_nanos().min(u128::from(u64::MAX)) as u64);
         Some(network)
@@ -720,36 +760,60 @@ impl Estimator {
         }
     }
 
-    /// Records that this node returned a proposal to consensus at `now`.
+    /// Records that this node returned a proposal to consensus.
     ///
-    /// The matching [`Self::on_notarized`] completes the network sample.
+    /// `returned_unix_ms` must come from the same clock that block header
+    /// timestamps use; the matching [`Self::on_child_block_built`] completes
+    /// the network sample.
     pub fn on_proposal_returned(
         &self,
         now: Instant,
+        returned_unix_ms: u64,
         key: ProposalKey,
         expectation: ProposalExpectation,
     ) {
         self.state()
             .network
-            .proposal_returned(now, key, expectation);
+            .proposal_returned(now, returned_unix_ms, key, expectation);
     }
 
-    /// Records that a notarization for `key` became known locally at `now`.
+    /// Records the header timestamp of a block built on top of `parent`.
     ///
-    /// Only proposals this node returned itself produce a sample; other views
-    /// are ignored, so this can be fed every notarization the node sees.
-    pub fn on_notarized(&self, now: Instant, key: ProposalKey) {
+    /// Only proposals this node returned itself produce a sample; other
+    /// parents are ignored, so this can be fed every block the node verifies
+    /// or builds.
+    pub fn on_child_block_built(
+        &self,
+        now: Instant,
+        parent: ProposalKey,
+        child_view: u64,
+        child_timestamp_ms: u64,
+    ) {
         let mut state = self.state();
-        if let Some(network) = state.network.notarized(now, key) {
+        if let Some(network) =
+            state
+                .network
+                .child_built(now, parent, child_view, child_timestamp_ms)
+        {
             debug!(
-                epoch = key.0,
-                view = key.1,
+                epoch = parent.0,
+                view = parent.1,
                 ?network,
                 network_reserve = ?state.network.reserve(),
                 samples = state.network.samples.len(),
                 "updated network reservation"
             );
         }
+    }
+
+    /// Expected execution-layer validation time of a block with `workload`,
+    /// scaling the observed per-unit rates down as well as up.
+    ///
+    /// Use this to credit validators' work when measuring the network; the
+    /// pacing floor from [`Self::validation_latency_estimate`] never scales
+    /// down and would under-count the network for small blocks.
+    pub fn expected_validation(&self, workload: ValidationLatencyWorkload) -> Option<Duration> {
+        self.state().validation.workload_estimate(workload)
     }
 
     /// Drops a pending proposal whose view did not notarize.
@@ -863,8 +927,9 @@ mod tests {
     fn fixed_config_pins_the_return_budget() {
         let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50)));
         let now = Instant::now();
-        estimator.on_proposal_returned(now, (0, 1), ProposalExpectation::default());
-        estimator.on_notarized(now + ms(400), (0, 1));
+        estimator.on_proposal_returned(now, 1_000_000, (0, 1), ProposalExpectation::default());
+        estimator.on_child_block_built(now + ms(400), (0, 1), 2, 1_000_400);
+        assert_eq!(estimator.snapshot().network_samples, 1);
         assert_eq!(estimator.proposal_budget().return_budget, ms(300));
         assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
     }
@@ -1015,15 +1080,17 @@ mod tests {
     fn network_reserve_starts_at_the_floor_and_learns_from_own_proposals() {
         let estimator = Estimator::new(config());
         let now = Instant::now();
+        let base_ms = 1_800_000_000_000u64;
         assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
         assert_eq!(estimator.proposal_budget().return_budget, ms(500));
 
-        // Notarizations for other proposers' views are ignored.
-        estimator.on_notarized(now, (0, 7));
+        // Children of other proposers' blocks are ignored.
+        estimator.on_child_block_built(now, (0, 7), 8, base_ms);
         assert_eq!(estimator.snapshot().network_samples, 0);
 
-        // Own proposals: 420 ms from return to notarization, of which validators
-        // are expected to spend 225 ms validating and 15 ms persisting.
+        // Own proposals: the next leader starts building 420 ms after the
+        // return, of which validators were expected to spend 225 ms
+        // validating and 15 ms persisting.
         let expectation = ProposalExpectation {
             block_size_bytes: 2_600_000,
             validator_work: ms(225),
@@ -1031,8 +1098,14 @@ mod tests {
         };
         for view in 1..=4u64 {
             let returned = now + ms(view * 1000);
-            estimator.on_proposal_returned(returned, (0, view), expectation);
-            estimator.on_notarized(returned + ms(420), (0, view));
+            let returned_ms = base_ms + view * 1000;
+            estimator.on_proposal_returned(returned, returned_ms, (0, view), expectation);
+            estimator.on_child_block_built(
+                returned + ms(420),
+                (0, view),
+                view + 1,
+                returned_ms + 420,
+            );
         }
         let budget = estimator.proposal_budget();
         assert_eq!(budget.network_reserve, ms(180));
@@ -1044,50 +1117,71 @@ mod tests {
     fn network_reserve_is_clamped_and_pending_proposals_expire() {
         let estimator = Estimator::new(config());
         let now = Instant::now();
+        let base_ms = 1_800_000_000_000u64;
         let expectation = ProposalExpectation {
             block_size_bytes: 2_600_000,
             validator_work: ms(200),
             validator_persist: Duration::ZERO,
         };
         // Faster than the floor: stays at the floor.
-        estimator.on_proposal_returned(now, (0, 1), expectation);
-        estimator.on_notarized(now + ms(210), (0, 1));
+        estimator.on_proposal_returned(now, base_ms, (0, 1), expectation);
+        estimator.on_child_block_built(now + ms(210), (0, 1), 2, base_ms + 210);
         assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
 
         // Slower than the cap: clamped, but the observation is kept.
         for view in 2..=6u64 {
             let returned = now + ms(view * 1000);
-            estimator.on_proposal_returned(returned, (0, view), expectation);
-            estimator.on_notarized(returned + ms(700), (0, view));
+            let returned_ms = base_ms + view * 1000;
+            estimator.on_proposal_returned(returned, returned_ms, (0, view), expectation);
+            estimator.on_child_block_built(
+                returned + ms(700),
+                (0, view),
+                view + 1,
+                returned_ms + 700,
+            );
         }
         assert_eq!(estimator.proposal_budget().network_reserve, ms(250));
         assert_eq!(estimator.snapshot().network_observed, Some(ms(500)));
 
-        // A proposal that never notarizes is not a sample.
-        estimator.on_proposal_returned(now + ms(10_000), (0, 9), expectation);
+        // A nullified proposal is not a sample.
+        estimator.on_proposal_returned(now + ms(10_000), base_ms + 10_000, (0, 9), expectation);
         estimator.on_view_abandoned((0, 9));
-        estimator.on_notarized(now + ms(10_300), (0, 9));
+        estimator.on_child_block_built(now + ms(10_300), (0, 9), 10, base_ms + 10_300);
         assert_eq!(estimator.snapshot().network_samples, 6);
 
-        // Neither is one notarized after the pending ttl.
-        estimator.on_proposal_returned(now + ms(20_000), (0, 10), expectation);
-        estimator.on_notarized(now + ms(20_000) + PENDING_PROPOSAL_TTL + ms(1), (0, 10));
+        // Neither is a child that skipped a view: the chain waited on a
+        // leader timeout, not on propagation.
+        estimator.on_proposal_returned(now + ms(20_000), base_ms + 20_000, (0, 10), expectation);
+        estimator.on_child_block_built(now + ms(21_500), (0, 10), 12, base_ms + 21_500);
         assert_eq!(estimator.snapshot().network_samples, 6);
         assert_eq!(estimator.snapshot().pending_proposals, 0);
+
+        // Nor an implausibly late child, which is clock skew or a stall.
+        estimator.on_proposal_returned(now + ms(30_000), base_ms + 30_000, (0, 11), expectation);
+        estimator.on_child_block_built(now + ms(36_000), (0, 11), 12, base_ms + 36_000);
+        assert_eq!(estimator.snapshot().network_samples, 6);
+
+        // Clock skew that puts the child before the return counts as zero
+        // network time rather than being dropped.
+        estimator.on_proposal_returned(now + ms(40_000), base_ms + 40_000, (0, 12), expectation);
+        estimator.on_child_block_built(now + ms(40_100), (0, 12), 13, base_ms + 39_990);
+        assert_eq!(estimator.snapshot().network_samples, 7);
     }
 
     #[test]
     fn network_samples_expire_back_to_the_floor() {
         let estimator = Estimator::new(config());
         let now = Instant::now();
+        let base_ms = 1_800_000_000_000u64;
         let expectation = ProposalExpectation::default();
-        estimator.on_proposal_returned(now, (0, 1), expectation);
-        estimator.on_notarized(now + ms(150), (0, 1));
+        estimator.on_proposal_returned(now, base_ms, (0, 1), expectation);
+        estimator.on_child_block_built(now + ms(150), (0, 1), 2, base_ms + 150);
         assert_eq!(estimator.proposal_budget().network_reserve, ms(150));
         // Pushing a sample much later prunes the stale one first.
         let later = now + NETWORK_SAMPLE_TTL + ms(1000);
-        estimator.on_proposal_returned(later, (0, 2), expectation);
-        estimator.on_notarized(later + ms(40), (0, 2));
+        let later_ms = base_ms + NETWORK_SAMPLE_TTL.as_millis() as u64 + 1000;
+        estimator.on_proposal_returned(later, later_ms, (0, 2), expectation);
+        estimator.on_child_block_built(later + ms(40), (0, 2), 3, later_ms + 40);
         assert_eq!(estimator.snapshot().network_samples, 1);
         assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
     }
@@ -1198,10 +1292,12 @@ mod tests {
 
     /// A ten validator network with 2.6 MB blocks, as measured on the
     /// multi-region benchmark: validators need ~225 ms to validate and ~15 ms
-    /// to persist, propagation plus votes take ~210 ms.
+    /// to persist, and the next leader starts building ~210 ms of network
+    /// time after that (body to the quorum plus votes to the next leader).
     struct SimulatedNetwork {
         estimator: Estimator,
         now: Instant,
+        unix_ms: u64,
         validators: u64,
         block_size: usize,
         validation: Duration,
@@ -1214,6 +1310,7 @@ mod tests {
             Self {
                 estimator,
                 now: Instant::now(),
+                unix_ms: 1_800_000_000_000,
                 validators: 10,
                 block_size: 2_600_000,
                 validation: ms(225),
@@ -1222,11 +1319,17 @@ mod tests {
             }
         }
 
+        fn advance(&mut self, by: Duration) {
+            self.now += by;
+            self.unix_ms += by.as_millis() as u64;
+        }
+
         /// Plays `blocks` consecutive blocks; this node proposes every
         /// `validators`th one. Returns the return budgets this node used
         /// for its own proposals.
         fn run(&mut self, blocks: u64) -> Vec<Duration> {
             let mut budgets = Vec::new();
+            let workload = ValidationLatencyWorkload::new(1_000_000_000, 10_000);
             for height in 1..=blocks {
                 let key = (0, height);
                 let ours = height % self.validators == 0;
@@ -1237,21 +1340,21 @@ mod tests {
                         self.estimator.marshal_persist().estimate(self.block_size);
                     let expected_work = self
                         .estimator
-                        .validation_latency_estimate()
-                        .and_then(|e| {
-                            e.estimate(ValidationLatencyWorkload::new(1_000_000_000, 10_000))
-                        })
+                        .expected_validation(workload)
                         .unwrap_or(self.validation);
                     // Build for whatever the budget leaves after the expected
                     // remote work, then persist and return.
-                    self.now += budget
-                        .return_budget
-                        .saturating_sub(expected_work)
-                        .saturating_sub(expected_persist);
+                    self.advance(
+                        budget
+                            .return_budget
+                            .saturating_sub(expected_work)
+                            .saturating_sub(expected_persist),
+                    );
                     self.estimator
                         .on_marshal_persist(self.now, self.block_size, self.persist);
                     self.estimator.on_proposal_returned(
                         self.now,
+                        self.unix_ms,
                         key,
                         ProposalExpectation {
                             block_size_bytes: self.block_size,
@@ -1259,20 +1362,22 @@ mod tests {
                             validator_persist: expected_persist,
                         },
                     );
-                    self.now += self.network + self.validation + self.persist;
-                    self.estimator.on_notarized(self.now, key);
+                    // The next leader starts building once the quorum has
+                    // validated and its votes reached it.
+                    self.advance(self.network + self.validation + self.persist);
+                    self.estimator
+                        .on_child_block_built(self.now, key, height + 1, self.unix_ms);
                 } else {
-                    // Someone else proposed: we receive, validate and persist.
-                    self.now += ms(240) + self.network / 2;
-                    self.estimator.on_block_verified(
-                        height,
-                        ValidationLatencyWorkload::new(1_000_000_000, 10_000),
-                        self.validation,
-                    );
+                    // Someone else proposed: we receive, validate and persist,
+                    // and see the next block's timestamp when we verify it.
+                    self.advance(ms(240) + self.network / 2);
+                    self.estimator
+                        .on_block_verified(height, workload, self.validation);
                     self.estimator
                         .on_marshal_persist(self.now, self.block_size, self.persist);
-                    self.now += self.network / 2;
-                    self.estimator.on_notarized(self.now, key);
+                    self.advance(self.network / 2);
+                    self.estimator
+                        .on_child_block_built(self.now, key, height + 1, self.unix_ms);
                 }
             }
             budgets

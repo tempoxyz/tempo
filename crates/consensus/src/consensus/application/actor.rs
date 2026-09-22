@@ -356,10 +356,12 @@ impl Inner<Init> {
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.return_at).await;
-                    // The proposal leaves this node now; the notarization of
-                    // this round completes the network sample.
+                    // The proposal leaves this node now; the header timestamp
+                    // of the block built on top of it completes the network
+                    // sample, so record the return on the same clock.
                     self.estimator.on_proposal_returned(
                         Instant::now(),
+                        context.current().epoch_millis(),
                         (round.epoch().get(), round.view().get()),
                         proposal_return.expectation,
                     );
@@ -571,6 +573,15 @@ impl Inner<Init> {
 
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
+        // If this node also proposed the parent, this build start is what the
+        // chain waited for; complete that network sample.
+        self.estimator.on_child_block_built(
+            Instant::now(),
+            (round.epoch().get(), parent_view.get()),
+            round.view().get(),
+            epoch_millis,
+        );
+
         let consensus_context = Some(TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
@@ -631,6 +642,17 @@ impl Inner<Init> {
         let block_size_estimate_bytes =
             execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
         let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
+        // Validators' expected work on this block, scaled to its actual size.
+        // The pacing estimate above is a floor that never scales down; using
+        // it to credit validators would under-count the network for blocks
+        // smaller than the recent ones this node validated.
+        let expected_validator_work = self
+            .estimator
+            .expected_validation(ValidationLatencyWorkload::new(
+                proposal.block().gas_used(),
+                proposal.block().body().transaction_count(),
+            ))
+            .unwrap_or(validation_latency_elapsed);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
@@ -647,6 +669,7 @@ impl Inner<Init> {
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
+            expected_validator_work = %display_duration(expected_validator_work),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
             execution_block_rlp_size_estimate_bytes,
@@ -661,7 +684,7 @@ impl Inner<Init> {
                 return_at,
                 expectation: ProposalExpectation {
                     block_size_bytes: block_size_estimate_bytes,
-                    validator_work: validation_latency_elapsed,
+                    validator_work: expected_validator_work,
                     validator_persist: validator_marshal_persist,
                 },
             }),
@@ -738,6 +761,17 @@ impl Inner<Init> {
                 result: false,
                 block: Some(block),
             });
+        }
+
+        // If this node proposed the parent, the child's timestamp is when the
+        // next leader could build on it: the network sample for that proposal.
+        if let Some(consensus_context) = block.header().consensus_context {
+            self.estimator.on_child_block_built(
+                Instant::now(),
+                (consensus_context.epoch, consensus_context.parent_view),
+                consensus_context.view,
+                block.timestamp_millis(),
+            );
         }
 
         let validation_duration = verify_block(
