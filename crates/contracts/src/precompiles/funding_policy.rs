@@ -2,62 +2,12 @@ pub use IFundingPolicy::{
     IFundingPolicyErrors as FundingPolicyError, IFundingPolicyEvents as FundingPolicyEvent,
 };
 
-crate::sol! {
-    /// TIP-1120 shared funding policy interface; policy execution is activated separately.
+crate::sol!(
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-interface IFundingPolicy {
-    struct Source {
-        address target;
-        bytes data;
-    }
-
-    struct Route {
-        address token;
-        Source[] sources;
-    }
-
-    struct Policy {
-        address[] admins;
-        uint16 slippageBps;
-        Route[] routes;
-    }
-
-    struct SourceCandidate {
-        address target;
-        bytes data;
-        uint256 availableAmount;
-    }
-
-    struct Discovery {
-        address token;
-        uint256 amount;
-        uint16 slippageBps;
-        SourceCandidate[] sources;
-    }
-
-    error TokenNotAllowed(address token);
-    error PolicyNotFound();
-    error Unauthorized();
-    error InvalidPolicy();
-
-    function policyIdCounter() external view returns (uint64);
-    function policyExists(uint64 policyId) external view returns (bool);
-    function createPolicy(Policy calldata policy) external returns (uint64 policyId);
-    function getPolicy(uint64 policyId) external view returns (Policy memory policy);
-    function modifyPolicy(uint64 policyId, uint16 slippageBps, Route[] calldata routes) external;
-    function setAdmins(uint64 policyId, address[] calldata admins) external;
-
-    /// Constructs independently estimated requests without selecting a policy or granting authority.
-    function discover(uint64 policyId, address account, address token, uint256 amount)
-        external view returns (Discovery memory);
-
-    event PolicyCreated(uint64 indexed policyId, address indexed updater);
-    /// @dev policyHash is keccak256(abi.encode(policy)) after the rule update.
-    event PolicyUpdated(uint64 indexed policyId, address indexed updater, bytes32 policyHash);
-    event PolicyAdminsUpdated(uint64 indexed policyId, address indexed updater, address[] admins);
-}
-}
+    IFundingPolicy,
+    "abi/IFundingPolicy.json"
+);
 
 #[cfg(test)]
 mod tests {
@@ -136,35 +86,6 @@ mod tests {
         assert_eq!(
             IFundingPolicy::modifyPolicyCall::abi_decode_validate(&call.abi_encode()).unwrap(),
             call
-        );
-    }
-    #[test]
-    fn discovery_preserves_target_and_independent_estimates() {
-        let result = IFundingPolicy::Discovery {
-            token: Address::repeat_byte(1),
-            amount: U256::from(50),
-            slippageBps: 100,
-            sources: vec![
-                IFundingPolicy::SourceCandidate {
-                    target: Address::repeat_byte(2),
-                    data: Bytes::from_static(&[1]),
-                    availableAmount: U256::from(30),
-                },
-                IFundingPolicy::SourceCandidate {
-                    target: Address::repeat_byte(2),
-                    data: Bytes::from_static(&[2]),
-                    availableAmount: U256::from(40),
-                },
-            ],
-        };
-        assert_eq!(
-            IFundingPolicy::discoverCall::SIGNATURE,
-            "discover(uint64,address,address,uint256)"
-        );
-        assert_eq!(
-            IFundingPolicy::discoverCall::abi_decode_returns_validate(&result.abi_encode())
-                .unwrap(),
-            result
         );
     }
 }

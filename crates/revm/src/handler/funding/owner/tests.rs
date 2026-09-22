@@ -115,7 +115,7 @@ fn requirement(
     FundingRequirement {
         token: asset,
         amount: U256::from(amount),
-        slippage_bps: 0,
+        slippage_bps: None,
         sources,
     }
 }
@@ -509,7 +509,7 @@ fn rejects_invalid_context_and_arguments_before_balance_shortcut() {
             0 => StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                 AccountKeychain::new().set_transaction_key(SOURCE).unwrap()
             }),
-            1 => request.slippage_bps = 10_001,
+            1 => request.slippage_bps = Some(10_001),
             2 => request.token = RECIPIENT,
             3 => request.token = address!("20c0000000000000000000000000000000000007"),
             4 => request.sources.push(source(Address::ZERO, 0, 0, 0, 0)),
@@ -666,7 +666,7 @@ fn owner_slippage_and_non_unit_rates_bound_total_cost() {
                 0,
             )],
         );
-        request.slippage_bps = 205; // floor(49 * 1.0205) = 50; at rate 2, at most 25 inputs.
+        request.slippage_bps = Some(205); // floor(49 * 1.0205) = 50; at rate 2, at most 25 inputs.
         let result = run(
             &mut evm,
             &[request],
@@ -749,3 +749,189 @@ fn fatal_application_errors_also_revert_funding() {
 }
 
 mod dex;
+
+mod delegated {
+    use super::*;
+    use tempo_contracts::precompiles::{FUNDING_POLICY_ADDRESS, IFundingPolicy};
+    use tempo_precompiles::funding_policy::FundingPolicy;
+    use tempo_primitives::transaction::FundingPolicyAuthorization;
+    const KEY: Address = Address::repeat_byte(0x71);
+
+    fn authorize(evm: &mut TestEvm, output: Address, limit: u64) {
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(ACCOUNT).unwrap();
+            keychain
+                .authorize_key(
+                    ACCOUNT,
+                    KEY,
+                    IAccountKeychain::SignatureType::Secp256k1,
+                    IAccountKeychain::KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![IAccountKeychain::TokenLimit {
+                            token: output,
+                            amount: U256::from(limit),
+                            period: 0,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                    None,
+                )
+                .unwrap();
+            let id = FundingPolicy::new(FUNDING_POLICY_ADDRESS)
+                .create_policy(
+                    ACCOUNT,
+                    IFundingPolicy::Policy {
+                        admins: vec![ACCOUNT],
+                        slippageBps: 100,
+                        routes: vec![IFundingPolicy::Route {
+                            token: output,
+                            sources: vec![SOURCE, SOURCE2]
+                                .into_iter()
+                                .map(|target| IFundingPolicy::Source {
+                                    target,
+                                    data: PATH_USD_ADDRESS.abi_encode().into(),
+                                })
+                                .collect(),
+                        }],
+                    },
+                )
+                .unwrap();
+            keychain
+                .install_funding_policy(
+                    ACCOUNT,
+                    KEY,
+                    &FundingPolicyAuthorization::Id(id.try_into().unwrap()),
+                )
+                .unwrap();
+            keychain.set_transaction_key(KEY).unwrap();
+        });
+        evm.inner.ctx.journaled_state.logs.clear();
+    }
+    fn remaining(evm: &mut TestEvm, output: Address) -> U256 {
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            AccountKeychain::new()
+                .get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
+                    account: ACCOUNT,
+                    keyId: KEY,
+                    token: output,
+                })
+                .unwrap()
+        })
+    }
+
+    #[test]
+    fn delegated_two_sources_charge_output_once_without_input_limits() {
+        let (mut evm, output) = setup(TempoHardfork::T13);
+        authorize(&mut evm, output, 50);
+        let req = requirement(
+            output,
+            50,
+            vec![
+                source(SOURCE, 30, 30, 50, 0),
+                source(SOURCE2, 20, 20, 20, 0),
+            ],
+        );
+        let result = run(&mut evm, &[req], vec![transfer(output, 50)], true, LIMIT, 0);
+        assert!(result.instruction_result().is_ok(), "{result:?}");
+        assert_eq!(remaining(&mut evm, output), U256::ZERO);
+        assert_eq!(
+            balance(&mut evm, PATH_USD_ADDRESS, ACCOUNT),
+            U256::from(950)
+        );
+        assert_eq!(balance(&mut evm, output, RECIPIENT), U256::from(50));
+        assert!(evm.inner.ctx.journaled_state.logs.iter().any(|log| {
+            ITIP20Funder::FundsRequired::decode_log(log).is_ok_and(|log| log.key == KEY)
+        }));
+    }
+
+    #[test]
+    fn delegated_policy_validation_precedes_shortcuts_and_source_execution() {
+        for mode in 0..5 {
+            let (mut evm, output) = setup(TempoHardfork::T13);
+            authorize(&mut evm, output, 50);
+            let mut req = requirement(output, 0, vec![]);
+            match mode {
+                0 => req.token = PATH_USD_ADDRESS,
+                1 => req.slippage_bps = Some(0),
+                2 => req.sources = vec![source(SOURCE2, 0, 0, 0, 0), source(SOURCE, 0, 0, 0, 0)],
+                3 => req.sources = vec![source(RECIPIENT, 0, 0, 0, 0)],
+                4 => StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                    AccountKeychain::new()
+                        .set_transaction_key(Address::ZERO)
+                        .unwrap();
+                    FundingPolicy::new(FUNDING_POLICY_ADDRESS)
+                        .modify_policy(ACCOUNT, 1, 100, vec![])
+                        .unwrap();
+                    AccountKeychain::new().set_transaction_key(KEY).unwrap();
+                }),
+                _ => unreachable!(),
+            }
+            let result = run(&mut evm, &[req], vec![noop()], true, LIMIT, 0);
+            assert!(!result.instruction_result().is_ok(), "mode {mode}");
+            assert!(evm.inner.inspector.calls.is_empty());
+            assert_eq!(remaining(&mut evm, output), U256::from(50));
+        }
+    }
+
+    #[test]
+    fn delegated_budget_and_credits_revert_with_funding_or_application() {
+        for mode in 0..3 {
+            let (mut evm, output) = setup(TempoHardfork::T13);
+            authorize(&mut evm, output, if mode == 0 { 49 } else { 50 });
+            let req = requirement(
+                output,
+                50,
+                vec![source(SOURCE, 50, if mode == 1 { 49 } else { 50 }, 50, 0)],
+            );
+            let result = run(
+                &mut evm,
+                &[req],
+                vec![transfer(output, if mode == 2 { 51 } else { 50 })],
+                true,
+                LIMIT,
+                0,
+            );
+            assert!(!result.instruction_result().is_ok());
+            assert_eq!(
+                remaining(&mut evm, output),
+                U256::from(if mode == 0 { 49 } else { 50 })
+            );
+            assert_eq!(
+                balance(&mut evm, PATH_USD_ADDRESS, ACCOUNT),
+                U256::from(1000)
+            );
+            assert_eq!(balance(&mut evm, output, ACCOUNT), U256::ZERO);
+            assert!(evm.inner.ctx.journaled_state.logs.is_empty());
+        }
+    }
+
+    #[test]
+    fn delegated_approval_credit_cannot_cover_another_spender() {
+        let (mut evm, output) = setup(TempoHardfork::T13);
+        authorize(&mut evm, output, 50);
+        let req = requirement(output, 50, vec![source(SOURCE, 50, 50, 50, 0)]);
+        let approve = |spender, amount| Call {
+            to: TxKind::Call(output),
+            value: U256::ZERO,
+            input: ITIP20::approveCall {
+                spender,
+                amount: U256::from(amount),
+            }
+            .abi_encode()
+            .into(),
+        };
+        let result = run(
+            &mut evm,
+            &[req],
+            vec![approve(SOURCE, 50), approve(SOURCE2, 1)],
+            true,
+            LIMIT,
+            0,
+        );
+        assert!(!result.instruction_result().is_ok());
+        assert_eq!(remaining(&mut evm, output), U256::from(50));
+    }
+}

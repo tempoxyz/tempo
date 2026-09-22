@@ -357,6 +357,26 @@ fn calculate_key_authorization_gas(
             regular_gas += call_scope_extra_gas(&key_auth.authorization);
         }
 
+        if let Some(policy) = &key_auth.funding_policy {
+            use tempo_primitives::transaction::FundingPolicyAuthorization;
+            num_sstores += 1;
+            regular_gas = regular_gas
+                .saturating_add(sstore_cost)
+                .saturating_add(sload_cost * 2);
+            if let FundingPolicyAuthorization::Inline(policy) = policy {
+                let abi: tempo_contracts::precompiles::IFundingPolicy::Policy =
+                    policy.clone().into();
+                // The persisted value includes the outer tuple offset.
+                let size = alloy_sol_types::SolValue::abi_encode(&abi).len() as u64;
+                let slots = size.div_ceil(32).saturating_add(2);
+                num_sstores = num_sstores.saturating_add(slots);
+                regular_gas = regular_gas
+                    .saturating_add(sstore_cost.saturating_mul(slots))
+                    .saturating_add(size.saturating_mul(100))
+                    .saturating_add(10_000);
+            }
+        }
+
         // TIP-1016: each storage-creating SSTORE also incurs state gas.
         let state_gas = gas_params
             .get(GasId::sstore_set_state_gas())
@@ -1639,6 +1659,7 @@ where
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
+                let installation_checkpoint = spec.is_t13().then(|| StorageCtx.checkpoint());
                 let mut keychain = AccountKeychain::default();
                 let access_key_addr = key_auth.key_id;
 
@@ -1701,9 +1722,21 @@ where
                     )
                 };
 
+                let result = result.and_then(|()| {
+                    if let Some(policy) = &key_auth.funding_policy {
+                        keychain.install_funding_policy(tx.caller, access_key_addr, policy)?;
+                    }
+                    Ok(())
+                });
+
                 match result {
                     // all is good, we can do execution.
-                    Ok(_) => Ok(false),
+                    Ok(_) => {
+                        if let Some(checkpoint) = installation_checkpoint {
+                            checkpoint.commit();
+                        }
+                        Ok(false)
+                    }
                     // on out of gas we are skipping execution but not invalidating the transaction.
                     Err(TempoPrecompileError::OutOfGas) => Ok(true),
                     Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
@@ -1869,9 +1902,6 @@ where
         {
             if !evm.ctx.cfg.spec.is_t13() {
                 return Err(TempoInvalidTransaction::FundingNotActivated.into());
-            }
-            if tx.signature.is_keychain() || tx.override_key_id.is_some() {
-                return Err(TempoInvalidTransaction::DelegatedFundingNotActivated.into());
             }
             if tx
                 .require_funds
@@ -2058,11 +2088,26 @@ where
                     .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
 
+                if key_auth.funding_policy.is_some() && !cfg.spec.is_t13() {
+                    return Err(TempoInvalidTransaction::DelegatedFundingNotActivated.into());
+                }
+
                 if key_auth.has_witness() && !cfg.spec.is_t5() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "key authorization witnesses are not active before T5".to_string(),
                     }
                     .into());
+                }
+
+                if key_auth.funding_policy.is_some()
+                    && (key_auth.is_admin()
+                        || key_auth.recover_signer().map_err(|_| {
+                            TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                        })? != tx.caller)
+                {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "funding policy installation requires the owner signature and a non-admin key".into(),
+                    }.into());
                 }
 
                 // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay

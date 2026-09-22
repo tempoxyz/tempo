@@ -78,6 +78,8 @@ impl Precompile for AccountKeychain {
                         self.remove_allowed_calls(sender, c)
                     }),
                     getKey(call) => view(call, |c| self.get_key(c)),
+                    #[schedule(since = T13)]
+                    getFundingPolicyId(call) => view(call, |c| self.get_funding_policy_id(c.account, c.keyId)),
                     #[schedule(until = T3)]
                     getRemainingLimit(call) => view(call, |c| self.get_remaining_limit(c)),
                     #[schedule(since = T3)]
@@ -115,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = AccountKeychain::new();
             let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS

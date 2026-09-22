@@ -124,6 +124,9 @@ pub struct AccountKeychain {
     // key_authorization_witnesses[account][witness] -> true once manually burned.
     key_authorization_witnesses: Mapping<Address, Mapping<B256, bool>>,
 
+    // Immutable policy binding installed with the signed key authorization.
+    funding_policy_ids: Mapping<Address, Mapping<Address, u64>>,
+
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
@@ -1533,7 +1536,8 @@ impl AccountKeychain {
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, amount)
+        let covered = self.take_funding_credit(account, token, amount)?;
+        self.verify_and_update_spending(account, transaction_key, token, amount - covered)
     }
 
     /// Authorize a token approval with access key spending limits.
@@ -1552,19 +1556,19 @@ impl AccountKeychain {
         token: Address,
         old_approval: U256,
         new_approval: U256,
-    ) -> Result<()> {
+    ) -> Result<U256> {
         // Get the transaction key for this account
         let transaction_key = self.transaction_key.t_read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
-            return Ok(());
+            return Ok(U256::ZERO);
         }
 
         // Only apply spending limits if the caller is the tx origin.
         let tx_origin = self.tx_origin.t_read()?;
         if account != tx_origin {
-            return Ok(());
+            return Ok(U256::ZERO);
         }
 
         // Calculate the increase in approval (only deduct if increasing)
@@ -1574,11 +1578,18 @@ impl AccountKeychain {
 
         // Only check spending limits if there's an increase in approval
         if approval_increase.is_zero() {
-            return Ok(());
+            return Ok(U256::ZERO);
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+        let covered = self.take_funding_credit(account, token, approval_increase)?;
+        self.verify_and_update_spending(
+            account,
+            transaction_key,
+            token,
+            approval_increase - covered,
+        )?;
+        Ok(covered)
     }
 }
 
@@ -5555,3 +5566,5 @@ mod tests {
         })
     }
 }
+
+mod funding;

@@ -31,8 +31,9 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature, SelectorRule,
-        SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
+        Call, CallScope, FundingPolicyAuthorization, KeyAuthorization, KeychainSignature,
+        PrimitiveSignature, SelectorRule, SignedKeyAuthorization, TempoSignature,
+        TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -1796,6 +1797,8 @@ struct PersistedSignedKeyAuthorization {
     is_admin: bool,
     #[serde(default)]
     account: Option<Address>,
+    #[serde(default)]
+    funding_policy: Option<FundingPolicyAuthorization>,
     #[serde(rename = "type")]
     key_type: PersistedKeyType,
     signature: PersistedPrimitiveSignature,
@@ -1820,6 +1823,8 @@ struct AccountsRpcKeyAuthorization {
     #[serde(default)]
     limits: Option<Vec<PersistedTokenLimit>>,
     signature: AccountsRpcSignature,
+    #[serde(default)]
+    funding_policy: Option<FundingPolicyAuthorization>,
 }
 
 impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
@@ -1846,6 +1851,7 @@ impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
             witness: None,
             is_admin: false,
             account: None,
+            funding_policy: value.funding_policy,
         };
         Ok(Self::new(authorization, value.signature.try_into()?))
     }
@@ -1962,6 +1968,7 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             witness,
             is_admin,
             account,
+            funding_policy,
             key_type,
             signature,
         } = value;
@@ -1971,7 +1978,8 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             })
             .transpose()?;
         let has_scopes = scopes.is_some();
-        let has_tip1053_fields = witness.is_some() || is_admin || account.is_some();
+        let has_tip1053_fields =
+            witness.is_some() || is_admin || account.is_some() || funding_policy.is_some();
         let limits = match limits {
             Some(limits) => Some(limits.into_iter().map(Into::into).collect()),
             // Ox 0.14 uses an empty RLP list as the positional limits
@@ -1992,6 +2000,7 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             witness,
             is_admin,
             account,
+            funding_policy,
         };
         Ok(Self::new(authorization, signature.try_into()?))
     }
@@ -2425,6 +2434,8 @@ struct WritableSignedKeyAuthorization {
     is_admin: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<Address>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    funding_policy: Option<FundingPolicyAuthorization>,
     #[serde(rename = "type")]
     key_type: &'static str,
     signature: WritablePrimitiveSignature,
@@ -2610,6 +2621,7 @@ fn writable_access_key(
             witness: authorization.witness,
             is_admin: authorization.is_admin,
             account: authorization.account,
+            funding_policy: authorization.funding_policy.clone(),
             key_type: "secp256k1",
             signature: writable_signature(&authorization.signature)?,
         },
@@ -3697,6 +3709,7 @@ mod tests {
             witness: Some(B256::repeat_byte(0x55)),
             is_admin: false,
             account: Some(account),
+            funding_policy: None,
         }
         .into_signed(PrimitiveSignature::WebAuthn(WebAuthnSignature {
             r: B256::repeat_byte(0x11),
@@ -4337,6 +4350,7 @@ mod tests {
             witness: None,
             is_admin: false,
             account: None,
+            funding_policy: None,
         };
         let signature = root
             .sign_hash_sync(&authorization.signature_hash())
@@ -4405,6 +4419,47 @@ mod tests {
     }
 
     #[test]
+    fn funding_policy_survives_signed_store_roundtrip() {
+        use tempo_primitives::transaction::{FundingPolicy, FundingPolicyRoute, FundingSource};
+        let root = PrivateKeySigner::random();
+        let key = PrivateKeySigner::random();
+        let policies = [
+            FundingPolicyAuthorization::Id(NonZeroU64::MIN),
+            FundingPolicyAuthorization::Inline(FundingPolicy {
+                admins: vec![root.address()],
+                slippage_bps: 100,
+                routes: vec![FundingPolicyRoute {
+                    token: Address::repeat_byte(1),
+                    sources: vec![FundingSource {
+                        target: Address::repeat_byte(2),
+                        data: Bytes::from_static(&[3]),
+                    }],
+                }],
+            }),
+        ];
+        for policy in policies {
+            let authorization =
+                KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, key.address())
+                    .with_allowed_calls(vec![CallScope {
+                        target: Address::repeat_byte(4),
+                        selector_rules: vec![],
+                    }])
+                    .with_funding_policy(policy);
+            let signature = root
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            let signed = authorization.into_signed(PrimitiveSignature::Secp256k1(signature));
+            let writable = writable_access_key(root.address(), &key, &signed).unwrap();
+            let value = serde_json::to_value(writable.key_authorization).unwrap();
+            let persisted: PersistedSignedKeyAuthorization = serde_json::from_value(value).unwrap();
+            let restored = SignedKeyAuthorization::try_from(persisted).unwrap();
+            assert_eq!(restored, signed);
+            assert_eq!(restored.recover_signer().unwrap(), root.address());
+            assert!(restored.limits.is_none());
+        }
+    }
+
+    #[test]
     fn tip1053_scoped_authorization_preserves_the_null_limits_placeholder() {
         let root = PrivateKeySigner::random();
         let access_key = PrivateKeySigner::random();
@@ -4422,6 +4477,7 @@ mod tests {
             witness: None,
             is_admin: false,
             account: Some(root.address()),
+            funding_policy: None,
         };
         let signature = root
             .sign_hash_sync(&authorization.signature_hash())

@@ -149,6 +149,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
 }
 
 #[cfg(test)]
+mod discovery_tests;
+#[cfg(test)]
 mod tests;
 
 mod owner;

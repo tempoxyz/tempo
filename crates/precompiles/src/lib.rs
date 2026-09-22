@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod funding_policy;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -71,12 +72,13 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NATIVE_DEX_FUNDING_SOURCE_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
-    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_FUNDER_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    DEFAULT_FEE_TOKEN, FUNDING_POLICY_ADDRESS, NATIVE_DEX_FUNDING_SOURCE_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP20_FUNDER_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
+    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -232,6 +234,10 @@ pub fn extend_tempo_precompiles(
             Some(TIP20ChannelReserve::create_precompile(&env))
         } else if *address == ADDRESS_REGISTRY_ADDRESS && env.cfg.spec.is_t3() {
             Some(AddressRegistry::create_precompile(&env))
+        } else if *address == FUNDING_POLICY_ADDRESS && env.cfg.spec.is_t13() {
+            Some(funding_policy::FundingPolicy::create_precompile(
+                *address, &env,
+            ))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403Registry::create_precompile(&env))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
@@ -325,6 +331,13 @@ impl tip20_funder::native_dex::NativeDexFundingSource {
     /// Builds an unregistered source; deployment configuration supplies its addresses and parity assets.
     pub fn create_precompile(self, env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("NativeDexFundingSource", env: env, |input| { self.clone() })
+    }
+}
+
+impl funding_policy::FundingPolicy {
+    /// Builds the policy precompile without activating a protocol address.
+    pub fn create_precompile(address: Address, env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("FundingPolicy", env: env, |input| { Self::new(address) })
     }
 }
 
