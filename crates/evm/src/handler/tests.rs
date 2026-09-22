@@ -1701,21 +1701,27 @@ fn test_2d_nonce_gas_limit_validation() {
         TempoHardfork::T1,
         TempoHardfork::T2,
     ] {
-        let evm = test_evm(spec);
-        let env = |nonce| {
+        let env = |nonce, gas_limit| {
             aa_env(
                 TempoTransaction {
+                    chain_id: 1,
                     nonce,
                     nonce_key: U256::ONE,
+                    gas_limit,
                     calls: vec![call(Bytes::new())],
                     ..Default::default()
                 },
                 secp256k1_signature(),
             )
         };
-        let nonce_zero_env = env(0);
-        let nonce_zero = nonce_zero_env.as_aa().unwrap();
-        let (nonce_zero_gas, nonce_zero_state_gas) = nonce_intrinsic_gas(&evm, nonce_zero);
+        let evm = test_evm(spec);
+        let gas_params = &evm.version().gas_params;
+        let nonce_zero_gas = if spec.is_t1() {
+            u64::from(gas_params.get(GasId::NewAccountCost))
+        } else {
+            spec.gas_new_nonce_key()
+        };
+        let nonce_zero_state_gas = gas_params.new_account_state_gas();
         let nonce_zero_total = nonce_zero_gas + nonce_zero_state_gas;
 
         // Build spec-specific test cases: (gas_limit, nonce, expected_result)
@@ -1738,25 +1744,38 @@ fn test_2d_nonce_gas_limit_validation() {
         };
 
         for (gas_limit, nonce, should_succeed) in cases {
-            let env = env(nonce);
-            let aa = env.as_aa().unwrap();
-            let (mut regular, mut state, _) = intrinsic_gas(&evm, aa).unwrap();
-            if spec.is_t0() {
-                let (nonce_regular, nonce_state) = nonce_intrinsic_gas(&evm, aa);
-                regular += nonce_regular;
-                state += nonce_state;
+            let mut evm = test_evm(spec);
+            if nonce > 0 {
+                StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+                    NonceManager::new()
+                        .increment_nonce(SIGNER, U256::ONE)
+                        .unwrap();
+                });
             }
-            let result = evm2::ethereum::validate_intrinsic_gas(gas_limit, regular, state);
+            let env = env(nonce, gas_limit);
+            let result = evm.transact(&Recovered::new_unchecked(env, SIGNER));
 
             if should_succeed {
-                assert!(
-                    result.is_ok(),
-                    "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected success but got error"
-                );
+                let result = result.unwrap_or_else(|error| {
+                    panic!(
+                        "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected inclusion but got {error:?}"
+                    )
+                });
+                if !spec.is_t0() && nonce == 0 && gas_limit < BASE_INTRINSIC_GAS + nonce_zero_total
+                {
+                    assert_eq!(result.result().stop, InstrStop::OutOfGas);
+                    assert_eq!(result.result().tx_gas_used(), gas_limit);
+                }
             } else {
                 assert!(
-                    result.is_err(),
-                    "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: should fail"
+                    matches!(
+                        result,
+                        Err(evm2::registry::HandlerError::IntrinsicGasTooLow {
+                            got,
+                            required: _,
+                        }) if got == gas_limit
+                    ),
+                    "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected intrinsic gas rejection, got {result:?}"
                 );
             }
         }

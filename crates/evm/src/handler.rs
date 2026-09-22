@@ -17,11 +17,11 @@ use evm2::{
     env::TxEnv,
     ethereum::{
         access_list_counts, eip1559, eip2930, eip7702, execute_initial_frame,
-        initial_gas_and_reservoir, legacy, prepare_initial_frame, validate_block_gas_limit,
-        validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
-        validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-        validate_nonce_not_overflow, validate_priority_fee, validate_tx_gas_limit_cap,
-        warm_access_list, warm_base_accounts,
+        initial_gas_and_reservoir, legacy, prepare_initial_frame, runtime_oog_result,
+        validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+        validate_execution_gas_limit_cap, validate_floor_gas, validate_gas_price,
+        validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+        validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{GasTracker, InstrStop, MessageResult},
@@ -1613,6 +1613,26 @@ fn handle_aa(
     // Pool admission validates the pre-execution lifecycle without running user calls.
     if !execute_calls {
         return Ok(None);
+    }
+
+    // At Genesis, 2D nonce gas is charged after intrinsic-gas validation. If that charge exhausts
+    // the transaction gas limit, preserve the historical behavior by including an OOG transaction
+    // without entering execution.
+    if !spec.is_t0() && intrinsic.saturating_add(initial_state_gas) > tx.gas_limit {
+        return TempoHandlerHooks::settle_transaction(
+            request.host,
+            request.envelope,
+            GasSettlement {
+                caller,
+                gas_price,
+                gas_limit: tx.gas_limit,
+                floor_gas,
+                initial_state_gas,
+                state_refund: 0,
+                result: runtime_oog_result(tx.gas_limit, 0),
+            },
+        )
+        .map(Some);
     }
 
     let (execution_gas, mut reservoir) = initial_gas_and_reservoir(
