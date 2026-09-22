@@ -450,7 +450,7 @@ fn public_quotes_grant_no_funding_authority() {
                 result.output().unwrap(),
             )
             .unwrap()
-            .data,
+            .requestData,
         }
         .abi_encode()
         .into();
