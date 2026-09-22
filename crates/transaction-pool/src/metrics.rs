@@ -4,6 +4,47 @@ use reth_metrics::{
     Metrics,
     metrics::{Counter, Gauge, Histogram},
 };
+use std::{sync::LazyLock, time::Instant};
+
+/// Temporary admission-stage diagnostics for the public workload benchmark.
+#[derive(Metrics)]
+#[metrics(scope = "transaction_pool.admission")]
+pub(crate) struct TempoPoolAdmissionMetrics {
+    /// Validation service round trip, including queueing, in seconds.
+    pub validation_wait_seconds: Histogram,
+    /// Time executing a validation batch, excluding queueing and provider acquisition.
+    pub validation_work_seconds: Histogram,
+    /// Time acquiring the latest provider and its matching cache.
+    pub provider_seconds: Histogram,
+    /// Time inserting one validated transaction, including lock acquisition.
+    pub insert_seconds: Histogram,
+    /// Number of transactions per validation job.
+    pub batch_size: Histogram,
+}
+
+pub(crate) static ADMISSION_METRICS: LazyLock<TempoPoolAdmissionMetrics> =
+    LazyLock::new(TempoPoolAdmissionMetrics::default);
+
+/// Records elapsed time on all return paths from a benchmark diagnostic stage.
+pub(crate) struct AdmissionTimer {
+    metric: &'static Histogram,
+    started: Instant,
+}
+
+impl AdmissionTimer {
+    pub(crate) fn new(metric: &'static Histogram) -> Self {
+        Self {
+            metric,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for AdmissionTimer {
+    fn drop(&mut self) {
+        self.metric.record(self.started.elapsed());
+    }
+}
 
 /// AA2D pool metrics
 #[derive(Metrics, Clone)]

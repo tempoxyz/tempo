@@ -5,6 +5,7 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
+    metrics::{ADMISSION_METRICS, AdmissionTimer},
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
@@ -551,6 +552,7 @@ where
         origin: TransactionOrigin,
         transaction: TransactionValidationOutcome<TempoPooledTransaction>,
     ) -> PoolResult<AddedTransactionOutcome> {
+        let _timer = AdmissionTimer::new(&ADMISSION_METRICS.insert_seconds);
         match transaction {
             TransactionValidationOutcome::Valid {
                 balance,
@@ -688,11 +690,13 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
+        let tx = {
+            let _timer = AdmissionTimer::new(&ADMISSION_METRICS.validation_wait_seconds);
+            self.protocol_pool
+                .validator()
+                .validate_transaction(origin, transaction)
+                .await
+        };
         let res = self.add_validated_transaction(origin, tx)?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
@@ -703,11 +707,13 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
+        let tx = {
+            let _timer = AdmissionTimer::new(&ADMISSION_METRICS.validation_wait_seconds);
+            self.protocol_pool
+                .validator()
+                .validate_transaction(origin, transaction)
+                .await
+        };
         self.add_validated_transaction(origin, tx)
     }
 
@@ -728,10 +734,14 @@ where
                 .await;
         }
 
-        self.protocol_pool
-            .validator()
-            .validate_transactions_with_origin(origin, transactions)
-            .await
+        let validated = {
+            let _timer = AdmissionTimer::new(&ADMISSION_METRICS.validation_wait_seconds);
+            self.protocol_pool
+                .validator()
+                .validate_transactions_with_origin(origin, transactions)
+                .await
+        };
+        validated
             .into_iter()
             .map(|outcome| self.add_validated_transaction(origin, outcome))
             .collect()
@@ -758,10 +768,14 @@ where
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
 
-        self.protocol_pool
-            .validator()
-            .validate_transactions(transactions)
-            .await
+        let validated = {
+            let _timer = AdmissionTimer::new(&ADMISSION_METRICS.validation_wait_seconds);
+            self.protocol_pool
+                .validator()
+                .validate_transactions(transactions)
+                .await
+        };
+        validated
             .into_iter()
             .zip(origins)
             .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))

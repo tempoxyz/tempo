@@ -1,6 +1,7 @@
 use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
+    metrics::{ADMISSION_METRICS, AdmissionTimer},
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -350,6 +351,7 @@ where
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
+        let _timer = AdmissionTimer::new(&ADMISSION_METRICS.validation_work_seconds);
         let db = StateCacheDb::new(
             &cached_state,
             StateProviderDatabase::new(&state_provider as &dyn StateProvider),
@@ -361,16 +363,19 @@ where
         // EVM and tip-scoped state cache keep repeated reads warm.
         let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
 
-        transactions
+        let outcomes: Vec<_> = transactions
             .into_iter()
             .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
-            .collect()
+            .collect();
+        ADMISSION_METRICS.batch_size.record(outcomes.len() as f64);
+        outcomes
     }
 
     /// Returns the latest state provider and a state cache valid for the provider's tip.
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+        let _timer = AdmissionTimer::new(&ADMISSION_METRICS.provider_seconds);
         let state_provider = self.inner.client().latest()?;
         let latest_hash = self.inner.client().chain_info()?.best_hash;
         Ok((state_provider, self.state_cache_for_tip(latest_hash)))
