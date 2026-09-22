@@ -80,7 +80,7 @@ use tempo_transaction_pool::{
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -297,6 +297,10 @@ where
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
+        // The block identity is recorded on this span after the payload is built;
+        // read diagnostics retain that exact parent through early returns too.
+        let _readiness =
+            reth_tracing::readiness::Scope::enter(reth_tracing::readiness::Role::PayloadBuilder);
         let BuildArguments {
             cached_reads,
             execution_cache,
@@ -306,6 +310,9 @@ where
             best_payload,
             ..
         } = args;
+        let readiness_reporter = execution_cache
+            .as_ref()
+            .and_then(|cache| cache.readiness_reporter(Span::current()));
         let PayloadConfig {
             parent_header,
             attributes,
@@ -475,6 +482,7 @@ where
             self.provider.clone(),
             self.executor.clone(),
             execution_cache,
+            readiness_reporter.clone(),
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
@@ -798,6 +806,7 @@ where
         drop(roots_tx);
 
         let (evm, execution_result) = executor.finish()?;
+        tracing::info!(target: "lifecycle", stage = "builder_execution_done");
         let evm_env = evm.into_env();
 
         // Drop the state hook to signal that execution is complete and the sparse trie task can
@@ -1095,6 +1104,7 @@ where
 
         drop(db);
         self.executor.spawn_drop(state_provider);
+        drop(readiness_reporter);
         Ok(BuildOutcome::Freeze(payload))
     }
 
