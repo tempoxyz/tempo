@@ -3,7 +3,7 @@ pub use IFundingPolicy::{
 };
 
 crate::sol! {
-    /// TIP-1120 shared funding policy interface; registry execution is activated separately.
+    /// TIP-1120 shared funding policy interface; policy execution is activated separately.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
 interface IFundingPolicy {
