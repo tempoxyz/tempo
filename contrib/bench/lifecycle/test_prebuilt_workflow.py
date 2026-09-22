@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -141,6 +142,33 @@ def without_prebuilt(workflow):
 
 
 class Workflow(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('nu'), 'Nu required for receipt reconciliation regression')
+    def test_sanitized_window_overrides_pre_shutdown_stop_reason(self):
+        source=(ROOT/'bench-e2e.nu').read_text()
+        phase=source.split('def run-local-e2e-phase',1)[1].split('\ndef e2e-load',1)[0]
+        self.assertLess(phase.index('lifecycle-finalize-phase-receipt'),
+                        phase.index('phase_archive.py pack'))
+        self.assertLess(phase.index('$phase_stop_reason = $final_stop_reason'),
+                        phase.index('$phase_stop_reason == "backpressure"'))
+        helper='def lifecycle-finalize-phase-receipt'+source.split(
+            'def lifecycle-finalize-phase-receipt',1)[1].split('\ndef run-local-e2e-phase',1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);window=root/'window.json';receipt=root/'receipt.json'
+            original=dict(schema=1,phase='feature-1',started_ms=10,finished_ms=20,
+                          stop_reason='load_finished')
+            receipt.write_text(json.dumps(original));window.write_text(json.dumps(
+                dict(start_ns=1,end_ns=2,stop_reason='backpressure')))
+            script=(helper+'\nlet reason = (lifecycle-finalize-phase-receipt '
+                    +json.dumps(str(window))+' '+json.dumps(str(receipt))+')\nprint $reason')
+            run=subprocess.run(['nu','--no-config-file','-c',script],capture_output=True,text=True)
+            self.assertEqual(run.returncode,0,run.stderr)
+            self.assertEqual(run.stdout.strip(),'backpressure')
+            self.assertEqual(json.loads(receipt.read_text()),{**original,'stop_reason':'backpressure'})
+            window.write_text(json.dumps(dict(stop_reason='unknown')))
+            rejected=subprocess.run(['nu','--no-config-file','-c',script],capture_output=True,text=True)
+            self.assertNotEqual(rejected.returncode,0)
+            self.assertEqual(json.loads(receipt.read_text()),{**original,'stop_reason':'backpressure'})
+
     def test_only_explicit_prebuilt_boundary_changes_workflow(self):
         source=(ROOT/'.github/workflows/bench-e2e.yml').read_text()
         # Frozen workflow including reviewed final cleanup; works in source-only checkouts.

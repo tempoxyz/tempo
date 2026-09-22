@@ -1046,6 +1046,19 @@ def build-valscope-static-reports [
     }
 }
 
+def lifecycle-finalize-phase-receipt [window_path: string, receipt_path: string] {
+    let stop_reason = (open $window_path | get -o stop_reason | default "")
+    if $stop_reason not-in ["load_finished" "backpressure"] {
+        error make {msg: "Invalid sanitized lifecycle stop reason"}
+    }
+    let receipt = (open $receipt_path)
+    if ($receipt | columns | sort) != ["finished_ms" "phase" "schema" "started_ms" "stop_reason"] or $receipt.schema != 1 {
+        error make {msg: "Invalid private lifecycle phase receipt"}
+    }
+    $receipt | upsert stop_reason $stop_reason | to json | save -f $receipt_path
+    $stop_reason
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     if ($ctx.prebuilt_directory? | default "") != "" {
@@ -1339,6 +1352,19 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let scheduler_report_args = if $ctx.lifecycle_scheduler { ["--scheduler-dir" $lifecycle_dir] } else { [] }
         let report = (^python3 contrib/bench/lifecycle/progress.py ...$scheduler_report_args --prune --expected-detail $capture_detail ...$prewarm_report_args --out $lifecycle_report_dir --warmup $ctx.summary_warmup_blocks --workload-report $"($ctx.results_dir)/report-($phase).json" --window $"($lifecycle_dir)/window.json" $"($lifecycle_dir)/a.jsonl" $"($lifecycle_dir)/b.jsonl" err> /dev/stderr | complete)
         if $report.exit_code != 0 { $phase_exit = 1 }
+        if $report.exit_code == 0 {
+            let final_stop_reason = try {
+                lifecycle-finalize-phase-receipt $"($lifecycle_report_dir)/window.json" $"($ctx.results_dir)/phase-range-($phase).json"
+            } catch { |error|
+                print $"Error: failed to reconcile lifecycle stop reason for ($phase): ($error.msg)"
+                ""
+            }
+            if $final_stop_reason == "" {
+                $phase_exit = 1
+            } else {
+                $phase_stop_reason = $final_stop_reason
+            }
+        }
         rm -rf $lifecycle_dir
         if $phase_exit == 0 {
             # Workload has returned, validators stopped, tuning restored and the
