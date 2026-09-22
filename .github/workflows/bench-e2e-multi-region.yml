@@ -3,6 +3,11 @@ name: bench-e2e-multi-region
 on:
   workflow_call:
     inputs:
+      pr:
+        description: PR number to associate with this benchmark (optional).
+        type: string
+        required: false
+        default: ""
       cloud:
         type: string
         required: false
@@ -264,6 +269,7 @@ env:
 jobs:
   bench-e2e-multi-region:
     permissions:
+      issues: write
       actions: read
       contents: read
       id-token: write
@@ -277,6 +283,8 @@ jobs:
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
+      BENCH_EXECUTION_URL: https://dev-eu-tempo-internal-perf.tail388b2e.ts.net/execution/${{ github.repository_owner }}:${{ github.event.repository.name }}:${{ github.run_id }}:${{ github.run_attempt }}
+      BENCH_PR: ${{ inputs.pr }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
       BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
@@ -321,6 +329,24 @@ jobs:
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
+      - name: Resolve associated PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          FEATURE_REF: ${{ inputs.feature }}
+        with:
+          script: |
+            // Dispatch already uses all 25 inputs. An explicit pull ref uses
+            // the existing feature input; reusable callers can pass pr.
+            const pullRef = /^refs\/pull\/(\d+)\/head$/.exec(process.env.FEATURE_REF || '');
+            const pr = process.env.BENCH_PR || pullRef?.[1];
+            if (!pr) return;
+            if (!/^[1-9]\d*$/.test(pr)) {
+              core.setFailed('pr must be a positive pull request number');
+              return;
+            }
+            await github.rest.pulls.get({ owner: 'tempoxyz', repo: 'tempo', pull_number: Number(pr) });
+            core.exportVariable('BENCH_PR', pr);
 
       - name: Fetch GitHub token via STS
         id: github-sts
@@ -755,6 +781,13 @@ jobs:
           echo "path=$results_dir" >> "$GITHUB_OUTPUT"
           echo "Results directory: $results_dir"
 
+      - name: Publish benchmark execution
+        if: always() && steps.results-dir.outputs.path != ''
+        continue-on-error: true
+        env:
+          EXECUTION_STATUS: ${{ job.status }}
+        run: python3 "$BENCH_REPO_DIR/scripts/bench-execution.py" "$BENCH_RESULTS_DIR" --status "$EXECUTION_STATUS"
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -828,8 +861,23 @@ jobs:
               core.info(`Unable to resolve job URL: ${e.message}`);
             }
 
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${dashboardSection}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [Benchmark results](${process.env.BENCH_EXECUTION_URL}) · [View job](${jobUrl})\n\n${summary}${dashboardSection}`;
             await core.summary.addRaw(body).write();
+            const pr = process.env.BENCH_PR;
+            // The default token cannot comment across repositories.
+            if (context.repo.repo === 'tempo' && pr && /^[1-9]\d*$/.test(pr)) {
+              const marker = `<!-- benchmark-execution:${context.runId}:${process.env.GITHUB_RUN_ATTEMPT} -->`;
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo, issue_number: Number(pr),
+              });
+              const previous = comments.find(c => c.user?.login === 'github-actions[bot]' && c.body?.includes(marker));
+              const report = `${marker}\n${body}`;
+              if (previous) {
+                await github.rest.issues.updateComment({ ...context.repo, comment_id: previous.id, body: report });
+              } else {
+                await github.rest.issues.createComment({ ...context.repo, issue_number: Number(pr), body: report });
+              }
+            }
 
       - name: Wait for infrastructure teardown
         if: always() && steps.checkout_benchmark_repo.outcome == 'success'
