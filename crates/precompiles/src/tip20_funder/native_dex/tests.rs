@@ -34,7 +34,7 @@ fn quote(input: Address, cap: U256, budget: U256) -> IFundingSource::quoteCall {
         amountOut: U256::from(50),
         assetOut: PATH_USD_ADDRESS,
         maxCost: budget,
-        data: (input, cap).abi_encode().into(),
+        requestData: (input, cap).abi_encode().into(),
         policyData: Bytes::new(),
         ownerAuthorized: true,
     }
@@ -60,7 +60,7 @@ fn caps_omission_zero_and_native_width_without_truncation() {
                 (plan.assetIn, plan.rate, plan.maxAmountIn),
                 (input, RATE_SCALE, expected)
             );
-            assert_eq!(source.decode(&plan.data).unwrap(), (input, expected));
+            assert_eq!(source.decode(&plan.requestData).unwrap(), (input, expected));
         }
     });
 }
@@ -74,7 +74,7 @@ fn quoting_rejects_unsupported_policy_and_malformed_data() {
             match mode {
                 1 => call.ownerAuthorized = false,
                 2 => call.policyData = Bytes::from_static(b"policy"),
-                3 => call.data = Bytes::from_static(b"invalid"),
+                3 => call.requestData = Bytes::from_static(b"invalid"),
                 _ => {}
             }
             assert!(source.quote(call).is_err());
@@ -101,7 +101,7 @@ fn fund_requires_matching_native_scope_even_when_no_input_available() {
             account: ACCOUNT,
             assetOut: PATH_USD_ADDRESS,
             amountOut: U256::from(50),
-            data: plan.data.clone(),
+            requestData: plan.requestData.clone(),
         };
         assert!(source.fund(FUNDER, call.clone()).is_err());
         for (account, address) in [(SOURCE, SOURCE), (ACCOUNT, ACCOUNT)] {
@@ -141,5 +141,46 @@ fn all_route_assets_require_explicit_parity_approval() {
         let all =
             NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, output, PATH_USD_ADDRESS]);
         assert!(all.quote(call).is_ok());
+    });
+}
+
+#[test]
+fn policy_quotes_preserve_input_and_tighten_reusable_caps() {
+    let (mut storage, source, input) = setup();
+    StorageCtx::enter(&mut storage, || {
+        let mut call = quote(input, U256::from(30), U256::from(50));
+        call.ownerAuthorized = false;
+        call.policyData = vec![input].abi_encode().into();
+        let first = source.quote(call.clone()).unwrap();
+        call.requestData = first.requestData;
+        call.maxCost = U256::from(20);
+        let second = source.quote(call.clone()).unwrap();
+        assert_eq!(
+            source.decode(&second.requestData).unwrap(),
+            (input, U256::from(20))
+        );
+        call.policyData = vec![PATH_USD_ADDRESS].abi_encode().into();
+        assert!(source.quote(call).is_err());
+    });
+}
+
+#[test]
+fn discovery_omits_zero_capacity_and_rejects_invalid_configuration() {
+    let (mut storage, source, input) = setup();
+    StorageCtx::enter(&mut storage, || {
+        let mut call = IFundingSource::discoverCall {
+            account: ACCOUNT,
+            assetOut: PATH_USD_ADDRESS,
+            amountOut: U256::from(50),
+            maxCost: U256::from(50),
+            config: vec![input].abi_encode().into(),
+        };
+        assert!(source.discover(call.clone()).unwrap().is_empty());
+        call.config = Vec::<Address>::new().abi_encode().into();
+        assert!(source.discover(call.clone()).unwrap().is_empty());
+        call.config = Bytes::new();
+        assert!(source.discover(call.clone()).is_err());
+        call.config = vec![Address::ZERO].abi_encode().into();
+        assert!(source.discover(call).is_err());
     });
 }
