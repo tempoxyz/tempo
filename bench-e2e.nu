@@ -1009,6 +1009,17 @@ def run-local-e2e-phase [run: record, ctx: record] {
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
 
+    # Convert only disposable restored DBs, using the exact phase binary. Never
+    # promote the converted layout: the next phase must recover the same v2 state.
+    for datadir in [$ctx.a.datadir $ctx.b.datadir] {
+        bash scripts/bench-prepare-storage-layout.sh $run.tempo $datadir
+        if $env.LAST_EXIT_CODE != 0 { error make {msg: "benchmark storage layout preparation failed"} }
+    }
+    # Conversion reads/writes much more data than restoring the baseline. Start
+    # both sides cold so that migration cannot give the candidate a warm-cache lead.
+    sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+    if $env.LAST_EXIT_CODE != 0 { error make {msg: "could not normalize benchmark page cache"} }
+
     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
             print $"Error: required e2e path does not exist after snapshot recovery: ($path)"
@@ -1016,8 +1027,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" or $ctx.general_gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -1540,8 +1551,14 @@ def "main e2e" [
         mkdir $E2E_BLOAT_TMP_DIR
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
-        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+        # Generate the shared virgin snapshot with the baseline layout. The feature
+        # binary converts its restored copy before each phase, outside measurement.
+        let snapshot_wt = $"($BENCH_WORKTREES_DIR)/e2e-snapshot-baseline"
+        mkdir $BENCH_WORKTREES_DIR
+        if ($snapshot_wt | path exists) { git worktree remove --force $snapshot_wt }
+        git worktree add $snapshot_wt $baseline
+        build-in-worktree --no-default-features=$no_default_features $snapshot_wt $baseline $profile $snapshot_features $baseline
+        let tempo_bin = (worktree-bin $snapshot_wt $profile "tempo")
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
         cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
