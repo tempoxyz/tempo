@@ -26,6 +26,29 @@ def fixture(path, lost=0, close=True):
 
 
 class ReportTests(unittest.TestCase):
+    def test_sender_population_and_root_result_success_survive_reporting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'; fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            for row in records:
+                if row.get('fields', {}).get('stage') == 'proposal_ready':
+                    row['fields']['height'] = row['id'] + 1000
+            for ident, count in ((1, 3), (2, 200), (3, 0), (4, 300)):
+                records[-1:-1] = [
+                    dict(type='event', id=ident, ts=ident*1_000_000_000+200,
+                         fields=dict(stage='execution_totals', transactions=count)),
+                    dict(type='event', id=ident, ts=ident*1_000_000_000+300,
+                         fields=dict(stage='state_root_result_ready', success=ident%2)),
+                ]
+            path.write_text('\n'.join(map(json.dumps, records)))
+            result = build([path], warmup=0, workload_blocks={1002:200, 1003:0})
+            self.assertEqual(result['eligible'], 1)
+            self.assertEqual([b['id'] for b in result['blocks'] if b['in_population']], [2])
+            self.assertEqual(result['workload_population']['completed_transactions'], 200)
+            for block in result['blocks'][:4]:
+                ready = [m for m in block['markers'] if m['stage']=='state_root_result_ready']
+                self.assertEqual(ready[0]['success'], block['id']%2)
+
     def test_worker_slice_cpu_uses_exact_node_span_kind_and_retained_completion(self):
         from perfetto import trace_events
         with tempfile.TemporaryDirectory() as directory:
@@ -264,6 +287,25 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(result['blocks'][49]['duration'],50)
             self.assertEqual(build([path],warmup=5)['eligible'],95)
 
+    def test_payload_resource_late_binding_requires_unique_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl'
+            h1='1'*24; h2='2'*24
+            records=[{'type':'header','schema':1}]
+            for ident, payload, block in [(1,'unique',h1),(2,'unique',None),
+                                          (3,'ambiguous',h1),(4,'ambiguous',h2),
+                                          (5,'ambiguous',None)]:
+                records.append({'type':'start','id':ident,'ts':ident,'thread':1,
+                    'name':'resource_worker','category':'trie','parent':None,
+                    'fields':{'payload_id':payload, **({'block_hash':block} if block else {})}})
+                records.append({'type':'end','id':ident,'ts':ident+1})
+            records.append({'type':'footer','dropped':0,'io_error':False})
+            path.write_text('\n'.join(map(json.dumps,records)))
+            spans, _, _ = read_node(path, 'Validator A')
+            by_id={span['id']:span for span in spans}
+            self.assertEqual(by_id[2]['fields']['block_hash'],h1)
+            self.assertNotIn('block_hash',by_id[5]['fields'])
+
     def test_loss_or_missing_footer_disables_percentiles(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'a.jsonl'
@@ -289,6 +331,98 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(cut['quality'][0]['cutoff_spans'],1)
             self.assertFalse(cut['bad_capture'])
             self.assertEqual(cut['representatives'],{'50':50,'90':90,'99':99})
+
+    def test_valid_load_window_exposes_post_window_tail_without_invalidating_population(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl';fixture(path)
+            records=[json.loads(line) for line in path.read_text().splitlines()]
+            records.insert(-1,dict(type='start',id=102,ts=102_000_000_000,thread=1,
+                name='storage_worker',category='trie',parent=None,fields={}))
+            path.write_text('\n'.join(map(json.dumps,records)))
+            window={'start_ns':1_000_000_000,'end_ns':101_050_000_000,'stop_reason':'load_finished'}
+            result=build([path],warmup=0,window=window)
+            self.assertEqual(result['quality'][0]['open_spans'],1)
+            self.assertEqual(result['quality'][0]['post_window_open_spans'],1)
+            self.assertFalse(result['bad_capture'])
+
+    def test_open_span_before_window_or_invalid_window_remains_fatal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'a.jsonl';fixture(path)
+            records=[json.loads(line) for line in path.read_text().splitlines()]
+            records.insert(-1,dict(type='start',id=102,ts=50_000_000_000,thread=1,
+                name='storage_worker',category='trie',parent=None,fields={}))
+            path.write_text('\n'.join(map(json.dumps,records)))
+            valid={'start_ns':1_000_000_000,'end_ns':101_050_000_000,'stop_reason':'load_finished'}
+            result=build([path],warmup=0,window=valid)
+            self.assertEqual(result['quality'][0]['post_window_open_spans'],0)
+            self.assertTrue(result['bad_capture'])
+            for invalid in [
+                {'start_ns':101_050_000_000,'end_ns':1_000_000_000,'stop_reason':'load_finished'},
+                {'start_ns':1_000_000_000,'end_ns':101_050_000_000,'stop_reason':'backpressure'},
+                {'start_ns':1_000_000_000,'end_ns':101_050_000_000},
+            ]:
+                self.assertTrue(build([path],warmup=0,window=invalid)['bad_capture'])
+
+    def test_exact_unbound_shutdown_payload_forest_is_reported_as_censored(self):
+        latest = f'{100:024x}'
+        window = {'start_ns':1_000_000_000, 'end_ns':103_000_000_000,
+                  'stop_reason':'load_finished'}
+
+        def terminal(path, mutation=None, footer=True):
+            fixture(path)
+            records = [json.loads(line) for line in path.read_text().splitlines()][:-1]
+            tail = [
+                dict(type='start', id=102, ts=102_000_000_000, thread=1,
+                     name='handle_propose', category='consensus', parent=None,
+                     fields={'parent_digest':latest}),
+                dict(type='event', id=102, ts=102_000_000_001,
+                     fields={'stage':'proposal_start'}),
+                dict(type='start', id=103, ts=102_000_000_010, thread=2,
+                     name='payload_resources', category='builder', parent=None,
+                     fields={'payload_id':'a'*24}),
+                dict(type='start', id=104, ts=102_000_000_020, thread=3,
+                     name='build_payload', category='builder', parent=None,
+                     fields={'payload_id':'a'*24, 'parent_hash':latest}),
+                dict(type='start', id=105, ts=102_000_000_030, thread=4,
+                     name='storage_worker', category='trie', parent=103, fields={}),
+                dict(type='start', id=106, ts=102_000_000_040, thread=5,
+                     name='account_worker', category='trie', parent=103, fields={}),
+                dict(type='start', id=107, ts=102_000_000_050, thread=6,
+                     name='sparse_trie_task', category='trie', parent=103, fields={}),
+            ]
+            if mutation:
+                mutation(tail)
+            records.extend(tail)
+            if footer:
+                records.append({'type':'footer','dropped':0,'io_error':False})
+            path.write_text('\n'.join(map(json.dumps, records)))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'
+            terminal(path)
+            result = build([path], warmup=0, window=window)
+            self.assertEqual(result['quality'][0]['open_spans'], 6)
+            self.assertEqual(result['quality'][0]['post_window_open_spans'], 0)
+            self.assertEqual(result['quality'][0]['shutdown_tail_open_spans'], 6)
+            self.assertFalse(result['bad_capture'])
+            self.assertEqual(result['attempt_details'][-1]['status'], 'shutdown_incomplete')
+
+            mutations = {
+                'wrong payload': lambda rows: rows[3]['fields'].__setitem__('payload_id', 'b'*24),
+                'wrong parent': lambda rows: rows[3]['fields'].__setitem__('parent_hash', 'b'*24),
+                'bound worker': lambda rows: rows[4]['fields'].__setitem__('block_hash', latest),
+                'unknown span': lambda rows: rows[4].__setitem__('name', 'unknown_worker'),
+            }
+            for name, mutation in mutations.items():
+                with self.subTest(name=name):
+                    terminal(path, mutation)
+                    rejected = build([path], warmup=0, window=window)
+                    self.assertEqual(rejected['quality'][0]['shutdown_tail_open_spans'], 0)
+                    self.assertTrue(rejected['bad_capture'])
+            terminal(path, footer=False)
+            rejected = build([path], warmup=0, window=window)
+            self.assertEqual(rejected['quality'][0]['shutdown_tail_open_spans'], 0)
+            self.assertTrue(rejected['bad_capture'])
 
     def test_unexplained_attempt_fails_cli_after_publishing_diagnostics(self):
         import subprocess

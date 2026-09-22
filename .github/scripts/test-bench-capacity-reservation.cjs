@@ -9,6 +9,13 @@ const adapter = require('./bench-capacity-reservation.js');
 const root = path.resolve(__dirname, '../..');
 const election = fs.readFileSync(path.join(root, 'contrib/bench/lifecycle/capacity_election.py'), 'utf8');
 const probeSource = fs.readFileSync(path.join(root, 'contrib/bench/lifecycle/capacity_preflight.py'), 'utf8');
+const prebuiltSource = fs.readFileSync(path.join(root, 'contrib/bench/lifecycle/prebuilt.py'), 'utf8');
+const prebuiltPlan = fs.readFileSync(path.join(root, 'contrib/bench/lifecycle/prebuilt-plan.json'), 'utf8');
+const prebuiltProofResult = spawnSync('python3', ['-I', '-c', prebuiltSource], {
+  input: prebuiltPlan, encoding: 'utf8', maxBuffer: 65536,
+});
+assert.equal(prebuiltProofResult.status, 0, prebuiltProofResult.stderr);
+const prebuiltProof = JSON.parse(prebuiltProofResult.stdout);
 const SHA = '1'.repeat(40);
 const context = { eventName: 'workflow_dispatch', sha: SHA, runId: 12345, repo: { owner: 'fixture', repo: 'repo' } };
 const secret = 'PRIVATE_SENTINEL_TOKEN_HOST_PATH';
@@ -53,20 +60,32 @@ function fixture(options = {}) {
     GITHUB_RUN_ATTEMPT: '3', BENCH_CAPACITY_SLOT: String(options.slot || 1), BENCH_CAPACITY_SLOTS: String(options.slots || 2),
     BENCH_LIFECYCLE: 'true', BENCH_NO_SLACK: 'true', GITHUB_TOKEN: secret };
   if (options.policy !== undefined) env.BENCH_CAPACITY_POLICY = options.policy;
+  if (options.policy === adapter.SINGLE_DIAGNOSTIC_POLICY) Object.assign(env, {
+    BENCH_BINARY_MODE: 'prebuilt_v1',
+    BENCH_PREBUILT_PLAN_SHA256: require('node:crypto').createHash('sha256').update(prebuiltPlan).digest('hex'),
+    BENCH_LIFECYCLE_DETAIL: 'milestones', BENCH_RUN_SIDE: 'feature', BENCH_RUN_PAIRS: '1',
+    BENCH_DURATION: '30', BENCH_FEATURE_ENV: '', BENCH_READ_READINESS: 'true',
+    BENCH_BASELINE_ENV: '', BENCH_BENCH_ENV: '', BENCH_LIFECYCLE_SCHEDULER: 'false',
+    BENCH_SAMPLY: 'false', BENCH_TRACY: 'off', BENCH_OTLP: 'false',
+    BENCH_VALSCOPE: 'false', BENCH_METRICS: 'false',
+  });
   const messages = []; const output = {}; const requests = []; let clock = 0; let lists = 0; let jobLists = 0;
   const core = { setOutput: (k, v) => { output[k] = v; }, info: m => messages.push(String(m)),
     setFailed: m => messages.push(`FAILED:${m}`) };
   const github = { rest: { repos: { getContent: async args => {
     requests.push(['source', args]);
     assert.equal(args.ref, SHA); assert.deepEqual({ owner: args.owner, repo: args.repo }, context.repo);
-    assert.ok(['contrib/bench/lifecycle/capacity_election.py', 'contrib/bench/lifecycle/capacity_preflight.py'].includes(args.path));
+    assert.ok(['contrib/bench/lifecycle/capacity_election.py', 'contrib/bench/lifecycle/capacity_preflight.py',
+      'contrib/bench/lifecycle/prebuilt-plan.json', 'contrib/bench/lifecycle/prebuilt.py'].includes(args.path));
     assert.ok(args.request.signal instanceof AbortSignal);
     assert.equal(args.request.signal.aborted, false);
     assert.equal(args.request.log.warn('private sentinel'), undefined);
     if (options.sourceError) throw new Error(secret);
     if (options.sourceData) return { data: options.sourceData };
     if (options.sourceClock) clock += options.sourceClock;
-    const text = args.path.endsWith('capacity_election.py') ? election : probeSource;
+    const text = args.path.endsWith('capacity_election.py') ? election :
+      args.path.endsWith('capacity_preflight.py') ? probeSource :
+      args.path.endsWith('prebuilt-plan.json') ? prebuiltPlan : prebuiltSource;
     return { data: { type: 'file', encoding: 'base64', size: Buffer.byteLength(text), content: Buffer.from(text).toString('base64') } };
   } }, actions: { listJobsForWorkflowRunAttempt: async args => {
     requests.push(['jobs', args]);
@@ -97,9 +116,10 @@ function fixture(options = {}) {
   } } } };
   const execute = (command, args, opts) => {
     assert.equal(command, 'python3'); assert.equal(args[0], '-I'); assert.equal(args[1], '-c');
-    assert.ok([election, adapter.EXTRACT_RECEIPT].includes(args[2]));
+    assert.ok(args[2] === election || args[2] === adapter.EXTRACT_RECEIPT ||
+      args[2] === prebuiltSource || args[2].endsWith(election));
     assert.equal(opts.env.GITHUB_TOKEN, undefined); assert.ok(opts.timeout > 0 && opts.timeout <= 60000);
-    if (args[2] === election) assert.deepEqual(args.slice(3), ['--workflow-sha', SHA, '--run-id', '12345', '--run-attempt', '3', '--slots', String(options.slots || 2), ...(options.policy === adapter.SETUP_FAILURE_POLICY ? ['--policy', adapter.SETUP_FAILURE_POLICY] : [])]);
+    if (args.includes('--workflow-sha')) assert.deepEqual(args.slice(3), ['--workflow-sha', SHA, '--run-id', '12345', '--run-attempt', '3', '--slots', String(options.slots || 2), ...(!options.policy || options.policy === 'strict_v1' ? [] : ['--policy', options.policy]), ...(options.policy === adapter.SINGLE_DIAGNOSTIC_POLICY ? ['--binary-mode', 'prebuilt_v1'] : [])]);
     if (options.pythonResult) return options.pythonResult;
     const result = spawnSync(command, args, opts);
     if (options.pythonClock) clock += options.pythonClock;
@@ -491,6 +511,34 @@ test('setup policy is a closed fixed four-slot choice', () => {
     for(const slots of ['2','3']) assert.throws(()=>adapter.binding(context,{...f.env,BENCH_CAPACITY_POLICY:adapter.SETUP_FAILURE_POLICY,BENCH_CAPACITY_SLOTS:slots}));
     assert.equal(adapter.binding(context,f.env).policy,'strict_v1');
   } finally {f.close();}
+});
+
+test('single diagnostic policy admits one exact prebuilt receipt without setup fallback', async () => {
+  const options = { slots: 1, slot: 1, policy: adapter.SINGLE_DIAGNOSTIC_POLICY,
+    artifacts: [artifact(1)],
+    zips: new Map([[101, zip(JSON.stringify({ ...receipt(1), prebuilt: prebuiltProof }))]]) };
+  const result = await elect(options);
+  assert.equal(result.output.selected, 'true');
+  assert.equal(result.admission, null);
+  assert.equal(result.requests.filter(([kind]) => kind === 'jobs').length, 0);
+  assert.equal(result.requests.filter(([kind]) => kind === 'download').length, 1);
+
+  const f = fixture(options);
+  try {
+    assert.equal(adapter.binding(context, f.env).policy, adapter.SINGLE_DIAGNOSTIC_POLICY);
+    for (const [field, value] of [
+      ['BENCH_CAPACITY_SLOTS', '2'], ['BENCH_CAPACITY_SLOT', '2'],
+      ['BENCH_BINARY_MODE', 'build_v1'], ['BENCH_LIFECYCLE_DETAIL', 'full'],
+      ['BENCH_RUN_SIDE', 'comparison'], ['BENCH_RUN_PAIRS', '2'],
+      ['BENCH_DURATION', '31'], ['BENCH_FEATURE_ENV', 'TEMPO_READ_READINESS=1'],
+      ['BENCH_READ_READINESS', 'false'],
+      ['BENCH_BASELINE_ENV', 'PRIVATE=1'], ['BENCH_BENCH_ENV', 'PRIVATE=1'],
+      ['BENCH_LIFECYCLE_SCHEDULER', 'true'], ['BENCH_SAMPLY', 'true'],
+      ['BENCH_TRACY', 'tracy'], ['BENCH_OTLP', 'true'], ['BENCH_VALSCOPE', 'true'],
+      ['BENCH_METRICS', 'true'],
+      ['BENCH_LIFECYCLE', 'false'], ['BENCH_NO_SLACK', 'false'],
+    ]) assert.throws(() => adapter.binding(context, { ...f.env, [field]: value }));
+  } finally { f.close(); }
 });
 
 test('setup metadata network await aborts under the same real deadline', async () => {

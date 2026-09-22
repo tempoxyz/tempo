@@ -7,10 +7,11 @@ from pathlib import Path
 from report_package import write_package
 from backpressure import first_boundary, prepare_captures
 import prewarm
+import read_readiness
 from collections import defaultdict
 
 BLOCK_FIELDS = ('block_hash', 'hash', 'digest', 'proposal', 'payload')
-STAGES = ('proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
+STAGES = ('builder_execution_done', 'state_root_result_ready', 'proposal_start', 'payload_built', 'proposal_ready', 'digest_released',
           'verify_start', 'body_ready', 'replay_start', 'replay_done', 'verify_done',
           'notarize_vote_sent', 'notarized', 'finalize_vote_sent', 'finalized', 'finalization_received', 'cancelled', 'proposal_failed')
 
@@ -124,11 +125,17 @@ def read_node(path, role, cutoff=None):
         span = spans.get(event['id'])
         if key and span and not block_key(span['fields']):
             span['fields']['block_hash'] = key
-    payloads = {s['fields']['payload_id']: block_key(s['fields']) for s in spans.values()
-                if s['fields'].get('payload_id') and block_key(s['fields'])}
+    payloads = {}
+    for span in spans.values():
+        payload = span['fields'].get('payload_id')
+        block = block_key(span['fields'])
+        if payload and block:
+            payloads.setdefault(payload, set()).add(block)
     for s in spans.values():
-        if not block_key(s['fields']) and s['fields'].get('payload_id') in payloads:
-            s['fields']['block_hash'] = payloads[s['fields']['payload_id']]
+        if not block_key(s['fields']):
+            owners = payloads.get(s['fields'].get('payload_id'), set())
+            if len(owners) == 1:
+                s['fields']['block_hash'] = next(iter(owners))
 
     # A mailbox span travels with exactly one message; timestamps delimit its queue wait.
     queued = {}
@@ -193,6 +200,7 @@ def read_node(path, role, cutoff=None):
     for event in events:
         event['block'] = block_key(event['fields']) or inherited(spans.get(event['id']))
     quality = {'node': role, 'header': bool(header and header.get('schema') == 1),
+               'read_readiness': (header or {}).get('read_readiness', 'disabled'),
                'detail': (header or {}).get('detail', 'full'),
                'prewarm_cpu': (header or {}).get('prewarm_cpu'),
                'prewarm_coverage_failures': (footer or {}).get('prewarm_coverage_failures'),
@@ -222,7 +230,58 @@ def active_wall_ns(intervals):
     return duration
 
 
-def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None):
+def valid_load_window(window):
+    if not isinstance(window, dict) or window.get('stop_reason') != 'load_finished':
+        return False
+    start, end = window.get('start_ns'), window.get('end_ns')
+    return (type(start) is int and type(end) is int and 0 <= start < end)
+
+
+def shutdown_tail_open_spans(spans, events, quality, window):
+    """Count a structurally proven, unbound terminal payload forest before window end."""
+    if (not valid_load_window(window) or not quality['header'] or not quality['footer'] or
+            quality['dropped'] or quality['io_error'] or quality['invalid_lines']):
+        return 0
+    opened = [span for span in spans if span['end'] is None]
+    if not opened or any(span.get('block') for span in opened):
+        return 0
+    proposals = [span for span in opened if span['name'] == 'handle_propose']
+    builds = [span for span in opened if span['name'] == 'build_payload']
+    resources = [span for span in opened if span['name'] == 'payload_resources']
+    if len(proposals) != 1 or len(builds) != 1 or len(resources) != 1:
+        return 0
+    proposal, build, resource = proposals[0], builds[0], resources[0]
+    if any(span.get('parent') is not None for span in (proposal, build, resource)):
+        return 0
+    all_proposals = [span for span in spans if span['name'] == 'handle_propose']
+    if proposal is not max(all_proposals, key=lambda span: (span['ts'], span['id'])):
+        return 0
+    proposal_starts = [event for event in events if event['id'] == proposal['id'] and
+                       event['fields'].get('stage') == 'proposal_start']
+    if len(proposal_starts) != 1:
+        return 0
+    finalized = [event for event in events if event['fields'].get('stage') == 'finalized' and
+                 block_key(event['fields'])]
+    if not finalized:
+        return 0
+    latest_finalized = block_key(max(finalized, key=lambda event: event['ts'])['fields'])
+    parent = proposal['fields'].get('parent_digest')
+    payload = build['fields'].get('payload_id')
+    if (not parent or parent != build['fields'].get('parent_hash') or
+            parent != latest_finalized or not payload or
+            payload != resource['fields'].get('payload_id')):
+        return 0
+    descendants = [span for span in opened if span not in (proposal, build, resource)]
+    if (not any(span['name'] == 'sparse_trie_task' for span in descendants) or
+            any(span['name'] not in ('account_worker', 'storage_worker', 'sparse_trie_task') or
+                span.get('parent') != resource['id'] for span in descendants)):
+        return 0
+    if any(span['ts'] < proposal['ts'] for span in opened):
+        return 0
+    return sum(span['ts'] < window['end_ns'] for span in opened)
+
+
+def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_cpu=None, workload_blocks=None):
     spans, events, quality = [], [], []
     boundary = first_boundary(paths)
     recorded = (window or {}).get('backpressure')
@@ -235,6 +294,12 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         events.extend(es)
         pruned = next((q for q in (window or {}).get('pruning', []) if q['node'] == qq['node']), {})
         qq['crossing_aggregates_excluded'] += pruned.get('crossing_aggregates_excluded', 0)
+        window_ok = valid_load_window(window)
+        capture_ok = (qq['header'] and qq['footer'] and not qq['dropped'] and
+                      not qq['io_error'] and not qq['invalid_lines'])
+        qq['post_window_open_spans'] = (sum(s['end'] is None and s['ts'] >= window['end_ns'] for s in ss)
+                                       if window_ok and capture_ok else 0)
+        qq['shutdown_tail_open_spans'] = shutdown_tail_open_spans(ss, es, qq, window)
         quality.append(qq)
     first = min((x['ts'] for x in spans + events), default=0)
     by_block = {}
@@ -243,9 +308,14 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
             by_block.setdefault(event['block'],[]).append(event)
     keys = sorted(by_block,key=lambda key: min(e['ts'] for e in by_block[key]))
     aliases = {key: i + 1 for i, key in enumerate(keys)}
+    readiness = read_readiness.build(events, quality, aliases, first, cutoff)
     blocks = []
     for key in keys:
-        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'])
+        markers = [dict(stage=e['fields'].get('stage'), ts=(e['ts']-first)/1e6, node=e['node'],
+                        **({'success': e['fields']['success']} if
+                           e['fields'].get('stage') == 'state_root_result_ready' and
+                           type(e['fields'].get('success')) is int and
+                           e['fields']['success'] in (0, 1) else {}))
                    for e in by_block[key] if e['fields'].get('stage') in STAGES]
         starts = [e['ts'] for e in markers if e['stage'] == 'proposal_start']
         ends = [e['ts'] for e in markers if e['stage'] == 'finalized']
@@ -277,11 +347,17 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                          ('proof_storage_worker_totals','proof_account_worker_totals')]
         blocks.append({'proof_worker_totals': worker_totals, 'execution_totals': totals, 'id': aliases[key], 'start': start, 'end': finish,
                        'duration': finish-start, 'complete': complete, 'markers': markers})
+    for block in blocks:
+        block['read_readiness'] = readiness['by_block'].get(block['id'], [])
     completed = sorted((b for b in blocks if b['complete']), key=lambda b: b['start'])
     for b in completed[:warmup]:
         b['warmup'] = True
     eligible = [b for b in completed if not b.get('warmup') and (not window or 'start_ns' not in window or
                 (b['start'] >= (window['start_ns']-first)/1e6 and b['end'] <= (window['end_ns']-first)/1e6))]
+    workload_population = {'source': 'process_window'}
+    if workload_blocks is not None:
+        import workload
+        eligible, workload_population = workload.select(eligible, by_block, aliases, workload_blocks)
     for b in blocks:
         b['in_population'] = b in eligible
     details = {q['detail'] for q in quality}
@@ -300,7 +376,10 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
         leaves_by_block[leaf['block']].append(leaf)
     for block in blocks:
         block['prewarm_calls'] = prewarm.summarize(leaves_by_block[block['id']])
-    bad_capture = not prewarm_valid or not detail_valid or any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or q['open_spans'] for q in quality)
+    bad_capture = (not prewarm_valid or not detail_valid or not readiness['mode_valid'] or
+                   any(not q['header'] or not q['footer'] or q['dropped'] or q['io_error'] or q['invalid_lines'] or
+                       q['open_spans'] > q['post_window_open_spans'] + q['shutdown_tail_open_spans']
+                       for q in quality))
     # Unexplained gaps invalidate completeness even when some blocks survived.
     representatives = {str(p): nearest_rank(eligible, p) if not bad_capture else None for p in (50,90,99)}
     attempts = sorted((s for s in spans if s['name'] == 'handle_propose'),
@@ -372,19 +451,27 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
             'representatives':representatives, 'eligible':len(eligible), 'warmup':warmup,
             'unexplained_attempts':sum(a['status'] == 'unexplained_unassociated' for a in attempt_details),
             'attempt_details':attempt_details, 'attempts':len(attempts), 'unbound_attempts':sum(not s.get('block') for s in attempts),
+            'read_readiness': readiness, 'workload_population': workload_population,
             'coverage':sorted({s['name'] for s in rows}), 'stages':list(STAGES), 'bad_capture':bad_capture,
             'definition':('Milestone-only capture: detailed proof, storage, network and poll spans are intentionally disabled. This report measures coarse lifecycle intervals and does not provide complete operation coverage. ' if detail == 'milestones' else '') +
-                'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the load window. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
+                'Proposal handling start on proposer → first accepted finalization certificate on a validator. Nearest-rank percentiles select actual complete blocks; initial complete blocks are excluded as warmup. When load boundaries are available, both endpoints must fall inside the process window. If workload_population.source is sender_block_range_nonempty, percentiles additionally require a nonempty sender-listed block with matching transaction count; setup and post-load processing blocks are excluded. All views exclude data at or after the first engine persistence backpressure event on either validator; crossing spans are right-censored and crossing aggregates omitted.'}
 
 
-def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None, scheduler_dir=None):
+def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail=None, expected_prewarm_cpu=None, scheduler_dir=None, workload_report=None):
     from progress import emit
     if prune:
         emit('lifecycle_prune', 'begin')
         paths, window = prepare_captures(paths, out, window)
         emit('lifecycle_prune', 'end')
     emit('lifecycle_build', 'begin')
-    data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu)
+    workload_blocks = None
+    workload_status = None
+    if workload_report is not None:
+        import workload
+        workload_blocks, workload_status = workload.load_for_capture(workload_report, window)
+    data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu, workload_blocks)
+    if workload_status is not None:
+        data['workload_population']['sender_report'] = workload_status
     emit('lifecycle_build', 'end')
     out.mkdir(parents=True, exist_ok=True)
     if scheduler_dir is not None:
@@ -420,6 +507,7 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--window', type=Path)
+    parser.add_argument('--workload-report', type=Path, help='Private sender report; select its complete nonempty workload blocks')
     parser.add_argument('--scheduler-dir', type=Path, help='Require matching private scheduler captures')
     parser.add_argument('--prune', action='store_true', help='Publish only pre-backpressure raw captures alongside the report')
     parser.add_argument('--expected-detail', choices=('full', 'milestones'), help='Reject captures whose recorder detail does not match the requested mode')
@@ -428,7 +516,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     window = json.loads(args.window.read_text()) if args.window and args.window.exists() else (
         {'start_ns': 0, 'end_ns': 0, 'stop_reason': 'load_not_started'} if args.window else None)
-    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu, args.scheduler_dir)
+    result = write_report(args.captures, args.out, args.warmup, window, args.prune, args.expected_detail, args.expected_prewarm_cpu, args.scheduler_dir, args.workload_report)
     print(f"Lifecycle report: {len(result['blocks'])} blocks, {result['eligible']} complete post-warmup blocks; invalid capture: {result['bad_capture']}")
     if result['bad_capture'] or not result['eligible']:
         raise SystemExit(2)

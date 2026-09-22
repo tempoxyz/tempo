@@ -110,7 +110,8 @@ print $"phase-result=($result)"
             (root / 'fixture.nu').write_text(script)
             result = subprocess.run(['nu', '--no-config-file', 'fixture.nu'], cwd=root,
                                     env=dict(os.environ, PATH=str(root)+os.pathsep+os.environ['PATH'],
-                                             LIFECYCLE_TEST_FAILURE=failure),
+                                             LIFECYCLE_TEST_FAILURE=failure,
+                                             BENCH_READ_READINESS='false'),
                                     text=True, capture_output=True)
             effects = dict(tuned=(root / 'tuning-effect').exists(),
                            key=any((root / 'localnet').glob('lifecycle-key-*')),

@@ -31,7 +31,8 @@ class ProgressTests(unittest.TestCase):
         for code in (0, 7):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                self.fixture(root, '''emit('lifecycle_build','begin')
+                self.fixture(root, '''assert sys.argv[sys.argv.index('--workload-report')+1] == 'results/report-feature-1.json'
+emit('lifecycle_build','begin')
 print('PRIVATE-PAYLOAD',flush=True)
 print('PRIVATE-TRACEBACK',file=sys.stderr,flush=True)
 for _ in range(500):
@@ -41,7 +42,7 @@ else: sys.exit(9)
 emit('lifecycle_build','end')
 '''+f'sys.exit({code})\n')
                 script = root/'test.nu'
-                script.write_text('let prewarm_report_args = []\nlet scheduler_report_args = []\nlet capture_detail = "full"\nlet lifecycle_report_dir = "out"\nlet lifecycle_dir = "private"\nlet ctx = {summary_warmup_blocks: 0}\nmut phase_exit = 0\n'+snippet+'\nprint $"phase_exit=($phase_exit)"\n')
+                script.write_text('let prewarm_report_args = []\nlet scheduler_report_args = []\nlet capture_detail = "full"\nlet lifecycle_report_dir = "out"\nlet lifecycle_dir = "private"\nlet ctx = {summary_warmup_blocks: 0, results_dir: "results"}\nlet phase = "feature-1"\nmut phase_exit = 0\n'+snippet+'\nprint $"phase_exit=($phase_exit)"\n')
                 child = subprocess.Popen(['nu',str(script)],cwd=root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
                 try:
                     with selectors.DefaultSelector() as ready:

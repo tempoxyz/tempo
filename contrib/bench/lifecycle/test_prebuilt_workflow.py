@@ -14,6 +14,34 @@ from prebuilt_workflow import inputs
 ROOT=Path(__file__).resolve().parents[3]
 
 
+def without_single_diagnostic(workflow):
+    """Reverse only the reviewed single-slot readiness diagnostic job settings."""
+    replacements = [
+        ('      max-parallel: 1\n', '      max-parallel: 5\n'),
+        ('        slot: [1]\n', '        slot: [1, 2, 3, 4, 5]\n'),
+        ('      BENCH_CAPACITY_SLOTS: "1"\n', '      BENCH_CAPACITY_SLOTS: "5"\n'),
+        ('      BENCH_CAPACITY_POLICY: "single_diagnostic_v1"\n', '      BENCH_CAPACITY_POLICY: "setup_failure_v2"\n'),
+        ('      BENCH_LIFECYCLE: "true"\n', "      BENCH_LIFECYCLE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') }}\n"),
+        ('      BENCH_LIFECYCLE_SCHEDULER: "false"\n', "      BENCH_LIFECYCLE_SCHEDULER: ${{ inputs.profiling == 'lifecycle-kernel-faults' }}\n"),
+        ('      BENCH_LIFECYCLE_DETAIL: "milestones"\n', "      BENCH_LIFECYCLE_DETAIL: ${{ inputs.profiling == 'lifecycle-compare-detail' && 'compare' || (inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-prewarm-cpu') && 'milestones' || 'full' }}\n"),
+        ('      BENCH_LIFECYCLE_PREWARM_CPU: "disabled"\n', "      BENCH_LIFECYCLE_PREWARM_CPU: ${{ inputs.profiling == 'lifecycle-compare-prewarm-cpu' && 'compare' || 'disabled' }}\n"),
+        ('      BENCH_DURATION: "30"\n', '      BENCH_DURATION: ${{ inputs.duration }}\n'),
+        ('      BENCH_SAMPLY: "false"\n', "      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}\n"),
+        ('      BENCH_TRACY: "off"\n', "      BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}\n"),
+        ('      BENCH_OTLP: "false"\n', "      BENCH_OTLP: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-kernel-faults' && inputs.otlp != false && inputs.otlp != 'false' }}\n"),
+        ('      BENCH_VALSCOPE: "false"\n', "      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-kernel-faults' && (inputs.valscope == true || inputs.valscope == 'true') }}\n"),
+        ('      BENCH_NO_SLACK: "true"\n', '      BENCH_NO_SLACK: ${{ inputs.no-slack }}\n'),
+        ('      BENCH_METRICS: "false"\n', "      BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}\n"),
+        ('      BENCH_FEATURE_ENV: ""\n      BENCH_READ_READINESS: "true"\n', '      BENCH_FEATURE_ENV: ${{ inputs.feature-env }}\n'),
+        ('      BENCH_RUN_PAIRS: "1"\n', "      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}\n"),
+        ('      BENCH_RUN_SIDE: "feature"\n', "      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}\n"),
+    ]
+    for current, previous in replacements:
+        assert workflow.count(current) == 1
+        workflow = workflow.replace(current, previous)
+    return workflow
+
+
 def without_main_runner_updates(workflow):
     # Reverse only the reviewed main d84e56a00b runner updates for frozen history.
     blocks = [
@@ -69,7 +97,8 @@ class Workflow(unittest.TestCase):
     def test_only_explicit_prebuilt_boundary_changes_workflow(self):
         source=(ROOT/'.github/workflows/bench-e2e.yml').read_text()
         # Frozen workflow including reviewed final cleanup; works in source-only checkouts.
-        self.assertEqual(hashlib.sha256(without_prebuilt(without_workspace_guard(source)).encode()).hexdigest(),'b5d893409234ae42d29d9202dfe72085edc23bbb4db1a52d8dfcec533ab3732b')
+        historical = without_prebuilt(without_workspace_guard(without_single_diagnostic(source)))
+        self.assertEqual(hashlib.sha256(historical.encode()).hexdigest(),'b5d893409234ae42d29d9202dfe72085edc23bbb4db1a52d8dfcec533ab3732b')
         self.assertIn('prebuilt_workflow.py',source)
         self.assertLess(source.index('id: refs'),source.index('- name: Admit exact prebuilt binaries'))
         self.assertLess(source.index('- name: Admit exact prebuilt binaries'),source.index('- name: Run e2e benchmark'))
