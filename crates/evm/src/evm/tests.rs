@@ -1571,7 +1571,7 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
     // The floor gas error (GasFloorMoreThanGasLimit) would only appear if gas_limit
     // were between intrinsic_gas and floor_gas, but AA intrinsic gas already exceeds
     // both values here.
-    {
+    let initial_gas = {
         let large_calldata = vec![0x42; 1000]; // 1000 non-zero bytes = 1000 tokens
 
         let (mut evm, tx_env) = create_evm_with_tx(
@@ -1583,17 +1583,14 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
 
         let result = evm.transact_detach(tx_env);
 
-        assert!(
-            matches!(
-                result,
-                Err(evm2::registry::HandlerError::IntrinsicGasTooLow {
-                    got: 31_000,
-                    required: initial_gas
-                }) if initial_gas > 31_000
-            ),
-            "Expected CallGasCostMoreThanGasLimit, got: {result:?}"
-        );
-    }
+        match result {
+            Err(evm2::registry::HandlerError::IntrinsicGasTooLow {
+                got: 31_000,
+                required: initial_gas,
+            }) if initial_gas > 31_000 => initial_gas,
+            other => panic!("Expected CallGasCostMoreThanGasLimit, got: {other:?}"),
+        }
+    };
 
     // Test 5: Success when gas_limit >= both initial_gas and floor_gas
     // Verifies floor_gas > initial_gas for large calldata (EIP-7623 scenario)
@@ -1616,10 +1613,10 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
         let gas = result.unwrap().result;
         // Verify floor_gas > initial_total_gas for this calldata (EIP-7623 scenario)
         assert!(
-            gas.floor_gas > 21_000,
+            gas.floor_gas > initial_gas,
             "Expected floor_gas ({}) > initial_total_gas ({}) for large calldata",
             gas.floor_gas,
-            21_000
+            initial_gas
         );
     }
 
@@ -4660,9 +4657,10 @@ mod runtime_tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
         precompiles::{
-            IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+            IZoneFactory, IZoneVerifier, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
+            ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
+        zones::{T13_ZONE_VERIFIER_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -5098,6 +5096,59 @@ mod runtime_tests {
             .discard();
         assert!(result.is_success(), "portal call failed: {result:?}");
         assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
+    }
+
+    #[test]
+    fn test_zone_verifier_runtime_is_shadowed_at_t13() {
+        let calldata = IZoneVerifier::verifyCall {
+            zoneId: 1,
+            tempoBlockNumber: 1,
+            anchorBlockNumber: 1,
+            anchorBlockHash: B256::ZERO,
+            expectedWithdrawalBatchIndex: 0,
+            nextZoneHeight: U256::ZERO,
+            blockTransition: IZoneVerifier::BlockTransition {
+                prevBlockHash: B256::ZERO,
+                nextBlockHash: B256::ZERO,
+            },
+            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+                prevProcessedHash: B256::ZERO,
+                nextProcessedHash: B256::ZERO,
+                prevDepositNumber: 0,
+                nextDepositNumber: 0,
+            },
+            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+                prevProcessedTokenCount: 0,
+                nextProcessedTokenCount: 0,
+            },
+            withdrawalQueueHash: B256::ZERO,
+            verifierConfig: Bytes::new(),
+            proof: Bytes::new(),
+        }
+        .abi_encode();
+
+        let execute = |spec| {
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(
+                &ZONE_VERIFIER_ADDRESS,
+                AccountInfo::default().with_code(Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME)),
+            );
+            let mut evm = configured_evm(spec, 0, false, db);
+            let result = evm
+                .system_call(SystemTx::new(
+                    ZONE_VERIFIER_ADDRESS,
+                    calldata.clone().into(),
+                ))
+                .unwrap()
+                .discard();
+            assert!(result.is_success(), "Zone verifier call failed: {result:?}");
+            IZoneVerifier::verifyCall::abi_decode_returns(&result.output).unwrap()
+        };
+
+        assert!(execute(TempoHardfork::T10));
+        assert!(execute(TempoHardfork::T11));
+        assert!(execute(TempoHardfork::T12));
+        assert!(!execute(TempoHardfork::T13));
     }
 
     #[test]

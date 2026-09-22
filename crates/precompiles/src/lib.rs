@@ -308,7 +308,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{
-        primitives::{B256, Bytes, U256, bytes},
+        primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
     };
     use evm2::{
@@ -320,7 +320,7 @@ mod tests {
         },
         registry::TxRegistry,
     };
-    use tempo_contracts::precompiles::{ITIP20, IZoneVerifier, UnknownFunctionSelector};
+    use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
     struct TestTypes;
@@ -995,65 +995,6 @@ mod tests {
                 "unexpected native ZoneVerifier activation at {spec:?}"
             );
         }
-    }
-
-    #[test]
-    fn test_zone_verifier_runtime_is_shadowed_at_t13() {
-        let calldata = IZoneVerifier::verifyCall {
-            zoneId: 1,
-            tempoBlockNumber: 1,
-            anchorBlockNumber: 1,
-            anchorBlockHash: B256::ZERO,
-            expectedWithdrawalBatchIndex: 0,
-            nextZoneHeight: U256::ZERO,
-            blockTransition: IZoneVerifier::BlockTransition {
-                prevBlockHash: B256::ZERO,
-                nextBlockHash: B256::ZERO,
-            },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
-                prevProcessedHash: B256::ZERO,
-                nextProcessedHash: B256::ZERO,
-                prevDepositNumber: 0,
-                nextDepositNumber: 0,
-            },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
-                prevProcessedTokenCount: 0,
-                nextProcessedTokenCount: 0,
-            },
-            withdrawalQueueHash: B256::ZERO,
-            verifierConfig: Bytes::new(),
-            proof: Bytes::new(),
-        }
-        .abi_encode();
-
-        for spec in [TempoHardfork::T10, TempoHardfork::T11, TempoHardfork::T12] {
-            let mut evm = test_evm(spec, false);
-            let mut precompiles = test_tempo_precompiles(spec);
-            let message = Message::<TestTypes> {
-                kind: MessageKind::Call,
-                gas_limit: 1_000_000,
-                destination: ZONE_VERIFIER_ADDRESS,
-                code_address: ZONE_VERIFIER_ADDRESS,
-                input: calldata.clone().into(),
-                caller: Address::repeat_byte(0x77),
-                ..Default::default()
-            };
-            let mut gas = GasTracker::new(message.gas_limit);
-            assert!(
-                precompiles.execute(&mut evm, &message, &mut gas).is_none(),
-                "runtime must remain visible before T13"
-            );
-        }
-
-        let (result, _) = call_tempo(
-            TempoHardfork::T13,
-            calldata.into(),
-            MessageKind::Call,
-            ZONE_VERIFIER_ADDRESS,
-            ZONE_VERIFIER_ADDRESS,
-            false,
-        );
-        assert!(!IZoneVerifier::verifyCall::abi_decode_returns(result.unwrap().bytes()).unwrap());
     }
 
     #[test]

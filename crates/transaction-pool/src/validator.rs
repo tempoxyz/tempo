@@ -1073,6 +1073,45 @@ mod tests {
     }
 
     #[test]
+    fn nonce_bound_check_only_exempts_expiring_nonces() {
+        for nonce in [0, 1, u64::MAX - 1, u64::MAX] {
+            let sender = Address::random();
+            for tx in [
+                TxBuilder::eip1559(sender).nonce(nonce).build_eip1559(),
+                TxBuilder::aa(sender).nonce(nonce).build(),
+                TxBuilder::aa(sender)
+                    .nonce_key(U256::from(1))
+                    .nonce(nonce)
+                    .build(),
+                TxBuilder::aa(sender)
+                    .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+                    .nonce(nonce)
+                    .valid_before(TEST_VALIDITY_WINDOW)
+                    .build(),
+            ] {
+                assert_eq!(
+                    tx.nonce(),
+                    nonce,
+                    "test transaction must preserve its nonce"
+                );
+                let validator = setup_validator(&tx, 1);
+                let result = validator
+                    .inner
+                    .validate_stateless(TransactionOrigin::External, &tx);
+                if nonce == u64::MAX && !tx.is_expiring_nonce() {
+                    assert!(
+                        matches!(result, Err(InvalidPoolTransactionError::Eip2681)),
+                        "expected EIP-2681 rejection for nonce key {:?}, got {result:?}",
+                        tx.nonce_key(),
+                    );
+                } else {
+                    assert!(result.is_ok(), "unexpected stateless rejection: {result:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn state_cache_for_tip_reuses_only_matching_tip_cache() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);

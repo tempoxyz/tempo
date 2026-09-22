@@ -2730,6 +2730,16 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
 
 mod keychain {
     use super::*;
+    use evm2::Inspector;
+
+    #[derive(Default)]
+    struct LogInspector(Vec<Address>);
+
+    impl Inspector<TempoEvmTypes> for LogInspector {
+        fn log(&mut self, log: &alloy_primitives::Log, _host: &mut crate::TempoEvm<'_>) {
+            self.0.push(log.address);
+        }
+    }
 
     pub(super) fn generate_keypair() -> (PrivateKeySigner, Address) {
         let signer = PrivateKeySigner::random();
@@ -3574,10 +3584,7 @@ mod keychain {
 
         let result = validate_against_state(&mut evm, &env);
         assert!(
-            !matches!(
-                result.as_ref().err().and_then(invalid_transaction),
-                Some(TempoInvalidTransaction::KeychainValidationFailed { .. })
-            ),
+            result.is_ok(),
             "Valid authorized key should pass, got: {result:?}"
         );
     }
@@ -3688,15 +3695,7 @@ mod keychain {
 
         let result = validate_against_state(&mut evm, &env);
         assert!(
-            !matches!(
-                result.as_ref().err().and_then(invalid_transaction),
-                Some(
-                    TempoInvalidTransaction::KeychainValidationFailed { .. }
-                        | TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
-                        | TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { .. }
-                        | TempoInvalidTransaction::KeychainPrecompileError { .. }
-                )
-            ),
+            result.is_ok(),
             "Same-tx auth+use should pass when key does not exist, got: {result:?}"
         );
     }
@@ -3758,6 +3757,7 @@ mod keychain {
         let context = TempoHandlerHooks::resolve_fee_context(&mut evm, &env).unwrap();
         assert_eq!(context.collected, fee);
 
+        evm.set_inspector(LogInspector::default());
         let result = evm.transact(&Recovered::new_unchecked(env, user));
 
         assert!(
@@ -3769,10 +3769,16 @@ mod keychain {
             "same-tx auth+use should reject fee above the new key limit before auth, got: {result:?}"
         );
         drop(result);
+        let inspector = evm
+            .inspector()
+            .unwrap()
+            .downcast_ref::<LogInspector>()
+            .unwrap();
         assert!(
-            evm.logs()
+            inspector
+                .0
                 .iter()
-                .all(|log| log.address != tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS),
+                .all(|address| *address != tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS),
             "fee-limit rejection must happen before key authorization emits events"
         );
     }
