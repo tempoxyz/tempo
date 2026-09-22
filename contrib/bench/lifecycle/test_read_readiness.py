@@ -8,6 +8,22 @@ def event(stage, ts=100, block='a', ident=1, **fields):
     return {'type':'event','ts':ts,'id':ident,'node':'Validator A','block':block,'fields':{'stage':stage,**fields}}
 
 class ReadinessTests(unittest.TestCase):
+    def test_overlap_root_tail_and_grouping_fields_are_numeric_and_pruned(self):
+        from read_readiness import CACHE_FIELDS, ROOT_FIELDS, PROOF_FIELDS
+        for stage, fields in [('execution_cache_readiness', CACHE_FIELDS),
+                              ('proof_root_tail_totals', ROOT_FIELDS),
+                              ('proof_dispatch_totals', PROOF_FIELDS)]:
+            numeric = {name: 1 for name in fields}
+            events = [event(stage, ts=90, **numeric, key='private', address='private'),
+                      event(stage, ts=100, **numeric),
+                      event(stage, ts=110, **numeric),
+                      event(stage, ts=95, **{name: 'private' for name in fields})]
+            result = build(events, [{'read_readiness':'v1'}], {'a':1}, 0, cutoff=100)
+            self.assertEqual(len(result['events']), 2)
+            self.assertEqual(result['events'][0]['fields'], numeric)
+            self.assertEqual(result['events'][0]['block'], 1)
+            self.assertEqual(result['events'][1]['fields'], {})
+
     def test_queue_and_backing_latency_numeric_fields_and_cutoff(self):
         events = [event('execution_cache_readiness', ts=90,
                         storage_backing_inflight_count=2, storage_backing_inflight_ns=300,
