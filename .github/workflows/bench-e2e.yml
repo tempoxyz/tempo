@@ -406,7 +406,8 @@ jobs:
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       BENCH_RUN_SIDE: ${{ inputs.run-side || 'comparison' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
-      BENCHMARK_ID: bench-e2e-${{ github.run_id }}
+      BENCHMARK_ID: bench-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      BENCH_EXECUTION_URL: https://dev-eu-tempo-internal-perf.tail388b2e.ts.net/execution/${{ github.repository_owner }}:${{ github.event.repository.name }}:${{ github.run_id }}:${{ github.run_attempt }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
@@ -1053,6 +1054,14 @@ jobs:
             echo "url=${VALSCOPE_REPORTS_BASE_URL%/}/${BENCHMARK_ID}/" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Publish benchmark execution
+        if: always() && steps.results-dir.outputs.path != ''
+        continue-on-error: true
+        env:
+          EXECUTION_STATUS: ${{ job.status }}
+          EXECUTION_RESULTS: ${{ steps.results-dir.outputs.path }}
+        run: python3 .github/scripts/bench-execution.py "$EXECUTION_RESULTS" --status "$EXECUTION_STATUS"
+
       - name: Upload results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1225,7 +1234,7 @@ jobs:
             } else if (grafanaSection) {
               summary += observabilityHeading + grafanaSection;
             }
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${samplySection}${tracySection}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [Benchmark results](${process.env.BENCH_EXECUTION_URL}) · [View job](${jobUrl})\n\n${summary}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {

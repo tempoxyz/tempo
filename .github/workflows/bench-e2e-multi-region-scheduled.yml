@@ -155,6 +155,7 @@ jobs:
     name: bench-e2e-multi-region-scheduled
     uses: ./.github/workflows/bench-e2e-multi-region.yml
     permissions:
+      issues: write
       actions: read
       contents: read
       id-token: write

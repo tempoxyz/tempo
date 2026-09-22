@@ -839,7 +839,15 @@ def txgen-run-preset-pipeline [
             ["--report" $"clickhouse:($clickhouse_url)" "--clickhouse-metrics-file" ([ (txgen-repo-root) $TXGEN_HELPER_CLICKHOUSE_METRICS_FILE ] | path join)]
         } else { [] })
     let pr_number = ($env | get --optional BENCH_PR | default "")
+    let github_repository = ($env | get --optional GITHUB_REPOSITORY | default "")
+    let github_run_id = ($env | get --optional GITHUB_RUN_ID | default "")
+    let github_run_attempt = ($env | get --optional GITHUB_RUN_ATTEMPT | default "")
+    let github_workflow = ($env | get --optional GITHUB_WORKFLOW_REF | default "")
     let metadata_args = [
+        "-m" $"github_repository=($github_repository)"
+        "-m" $"github_run_id=($github_run_id)"
+        "-m" $"github_run_attempt=($github_run_attempt)"
+        "-m" $"github_workflow_ref=($github_workflow)"
         "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
