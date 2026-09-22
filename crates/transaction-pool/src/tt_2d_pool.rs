@@ -217,7 +217,8 @@ impl AA2dPool {
     ///
     /// `on_chain_nonce` is expected to be the nonce of the sender at the time of validation.
     /// If transaction is using 2D nonces, this is expected to be the nonce corresponding
-    /// to the transaction's nonce key.
+    /// to the transaction's nonce key. Validation and pool nonce maintenance run separately,
+    /// so this nonce can lag the pool's current lane state.
     ///
     /// `hardfork` indicates the active Tempo hardfork. When T1 or later, expiring nonce
     /// transactions (nonce_key == U256::MAX) are handled specially. Otherwise, they are
@@ -348,8 +349,10 @@ impl AA2dPool {
 
         // clean up replaced
         if let Some(replaced) = &replaced {
-            // we only need to remove it from the hash list, because we already replaced it in the by id set,
-            // and if this is the independent transaction, it will be replaced by the new transaction below
+            // Clear the old independent entry even if a stale validation nonce parks the
+            // replacement. The pending path below re-inserts it when eligible.
+            self.independent_transactions
+                .remove(tx_id.seq_id, Some(tx_id.nonce));
             self.by_hash.remove(replaced.inner.transaction.hash());
             // Remove from eviction set
             self.remove_eviction_key(replaced);
@@ -5982,6 +5985,79 @@ mod tests {
             PoolErrorKind::SpammerExceededCapacity(_)
         ));
         pool.assert_invariants();
+    }
+
+    #[test]
+    fn lane_limit_parked_replacement_clears_independent_transaction() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_lane: 1,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let make_tx = |key, nonce, fee| {
+            Arc::new(wrap_valid_tx(
+                TxBuilder::aa(sender)
+                    .nonce_key(key)
+                    .nonce(nonce)
+                    .max_priority_fee(fee)
+                    .max_fee(fee * 2)
+                    .build(),
+                TransactionOrigin::External,
+            ))
+        };
+        let original = make_tx(nonce_key, 5, 2_000_000_000);
+        pool.add_transaction(original.clone(), 5, TempoHardfork::T1)
+            .unwrap();
+        let other_lane = make_tx(U256::from(2), 0, 1_000_000_000);
+        pool.add_transaction(other_lane.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        assert_eq!(
+            pool.best_transactions().next().unwrap().hash(),
+            original.hash()
+        );
+        pool.assert_invariants();
+
+        // Validation can supply an older nonce than pool maintenance has observed.
+        // The full lane's independent transaction is replaced but now has a nonce gap.
+        let replacement = make_tx(nonce_key, 5, 4_000_000_000);
+        let added = pool
+            .add_transaction(replacement.clone(), 4, TempoHardfork::T1)
+            .unwrap();
+        assert!(added.as_pending().is_none());
+        assert_eq!(added.replaced().unwrap().hash(), original.hash());
+        assert!(!pool.contains(original.hash()));
+        assert!(pool.contains(replacement.hash()));
+        assert!(!pool.independent_transactions.contains_key(&seq_id));
+        assert_eq!(pool.txs_by_lane[&seq_id], 1);
+        assert_eq!(pool.txs_by_sender[&sender], 2);
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 1));
+        pool.assert_invariants();
+        assert_eq!(
+            pool.best_transactions()
+                .map(|tx| *tx.hash())
+                .collect::<Vec<_>>(),
+            vec![*other_lane.hash()]
+        );
+
+        // Gap filling must promote the replacement and rebuild the independent index.
+        let gap = make_tx(nonce_key, 4, 3_000_000_000);
+        let added = pool
+            .add_transaction(gap.clone(), 4, TempoHardfork::T1)
+            .unwrap();
+        let pending = added.as_pending().unwrap();
+        assert_eq!(pending.promoted.len(), 1);
+        assert_eq!(pending.promoted[0].hash(), replacement.hash());
+        assert_eq!(pool.txs_by_lane[&seq_id], 2);
+        assert_eq!(pool.pending_and_queued_txn_count(), (3, 0));
+        pool.assert_invariants();
+        assert_eq!(
+            pool.best_transactions()
+                .map(|tx| *tx.hash())
+                .collect::<Vec<_>>(),
+            vec![*gap.hash(), *replacement.hash(), *other_lane.hash()]
+        );
     }
 
     #[test]
