@@ -19,15 +19,22 @@ pub(crate) struct TransactionWaiter {
     runtime: Handle,
     deadline: Instant,
     idle_elapsed: Duration,
+    /// Parallel results include EVM execution; ordinary iterator handoffs do not.
+    waits_for_execution: bool,
 }
 
 impl TransactionWaiter {
-    pub(crate) fn new(executor: &TaskExecutor, pending: mpsc::Receiver<B256>) -> Self {
+    pub(crate) fn new(
+        executor: &TaskExecutor,
+        pending: mpsc::Receiver<B256>,
+        waits_for_execution: bool,
+    ) -> Self {
         Self {
             pending: Some(pending),
             runtime: executor.handle().clone(),
             deadline: Instant::now(),
             idle_elapsed: Duration::ZERO,
+            waits_for_execution,
         }
     }
 
@@ -58,7 +65,7 @@ impl TransactionWaiter {
                 () = pending_transactions_changed(&mut self.pending), if pool_idle => WaitResult::PoolChanged,
             }
         });
-        if pool_idle {
+        if pool_idle || !self.waits_for_execution {
             self.idle_elapsed += start.elapsed();
         }
         result
@@ -88,7 +95,7 @@ mod tests {
     fn ready_work_wins_without_consuming_pool_notifications() {
         let executor = TaskExecutor::test();
         let (sender, receiver) = mpsc::channel(8);
-        let mut waiter = TransactionWaiter::new(&executor, receiver);
+        let mut waiter = TransactionWaiter::new(&executor, receiver, true);
         waiter.set_deadline(Instant::now() + Duration::from_secs(1));
         for _ in 0..8 {
             sender.try_send(B256::ZERO).unwrap();
@@ -112,7 +119,7 @@ mod tests {
     fn pool_arrival_wakes_an_idle_wait() {
         let executor = TaskExecutor::test();
         let (sender, receiver) = mpsc::channel(1);
-        let mut waiter = TransactionWaiter::new(&executor, receiver);
+        let mut waiter = TransactionWaiter::new(&executor, receiver, true);
         waiter.set_deadline(Instant::now() + Duration::from_secs(5));
         let sender = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(10));
@@ -130,7 +137,7 @@ mod tests {
     fn closed_subscription_waits_until_deadline() {
         let executor = TaskExecutor::test();
         let (sender, receiver) = mpsc::channel(1);
-        let mut waiter = TransactionWaiter::new(&executor, receiver);
+        let mut waiter = TransactionWaiter::new(&executor, receiver, true);
         drop(sender);
         let deadline = Instant::now() + Duration::from_millis(10);
         waiter.set_deadline(deadline);
@@ -144,10 +151,31 @@ mod tests {
     }
 
     #[test]
+    fn only_execution_waits_are_charged_as_replayable_work() {
+        for waits_for_execution in [false, true] {
+            let executor = TaskExecutor::test();
+            let (_sender, receiver) = mpsc::channel(1);
+            let mut waiter = TransactionWaiter::new(&executor, receiver, waits_for_execution);
+            waiter.set_deadline(Instant::now() + Duration::from_secs(5));
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let producer = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(10));
+                sender.send(42).unwrap();
+            });
+            assert!(matches!(
+                waiter.wait(receiver, false),
+                WaitResult::Ready(Ok(42))
+            ));
+            assert_eq!(waiter.take_idle_elapsed().is_zero(), waits_for_execution);
+            producer.join().unwrap();
+        }
+    }
+
+    #[test]
     fn elapsed_deadline_does_not_consume_ready_work() {
         let executor = TaskExecutor::test();
         let (_sender, receiver) = mpsc::channel(1);
-        let mut waiter = TransactionWaiter::new(&executor, receiver);
+        let mut waiter = TransactionWaiter::new(&executor, receiver, true);
         let (sender, mut ready) = mpsc::channel(1);
         sender.try_send(42).unwrap();
         assert!(matches!(

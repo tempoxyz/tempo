@@ -827,9 +827,12 @@ mod tests {
         )
     }
 
-    fn test_waiter(executor: &TaskExecutor) -> (TransactionWaiter, async_mpsc::Sender<B256>) {
+    fn test_waiter(
+        executor: &TaskExecutor,
+        parallel: bool,
+    ) -> (TransactionWaiter, async_mpsc::Sender<B256>) {
         let (pending_tx, pending_rx) = async_mpsc::channel(1);
-        let mut waiter = TransactionWaiter::new(executor, pending_rx);
+        let mut waiter = TransactionWaiter::new(executor, pending_rx, parallel);
         waiter.set_deadline(Instant::now() + Duration::from_secs(5));
         (waiter, pending_tx)
     }
@@ -870,7 +873,7 @@ mod tests {
     #[test]
     fn budgeted_wait_retries_on_pool_arrival_then_receives_ready_work() {
         let executor = TaskExecutor::test();
-        let (mut waiter, pending_tx) = test_waiter(&executor);
+        let (mut waiter, pending_tx) = test_waiter(&executor, true);
         let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
@@ -900,7 +903,7 @@ mod tests {
     #[test]
     fn budgeted_wait_does_not_queue_advances_on_timeout() {
         let executor = TaskExecutor::test();
-        let (mut waiter, _pending_tx) = test_waiter(&executor);
+        let (mut waiter, _pending_tx) = test_waiter(&executor, true);
         let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         for _ in 0..3 {
             waiter.set_deadline(Instant::now() + Duration::from_millis(1));
@@ -931,7 +934,7 @@ mod tests {
     #[test]
     fn ready_prewarm_wakes_an_idle_builder_without_a_pool_arrival() {
         let executor = TaskExecutor::test();
-        let (mut waiter, _pending_tx) = test_waiter(&executor);
+        let (mut waiter, _pending_tx) = test_waiter(&executor, true);
         let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
@@ -958,7 +961,7 @@ mod tests {
     fn budgeted_wait_resumes_after_idle_in_both_prewarming_modes() {
         for parallel in [false, true] {
             let executor = TaskExecutor::test();
-            let (mut waiter, pending_tx) = test_waiter(&executor);
+            let (mut waiter, pending_tx) = test_waiter(&executor, parallel);
             let (incoming, incoming_rx) = mpsc::channel();
             let mut source = TestBestTransactions::new(Vec::new(), Arc::default());
             source.incoming = Some(incoming_rx);
@@ -1006,7 +1009,7 @@ mod tests {
     #[test]
     fn invalidation_replaces_an_outstanding_advance() {
         let executor = TaskExecutor::test();
-        let (mut waiter, _pending_tx) = test_waiter(&executor);
+        let (mut waiter, _pending_tx) = test_waiter(&executor, true);
         let (mut prewarming, old_tx, commands_rx) = prewarming_channels();
         waiter.set_deadline(Instant::now() + Duration::from_millis(1));
         assert!(prewarming.next_with_waiter(Some(&mut waiter)).is_none());
@@ -1086,7 +1089,7 @@ mod tests {
                     .send(test_tx(Address::random(), nonce as u64))
                     .unwrap();
             }
-            let (mut waiter, _pending_tx) = test_waiter(&executor);
+            let (mut waiter, _pending_tx) = test_waiter(&executor, parallel);
             waiter.set_deadline(Instant::now() + Duration::from_millis(100));
             let _ = prewarming.next_with_waiter(Some(&mut waiter));
             let deadline = Instant::now() + Duration::from_secs(1);
@@ -1098,7 +1101,9 @@ mod tests {
             release.wait();
             blocker.join().unwrap();
             assert_eq!(scheduled, expected);
-            assert_eq!(idle_elapsed, Duration::ZERO);
+            if parallel {
+                assert_eq!(idle_elapsed, Duration::ZERO);
+            }
         }
     }
 

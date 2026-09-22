@@ -483,6 +483,7 @@ where
                 &self.executor,
                 self.pool
                     .pending_transactions_listener_for(TransactionListenerKind::All),
+                self.config.enable_prewarming && self.config.enable_parallel,
             )
         });
         let raw_best_txs = best_txs(BestTransactionsAttributes::new(
