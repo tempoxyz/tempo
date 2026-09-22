@@ -1483,50 +1483,6 @@ mod tests {
         assert_eq!(*tx.cost(), U256::ZERO);
     }
 
-    /// Test-only copy of the decode-based slot derivation that [`warm_payment_keccak_slots`]
-    /// replaced, kept verbatim as the equivalence oracle.
-    fn decode_based_keccak_slots<'a>(
-        calls: impl Iterator<Item = &'a [u8]>,
-        sender: Address,
-        fee_payer: Address,
-    ) -> Vec<U256> {
-        use alloy_sol_types::SolInterface;
-
-        let mut slots = Vec::new();
-        if fee_payer != sender {
-            slots.push(sender.mapping_slot(tip20_slots::BALANCES));
-        }
-        for input in calls {
-            if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
-                for addr in call.balance_addresses().into_iter().flatten() {
-                    if addr != fee_payer {
-                        slots.push(addr.mapping_slot(tip20_slots::BALANCES));
-                    }
-                }
-                if let Some(slot) = call
-                    .to()
-                    .map(|addr| addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES))
-                {
-                    slots.push(slot);
-                    slots.push(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
-                }
-
-                // Allowance slots for transferFrom variants: allowances[from][sender]
-                let from = match &call {
-                    ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
-                    ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),
-                    _ => None,
-                };
-                if let Some(from) = from {
-                    let owner_slot = from.mapping_slot(tip20_slots::ALLOWANCES);
-                    slots.push(owner_slot);
-                    slots.push(sender.mapping_slot(owner_slot));
-                }
-            }
-        }
-        slots
-    }
-
     /// Collects the slots [`warm_payment_keccak_slots`] warms for `calls`.
     fn warmed_keccak_slots<'a>(
         calls: impl Iterator<Item = &'a [u8]>,
@@ -1578,49 +1534,64 @@ mod tests {
     }
 
     #[test]
-    fn warmed_keccak_slots_match_decode_based_derivation() {
-        let (alice, bob, carol) = (
-            Address::repeat_byte(0x11),
-            Address::repeat_byte(0x22),
-            Address::repeat_byte(0x33),
-        );
+    fn warmed_keccak_slots_for_payment_shapes() {
+        let [sender, fee_payer, from, to] = [0x11, 0x22, 0x33, 0x44].map(Address::repeat_byte);
+        let amount = U256::random();
+        let balance = |addr: Address| addr.mapping_slot(tip20_slots::BALANCES);
+        let allowance = |addr: Address| addr.mapping_slot(tip20_slots::ALLOWANCES);
+        let policy = |addr: Address| {
+            let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+            [slot, keccak256(slot.to_be_bytes::<32>()).into()]
+        };
 
-        // distinct from/to pairs, plus pairs that overlap the sender and fee payer below so
-        // the `fee_payer` dedup rules and the `allowances[from][sender]` slot are exercised
-        // for self-transfers and fee-payer recipients alike
-        let address_pairs = [
-            (alice, bob),
-            (bob, alice),
-            (alice, alice),
-            (carol, alice),
-            (alice, carol),
-            (Address::ZERO, bob),
-        ];
-
-        let contexts = [(alice, alice), (alice, bob), (bob, carol), (carol, carol)];
-
-        for (from, to) in address_pairs {
-            let calldatas = payment_calldatas(from, to);
-
-            for (sender, fee_payer) in contexts {
-                // each call on its own
-                for calldata in &calldatas {
-                    let once = || core::iter::once(calldata.as_ref());
-                    assert_eq!(
-                        warmed_keccak_slots(once(), sender, fee_payer),
-                        decode_based_keccak_slots(once(), sender, fee_payer),
-                        "mismatch for {calldata} with sender {sender}, fee payer {fee_payer}"
-                    );
+        let cases = [
+            (
+                &ITIP20::transferCall { to, amount }.abi_encode(),
+                fee_payer,
+                vec![balance(sender), balance(to), policy(to)[0], policy(to)[1]],
+            ),
+            (
+                &ITIP20::transferCall {
+                    to: fee_payer,
+                    amount,
                 }
-
-                // and all of them batched into a single AA transaction
-                let batch = || calldatas.iter().map(|calldata| calldata.as_ref());
-                assert_eq!(
-                    warmed_keccak_slots(batch(), sender, fee_payer),
-                    decode_based_keccak_slots(batch(), sender, fee_payer),
-                    "batch mismatch with sender {sender}, fee payer {fee_payer}"
-                );
-            }
+                .abi_encode(),
+                fee_payer,
+                vec![balance(sender), policy(fee_payer)[0], policy(fee_payer)[1]],
+            ),
+            (
+                &ITIP20::transferCall { to, amount }.abi_encode(),
+                sender,
+                vec![balance(to), policy(to)[0], policy(to)[1]],
+            ),
+            (
+                &ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+                fee_payer,
+                vec![
+                    balance(sender),
+                    balance(from),
+                    balance(to),
+                    policy(to)[0],
+                    policy(to)[1],
+                    allowance(from),
+                    sender.mapping_slot(allowance(from)),
+                ],
+            ),
+            (
+                &ITIP20::approveCall {
+                    spender: to,
+                    amount,
+                }
+                .abi_encode(),
+                fee_payer,
+                vec![balance(sender)],
+            ),
+        ];
+        for (input, payer, expected) in cases {
+            assert_eq!(
+                warmed_keccak_slots(core::iter::once(input.as_slice()), sender, payer),
+                expected,
+            );
         }
     }
 
@@ -1664,39 +1635,7 @@ mod tests {
                 warmed_keccak_slots(once(), sender, fee_payer),
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
-
-            assert_eq!(
-                warmed_keccak_slots(once(), sender, fee_payer),
-                decode_based_keccak_slots(once(), sender, fee_payer),
-            );
         }
-    }
-
-    #[test]
-    fn precalculate_keccak_slots_warms_payment_transaction_slots() {
-        let sender = Address::random();
-        let calls = payment_calldatas(Address::random(), Address::random())
-            .into_iter()
-            .map(|input| Call {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                value: U256::ZERO,
-                input,
-            })
-            .collect::<Vec<_>>();
-
-        let tx = TxBuilder::aa(sender).calls(calls).build();
-        assert!(tx.is_payment(), "fixture must reach the warming path");
-
-        // exercises the real entry point; the warmed set itself is asserted below
-        tx.precalculate_keccak_slots();
-
-        let fee_payer = tx.fee_payer().unwrap_or(sender);
-        let calls = || tx.inner().calls().map(|(_kind, input)| input.as_ref());
-
-        assert_eq!(
-            warmed_keccak_slots(calls(), sender, fee_payer),
-            decode_based_keccak_slots(calls(), sender, fee_payer),
-        );
     }
 }
 

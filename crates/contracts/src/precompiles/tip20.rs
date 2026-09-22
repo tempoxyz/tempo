@@ -208,36 +208,6 @@ impl ITIP20::ITIP20Calls {
     pub fn is_payment(input: &[u8]) -> bool {
         PaymentSlotsKind::from_calldata(input).is_some()
     }
-
-    /// Returns addresses whose balance slots are accessed by this call.
-    ///
-    /// For transfers: `[to]` or `[from, to]`. For mints: `[to]`.
-    /// For burns, approves, and view calls: empty.
-    pub fn balance_addresses(&self) -> [Option<Address>; 2] {
-        match self {
-            Self::transfer(c) => [Some(c.to), None],
-            Self::transferWithMemo(c) => [Some(c.to), None],
-            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
-            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
-            Self::mint(c) => [Some(c.to), None],
-            Self::mintWithMemo(c) => [Some(c.to), None],
-            _ => [None, None],
-        }
-    }
-
-    /// Returns addresses whose rewards slots are accessed by this call.
-    pub fn reward_addresses(&self, sender: Address) -> [Option<Address>; 2] {
-        match self {
-            Self::transfer(c) => [Some(sender), Some(c.to)],
-            Self::transferWithMemo(c) => [Some(sender), Some(c.to)],
-            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
-            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
-            Self::mint(c) => [Some(c.to), None],
-            Self::mintWithMemo(c) => [Some(c.to), None],
-            Self::burn(_) | Self::burnWithMemo(_) => [Some(sender), Some(Address::ZERO)],
-            _ => [None, None],
-        }
-    }
 }
 
 const WORD: usize = 32;
@@ -345,7 +315,7 @@ impl PaymentSlots {
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use alloy_primitives::{Address, B256, U256};
     use alloy_sol_types::SolInterface;
 
@@ -412,14 +382,13 @@ mod test {
 
             assert_eq!(classified.to(), decoded.to());
             assert_eq!(classified.from(), decoded_from(&decoded));
-            assert_eq!(
-                classified.addresses(),
-                decoded
-                    .balance_addresses()
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>(),
-            );
+            let expected = match (decoded_from(&decoded), decoded.to()) {
+                (Some(from), Some(to)) => vec![from, to],
+                (None, Some(to)) => vec![to],
+                (None, None) => vec![],
+                (Some(_), None) => unreachable!("payment owner without recipient"),
+            };
+            assert_eq!(classified.addresses(), expected);
         }
     }
 
