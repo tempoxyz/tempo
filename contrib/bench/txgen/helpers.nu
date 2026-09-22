@@ -868,12 +868,15 @@ def txgen-run-preset-pipeline [
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
+    # Controlled diagnostic: vary only the sender runtime, not node workers or
+    # generation/signing. Keep baseline at the runner's default worker count.
+    let sender_runtime = if ($benchmark_run | str starts-with "feature-") { ["env" "TOKIO_WORKER_THREADS=4"] } else { [] }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
     let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
-    let bench_cmd_str = (txgen-shell-join $bench_cmd)
+    let bench_cmd_str = (txgen-shell-join ($sender_runtime | append $bench_cmd | append "--collect-latencies"))
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
     if $use_two_phase_setup {
