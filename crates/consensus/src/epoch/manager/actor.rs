@@ -59,7 +59,6 @@ use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
-use reth_provider::HeaderProvider as _;
 use tempo_chainspec::TempoHardforks as _;
 use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
@@ -67,6 +66,7 @@ use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, war
 use crate::{
     consensus::Digest,
     epoch::manager::ingress::{EpochTransition, Exit},
+    storage::FinalizedBlocksProvider as _,
 };
 
 use super::ingress::{Content, Message};
@@ -113,6 +113,10 @@ where
             "latest_participants",
             "the number of participants in the most recently started epoch",
         );
+        let elector_version = context.gauge(
+            "elector_version",
+            "the elector version in the most recently started epoch (0 = V0, 1 = V1)",
+        );
         let how_often_signer = context.counter(
             "how_often_signer",
             "how often a node is a signer; a node is a signer if it has a share",
@@ -130,6 +134,7 @@ where
                 active_epochs,
                 latest_epoch,
                 latest_participants,
+                elector_version,
                 how_often_signer,
                 how_often_verifier,
             },
@@ -243,17 +248,23 @@ where
         }
     }
 
-    /// Read a finalized header, falling back to EL headers if the block body is unavailable.
+    /// Read an EL header only when covered by its finalized watermark, falling back to marshal.
     async fn get_header(&mut self, height: Height) -> eyre::Result<TempoHeader> {
-        if let Some(block) = self.config.marshal.get_block(height).await {
-            return Ok(block.header().clone());
+        if let Some(header) = self
+            .config
+            .execution_node
+            .provider
+            .header_by_height(height.get())
+            .wrap_err_with(|| format!("failed reading finalized EL header at height `{height}`"))?
+        {
+            return Ok(header);
         }
 
         self.config
-            .execution_node
-            .provider
-            .header_by_number(height.get())
-            .wrap_err_with(|| format!("failed reading finalized header at height `{height}`"))?
+            .marshal
+            .get_block(height)
+            .await
+            .map(|block| block.header().clone())
             .ok_or_eyre(format!("missing finalized header at height `{height}`"))
     }
 
@@ -359,6 +370,12 @@ where
         } else {
             elector::RandomVersion::V0
         };
+
+        #[expect(deprecated, reason = "retain the pre-T12 leader schedule")]
+        self.metrics.elector_version.metric().set(match elector {
+            elector::RandomVersion::V0 => 0,
+            elector::RandomVersion::V1 => 1,
+        });
 
         let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
         let engine = simplex::Engine::new(
@@ -509,6 +526,7 @@ struct Metrics {
     active_epochs: Gauge,
     latest_epoch: Gauge,
     latest_participants: Gauge,
+    elector_version: Gauge,
     how_often_signer: Counter,
     how_often_verifier: Counter,
 }

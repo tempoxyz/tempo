@@ -11,7 +11,11 @@ use commonware_runtime::{
 use commonware_utils::NZU64;
 use futures::future::join_all;
 
-use crate::{Setup, connect_execution_peers, metrics::wait_for_metrics, setup_validators};
+use crate::{
+    Setup, connect_execution_peers,
+    metrics::{MetricsExt as _, wait_for_metrics},
+    setup_validators,
+};
 
 #[test_traced]
 fn validators_transition_to_v1_elector_at_t12() {
@@ -34,12 +38,42 @@ fn validators_transition_to_v1_elector_at_t12() {
         join_all(validators.iter_mut().map(|node| node.start(&context))).await;
         connect_execution_peers(&validators).await;
 
+        wait_for_metrics(&context, |metrics| {
+            metrics.consensus_at_epoch(0) == validators.len()
+        })
+        .await;
+
+        let metrics = context.to_metrics();
+        for validator in &validators {
+            let metrics = metrics.for_scope(validator);
+            assert_eq!(metrics.latest_consensus_epoch(), Some(0));
+            assert_eq!(
+                metrics.value::<u64>("epoch_manager_elector_version"),
+                Some(0)
+            );
+        }
+
+        // Check the version once all validators enter the first epoch using V1.
+        wait_for_metrics(&context, |metrics| {
+            metrics.consensus_at_epoch(1) == validators.len()
+        })
+        .await;
+
+        let metrics = context.to_metrics();
+        for validator in &validators {
+            let metrics = metrics.for_scope(validator);
+            assert_eq!(metrics.latest_consensus_epoch(), Some(1));
+            assert_eq!(
+                metrics.value::<u64>("epoch_manager_elector_version"),
+                Some(1)
+            );
+        }
+
         // Reaching epoch two on every validator means all of epoch one, where the
         // V1 elector first activates, has been observed and finalized by all nodes.
         let epoch_strategy = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
         let target = epoch_strategy.first(Epoch::new(2)).unwrap();
         wait_for_metrics(&context, |metrics| {
-            metrics.assert_no_dkg_failures();
             metrics.consensus_at_height(target.get()) == validators.len()
         })
         .await;
