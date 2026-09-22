@@ -391,7 +391,8 @@ def build(paths, warmup=5, window=None, expected_detail=None, expected_prewarm_c
                    for e in events if e['node'] == attempt['node'] and e['id'] == attempt['id']
                    and e['fields'].get('stage') in STAGES]
         stages = {e['stage'] for e in markers}
-        status = ('cancelled' if 'cancelled' in stages else
+        status = ('post_window' if valid_load_window(window) and attempt['ts'] >= window['end_ns'] else
+                  'cancelled' if 'cancelled' in stages else
                   'failed' if 'proposal_failed' in stages else
                   'cutoff_incomplete' if attempt.get('right_censored') else
                   'shutdown_incomplete' if attempt['end'] is None else

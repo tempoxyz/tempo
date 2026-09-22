@@ -1248,6 +1248,14 @@ jobs:
         if: ${{ steps.capacity-election.outputs.selected == 'true' && (!cancelled() && (steps.bench.outcome == 'failure' || steps.results-dir.outcome == 'failure')) }}
         run: |
           SUMMARY=$(find bench-results -mindepth 3 -maxdepth 3 -path '*/lifecycle/summary.md' -type f | sort | tail -1)
+          if [ -z "$SUMMARY" ]; then
+            RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
+            if [ -n "$RESULTS_DIR" ]; then
+              attempted=$(find "$RESULTS_DIR" -maxdepth 1 -name 'phase-range-*.json' -type f | wc -l)
+              python3 contrib/bench/lifecycle/statistical_trial.py unavailable "$RESULTS_DIR" "$attempted" summary_admission
+              SUMMARY="$RESULTS_DIR/lifecycle/summary.md"
+            fi
+          fi
           if [ -n "$SUMMARY" ]; then
             cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
           fi

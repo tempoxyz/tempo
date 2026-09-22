@@ -511,6 +511,27 @@ class ReportTests(unittest.TestCase):
 
 
 class AttributionTests(unittest.TestCase):
+    def test_closed_post_window_attempt_does_not_hide_in_window_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'a.jsonl'
+            def capture(start):
+                records = [dict(type='header',schema=1),
+                    dict(type='start',id=1,ts=start,thread=1,name='handle_propose',
+                         category='consensus',parent=None,fields={}),
+                    dict(type='end',id=1,ts=start+100),
+                    dict(type='footer',dropped=0,io_error=False)]
+                path.write_text('\n'.join(map(json.dumps,records)))
+                return build([path],0,{'start_ns':100,'end_ns':1000,'stop_reason':'load_finished'})
+            post = capture(1000)
+            self.assertEqual(post['attempt_details'][0]['status'],'post_window')
+            self.assertFalse(post['attempt_details'][0]['complete'])
+            self.assertEqual(post['unexplained_attempts'],0)
+            self.assertFalse(post['bad_capture'])
+            overlapping = capture(999)
+            self.assertEqual(overlapping['attempt_details'][0]['status'],'unexplained_unassociated')
+            self.assertEqual(overlapping['unexplained_attempts'],1)
+            self.assertTrue(overlapping['bad_capture'])
+
     def test_attempt_outcomes_and_detached_payload_without_block(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'a.jsonl'
