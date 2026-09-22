@@ -789,7 +789,7 @@ jobs:
             try {
               const clickhouseRunId = fs.readFileSync(`${resultsDir}/clickhouse-run-id.txt`, 'utf8').trim();
               if (clickhouseRunId) {
-                const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
+                const dashboardUrl = `https://dev-eu-tempo-internal-perf.tail388b2e.ts.net/benchmark/${encodeURIComponent(clickhouseRunId)}`;
                 dashboardSection = `\n\n### Internal dashboard\n\n[Internal dashboard](${dashboardUrl})\n`;
               }
             } catch (e) {
