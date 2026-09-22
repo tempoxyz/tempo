@@ -156,6 +156,11 @@ where
         }
     }
 
+    /// Returns the wrapped iterator.
+    pub fn inner_mut(&mut self) -> &mut I {
+        &mut self.inner
+    }
+
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &impl TxResult) {

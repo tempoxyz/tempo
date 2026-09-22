@@ -1,92 +1,71 @@
-//! Wake an idle builder when the pool or prewarming has more work.
+//! Wait directly on pool arrivals without a forwarding task or a second channel.
 
 use alloy_primitives::B256;
-use crossbeam_channel::{Receiver, Sender, bounded};
-use reth_tasks::TaskExecutor;
-use std::time::Duration;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::mpsc;
 
-/// Cancellation is an atomic flag without a wakeup, so bound otherwise idle waits.
-const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(1);
-
-pub(crate) struct TransactionWaiter {
-    notifications: Receiver<()>,
-    notifier: Sender<()>,
-    pool_listener: JoinHandle<()>,
-}
-
-impl TransactionWaiter {
-    pub(crate) fn new(executor: &TaskExecutor, mut pending: mpsc::Receiver<B256>) -> Self {
-        // Coalesce notifications: they are hints to retry the iterator, not transactions to consume.
-        let (notifier, notifications) = bounded(1);
-        let pool_notifier = notifier.clone();
-        let pool_listener = executor.spawn_task(async move {
-            while pending.recv().await.is_some() {
-                let _ = pool_notifier.try_send(());
-            }
-        });
-        Self {
-            notifications,
-            notifier,
-            pool_listener,
-        }
+/// Coalesce buffered arrivals into one retry of the best-transaction iterator.
+/// A missing or closed subscription must not make an idle consumer spin.
+pub(crate) async fn pending_transactions_changed(pending: &mut Option<mpsc::Receiver<B256>>) {
+    let Some(receiver) = pending else {
+        return std::future::pending().await;
+    };
+    if receiver.recv().await.is_none() {
+        *pending = None;
+        return std::future::pending().await;
     }
-
-    pub(crate) fn notifier(&self) -> Sender<()> {
-        self.notifier.clone()
-    }
-
-    /// A notification already queued before this call also wakes the builder immediately.
-    pub(crate) fn wait(&self, remaining_budget: Duration) -> bool {
-        self.notifications
-            .recv_timeout(remaining_budget.min(CANCEL_CHECK_INTERVAL))
-            .is_ok()
-    }
-}
-
-impl Drop for TransactionWaiter {
-    fn drop(&mut self) {
-        self.pool_listener.abort();
+    // Bound the drain so a continuous stream cannot delay cancellation or other work.
+    for _ in 0..receiver.len() {
+        let _ = receiver.try_recv();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    #[test]
-    fn pending_transaction_wakes_builder() {
-        let executor = TaskExecutor::test();
-        let (pending, receiver) = mpsc::channel(1);
-        let waiter = TransactionWaiter::new(&executor, receiver);
-        pending.blocking_send(B256::ZERO).unwrap();
-        waiter
-            .notifications
-            .recv_timeout(Duration::from_secs(5))
-            .expect("pool notification must reach the builder");
+    #[tokio::test]
+    async fn buffered_arrivals_are_coalesced() {
+        let (sender, receiver) = mpsc::channel(8);
+        let mut pending = Some(receiver);
+        for _ in 0..8 {
+            sender.try_send(B256::ZERO).unwrap();
+        }
+        pending_transactions_changed(&mut pending).await;
+        assert!(pending.as_ref().unwrap().is_empty());
+        sender.try_send(B256::ZERO).unwrap();
+        pending_transactions_changed(&mut pending).await;
+        assert!(pending.as_ref().unwrap().is_empty());
     }
 
-    #[test]
-    fn notifications_before_wait_are_retained_and_coalesced() {
-        let executor = TaskExecutor::test();
-        let (_pending, receiver) = mpsc::channel(1);
-        let waiter = TransactionWaiter::new(&executor, receiver);
-        let notifier = waiter.notifier();
-        notifier.try_send(()).unwrap();
-        assert!(notifier.try_send(()).unwrap_err().is_full());
-        assert!(waiter.wait(Duration::ZERO));
-        assert!(!waiter.wait(Duration::ZERO));
-    }
-
-    #[test]
-    fn dropping_waiter_closes_pool_listener() {
-        let executor = TaskExecutor::test();
-        let (pending, receiver) = mpsc::channel(1);
-        drop(TransactionWaiter::new(&executor, receiver));
-        executor.handle().block_on(async {
-            tokio::time::timeout(Duration::from_secs(5), pending.closed())
-                .await
-                .expect("builder drop must release the pool subscription");
+    #[tokio::test]
+    async fn arrivals_wake_an_idle_consumer() {
+        let (sender, receiver) = mpsc::channel(1);
+        let mut pending = Some(receiver);
+        let waiter = tokio::spawn(async move {
+            pending_transactions_changed(&mut pending).await;
         });
+        tokio::task::yield_now().await;
+        sender.send(B256::ZERO).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn closed_subscription_does_not_spin() {
+        let (sender, receiver) = mpsc::channel(1);
+        let mut pending = Some(receiver);
+        drop(sender);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(1),
+                pending_transactions_changed(&mut pending)
+            )
+            .await
+            .is_err()
+        );
+        assert!(pending.is_none());
     }
 }
