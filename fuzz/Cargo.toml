@@ -1,0 +1,41 @@
+[package]
+name = "tempo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+alloy-primitives = "1.7.3"
+alloy-rlp = "0.3.16"
+alloy-sol-types = "1.7.3"
+libfuzzer-sys = "0.4"
+tempo-contracts = { path = "../crates/contracts", default-features = false, features = ["std"] }
+tempo-primitives = { path = "../crates/primitives", default-features = false, features = ["std"] }
+
+[build-dependencies]
+alloy-primitives = "1.7.3"
+alloy-rlp = "0.3.16"
+alloy-sol-types = "1.7.3"
+tempo-contracts = { path = "../crates/contracts", default-features = false, features = ["std"] }
+tempo-primitives = { path = "../crates/primitives", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "consensus-rlp"
+path = "fuzz_targets/consensus_rlp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "strict-abi"
+path = "fuzz_targets/strict_abi.rs"
+test = false
+doc = false
+bench = false
+
+# Keep the fuzz package independent from the parent workspace.
+[workspace]
+members = ["."]
