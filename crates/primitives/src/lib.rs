@@ -10,6 +10,9 @@ mod address;
 pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
 pub mod ed25519;
 
+#[cfg(feature = "serde")]
+pub mod serde_rlp;
+
 #[cfg(feature = "evm")]
 mod block;
 #[cfg(feature = "evm")]
