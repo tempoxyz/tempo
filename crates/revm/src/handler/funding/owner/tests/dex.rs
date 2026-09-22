@@ -549,7 +549,7 @@ fn public_quotes_bound_availability_without_moving_funds() {
                 U256::from(ceiling)
             },
             maxCost: U256::from(budget),
-            data: (input, U256::from(cap)).abi_encode().into(),
+            requestData: (input, U256::from(cap)).abi_encode().into(),
             policyData: Bytes::new(),
             ownerAuthorized: true,
         };
@@ -585,7 +585,7 @@ fn public_quotes_bound_availability_without_moving_funds() {
                         account: owner,
                         assetOut: PATH_USD_ADDRESS,
                         amountOut: quote.amountOut,
-                        data: quote.data,
+                        requestData: quote.requestData,
                     }
                     .abi_encode()
                     .into(),
@@ -599,4 +599,71 @@ fn public_quotes_bound_availability_without_moving_funds() {
         assert_eq!(dex_balance(&mut evm, ACCOUNT, input), 0);
         assert!(evm.inner.ctx.journaled_state.logs.is_empty());
     }
+}
+
+#[test]
+fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
+    let (mut evm, a, b) = setup_dex();
+    let call = IFundingSource::discoverCall {
+        account: ACCOUNT,
+        assetOut: PATH_USD_ADDRESS,
+        amountOut: U256::from(50 * UNIT),
+        maxCost: U256::from(40 * UNIT),
+        config: vec![b, a, b].abi_encode().into(),
+    };
+    let result = TempoEvmHandler::new()
+        .execute_funding_call_with(
+            &mut evm,
+            &mut GasTracker::new(30_000_000, 30_000_000, 0),
+            crate::handler::funding::FundingCall {
+                caller: RECIPIENT,
+                source: SOURCE,
+                is_static: true,
+                permission: None,
+                data: call.abi_encode().into(),
+            },
+            TempoEvmHandler::run_exec_loop,
+        )
+        .unwrap();
+    assert!(result.instruction_result().is_ok(), "{result:?}");
+    let candidates =
+        IFundingSource::discoverCall::abi_decode_returns_validate(result.output().data()).unwrap();
+    assert_eq!(candidates.len(), 3);
+    for (candidate, input) in candidates.iter().zip([b, a, b]) {
+        assert_eq!(candidate.availableAmount, U256::from(40 * UNIT));
+        assert_eq!(
+            <(Address, U256)>::abi_decode_validate(&candidate.requestData).unwrap(),
+            (input, U256::from(40 * UNIT))
+        );
+    }
+    for input in [a, b] {
+        assert_eq!(balance(&mut evm, input, ACCOUNT), U256::from(200 * UNIT));
+        assert_eq!(dex_balance(&mut evm, ACCOUNT, input), 0);
+    }
+    assert!(evm.inner.ctx.journaled_state.logs.is_empty());
+    let result = run(
+        &mut evm,
+        &[requirement(
+            PATH_USD_ADDRESS,
+            50 * UNIT,
+            candidates
+                .into_iter()
+                .map(|candidate| ITIP20Funder::Source {
+                    target: SOURCE,
+                    data: candidate.requestData,
+                })
+                .collect(),
+        )],
+        vec![transfer(PATH_USD_ADDRESS, 50 * UNIT)],
+        true,
+        LIMIT,
+        0,
+    );
+    assert!(result.instruction_result().is_ok(), "{result:?}");
+    assert_eq!(balance(&mut evm, b, ACCOUNT), U256::from(160 * UNIT));
+    assert_eq!(balance(&mut evm, a, ACCOUNT), U256::from(190 * UNIT));
+    assert_eq!(
+        balance(&mut evm, PATH_USD_ADDRESS, RECIPIENT),
+        U256::from(50 * UNIT)
+    );
 }

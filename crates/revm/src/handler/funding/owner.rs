@@ -171,7 +171,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         || requirement
                             .sources
                             .iter()
-                            .any(|source| source.target.is_zero())
+                            .any(|source| source.target.is_zero() || source.data.is_empty())
                     {
                         return Err(invalid_context());
                     }
@@ -202,7 +202,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 amountOut: requirement.amount - balance,
                                 assetOut: requirement.token,
                                 maxCost: remaining_cost,
-                                data: request.data.clone(),
+                                requestData: request.data.clone(),
                                 policyData: Bytes::new(),
                                 ownerAuthorized: true,
                             }
@@ -219,7 +219,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                             result.output().data(),
                         )
                         .map_err(|_| invalid_quote(request.target))?;
-                        if plan.amountOut > requirement.amount - balance {
+                        if plan.requestData.is_empty()
+                            || plan.amountOut > requirement.amount - balance
+                        {
                             return Err(invalid_quote(request.target));
                         }
                         let permission = FundingPermission::new(
@@ -251,7 +253,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 account,
                                 assetOut: requirement.token,
                                 amountOut: maximum,
-                                data: plan.data,
+                                requestData: plan.requestData,
                             }
                             .abi_encode()
                             .into(),
