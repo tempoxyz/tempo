@@ -14,7 +14,7 @@ interface IFundingPolicyRegistry {
     }
 
     struct Route {
-        address[] tokens;
+        address token;
         Source[] sources;
     }
 
@@ -24,6 +24,20 @@ interface IFundingPolicyRegistry {
         Route[] routes;
     }
 
+    struct Candidate {
+        address target;
+        bytes data;
+        uint256 availableAmount;
+    }
+
+    struct Discovery {
+        address token;
+        uint256 amount;
+        uint16 slippageBps;
+        Candidate[] sources;
+    }
+
+    error TokenNotAllowed(address token);
     error PolicyNotFound();
     error Unauthorized();
     error InvalidPolicy();
@@ -34,6 +48,10 @@ interface IFundingPolicyRegistry {
     function getPolicy(uint64 policyId) external view returns (Policy memory policy);
     function modifyPolicy(uint64 policyId, uint16 slippageBps, Route[] calldata routes) external;
     function setAdmins(uint64 policyId, address[] calldata admins) external;
+
+    /// Constructs independently estimated requests without selecting a policy or granting authority.
+    function discover(uint64 policyId, address account, address token, uint256 amount)
+        external view returns (Discovery memory);
 
     event PolicyCreated(uint64 indexed policyId, address indexed updater);
     /// @dev policyHash is keccak256(abi.encode(policy)) after the rule update.
@@ -52,7 +70,7 @@ mod tests {
     #[test]
     fn policy_encoding_binds_routes_tokens_and_source_rules() {
         let route = IFundingPolicyRegistry::Route {
-            tokens: vec![Address::repeat_byte(2), Address::repeat_byte(3)],
+            token: Address::repeat_byte(2),
             sources: vec![IFundingPolicyRegistry::Source {
                 target: Address::repeat_byte(4),
                 data: Bytes::from_static(&[0xaa]),
@@ -64,7 +82,7 @@ mod tests {
             routes: vec![
                 route,
                 IFundingPolicyRegistry::Route {
-                    tokens: vec![Address::repeat_byte(5)],
+                    token: Address::repeat_byte(5),
                     sources: vec![IFundingPolicyRegistry::Source {
                         target: Address::repeat_byte(4),
                         data: Bytes::from_static(&[0xbb]),
@@ -82,7 +100,7 @@ mod tests {
         };
         assert_eq!(
             IFundingPolicyRegistry::createPolicyCall::SIGNATURE,
-            "createPolicy((address[],uint16,(address[],(address,bytes)[])[]))"
+            "createPolicy((address[],uint16,(address,(address,bytes)[])[]))"
         );
         assert_eq!(
             IFundingPolicyRegistry::createPolicyCall::abi_decode_validate(&call.abi_encode())
@@ -93,7 +111,7 @@ mod tests {
             let mut changed = policy.clone();
             match change {
                 0 => changed.routes.reverse(),
-                1 => changed.routes[0].tokens.reverse(),
+                1 => changed.routes[0].token = Address::repeat_byte(3),
                 2 => changed.routes[0].sources[0].data = Bytes::new(),
                 _ => changed.routes.clear(),
             }
@@ -117,12 +135,41 @@ mod tests {
         };
         assert_eq!(
             IFundingPolicyRegistry::modifyPolicyCall::SIGNATURE,
-            "modifyPolicy(uint64,uint16,(address[],(address,bytes)[])[])"
+            "modifyPolicy(uint64,uint16,(address,(address,bytes)[])[])"
         );
         assert_eq!(
             IFundingPolicyRegistry::modifyPolicyCall::abi_decode_validate(&call.abi_encode())
                 .unwrap(),
             call
+        );
+    }
+    #[test]
+    fn discovery_preserves_target_and_independent_estimates() {
+        let result = IFundingPolicyRegistry::Discovery {
+            token: Address::repeat_byte(1),
+            amount: U256::from(50),
+            slippageBps: 100,
+            sources: vec![
+                IFundingPolicyRegistry::Candidate {
+                    target: Address::repeat_byte(2),
+                    data: Bytes::from_static(&[1]),
+                    availableAmount: U256::from(30),
+                },
+                IFundingPolicyRegistry::Candidate {
+                    target: Address::repeat_byte(2),
+                    data: Bytes::from_static(&[2]),
+                    availableAmount: U256::from(40),
+                },
+            ],
+        };
+        assert_eq!(
+            IFundingPolicyRegistry::discoverCall::SIGNATURE,
+            "discover(uint64,address,address,uint256)"
+        );
+        assert_eq!(
+            IFundingPolicyRegistry::discoverCall::abi_decode_returns_validate(&result.abi_encode())
+                .unwrap(),
+            result
         );
     }
 }
