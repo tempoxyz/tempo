@@ -790,7 +790,7 @@ jobs:
               const clickhouseRunId = fs.readFileSync(`${resultsDir}/clickhouse-run-id.txt`, 'utf8').trim();
               if (clickhouseRunId) {
                 const dashboardUrl = `https://dev-eu-tempo-internal-perf.tail388b2e.ts.net/benchmark/${encodeURIComponent(clickhouseRunId)}`;
-                dashboardSection = `\n\n### Internal dashboard\n\n[Internal dashboard](${dashboardUrl})\n`;
+                dashboardSection = `\n- [Internal dashboard](${dashboardUrl})\n`;
               }
             } catch (e) {
               core.info(`Unable to read ClickHouse run ID for internal dashboard: ${e.message}`);
@@ -828,7 +828,14 @@ jobs:
               core.info(`Unable to resolve job URL: ${e.message}`);
             }
 
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${dashboardSection}`;
+            const observabilityHeading = '\n## Observability\n';
+            if (summary.includes(observabilityHeading)) {
+              summary = summary.replace(observabilityHeading, () => observabilityHeading + dashboardSection);
+            } else if (dashboardSection) {
+              summary += observabilityHeading + dashboardSection;
+            }
+
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;
             await core.summary.addRaw(body).write();
 
       - name: Wait for infrastructure teardown
