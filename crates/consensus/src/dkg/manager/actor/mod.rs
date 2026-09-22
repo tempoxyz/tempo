@@ -303,7 +303,9 @@ where
         let round = Round::from_state(
             &state,
             &self.config.namespace,
-            self.is_state_v1_activated(&state).await?,
+            self.is_state_v1_activated(&state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
         );
 
         let mut dealer_state = storage
@@ -603,7 +605,9 @@ where
         let round = Round::from_state(
             &state,
             &self.config.namespace,
-            self.is_state_v1_activated(&state).await?,
+            self.is_state_v1_activated(&state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
         );
 
         let mut height = storage
@@ -1428,7 +1432,9 @@ where
         let round = Round::from_state(
             &ceremony_state,
             &self.config.namespace,
-            self.is_state_v1_activated(&ceremony_state).await?,
+            self.is_state_v1_activated(&ceremony_state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
         );
         ensure!(
             round.players().position(&public_key).is_some(),
