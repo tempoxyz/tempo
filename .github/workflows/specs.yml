@@ -190,6 +190,16 @@ jobs:
         working-directory: tips/verify
         run: forge build --sizes
 
+      - name: Test funding discovery helper
+        run: |
+          forge fmt --root crates/contracts/solidity --check
+          forge test --root crates/contracts/solidity
+          forge inspect --root crates/contracts/solidity IFundingPolicy abi --json > crates/contracts/abi/IFundingPolicy.json
+          forge inspect --root crates/contracts/solidity IFundingDiscovery abi --json > crates/contracts/abi/IFundingDiscovery.json
+          forge inspect --root crates/contracts/solidity FundingDiscovery bytecode > crates/revm/src/handler/funding/fixtures/FundingDiscovery.hex
+          forge inspect --root crates/contracts/solidity Source bytecode > crates/revm/src/handler/funding/fixtures/DiscoverySource.hex
+          git diff --exit-code -- crates/contracts/abi/IFundingPolicy.json crates/contracts/abi/IFundingDiscovery.json crates/revm/src/handler/funding/fixtures/FundingDiscovery.hex crates/revm/src/handler/funding/fixtures/DiscoverySource.hex
+
   abi-alignment-check:
     name: ABI Alignment Check
     needs: check-specs-changes

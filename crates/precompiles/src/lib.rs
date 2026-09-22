@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod funding_policy;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -325,6 +326,13 @@ impl tip20_funder::native_dex::NativeDexFundingSource {
     /// Builds an unregistered source; deployment configuration supplies its addresses and parity assets.
     pub fn create_precompile(self, env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("NativeDexFundingSource", env: env, |input| { self.clone() })
+    }
+}
+
+impl funding_policy::FundingPolicy {
+    /// Builds the policy precompile without activating a protocol address.
+    pub fn create_precompile(address: Address, env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("FundingPolicy", env: env, |input| { Self::new(address) })
     }
 }
 

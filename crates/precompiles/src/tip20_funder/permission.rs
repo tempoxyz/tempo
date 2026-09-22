@@ -10,6 +10,10 @@ use crate::{account_keychain::AccountKeychain, error::Result, storage::StorageCt
 scoped_thread_local!(static ACTIVE: FundingPermission);
 const AMOUNT_IN_SLOT: U256 = U256::ZERO;
 
+pub(crate) fn is_active() -> bool {
+    ACTIVE.is_set()
+}
+
 /// Validated authority installed only by the transaction handler around one funding callback.
 #[derive(Debug)]
 pub struct FundingPermission {

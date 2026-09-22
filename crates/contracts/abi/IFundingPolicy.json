@@ -1,0 +1,314 @@
+[
+  {
+    "type": "function",
+    "name": "createPolicy",
+    "inputs": [
+      {
+        "name": "policy",
+        "type": "tuple",
+        "internalType": "struct IFundingPolicy.Policy",
+        "components": [
+          {
+            "name": "admins",
+            "type": "address[]",
+            "internalType": "address[]"
+          },
+          {
+            "name": "slippageBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "routes",
+            "type": "tuple[]",
+            "internalType": "struct IFundingPolicy.Route[]",
+            "components": [
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "sources",
+                "type": "tuple[]",
+                "internalType": "struct IFundingPolicy.Source[]",
+                "components": [
+                  {
+                    "name": "target",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "data",
+                    "type": "bytes",
+                    "internalType": "bytes"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getPolicy",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "policy",
+        "type": "tuple",
+        "internalType": "struct IFundingPolicy.Policy",
+        "components": [
+          {
+            "name": "admins",
+            "type": "address[]",
+            "internalType": "address[]"
+          },
+          {
+            "name": "slippageBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "routes",
+            "type": "tuple[]",
+            "internalType": "struct IFundingPolicy.Route[]",
+            "components": [
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "sources",
+                "type": "tuple[]",
+                "internalType": "struct IFundingPolicy.Source[]",
+                "components": [
+                  {
+                    "name": "target",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "data",
+                    "type": "bytes",
+                    "internalType": "bytes"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "modifyPolicy",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "slippageBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "routes",
+        "type": "tuple[]",
+        "internalType": "struct IFundingPolicy.Route[]",
+        "components": [
+          {
+            "name": "token",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "sources",
+            "type": "tuple[]",
+            "internalType": "struct IFundingPolicy.Source[]",
+            "components": [
+              {
+                "name": "target",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "data",
+                "type": "bytes",
+                "internalType": "bytes"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "policyExists",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "policyIdCounter",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "setAdmins",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "admins",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "PolicyAdminsUpdated",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "updater",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "admins",
+        "type": "address[]",
+        "indexed": false,
+        "internalType": "address[]"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyCreated",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "updater",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyUpdated",
+    "inputs": [
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "updater",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "policyHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "InvalidPolicy",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PolicyNotFound",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TokenNotAllowed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "Unauthorized",
+    "inputs": []
+  }
+]
