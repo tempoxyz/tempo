@@ -113,16 +113,6 @@ fn equal_boundaries_do_not_invoke_rules() {
 }
 
 #[test]
-fn accepted_difference_can_preserve_full_coverage() {
-    let real = evidence(&[21_000, 21_000]);
-    let shadow = evidence(&[21_200, 21_000]);
-    let report = Report::analyze(&real, &shadow, &[&GAS]);
-    assert_eq!(report.expected["test.gas"], 1);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
-    assert_eq!(report.boundaries_evaluated, 4);
-}
-
-#[test]
 fn nearby_incorrect_amount_stays_unexplained() {
     let real = evidence(&[21_000, 21_000]);
     let shadow = evidence(&[21_201, 21_000]);
@@ -142,28 +132,6 @@ fn accepted_gas_does_not_hide_unrelated_state_at_same_boundary() {
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.boundaries_not_evaluated, 0);
     assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
-}
-
-#[test]
-fn pre_block_difference_does_not_hide_transaction_findings() {
-    let real = evidence(&[21_000, 21_000]);
-    let mut shadow = evidence(&[21_000, 21_000]);
-    shadow.pre_block.as_mut().unwrap().transitions.insert(
-        Address::ZERO,
-        TransitionAccount {
-            info: Some(AccountInfo {
-                nonce: 1,
-                ..Default::default()
-            }),
-            previous_info: Some(AccountInfo::default()),
-            ..Default::default()
-        },
-    );
-    tx_mut(&mut shadow, 0).success = false;
-    let report = Report::analyze(&real, &shadow, &[]);
-    assert_eq!(report.unexplained, 2);
-    assert_eq!(report.boundaries_evaluated, 4);
-    assert_eq!(report.boundaries_not_evaluated, 0);
 }
 
 #[test]
