@@ -282,6 +282,12 @@ impl Iterator for BestTransactionsPrewarming {
 
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        // Expiring nonces have no descendants, and the source iterator's invalidation is a no-op.
+        // Avoid switching channels and draining buffered transactions when none can be invalidated.
+        if transaction.tx.transaction.is_expiring_nonce() {
+            return;
+        }
+
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
@@ -898,6 +904,44 @@ mod tests {
             expected
         );
         assert!(prewarming.next().is_none());
+    }
+
+    #[test]
+    fn mark_invalid_expiring_nonce_preserves_buffer_without_coordinator() {
+        let sender = Address::random();
+        let tx = TempoTransaction {
+            nonce_key: U256::MAX,
+            valid_before: Some(25),
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        let mut invalid = test_tx(sender, 0);
+        Arc::get_mut(&mut invalid).unwrap().transaction =
+            TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+        assert!(invalid.transaction.is_expiring_nonce());
+
+        let buffered = test_payment_tx(sender, 21_000);
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        transactions_tx
+            .send(Some(PrewarmedTransaction::without_replay(buffered.clone())))
+            .unwrap();
+
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(invalid),
+            InvalidPoolTransactionError::ExceedsGasLimit(21_000, 0),
+        );
+
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert_eq!(prewarming.next().unwrap().tx.hash(), buffered.hash());
     }
 
     #[test]
