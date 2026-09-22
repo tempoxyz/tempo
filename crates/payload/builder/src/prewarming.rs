@@ -830,10 +830,9 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
+    fn prewarming_clears_worker_state_after_completion() {
         let executor = TaskExecutor::test();
         let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
 
         let sender = Address::random();
         let txs = vec![test_tx(sender, 0)];
@@ -841,10 +840,13 @@ mod tests {
         let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
 
         assert!(prewarming.next().is_some());
+        drop(prewarming);
 
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
+        pool.init::<PrewarmEvmState>(|existing| {
+            assert!(existing.is_none());
+            None
         });
+        pool.clear();
     }
 
     #[test]

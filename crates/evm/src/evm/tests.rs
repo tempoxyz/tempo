@@ -4197,15 +4197,17 @@ fn test_system_call_and_inspector() -> eyre::Result<()> {
 ///
 /// Related fix: The handler creates a checkpoint before key_authorization
 /// precompile execution and reverts it on OOG. This ensures storage consistency.
-#[test]
-fn test_key_authorization_t1() -> eyre::Result<()> {
+#[test_case::test_case(TempoHardfork::T1)]
+#[test_case::test_case(TempoHardfork::T1A)]
+fn test_key_authorization_t1(spec: TempoHardfork) -> eyre::Result<()> {
     use tempo_precompiles::account_keychain::AccountKeychain;
 
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
-    // Create a T1 EVM (the fix only applies to T1)
-    let mut evm = create_funded_evm_t1(caller);
+    // Create a T1/T1A EVM (the fix only applies before T1B)
+    let mut evm = configured_evm(spec, 0, false, InMemoryDB::default());
+    fund_account(&mut evm, caller);
 
     // Set up TIP20 for fee payment
     {
@@ -4243,7 +4245,9 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
         );
     }
 
-    let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
+    let authorization_authority = P256KeyPair::random();
+    let signed_auth =
+        authorization_authority.create_signed_authorization(Address::repeat_byte(0x42))?;
 
     // Insufficient gas - will cause OOG during key_authorization processing
     let tx_low_gas = TxBuilder::new()
@@ -4301,6 +4305,17 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
             "Key should NOT be authorized when transaction fails due to insufficient gas"
         );
     }
+    assert!(
+        nonce_incremented,
+        "key authorization OOG should be included, not rejected"
+    );
+    assert_eq!(
+        evm.overlay_db()
+            .basic_ref(authorization_authority.address)?
+            .map(|account| account.code_hash),
+        Some(Bytecode::new_eip7702(Address::repeat_byte(0x42)).hash_slow()),
+        "EIP-7702 delegation should persist when key authorization runs out of gas"
+    );
 
     // ==================== Test 2: SUFFICIENT gas ====================
     // Now try with sufficient gas - key should be authorized

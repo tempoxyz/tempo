@@ -1580,6 +1580,8 @@ fn handle_aa(
             .saturating_sub(intrinsic)
             .saturating_sub(initial_state_gas),
     )?;
+    let (state_refund, regular_refund) =
+        apply_authorization_list(request.host, &tx.tempo_authorization_list, spec)?;
     if key_auth_gas == u64::MAX
         || key_auth_gas
             > tx.gas_limit
@@ -1607,8 +1609,6 @@ fn handle_aa(
         .map(Some);
     }
     intrinsic = intrinsic.saturating_add(key_auth_gas);
-    let (state_refund, regular_refund) =
-        apply_authorization_list(request.host, &tx.tempo_authorization_list, spec)?;
 
     // Pool admission validates the pre-execution lifecycle without running user calls.
     if !execute_calls {
