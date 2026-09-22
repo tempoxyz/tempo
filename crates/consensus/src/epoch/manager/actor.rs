@@ -331,11 +331,12 @@ where
         // Each epoch constructs one elector. Use its preceding finalized boundary so nodes
         // choose the same version even when entering or restarting at different times.
         #[expect(deprecated, reason = "retain the pre-T12 leader schedule")]
-        let elector_version = if self
+        let elector = if self
             .config
             .execution_node
             .chain_spec()
-            .is_t12_active_at_timestamp(boundary_timestamp)
+            .tempo_hardfork_at(boundary_timestamp)
+            .is_t12()
         {
             elector::RandomVersion::V1
         } else {
@@ -349,7 +350,7 @@ where
                 epoch,
                 floor,
                 scheme,
-                elector: elector::Random::<commonware_cryptography::Sha256>::new(elector_version),
+                elector: elector::Random::<commonware_cryptography::Sha256>::new(elector),
                 strategy: Sequential,
 
                 reporter: self.config.marshal.clone(),

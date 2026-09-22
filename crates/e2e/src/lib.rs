@@ -121,7 +121,8 @@ pub struct ConsensusNodeConfig {
 /// The test setup run by [`run`].
 #[derive(Clone)]
 pub struct Setup {
-    /// T12 activation timestamp. `None` leaves T12 unscheduled.
+    /// T12 activation override for transition tests; disables later forks when set.
+    /// `None` preserves the fixture schedule.
     pub t12_time: Option<u64>,
 
     /// How many signing validators to launch.
