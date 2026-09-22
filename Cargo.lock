@@ -14066,6 +14066,7 @@ dependencies = [
  "tempo-precompiles-macros",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-zone-verifier",
  "thiserror 2.0.18",
  "tracing",
  "x509-cert",
@@ -14287,6 +14288,18 @@ dependencies = [
  "tempo-revm",
  "tempo-validator-config",
  "tokio",
+]
+
+[[package]]
+name = "tempo-zone-verifier"
+version = "1.14.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "tempo-contracts",
+ "tempo-nitro-attestation",
 ]
 
 [[package]]
