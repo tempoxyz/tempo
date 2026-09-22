@@ -936,9 +936,19 @@ def generate-summary [
     --baseline-hardfork: string = "",
     --feature-hardfork: string = "",
     --summary-warmup-blocks: int = 0,
+    --summary-warmup-seconds: int = 0,
 ] {
     if $summary_warmup_blocks < 0 {
         error make { msg: "--summary-warmup-blocks must be non-negative" }
+    }
+    if $summary_warmup_seconds < 0 {
+        error make { msg: "--summary-warmup-seconds must be non-negative" }
+    }
+    if $summary_warmup_seconds >= $duration and $summary_warmup_seconds > 0 {
+        error make { msg: "--summary-warmup-seconds must be shorter than duration" }
+    }
+    if $summary_warmup_blocks > 0 and $summary_warmup_seconds > 0 {
+        error make { msg: "--summary-warmup-blocks and --summary-warmup-seconds are mutually exclusive" }
     }
 
     let run_order_path = $"($results_dir)/run-order.txt"
@@ -1231,17 +1241,34 @@ def generate-summary [
         }
 
         let sorted_blocks = ($report_blocks | sort-by timestamp)
-        let warmup_blocks = ([$summary_warmup_blocks ($sorted_blocks | length)] | math min)
-        let blocks = ($sorted_blocks | skip $warmup_blocks)
+        let block_warmup_count = ([$summary_warmup_blocks ($sorted_blocks | length)] | math min)
+        let block_trimmed = ($sorted_blocks | skip $block_warmup_count)
+        let first_report_block_ms = ($sorted_blocks | first | get timestamp)
+        let phase_range_path = $"($results_dir)/phase-range-($label).json"
+        let phase_started_ms = if ($phase_range_path | path exists) {
+            open $phase_range_path | get started_ms | into int
+        } else {
+            $first_report_block_ms
+        }
+        let warmup_cutoff_ms = $phase_started_ms + ($summary_warmup_seconds * 1000)
+        let blocks = if $summary_warmup_seconds > 0 {
+            $block_trimmed | where timestamp >= $warmup_cutoff_ms
+        } else {
+            $block_trimmed
+        }
+        let warmup_blocks = ($sorted_blocks | length) - ($blocks | length)
         if ($blocks | length) == 0 {
             print $"Warning: ($label) report has no summary blocks after excluding ($warmup_blocks) warmup blocks, skipping"
             continue
         }
 
-        let first_report_block_ms = ($sorted_blocks | first | get timestamp)
         let timestamps = ($blocks | get timestamp)
         let summary_from_ms = ($timestamps | first)
-        let summary_from_offset_ms = $summary_from_ms - $first_report_block_ms
+        let summary_from_offset_ms = if $summary_warmup_seconds > 0 {
+            $summary_warmup_seconds * 1000
+        } else {
+            $summary_from_ms - $first_report_block_ms
+        }
         let block_interval_blocks = if $warmup_blocks > 0 { $blocks | skip 1 } else { $blocks }
         let block_intervals = ($block_interval_blocks | where block_time_ms != null | get block_time_ms)
 
@@ -1358,7 +1385,9 @@ def generate-summary [
         let run_serialized_block_size_per_tx = do $compute_value_stats $serialized_block_size_per_tx_values
 
         # Compute TPS from block timestamps (timestamps are in milliseconds)
-        let time_span_ms = if ($timestamps | length) > 1 {
+        let time_span_ms = if $summary_warmup_seconds > 0 {
+            [(($duration - $summary_warmup_seconds) * 1000) 1] | math max
+        } else if ($timestamps | length) > 1 {
             let first = ($timestamps | first)
             let last = ($timestamps | last)
             [($last - $first) 1] | math max
@@ -1376,6 +1405,7 @@ def generate-summary [
         $run_data = ($run_data | append [{
             label: $label
             summary_warmup_blocks: $warmup_blocks
+            summary_warmup_seconds: $summary_warmup_seconds
             blocks: $num_blocks
             total_tx: $total_tx
             ok: $total_ok
@@ -1577,6 +1607,9 @@ def generate-summary [
     if $summary_warmup_blocks > 0 {
         $config_lines = ($config_lines | append $"- Summary warmup blocks: ($summary_warmup_blocks)")
     }
+    if $summary_warmup_seconds > 0 {
+        $config_lines = ($config_lines | append $"- Summary warmup seconds: ($summary_warmup_seconds)")
+    }
     if $baseline_hardfork != "" {
         $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
     }
@@ -1664,6 +1697,7 @@ def generate-summary [
             duration: $duration
             run_pairs: $run_pairs
             summary_warmup_blocks: $summary_warmup_blocks
+            summary_warmup_seconds: $summary_warmup_seconds
             derek_command: $derek_bench_command
             baseline_hardfork: $baseline_hardfork
             feature_hardfork: $feature_hardfork

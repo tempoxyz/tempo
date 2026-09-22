@@ -192,21 +192,25 @@ where
         tx: &TempoTransaction,
     ) -> Result<(), TempoPoolTransactionError> {
         let tip_timestamp = self.inner.fork_tracker().tip_timestamp();
+        let wall_clock_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
 
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         // The EVM checks `valid_before > block_timestamp` but the pool needs an extra
         // propagation buffer to prevent txs from expiring at peers with slightly newer tips.
-        let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+        // A stalled canonical tip must not keep admitting transactions that
+        // have already expired in real time.
+        let min_allowed = tip_timestamp
+            .max(wall_clock_timestamp)
+            .saturating_add(AA_VALID_BEFORE_MIN_SECS);
         tx.ensure_valid_before(min_allowed)?;
 
         // Reject AA txs where `valid_after` is too far in the future.
         // Uses wall-clock time to avoid rejecting valid txs when node is lagging.
         if tx.valid_after.is_some() {
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
+            let max_allowed = wall_clock_timestamp.saturating_add(self.aa_valid_after_max_secs);
             tx.ensure_valid_after(max_allowed)?;
         }
 
@@ -1436,14 +1440,14 @@ mod tests {
                     panic!("Expected InvalidValidBefore error, got: {err:?}");
                 };
                 assert_eq!(err.valid_before, current_time + AA_VALID_BEFORE_MIN_SECS);
-                assert_eq!(err.min_allowed, current_time + AA_VALID_BEFORE_MIN_SECS);
+                assert!(err.min_allowed >= current_time + AA_VALID_BEFORE_MIN_SECS);
             }
             _ => panic!("Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"),
         }
 
         // Test case 3: `valid_before` sufficiently in the future
         let tx_valid =
-            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS + 1));
+            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS + 10));
         let validator = setup_validator(&tx_valid, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_valid)

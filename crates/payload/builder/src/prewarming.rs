@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 
@@ -9,7 +9,9 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
+#[cfg(test)]
+use reth_tasks::WorkerPool;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -18,6 +20,31 @@ use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+struct ThreadPrewarmEvm {
+    generation: u64,
+    evm: PrewarmEvmState,
+}
+
+static NEXT_PREWARM_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+std::thread_local! {
+    // Builder prewarming must not share WorkerPool's type-erased slot with
+    // engine-tree prewarming running on the same worker threads.
+    static PREWARM_EVM: std::cell::RefCell<Option<ThreadPrewarmEvm>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn clear_prewarm_evm(generation: u64) {
+    PREWARM_EVM.with_borrow_mut(|slot| {
+        if slot
+            .as_ref()
+            .is_some_and(|state| state.generation == generation)
+        {
+            *slot = None;
+        }
+    });
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -78,11 +105,26 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let generation = ctx.prewarm.generation;
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                pool.broadcast(pool.current_num_threads(), |_| {
+                    if prewarm.is_stopped() {
+                        return;
+                    }
+                    let evm = prewarm.evm_for_ctx();
+                    if prewarm.is_stopped() {
+                        return;
+                    }
+                    PREWARM_EVM.with_borrow_mut(|slot| {
+                        *slot = Some(ThreadPrewarmEvm {
+                            generation: prewarm.generation,
+                            evm,
+                        });
+                    });
+                });
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -161,7 +203,10 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            clear_prewarm_evm(generation);
+        });
+        clear_prewarm_evm(generation);
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -177,16 +222,30 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = PREWARM_EVM.with_borrow_mut(|slot| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            if prewarm.is_stopped() {
+                return None;
+            }
+
+            if slot
+                .as_ref()
+                .is_none_or(|state| state.generation != prewarm.generation)
+            {
+                *slot = Some(ThreadPrewarmEvm {
+                    generation: prewarm.generation,
+                    evm: prewarm.evm_for_ctx(),
+                });
+            }
 
             if prewarm.is_stopped() {
                 return None;
             }
+
+            let evm = slot.as_mut()?.evm.as_mut()?;
 
             let mut tx_env = tx.transaction.clone_tx_env();
             if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
@@ -335,6 +394,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
+    generation: u64,
     parallel: bool,
 }
 
@@ -357,6 +417,7 @@ where
             cache,
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
+            generation: NEXT_PREWARM_GENERATION.fetch_add(1, Ordering::Relaxed),
             parallel,
         }
     }
@@ -712,6 +773,7 @@ mod tests {
             cache: None,
             evm_env,
             stop: Arc::default(),
+            generation: NEXT_PREWARM_GENERATION.fetch_add(1, Ordering::Relaxed),
             parallel,
         }
     }

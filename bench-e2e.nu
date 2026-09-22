@@ -26,11 +26,13 @@ const E2E_DEFAULT_BLOAT = 100
 const PAYMENTS_BLOAT_WORST_CASE = {
     preset: "tip20_full_senders_policy"
     tps: 50000
-    duration: 7200
+    duration: 1200
+    summary_warmup_seconds: 600
     bloat: 100
     token_count: 4
     gas_limit: "1000000000000"
     general_gas_limit: "1000000000000"
+    max_transactions: 900
     rpc_cache_args: "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
     bench_env: "RUST_LOG=error"
 }
@@ -1328,6 +1330,7 @@ def e2e-write-summary-config [
     benchmark_id: string
     reference_epoch: int
     summary_warmup_blocks: int
+    summary_warmup_seconds: int
     run_side: string
     baseline_hardfork: string
     feature_hardfork: string
@@ -1345,6 +1348,7 @@ def e2e-write-summary-config [
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
         summary_warmup_blocks: $summary_warmup_blocks
+        summary_warmup_seconds: $summary_warmup_seconds
         run_side: $run_side
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
@@ -1364,8 +1368,9 @@ def e2e-generate-summary [results_dir: string] {
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
     let summary_warmup_blocks = ($config | get -o summary_warmup_blocks | default 0 | into int)
+    let summary_warmup_seconds = ($config | get -o summary_warmup_seconds | default 0 | into int)
     let run_side = ($config | get -o run_side | default "comparison")
-    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork --summary-warmup-blocks $summary_warmup_blocks
+    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork --summary-warmup-blocks $summary_warmup_blocks --summary-warmup-seconds $summary_warmup_seconds
     let summary_path = $"($results_dir)/summary.json"
     if ($summary_path | path exists) {
         let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
@@ -1413,6 +1418,7 @@ def "main e2e" [
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
+    --summary-warmup-seconds: int = 0                   # Initial wall-clock seconds per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
     --scrape-interval-ms: int = 5000                    # Node metrics scrape interval; lower values create large sample archives
@@ -1495,6 +1501,18 @@ def "main e2e" [
     }
     if $summary_warmup_blocks < 0 {
         print "Error: --summary-warmup-blocks must be non-negative"
+        exit 1
+    }
+    if $summary_warmup_seconds < 0 {
+        print "Error: --summary-warmup-seconds must be non-negative"
+        exit 1
+    }
+    if $summary_warmup_seconds >= $duration and $summary_warmup_seconds > 0 {
+        print "Error: --summary-warmup-seconds must be less than --duration"
+        exit 1
+    }
+    if $summary_warmup_blocks > 0 and $summary_warmup_seconds > 0 {
+        print "Error: --summary-warmup-blocks and --summary-warmup-seconds are mutually exclusive"
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -1845,7 +1863,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $token_count $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $run_side $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $token_count $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $summary_warmup_seconds $run_side $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
@@ -1927,10 +1945,12 @@ def "main payments-bloat-worst-case" [
 ] {
     let baseline_node_args = ([
         $PAYMENTS_BLOAT_WORST_CASE.rpc_cache_args
+        $"--builder.max-transactions ($PAYMENTS_BLOAT_WORST_CASE.max_transactions)"
         $baseline_args
     ] | where { |arg| ($arg | str trim) != "" } | str join " ")
     let feature_node_args = ([
         $PAYMENTS_BLOAT_WORST_CASE.rpc_cache_args
+        $"--builder.max-transactions ($PAYMENTS_BLOAT_WORST_CASE.max_transactions)"
         $feature_args
     ] | where { |arg| ($arg | str trim) != "" } | str join " ")
 
@@ -1940,6 +1960,8 @@ def "main payments-bloat-worst-case" [
         --preset $PAYMENTS_BLOAT_WORST_CASE.preset
         --tps $tps
         --duration $duration
+        --summary-warmup-blocks 0
+        --summary-warmup-seconds $PAYMENTS_BLOAT_WORST_CASE.summary_warmup_seconds
         --bloat $PAYMENTS_BLOAT_WORST_CASE.bloat
         --bloat-keccak-signable-shared
         --isolated-roles

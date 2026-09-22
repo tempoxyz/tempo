@@ -42,6 +42,7 @@ const PING_INACTIVE_LIMIT: Duration = Duration::from_secs(10);
 /// How many times the connection may exceed the inactivity limit before it is
 /// closed.
 const PING_MAX_FAILURES: usize = 1;
+const MAX_UPSTREAM_RESPONSE_SIZE: u32 = 32 * 1024 * 1024;
 
 /// Manages the connection to the upstream node.
 ///
@@ -345,6 +346,7 @@ impl Connector for WebSocketConnector {
         let url = self.url.clone();
         async move {
             let client = WsClientBuilder::default()
+                .max_response_size(MAX_UPSTREAM_RESPONSE_SIZE)
                 .enable_ws_ping(
                     PingConfig::new()
                         .ping_interval(PING_INTERVAL)

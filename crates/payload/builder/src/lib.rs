@@ -153,6 +153,8 @@ pub struct TempoPayloadBuilderConfig {
     ///
     /// If not set, the parent gas limit is used.
     pub desired_gas_limit: Option<u64>,
+    /// Maximum number of pool transactions included in a payload.
+    pub max_transactions: Option<usize>,
     /// Whether the node is configured in `--dev` miner mode.
     pub is_dev: bool,
     /// Whether to enable state provider metrics.
@@ -509,6 +511,14 @@ where
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
+
+            if self
+                .config
+                .max_transactions
+                .is_some_and(|limit| pool_transactions_included as usize >= limit)
+            {
+                break BlockBuildStopReason::TransactionLimit;
+            }
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();

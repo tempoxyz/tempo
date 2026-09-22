@@ -116,6 +116,10 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
+
+    /// Maximum number of pool transactions included in a payload.
+    #[arg(long = "builder.max-transactions")]
+    pub builder_max_transactions: Option<usize>,
 }
 
 impl Default for TempoNodeArgs {
@@ -130,6 +134,7 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            builder_max_transactions: None,
         }
     }
 }
@@ -156,6 +161,7 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+            max_transactions: self.builder_max_transactions,
         }
     }
 }
@@ -825,6 +831,8 @@ pub struct TempoPayloadBuilderBuilder {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     pub build_time_multiplier: f64,
+    /// Maximum number of pool transactions included in a payload.
+    pub max_transactions: Option<usize>,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -834,6 +842,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_prewarming: true,
             enable_parallel: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            max_transactions: None,
         }
     }
 }
@@ -867,6 +876,7 @@ where
             evm_config,
             TempoPayloadBuilderConfig {
                 desired_gas_limit,
+                max_transactions: self.max_transactions,
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
@@ -953,17 +963,23 @@ mod tests {
 
     #[test]
     fn tempo_node_maps_payload_builder_builder() {
-        let node = TempoNode::new(&TempoNodeArgs::default(), None).map_payload_builder_builder(
-            |mut payload| {
-                payload.state_provider_metrics = true;
-                payload
-            },
-        );
+        let args = TempoNodeArgs {
+            builder_max_transactions: Some(1_300),
+            ..Default::default()
+        };
+        let node = TempoNode::new(&args, None).map_payload_builder_builder(|mut payload| {
+            payload.state_provider_metrics = true;
+            payload
+        });
 
         assert!(node.payload_builder_builder.state_provider_metrics);
         assert_eq!(
             node.payload_builder_builder.build_time_multiplier,
             TempoNodeArgs::default().builder_build_time_multiplier
+        );
+        assert_eq!(
+            node.payload_builder_builder.max_transactions,
+            args.builder_max_transactions
         );
     }
 
