@@ -61,6 +61,7 @@ jobs:
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       actions: read
       contents: read
     outputs:
@@ -77,6 +78,9 @@ jobs:
       warmup: ${{ steps.config.outputs.warmup }}
       samply: ${{ steps.config.outputs.samply }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
@@ -257,8 +261,12 @@ jobs:
     if: success()
     name: save-state
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      id-token: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
       - name: Prepare benchmark state
         env:
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}

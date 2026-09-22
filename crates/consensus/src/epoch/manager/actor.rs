@@ -405,6 +405,7 @@ where
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
         if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();
+            self.metrics.active_epochs.metric().dec();
             info!("stopped engine backing epoch");
         } else {
             warn!(

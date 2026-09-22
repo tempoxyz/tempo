@@ -119,6 +119,8 @@ pub struct AA2dPool {
     /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
     /// Entries are removed when count reaches 0 via `decrement_sender_count`.
     txs_by_sender: AddressMap<usize>,
+    /// Pending and queued regular transactions per `(sender, nonce_key)` lane.
+    txs_by_lane: HashMap<AASequenceId, usize>,
     /// Number of pending transactions, including expiring nonce transactions.
     pending_count: usize,
     /// Number of queued regular 2D nonce transactions.
@@ -158,6 +160,7 @@ impl AA2dPool {
             queued_eviction_order: Default::default(),
             base_fee: 0,
             txs_by_sender: Default::default(),
+            txs_by_lane: Default::default(),
             pending_count: 0,
             queued_count: 0,
             pending_size: Default::default(),
@@ -263,6 +266,18 @@ impl AA2dPool {
             ));
         }
 
+        let lane_count = self
+            .txs_by_lane
+            .get(&tx_id.seq_id)
+            .copied()
+            .unwrap_or_default();
+        if lane_count >= self.config.max_txs_per_lane && tx_id.nonce > on_chain_nonce {
+            return Err(PoolError::new(
+                *transaction.hash(),
+                PoolErrorKind::SpammerExceededCapacity(transaction.sender()),
+            ));
+        }
+
         // assume the transaction is not pending, will get updated later
         let tx = Arc::new(AA2dInternalTransaction {
             inner: AA2dStoredTransaction::new(self.next_id(), transaction.clone()),
@@ -315,6 +330,7 @@ impl AA2dPool {
                 }
 
                 entry.insert(Arc::clone(&tx));
+                *self.txs_by_lane.entry(tx_id.seq_id).or_default() += 1;
                 self.queued_count += 1;
                 None
             }
@@ -445,6 +461,7 @@ impl AA2dPool {
             replaced: replaced.map(|tx| tx.inner.transaction.clone()),
             subpool: SubPool::Queued,
             queued_reason: Some(QueuedReason::NonceGap),
+            promoted: Vec::new(),
         })
     }
 
@@ -635,6 +652,18 @@ impl AA2dPool {
             .filter(move |tx| tx.transaction.sender() == sender)
             .map(|tx| tx.transaction.clone());
         regular.chain(expiring)
+    }
+
+    /// Returns pending transactions in the address's sequential 2D nonce lane.
+    pub(crate) fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
+        self.by_id
+            .range(AASequenceId::new(address, nonce_key).range())
+            .filter(|(_, tx)| tx.is_pending())
+            .map(|(_, tx)| tx.inner.transaction.clone())
     }
 
     /// Returns an iterator over all transaction hashes in this pool
@@ -849,6 +878,12 @@ impl AA2dPool {
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
+        if let hash_map::Entry::Occupied(mut entry) = self.txs_by_lane.entry(id.seq_id) {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
 
         // Remove from eviction set
         self.remove_eviction_key(&tx);
@@ -1490,6 +1525,12 @@ impl AA2dPool {
     /// Asserts that all assumptions are valid.
     #[cfg(test)]
     pub(crate) fn assert_invariants(&self) {
+        let mut lane_counts = HashMap::default();
+        for id in self.by_id.keys() {
+            *lane_counts.entry(id.seq_id).or_insert(0usize) += 1;
+        }
+        assert_eq!(self.txs_by_lane, lane_counts);
+
         // Basic size constraints
         assert!(
             self.independent_transactions.len() <= self.by_id.len(),
@@ -1911,6 +1952,9 @@ impl IndependentTransactions {
 /// This limit prevents a single sender from monopolizing pool capacity.
 pub const DEFAULT_MAX_TXS_PER_SENDER: usize = 16;
 
+/// Default maximum number of pending and queued transactions in one regular 2D nonce lane.
+pub const DEFAULT_MAX_TXS_PER_LANE: usize = 1024;
+
 /// Settings for the [`AA2dPoolConfig`]
 #[derive(Debug, Clone)]
 pub struct AA2dPoolConfig {
@@ -1924,6 +1968,10 @@ pub struct AA2dPoolConfig {
     ///
     /// Prevents a single sender from monopolizing pool capacity (DoS protection).
     pub max_txs_per_sender: usize,
+    /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
+    /// The current on-chain nonce is admitted even at capacity to allow gap filling.
+    /// Expiring nonce transactions are independent and do not use this limit.
+    pub max_txs_per_lane: usize,
 }
 
 impl Default for AA2dPoolConfig {
@@ -1933,6 +1981,7 @@ impl Default for AA2dPoolConfig {
             pending_limit: SubPoolLimit::default(),
             queued_limit: SubPoolLimit::default(),
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         }
     }
 }
@@ -4941,6 +4990,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5148,6 +5198,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5216,6 +5267,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5258,6 +5310,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5295,6 +5348,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5330,6 +5384,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let max_fee = 30_000_000_000u128;
@@ -5421,6 +5476,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5481,6 +5537,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5584,6 +5641,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 3,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5644,6 +5702,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 2,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5696,6 +5755,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 2,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5741,6 +5801,117 @@ mod tests {
         pool.assert_invariants();
     }
 
+    #[test]
+    fn lane_limit_allows_on_chain_nonce_without_eviction() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_lane: 3,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let make_tx = |nonce, fee| {
+            Arc::new(wrap_valid_tx(
+                TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .nonce(nonce)
+                    .max_priority_fee(fee)
+                    .max_fee(fee * 2)
+                    .build(),
+                TransactionOrigin::External,
+            ))
+        };
+        let mut hashes = Vec::new();
+        for nonce in 1..=3 {
+            let tx = make_tx(nonce, 1_000_000_000);
+            hashes.push(*tx.hash());
+            pool.add_transaction(tx, 0, TempoHardfork::T1).unwrap();
+        }
+
+        // Both new future nonces and future-nonce replacements are rejected at capacity.
+        for nonce in [1, 4] {
+            assert!(
+                pool.add_transaction(make_tx(nonce, 2_000_000_000), 0, TempoHardfork::T1)
+                    .is_err()
+            );
+        }
+        let added = pool
+            .add_transaction(make_tx(0, 1_000_000_000), 0, TempoHardfork::T1)
+            .unwrap();
+        let pending = added.as_pending().unwrap();
+        assert_eq!(pending.promoted.len(), 3);
+        assert!(pending.discarded.is_empty());
+        assert!(hashes.iter().all(|hash| pool.contains(hash)));
+        assert_eq!(pool.txs_by_lane[&seq_id], 4);
+        pool.assert_invariants();
+
+        // The on-chain nonce remains replaceable, subject to the usual price bump.
+        assert!(
+            pool.add_transaction(make_tx(0, 900_000_000), 0, TempoHardfork::T1)
+                .is_err()
+        );
+        let replacement = pool
+            .add_transaction(make_tx(0, 2_000_000_000), 0, TempoHardfork::T1)
+            .unwrap();
+        assert_eq!(pool.txs_by_lane[&seq_id], 4);
+        pool.remove_transactions(std::iter::once(&hashes[2]));
+        assert!(
+            pool.add_transaction(make_tx(4, 1_000_000_000), 0, TempoHardfork::T1)
+                .is_err()
+        );
+        pool.remove_transactions(std::iter::once(replacement.hash()));
+        pool.add_transaction(make_tx(4, 1_000_000_000), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.assert_invariants();
+
+        pool.on_nonce_changes(HashMap::from_iter([(seq_id, 5)]));
+        assert!(!pool.txs_by_lane.contains_key(&seq_id));
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn lane_limit_is_scoped_to_sender_and_nonce_key() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_lane: 1,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        for (sender, key) in [(sender, 1), (sender, 2), (Address::random(), 1)] {
+            let tx = TxBuilder::aa(sender).nonce_key(U256::from(key)).build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        assert_eq!(pool.txs_by_lane.len(), 3);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn zero_lane_limit_does_not_limit_expiring_nonces() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_lane: 0,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        for key in [U256::from(1), U256::MAX] {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(key)
+                .nonce(u64::from(key != U256::MAX))
+                .build();
+            let result = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)),
+                0,
+                TempoHardfork::T1,
+            );
+            assert_eq!(result.is_ok(), key == U256::MAX);
+        }
+        assert!(pool.txs_by_lane.is_empty());
+        pool.assert_invariants();
+    }
+
     /// Tests that expiring nonce transactions also respect per-sender limits.
     #[test]
     fn test_per_sender_limit_includes_expiring_nonce_txs() {
@@ -5755,6 +5926,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 2,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -7623,6 +7795,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 1,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
