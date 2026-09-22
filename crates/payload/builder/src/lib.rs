@@ -805,6 +805,9 @@ where
                     }) => {
                         invalid_pool_transaction_execution_attempts += 1;
 
+                        // Benchmark-only: preserve rejection reasons without tracing successful txs.
+                        tracing::debug!(target: "tip1115_bench", %error, tx_hash = %tx.hash(), "Invalid benchmark pool transaction");
+
                         if error.is_nonce_too_low() {
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
