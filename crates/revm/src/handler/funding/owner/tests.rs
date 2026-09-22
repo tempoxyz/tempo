@@ -502,7 +502,7 @@ fn rechecks_all_balances_before_application_calls() {
 
 #[test]
 fn rejects_invalid_context_and_arguments_before_balance_shortcut() {
-    for mode in 0..5 {
+    for mode in 0..6 {
         let (mut evm, _) = setup(TempoHardfork::T5);
         let mut request = requirement(PATH_USD_ADDRESS, 0, vec![]);
         match mode {
@@ -513,6 +513,10 @@ fn rejects_invalid_context_and_arguments_before_balance_shortcut() {
             2 => request.token = RECIPIENT,
             3 => request.token = address!("20c0000000000000000000000000000000000007"),
             4 => request.sources.push(source(Address::ZERO, 0, 0, 0, 0)),
+            5 => request.sources.push(ITIP20Funder::Source {
+                target: SOURCE,
+                data: Bytes::new(),
+            }),
             _ => unreachable!(),
         }
         let result = run(&mut evm, &[request], vec![noop()], true, LIMIT, 0);
@@ -583,7 +587,7 @@ fn out_of_gas_rolls_back_every_completed_stage() {
 
 #[test]
 fn validates_quotes_and_rejects_output_balance_decreases() {
-    for mode in 0..6 {
+    for mode in 0..7 {
         let (mut evm, output) = setup(TempoHardfork::T5);
         let (asset, request) = match mode {
             0 => (
@@ -600,6 +604,7 @@ fn validates_quotes_and_rejects_output_balance_decreases() {
             ),
             3 => (output, source(RECIPIENT, 0, 50, 0, 0)),
             5 => (output, source(SOURCE, 0, 50, 0, 10)),
+            6 => (output, source(SOURCE, 0, 50, 0, 11)),
             // Consume the very output balance being measured.
             _ => (PATH_USD_ADDRESS, source(SOURCE, 1, 0, 0, 0)),
         };
