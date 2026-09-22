@@ -81,7 +81,7 @@ pub struct TempoNodeArgs {
     pub max_txs_per_lane: usize,
 
     /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
-    /// transaction sender and direct call target checks.
+    /// transaction sender, fee payer and direct call target checks.
     #[arg(
         long = "txpool.filter",
         value_name = "ADDRESSES_OR_FILE",
@@ -636,7 +636,7 @@ impl TempoPoolBuilder {
         self
     }
 
-    /// Configures transaction sender and direct call target checks.
+    /// Configures transaction sender, fee payer and direct call target checks.
     pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
         self.address_filter = address_filter;
         self
