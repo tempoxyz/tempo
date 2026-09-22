@@ -26,7 +26,7 @@ class ProgressTests(unittest.TestCase):
     def test_actual_nu_snippet_streams_before_completion_and_preserves_failure(self):
         source = (ROOT/'bench-e2e.nu').read_text()
         start = source.index('        let report = (^python3 contrib/bench/lifecycle/progress.py')
-        end = source.index('        rm -rf $lifecycle_dir', start)
+        end = source.index('        if $report.exit_code == 0 {', start)
         snippet = source[start:end]
         for code in (0, 7):
             with tempfile.TemporaryDirectory() as directory:
