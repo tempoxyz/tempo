@@ -156,9 +156,37 @@ where
         }
     }
 
-    /// Returns the wrapped iterator.
-    pub fn inner_mut(&mut self) -> &mut I {
-        &mut self.inner
+    /// Returns the next state-valid transaction using the supplied source operation.
+    /// This lets callers wait for transactions without bypassing state-aware filtering.
+    pub fn next_with(
+        &mut self,
+        mut next: impl FnMut(&mut I) -> Option<I::Item>,
+    ) -> Option<I::Item> {
+        loop {
+            let tx = next(&mut self.inner)?;
+            let best_tx = tx.best_transaction();
+
+            let Some(key) = best_tx.transaction.fee_balance_slot() else {
+                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+                continue;
+            };
+
+            if let Some(&balance) = self.decreased_balances.get(&key)
+                && balance < best_tx.transaction.fee_token_cost()
+            {
+                self.inner.mark_invalid(
+                    &tx,
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds(
+                            (balance, best_tx.transaction.fee_token_cost()).into(),
+                        ),
+                    ),
+                );
+                continue;
+            }
+
+            return Some(tx);
+        }
     }
 
     /// Processes a new transaction execution result and collects any relevant
@@ -189,31 +217,7 @@ where
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let tx = self.inner.next()?;
-            let best_tx = tx.best_transaction();
-
-            let Some(key) = best_tx.transaction.fee_balance_slot() else {
-                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
-                continue;
-            };
-
-            if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < best_tx.transaction.fee_token_cost()
-            {
-                self.inner.mark_invalid(
-                    &tx,
-                    InvalidPoolTransactionError::Consensus(
-                        InvalidTransactionError::InsufficientFunds(
-                            (balance, best_tx.transaction.fee_token_cost()).into(),
-                        ),
-                    ),
-                );
-                continue;
-            }
-
-            return Some(tx);
-        }
+        self.next_with(Iterator::next)
     }
 }
 
@@ -351,6 +355,28 @@ mod tests {
             aa_2d_best_transactions(aa_2d_txs),
             TEMPO_T1_BASE_FEE,
         )
+    }
+
+    #[test]
+    fn custom_next_preserves_state_filtering() {
+        let invalid = protocol_tx(0, 10);
+        let valid = protocol_tx(0, 5);
+        let source = protocol_best_transactions(vec![invalid.clone(), valid.clone()]);
+        let mut transactions = StateAwareBestTransactions::new(source);
+        transactions
+            .decreased_balances
+            .insert(invalid.transaction.fee_balance_slot().unwrap(), U256::ZERO);
+        assert!(invalid.transaction.fee_token_cost() > U256::ZERO);
+
+        let mut polls = 0;
+        let next = transactions
+            .next_with(|source| {
+                polls += 1;
+                source.next()
+            })
+            .unwrap();
+        assert_eq!(next.hash(), valid.hash());
+        assert_eq!(polls, 2);
     }
 
     #[test]

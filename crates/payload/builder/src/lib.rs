@@ -21,7 +21,7 @@ use crate::{
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
-    wait::pending_transactions_changed,
+    wait::TransactionWaiter,
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -90,7 +90,7 @@ use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
-/// Cancellation is an atomic flag, so idle waits must periodically check it.
+/// The upstream cancellation flag cannot wake a blocked builder.
 const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Source of transactions for payload building.
@@ -102,20 +102,22 @@ enum PayloadTransactions {
 
 impl PayloadTransactions {
     /// Returns the next transaction, if available.
-    fn next(&mut self) -> Option<PrewarmedTransaction> {
-        match self {
+    fn next(&mut self, mut waiter: Option<&mut TransactionWaiter>) -> Option<PrewarmedTransaction> {
+        let tx = match self {
             Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
-            Self::Prewarming(txs) => txs.next(),
-            Self::Parallel(planner) => planner.next(),
+            Self::Prewarming(txs) => {
+                txs.next_with(|txs| txs.next_with_waiter(waiter.as_deref_mut()))
+            }
+            Self::Parallel(txs) => txs.next_with_waiter(waiter.as_deref_mut()),
+        };
+        if tx.is_none()
+            && let Some(waiter) = waiter
+        {
+            // Prewarming normally used the deadline already. This also bounds retries
+            // if its coordinator disconnected; sequential mode waits on pool arrivals.
+            waiter.wait(std::future::pending::<()>(), true);
         }
-    }
-
-    fn prewarming_mut(&mut self) -> Option<&mut BestTransactionsPrewarming> {
-        match self {
-            Self::Sequential(_) => None,
-            Self::Prewarming(txs) => Some(txs.inner_mut()),
-            Self::Parallel(txs) => Some(txs),
-        }
+        tx
     }
 
     /// Mark the transaction as invalid.
@@ -475,10 +477,13 @@ where
 
         let pool_fetch_start = Instant::now();
         let payload_build_budget = attributes.payload_build_budget();
-        // Subscribe before taking the iterator snapshot so arrivals cannot be missed in between.
-        let mut pending_transactions = payload_build_budget.map(|_| {
-            self.pool
-                .pending_transactions_listener_for(TransactionListenerKind::All)
+        // Subscribe before the iterator snapshot so an arrival cannot fall between them.
+        let mut transaction_waiter = payload_build_budget.map(|_| {
+            TransactionWaiter::new(
+                &self.executor,
+                self.pool
+                    .pending_transactions_listener_for(TransactionListenerKind::All),
+            )
         });
         let raw_best_txs = best_txs(BestTransactionsAttributes::new(
             executor.evm().block().basefee,
@@ -501,15 +506,10 @@ where
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
                     raw_best_txs,
-                    pending_transactions.take(),
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(
-                        prewarm_ctx,
-                        raw_best_txs,
-                        pending_transactions.take(),
-                    ),
+                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
                 ))
             }
         } else {
@@ -532,7 +532,6 @@ where
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
-            let mut wait_deadline = None;
 
             if let Some(build_budget) = payload_build_budget {
                 let now = Instant::now();
@@ -570,37 +569,20 @@ where
                     );
                     break BlockBuildStopReason::BuildBudget;
                 }
-                wait_deadline = Some(
-                    now + (build_budget - budget_decision.total_reserved)
-                        .min(CANCEL_CHECK_INTERVAL),
-                );
+                if let Some(waiter) = &mut transaction_waiter {
+                    waiter.set_deadline(
+                        now + (build_budget - budget_decision.total_reserved)
+                            .min(CANCEL_CHECK_INTERVAL),
+                    );
+                }
             }
 
-            if let Some(prewarming) = best_txs.prewarming_mut() {
-                prewarming.deadline = wait_deadline;
-            }
-            let pool_tx = best_txs.next();
-            if let Some(prewarming) = best_txs.prewarming_mut() {
-                normal_transaction_fill_idle_elapsed +=
-                    std::mem::take(&mut prewarming.idle_elapsed);
+            let pool_tx = best_txs.next(transaction_waiter.as_mut());
+            if let Some(waiter) = &mut transaction_waiter {
+                normal_transaction_fill_idle_elapsed += waiter.take_idle_elapsed();
             }
             let Some(mut pool_tx) = pool_tx else {
-                if let Some(deadline) = wait_deadline
-                    && cumulative_gas_used < block_gas_limit
-                {
-                    // Prewarming already waited on its transaction queue. Without prewarming,
-                    // wait directly on the pool subscription, using the same deadline.
-                    if best_txs.prewarming_mut().is_none() {
-                        let idle_start = Instant::now();
-                        self.executor.handle().block_on(async {
-                            let _ = tokio::time::timeout_at(
-                                deadline.into(),
-                                pending_transactions_changed(&mut pending_transactions),
-                            )
-                            .await;
-                        });
-                        normal_transaction_fill_idle_elapsed += idle_start.elapsed();
-                    }
+                if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= block_gas_limit {
@@ -782,7 +764,7 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
-        drop(pending_transactions);
+        drop(transaction_waiter);
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
