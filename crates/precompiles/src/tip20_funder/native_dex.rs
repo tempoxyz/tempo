@@ -88,7 +88,8 @@ impl NativeDexFundingSource {
         call: IFundingSource::discoverCall,
     ) -> Result<Vec<IFundingSource::Candidate>> {
         self.validate_context()?;
-        self.validate_asset(call.assetOut)?;
+        let currency = TIP20Token::from_address(call.assetOut)?.currency()?;
+        self.validate_asset(call.assetOut, &currency)?;
         let inputs = self.decode_config(&call.config)?;
         let mut candidates = Vec::new();
         for asset_in in inputs {
