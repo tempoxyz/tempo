@@ -136,7 +136,7 @@ fn currency_metadata_allows_new_usd_assets_and_rejects_non_parity_assets() {
             .apply()
             .unwrap()
             .address();
-        call.data = (eur, U256::MAX).abi_encode().into();
+        call.requestData = (eur, U256::MAX).abi_encode().into();
         assert!(source.quote(call).is_err());
     });
 }
