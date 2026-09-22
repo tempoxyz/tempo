@@ -1602,7 +1602,7 @@ def "main e2e" [
         ($baseline | default "") !~ '^[0-9a-f]{40}$' or $baseline != $feature or
         $baseline_args != "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16" or
         $feature_args != $baseline_args or $baseline_hardfork != $feature_hardfork or
-        $run_side != "comparison" or $run_pairs != 6 or $duration != 60 or
+        $run_side != "comparison" or $run_pairs != 6 or $duration != 15 or
         $preset != "default" or $bloat != 100 or $tps != 15000 or $accounts != 1000 or
         $max_concurrent_requests != 100 or $token_count != 4 or
         $baseline_env != "" or $feature_env != "RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1"
@@ -1622,7 +1622,7 @@ def "main e2e" [
         ($run_side != "feature" and not $selective_retry_trial) or
         ($selective_retry_trial and $run_pairs != 6) or
         ((not $selective_retry_trial) and $run_pairs != 1) or
-        ($selective_retry_trial and $duration != 60) or ((not $selective_retry_trial) and $duration != 30) or
+        ($selective_retry_trial and $duration != 15) or ((not $selective_retry_trial) and $duration != 30) or
         $lifecycle_scheduler or $lifecycle_prewarm_cpu != "disabled"
     )) {
         error make {msg: "Read-readiness requires a 30-second feature diagnostic and is disabled for the selective retry trial"}

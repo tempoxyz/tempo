@@ -20,7 +20,7 @@ def inputs(env):
     if trial == 'true':
         need(env.get('BENCH_FEATURE_ENV') == 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1')
         need(env.get('BENCH_RUN_SIDE') == 'comparison' and env.get('BENCH_RUN_PAIRS') == '6')
-        need(env.get('BENCH_DURATION') == '60' and env.get('BENCH_READ_READINESS') == 'false')
+        need(env.get('BENCH_DURATION') == '15' and env.get('BENCH_READ_READINESS') == 'false')
         need(env.get('BENCH_PRESET') == 'default' and env.get('BENCH_BLOAT') == '100')
         need(env.get('BENCH_TPS') == '15000' and env.get('BENCH_ACCOUNTS') == '1000')
         need(env.get('BENCH_MAX_CONCURRENT_REQUESTS') == '100' and env.get('BENCH_TOKEN_COUNT') == '4')

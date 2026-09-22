@@ -101,7 +101,7 @@ def sanitize(root):
         need(all(finite(clean_rows[-1][field]) for field in
                  ('phase_duration_ms', 'timestamp_span_ms', 'first_retained_tx', 'first_retained_gas')))
     config = source.get('config')
-    need(type(config) is dict and config.get('duration') == 60 and config.get('run_pairs') == PAIRS and
+    need(type(config) is dict and config.get('duration') == 15 and config.get('run_pairs') == PAIRS and
          config.get('summary_warmup_blocks') == 5 and config.get('preset') == 'default' and
          config.get('bloat') == 102400 and config.get('tps') == 15000 and
          config.get('token_count') == 4 and config.get('run_side') == 'comparison')
@@ -132,7 +132,7 @@ def sanitize(root):
             'accounts': 1000,
             'max_concurrent_requests': 100,
             'token_count': 4,
-            'duration': 60,
+            'duration': 15,
             'run_pairs': PAIRS,
             'summary_warmup_blocks': 5,
             'order': RUNS,
@@ -150,6 +150,7 @@ def sanitize(root):
              if key in ('bloat', 'tps')))
     (root / 'summary.json').write_text(json.dumps(public, sort_keys=True, indent=2) + '\n')
     units = {field: ('ms' if 'latency' in field or 'block_time' in field else
+                     'Mgas/s' if field == 'mgas_s' else
                      'gas/s' if field.endswith('gas_s') else
                      'tx/s' if field == 'tps' else 'Mgas/s') for field in CORE}
     lines = ['# Standard benchmark summary', '',
@@ -158,7 +159,16 @@ def sanitize(root):
     for field in CORE:
         lines.append(f"| {field} | {units[field]} | {clean_results['baseline'][field]} | "
                      f"{clean_results['feature'][field]} | {clean_results['deltas'][field]:+.2f}% |")
-    lines += ['', 'Run-level confidence and estimator notes are in `run-inference.md`.', '']
+    lines += ['', '## Trial configuration', '',
+              'Six feature/control pairs; 15 seconds per phase; five warmup blocks excluded. '
+              'Preset: default; target: 15,000 TPS; state: 100 GiB. Workers: 32 storage, 32 account, '
+              '16 prewarming. Read-readiness instrumentation disabled.', '',
+              '| Phase | Blocks | Transactions | Gas | Success |', '|---|---:|---:|---:|---:|']
+    for row in clean_rows:
+        lines.append(f"| {row['label']} | {row['blocks']} | {row['total_tx']} | "
+                     f"{row['total_gas']} | {row['success_rate']:.1f}% |")
+    lines += ['', 'The 15-second phases limit tail estimates and do not establish sustained-load performance.',
+              'Run-level confidence and estimator notes are in `run-inference.md`.', '']
     (root / 'summary.md').write_text('\n'.join(lines))
     public_dir = root / 'lifecycle'
     public_dir.mkdir(exist_ok=True)

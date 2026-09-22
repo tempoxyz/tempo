@@ -22,7 +22,7 @@ class CapacityWorkflowTests(unittest.TestCase):
                 '      BENCH_LIFECYCLE: "true"\n',
                 '      BENCH_LIFECYCLE_SCHEDULER: "false"\n',
                 '      BENCH_LIFECYCLE_DETAIL: "milestones"\n',
-                '      BENCH_DURATION: "60"\n',
+                '      BENCH_DURATION: "15"\n',
                 '      BENCH_NO_SLACK: "true"\n',
                 '      BENCH_SAMPLY: "false"\n',
                 '      BENCH_TRACY: "off"\n',

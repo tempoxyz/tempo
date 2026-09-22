@@ -26,7 +26,7 @@ class StatisticalTrialTests(unittest.TestCase):
         root.joinpath('summary.json').write_text(json.dumps({
             'baseline_ref': 'a' * 40, 'feature_ref': 'a' * 40,
             'grafana_url': 'https://private.invalid/secret',
-            'config': {'preset': 'default', 'bloat': 102400, 'tps': 15000, 'duration': 60,
+            'config': {'preset': 'default', 'bloat': 102400, 'tps': 15000, 'duration': 15,
                        'run_pairs': 6, 'summary_warmup_blocks': 5, 'token_count': 4, 'run_side': 'comparison', 'derek_command': 'SECRET'},
             'results': {'baseline': {**result, 'blocks': 12, 'unknown_private': 7},
                         'feature': {**result, 'blocks': 12}, 'deltas': result},
@@ -42,6 +42,9 @@ class StatisticalTrialTests(unittest.TestCase):
             text = (root / 'lifecycle/summary.json').read_text() + (root / 'lifecycle/summary.md').read_text()
             self.assertNotIn('private.invalid', text); self.assertNotIn('SECRET', text)
             self.assertNotIn('unknown_private', text)
+            self.assertIn('| mgas_s | Mgas/s |', text)
+            self.assertIn('15 seconds per phase', text)
+            self.assertIn('| feature-1 | 2 | 20 | 200 | 100.0% |', text)
 
     def test_rejects_missing_truncated_cutoff_and_missing_metric(self):
         for mutation in ('missing', 'truncated', 'cutoff', 'metric'):

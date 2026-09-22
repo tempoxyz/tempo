@@ -16,8 +16,8 @@ ROOT=Path(__file__).resolve().parents[3]
 
 def without_single_diagnostic(workflow):
     """Reverse only the reviewed single-slot readiness diagnostic job settings."""
-    assert workflow.count('      BENCH_DURATION: "60"\n') == 1
-    workflow = workflow.replace('      BENCH_DURATION: "60"\n',
+    assert workflow.count('      BENCH_DURATION: "15"\n') == 1
+    workflow = workflow.replace('      BENCH_DURATION: "15"\n',
                                 '      BENCH_DURATION: "30"\n')
     trial = '      BENCH_SELECTIVE_RETRY_TRIAL: "true"\n      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1"\n'
     assert workflow.count(trial) == 1
@@ -159,7 +159,7 @@ class Workflow(unittest.TestCase):
         trial = {**env, 'BENCH_SELECTIVE_RETRY_TRIAL':'true',
                  'BENCH_FEATURE_ENV':'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1',
                  'BENCH_RUN_SIDE':'comparison', 'BENCH_RUN_PAIRS':'6',
-                 'BENCH_DURATION':'60', 'BENCH_READ_READINESS':'false',
+                 'BENCH_DURATION':'15', 'BENCH_READ_READINESS':'false',
                  'BENCH_PRESET':'default', 'BENCH_BLOAT':'100', 'BENCH_TPS':'15000',
                  'BENCH_ACCOUNTS':'1000', 'BENCH_MAX_CONCURRENT_REQUESTS':'100',
                  'BENCH_TOKEN_COUNT':'4',
@@ -213,7 +213,7 @@ class Workflow(unittest.TestCase):
                     baseline_args='--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16',
                     feature_args='--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16',
                     baseline_hardfork='', feature_hardfork='', run_side='comparison', run_pairs=6,
-                    duration=60, preset='default', bloat=100, tps=15000, accounts=1000,
+                    duration=15, preset='default', bloat=100, tps=15000, accounts=1000,
                     max_concurrent_requests=100, token_count=4, lifecycle_detail='milestones', lifecycle_scheduler=False,
                     lifecycle_prewarm_cpu='disabled')
         mutations=[{}, {'feature':'b'*40}, {'feature_args':'--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 15'},
