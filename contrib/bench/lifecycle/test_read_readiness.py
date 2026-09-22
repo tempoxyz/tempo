@@ -8,6 +8,29 @@ def event(stage, ts=100, block='a', ident=1, **fields):
     return {'type':'event','ts':ts,'id':ident,'node':'Validator A','block':block,'fields':{'stage':stage,**fields}}
 
 class ReadinessTests(unittest.TestCase):
+    def test_selective_storage_retry_round_trip_privacy_and_cutoff(self):
+        from read_readiness import RETRY_ENABLED_ONLY_FIELDS, RETRY_FIELDS
+        enabled = {name: 1 for name in RETRY_FIELDS}
+        disabled = {name: 1 for name in RETRY_FIELDS}
+        disabled['enabled'] = 0
+        for name in RETRY_ENABLED_ONLY_FIELDS:
+            disabled[name] = 0
+        events = [
+            event('selective_storage_retry_totals', ts=89, **disabled),
+            event('selective_storage_retry_totals', ts=90, **enabled,
+                  address='private', target_hash='private', private_counter=999),
+            event('selective_storage_retry_totals', ts=95, enabled=0, maps_skipped=1),
+            event('selective_storage_retry_totals', ts=96, enabled=2, retry_calls=1),
+            event('selective_storage_retry_totals', ts=100, **enabled),
+            event('selective_storage_retry_totals', ts=110, **enabled),
+        ]
+        result = build(events, [{'read_readiness':'v1'}], {'a':7}, 0, cutoff=100)
+        self.assertEqual(len(result['events']), 2)
+        self.assertEqual(result['events'][0]['stage'], 'selective_storage_retry_totals')
+        self.assertEqual(result['events'][0]['block'], 7)
+        self.assertEqual(result['events'][0]['fields'], disabled)
+        self.assertEqual(result['events'][1]['fields'], enabled)
+
     def test_progress_totals_round_trip_privacy_association_and_cutoff(self):
         from read_readiness import PROGRESS_FIELDS
         numeric = {name: 1 for name in PROGRESS_FIELDS}
