@@ -24,3 +24,17 @@ class WorkloadTests(unittest.TestCase):
             for rows in [[{'number':True,'tx_count':2}],[{'number':1,'tx_count':2}]*2]:
                 p.write_text(json.dumps({'blocks':rows}))
                 with self.assertRaises(ValueError):workload.load(p)
+
+    def test_interrupted_sender_summary_only_falls_back_with_backpressure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'sender.json'
+            cutoff = {'backpressure':{'ts':100, 'node':'Validator A'}}
+            for content in (None, '', '{"blocks":[', '{"private":"discard"}'):
+                if content is not None:
+                    path.write_text(content)
+                self.assertEqual(workload.load_for_capture(path, cutoff),
+                                 (None, 'unavailable_after_backpressure'))
+                with self.assertRaises(ValueError):
+                    workload.load_for_capture(path, {'stop_reason':'completed'})
+            path.write_text('{"blocks":[{"number":7,"tx_count":12}]}')
+            self.assertEqual(workload.load_for_capture(path, cutoff), ({7:12}, None))

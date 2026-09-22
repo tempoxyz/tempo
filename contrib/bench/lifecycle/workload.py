@@ -25,6 +25,18 @@ def load(path):
         raise ValueError('workload_report_invalid') from None
 
 
+def load_for_capture(path, window):
+    """An interrupted sender may leave an empty/partial report; retain the pruned timeline."""
+    try:
+        return load(path), None
+    except ValueError:
+        if not (window or {}).get('backpressure'):
+            raise
+        # The report still uses the explicit pre-backpressure process window. Do not
+        # claim the sender-selected population when its private summary is unavailable.
+        return None, 'unavailable_after_backpressure'
+
+
 def select(eligible, by_block, aliases, wanted):
     candidates = {block['id']: block for block in eligible}
     selected, seen = [], set()

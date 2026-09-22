@@ -465,13 +465,13 @@ def write_report(paths, out, warmup=5, window=None, prune=False, expected_detail
         emit('lifecycle_prune', 'end')
     emit('lifecycle_build', 'begin')
     workload_blocks = None
+    workload_status = None
     if workload_report is not None:
         import workload
-        if workload_report.is_file():
-            workload_blocks = workload.load(workload_report)
-        elif not (window or {}).get('backpressure'):
-            raise ValueError('workload_report_unavailable')
+        workload_blocks, workload_status = workload.load_for_capture(workload_report, window)
     data = build(paths, warmup, window, expected_detail, expected_prewarm_cpu, workload_blocks)
+    if workload_status is not None:
+        data['workload_population']['sender_report'] = workload_status
     emit('lifecycle_build', 'end')
     out.mkdir(parents=True, exist_ok=True)
     if scheduler_dir is not None:
