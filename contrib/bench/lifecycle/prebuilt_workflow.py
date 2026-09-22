@@ -19,8 +19,11 @@ def inputs(env):
     need(trial in ('', 'true'))
     if trial == 'true':
         need(env.get('BENCH_FEATURE_ENV') == 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1')
-        need(env.get('BENCH_RUN_SIDE') == 'comparison' and env.get('BENCH_RUN_PAIRS') == '2')
-        need(env.get('BENCH_DURATION') == '15' and env.get('BENCH_READ_READINESS') == 'true')
+        need(env.get('BENCH_RUN_SIDE') == 'comparison' and env.get('BENCH_RUN_PAIRS') == '6')
+        need(env.get('BENCH_DURATION') == '60' and env.get('BENCH_READ_READINESS') == 'false')
+        need(env.get('BENCH_PRESET') == 'default' and env.get('BENCH_BLOAT') == '100')
+        need(env.get('BENCH_TPS') == '15000' and env.get('BENCH_ACCOUNTS') == '1000')
+        need(env.get('BENCH_MAX_CONCURRENT_REQUESTS') == '100' and env.get('BENCH_TOKEN_COUNT') == '4')
         args = '--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16'
         need(env.get('BENCH_BASELINE_ARGS') == args and env.get('BENCH_FEATURE_ARGS') == args)
         need(env.get('PREBUILT_BASELINE_REF') == env.get('PREBUILT_FEATURE_REF'))

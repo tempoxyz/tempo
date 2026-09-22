@@ -528,14 +528,14 @@ test('single diagnostic policy admits one exact prebuilt receipt without setup f
     assert.equal(adapter.binding(context, f.env).policy, adapter.SINGLE_DIAGNOSTIC_POLICY);
     assert.equal(adapter.binding(context, { ...f.env, BENCH_BASELINE_ARGS: 'ordinary=1', BENCH_FEATURE_ARGS: 'ordinary=2' }).policy, adapter.SINGLE_DIAGNOSTIC_POLICY);
     const trialArgs = '--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16';
-    const trial = { ...f.env, BENCH_SELECTIVE_RETRY_TRIAL: 'true', BENCH_RUN_SIDE: 'comparison', BENCH_RUN_PAIRS: '2', BENCH_DURATION: '15', BENCH_BASELINE_ARGS: trialArgs, BENCH_FEATURE_ARGS: trialArgs, BENCH_FEATURE_ENV: 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1' };
+    const trial = { ...f.env, BENCH_SELECTIVE_RETRY_TRIAL: 'true', BENCH_RUN_SIDE: 'comparison', BENCH_RUN_PAIRS: '6', BENCH_DURATION: '60', BENCH_BASELINE_ARGS: trialArgs, BENCH_FEATURE_ARGS: trialArgs, BENCH_FEATURE_ENV: 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1', BENCH_READ_READINESS: 'false', BENCH_PRESET: 'default', BENCH_BLOAT: '100', BENCH_TPS: '15000', BENCH_ACCOUNTS: '1000', BENCH_MAX_CONCURRENT_REQUESTS: '100', BENCH_TOKEN_COUNT: '4' };
     assert.equal(adapter.binding(context, trial).policy, adapter.SINGLE_DIAGNOSTIC_POLICY);
     for (const [field, value] of [
       ['BENCH_SELECTIVE_RETRY_TRIAL', 'false'], ['BENCH_RUN_SIDE', 'feature'],
       ['BENCH_FEATURE_ENV', ''], ['BENCH_FEATURE_ENV', 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1 PRIVATE=1'],
       ['BENCH_BASELINE_ENV', 'PRIVATE=1'], ['BENCH_BASELINE_ARGS', '--engine.storage-worker-count 31 --engine.account-worker-count 32 --engine.prewarming-threads 16'],
       ['BENCH_FEATURE_ARGS', '--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 15'],
-      ['BENCH_DURATION', '30'], ['BENCH_DURATION', '90'], ['BENCH_RUN_PAIRS', '1'],
+      ['BENCH_DURATION', '30'], ['BENCH_DURATION', '90'], ['BENCH_RUN_PAIRS', '1'], ['BENCH_READ_READINESS', 'true'],
     ]) assert.throws(() => adapter.binding(context, { ...trial, [field]: value }));
 
     for (const [field, value] of [

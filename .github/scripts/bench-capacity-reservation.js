@@ -45,10 +45,11 @@ function binding(context, env) {
     requireValue(env.BENCH_LIFECYCLE_DETAIL === 'milestones');
     const trial = env.BENCH_SELECTIVE_RETRY_TRIAL || '';
     requireValue(['', 'true'].includes(trial));
-    requireValue(env.BENCH_RUN_SIDE === (trial === 'true' ? 'comparison' : 'feature') && env.BENCH_RUN_PAIRS === (trial === 'true' ? '2' : '1'));
+    requireValue(env.BENCH_RUN_SIDE === (trial === 'true' ? 'comparison' : 'feature') && env.BENCH_RUN_PAIRS === (trial === 'true' ? '6' : '1'));
     requireValue(env.BENCH_FEATURE_ENV === (trial === 'true' ? 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1' : '') || (!trial && !env.BENCH_FEATURE_ENV));
-    requireValue(env.BENCH_DURATION === (trial === 'true' ? '15' : '30'));
-    requireValue(env.BENCH_READ_READINESS === 'true');
+    requireValue(env.BENCH_DURATION === (trial === 'true' ? '60' : '30'));
+    requireValue(env.BENCH_READ_READINESS === (trial === 'true' ? 'false' : 'true'));
+    requireValue(trial !== 'true' || (env.BENCH_PRESET === 'default' && env.BENCH_BLOAT === '100' && env.BENCH_TPS === '15000' && env.BENCH_ACCOUNTS === '1000' && env.BENCH_MAX_CONCURRENT_REQUESTS === '100' && env.BENCH_TOKEN_COUNT === '4'));
     requireValue(!env.BENCH_BASELINE_ENV && !env.BENCH_BENCH_ENV);
     const trialArgs = '--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16';
     requireValue(trial !== 'true' || (env.BENCH_BASELINE_ARGS === trialArgs && env.BENCH_FEATURE_ARGS === trialArgs));

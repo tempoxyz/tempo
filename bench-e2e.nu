@@ -1169,7 +1169,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             error make {msg: "Read-readiness capture requires an admitted milestone phase"}
         }
         "TEMPO_READ_READINESS=1 "
-    } else { "" }
+    } else { "env -u TEMPO_READ_READINESS " }
     let scheduler_env = if $ctx.lifecycle_scheduler { "TEMPO_LIFECYCLE_SCHEDULER=registered_threads_v1 TEMPO_LIFECYCLE_KERNEL_WAITS=2 TEMPO_LIFECYCLE_PREWARM_CPU=disabled TEMPO_LIFECYCLE_PROCESS_CPU=disabled " } else { "" }
     let prewarm_config = (lifecycle-prewarm-config $ctx.lifecycle_prewarm_cpu $run.side)
     let a_capture = if $ctx.lifecycle { $"($prewarm_config.env)($scheduler_env)($readiness_env)RETH_LIFECYCLE_FILE=($lifecycle_dir)/a.jsonl TEMPO_LIFECYCLE_DETAIL=($capture_detail) RETH_LIFECYCLE_KEY_FILE=($lifecycle_key) RETH_LIFECYCLE_EPOCH_NS=($lifecycle_epoch) " } else { "" }
@@ -1259,6 +1259,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
+    mut phase_stop_reason = ""
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
@@ -1287,12 +1288,21 @@ def run-local-e2e-phase [run: record, ctx: record] {
             }
         }
         let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
+        $phase_stop_reason = if $ctx.lifecycle and ($"($lifecycle_dir)/window.json" | path exists) {
+            open $"($lifecycle_dir)/window.json" | get -o stop_reason | default ""
+        } else if not $ctx.lifecycle { "load_finished" } else { "" }
+        if $phase_stop_reason not-in ["load_finished" "backpressure"] {
+            print $"Error: invalid lifecycle stop reason for ($phase)"
+            $phase_exit = 1
+        }
         {
+            schema: 1
             phase: $phase
             started_ms: $phase_started_ms
             finished_ms: $phase_finished_ms
+            stop_reason: $phase_stop_reason
         } | to json | save -f $"($ctx.results_dir)/phase-range-($phase).json"
-        $phase_exit = $sender_exit
+        if $sender_exit != 0 { $phase_exit = $sender_exit }
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
     }
@@ -1344,6 +1354,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
             if $archive.stderr != "" { print $archive.stderr }
             if $archive.exit_code != 0 { $phase_exit = 1 }
         }
+    }
+
+    if $phase_exit == 0 and $phase_stop_reason == "backpressure" {
+        let completed = (glob $"($ctx.results_dir)/phase-range-*.json" | length)
+        ^python3 contrib/bench/lifecycle/statistical_trial.py unavailable $ctx.results_dir $completed
+        return 75
     }
 
     if $phase_exit != 0 {
@@ -1582,29 +1598,34 @@ def "main e2e" [
     let selective_retry_mode = ($env.BENCH_SELECTIVE_RETRY_TRIAL? | default "")
     let selective_retry_trial = $selective_retry_mode == "true"
     if $selective_retry_mode not-in ["" "true"] or ($selective_retry_trial and (
-        not $prebuilt or ($env.BENCH_READ_READINESS? | default "false") != "true" or
+        not $prebuilt or ($env.BENCH_READ_READINESS? | default "false") != "false" or
         ($baseline | default "") !~ '^[0-9a-f]{40}$' or $baseline != $feature or
         $baseline_args != "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16" or
         $feature_args != $baseline_args or $baseline_hardfork != $feature_hardfork or
-        $run_side != "comparison" or $run_pairs != 2 or $duration != 15 or
+        $run_side != "comparison" or $run_pairs != 6 or $duration != 60 or
+        $preset != "default" or $bloat != 100 or $tps != 15000 or $accounts != 1000 or
+        $max_concurrent_requests != 100 or $token_count != 4 or
         $baseline_env != "" or $feature_env != "RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1"
     )) {
         error make {msg: "Selective storage retry trial requires identical immutable inputs and the exact feature toggle"}
     }
-    if $selective_retry_trial { hide-env -i RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES }
+    if $selective_retry_trial {
+        hide-env -i RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES TEMPO_READ_READINESS
+    }
     if $prebuilt and (not $lifecycle or $profile != "profiling" or not $no_default_features or $force_bloat or $init_only or $no_cache or $samply or $tracy != "off" or $valscope_static_report or $baseline_env != "" or ($feature_env != "" and not $selective_retry_trial) or $bench_env != "" or $baseline_features != "" or $feature_features != "") {
         error make {msg: "Unsupported prebuilt execution inputs"}
     }
     let readiness_mode = ($env.BENCH_READ_READINESS? | default "false")
     if $readiness_mode not-in ["false" "true"] or ($readiness_mode == "true" and (
+        $selective_retry_trial or
         not $prebuilt or not $lifecycle or $lifecycle_detail != "milestones" or
         ($run_side != "feature" and not $selective_retry_trial) or
-        ($selective_retry_trial and $run_pairs != 2) or
+        ($selective_retry_trial and $run_pairs != 6) or
         ((not $selective_retry_trial) and $run_pairs != 1) or
-        ($selective_retry_trial and $duration != 15) or ((not $selective_retry_trial) and $duration != 30) or
+        ($selective_retry_trial and $duration != 60) or ((not $selective_retry_trial) and $duration != 30) or
         $lifecycle_scheduler or $lifecycle_prewarm_cpu != "disabled"
     )) {
-        error make {msg: "Read-readiness requires a 15-second selective storage retry trial or 30-second feature diagnostic"}
+        error make {msg: "Read-readiness requires a 30-second feature diagnostic and is disabled for the selective retry trial"}
     }
     if $lifecycle_scheduler and (not $lifecycle or $lifecycle_detail != "full" or $lifecycle_prewarm_cpu != "disabled" or $samply or $tracy != "off") {
         error make {msg: "Kernel fault diagnostic requires full lifecycle and no other observer"}

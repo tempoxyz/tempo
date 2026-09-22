@@ -16,23 +16,35 @@ ROOT=Path(__file__).resolve().parents[3]
 
 def without_single_diagnostic(workflow):
     """Reverse only the reviewed single-slot readiness diagnostic job settings."""
-    assert workflow.count('      BENCH_DURATION: "15"\n') == 1
-    workflow = workflow.replace('      BENCH_DURATION: "15"\n',
+    assert workflow.count('      BENCH_DURATION: "60"\n') == 1
+    workflow = workflow.replace('      BENCH_DURATION: "60"\n',
                                 '      BENCH_DURATION: "30"\n')
     trial = '      BENCH_SELECTIVE_RETRY_TRIAL: "true"\n      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1"\n'
     assert workflow.count(trial) == 1
     workflow = workflow.replace(trial, '      BENCH_FEATURE_ENV: ""\n')
     assert workflow.count('      BENCH_RUN_SIDE: "comparison"\n') == 1
     workflow = workflow.replace('      BENCH_RUN_SIDE: "comparison"\n', '      BENCH_RUN_SIDE: "feature"\n')
-    assert workflow.count('      BENCH_RUN_PAIRS: "2"\n') == 1
-    workflow = workflow.replace('      BENCH_RUN_PAIRS: "2"\n', '      BENCH_RUN_PAIRS: "1"\n')
+    assert workflow.count('      BENCH_RUN_PAIRS: "6"\n') == 1
+    workflow = workflow.replace('      BENCH_RUN_PAIRS: "6"\n', '      BENCH_RUN_PAIRS: "1"\n')
     for current, previous in [
         ('      BENCH_BASELINE_ARGS: "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16"\n', '      BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}\n'),
         ('      BENCH_FEATURE_ARGS: "--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16"\n', '      BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}\n'),
         ('      BENCH_BASELINE_ENV: ""\n', '      BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}\n'),
+        ('      BENCH_PR: ""\n', '      BENCH_PR: ${{ inputs.pr }}\n'),
+        ('      BENCH_COMMENT_ID: ""\n', '      BENCH_COMMENT_ID: ${{ inputs.comment-id }}\n'),
     ]:
         assert workflow.count(current) == 1
         workflow = workflow.replace(current, previous)
+    workflow = workflow.replace("      - name: Resolve PR attribution\n        if: ${{ steps.capacity-election.outputs.selected == 'true' && (false) }}\n",
+                                "      - name: Resolve PR attribution\n        if: steps.capacity-election.outputs.selected == 'true'\n", 1)
+    workflow = workflow.replace("      - name: Create dispatch PR comment\n        if: ${{ steps.capacity-election.outputs.selected == 'true' && (false) }}\n",
+                                "      - name: Create dispatch PR comment\n        if: ${{ steps.capacity-election.outputs.selected == 'true' && (github.event_name == 'workflow_dispatch') }}\n", 1)
+    workflow = workflow.replace('--baseline-name "$BASELINE_REF"\n            --feature-name "$FEATURE_REF"',
+                                '--baseline-name "$BASELINE_NAME"\n            --feature-name "$FEATURE_NAME"', 1)
+    workflow = workflow.replace("if (process.env.BENCH_LIFECYCLE !== 'true' && benchId && metricsFrom && metricsTo && actualFrom && actualTo) {",
+                                'if (benchId && metricsFrom && metricsTo && actualFrom && actualTo) {', 1)
+    workflow = workflow.replace('const body = `${resultHeadline} [View job](${jobUrl})\\n\\n${summary}${samplySection}${tracySection}`;',
+                                'const body = `cc @${process.env.BENCH_ACTOR}\\n\\n${resultHeadline} [View job](${jobUrl})\\n\\n${summary}${samplySection}${tracySection}`;', 1)
     replacements = [
         ('      max-parallel: 1\n', '      max-parallel: 5\n'),
         ('        slot: [1]\n', '        slot: [1, 2, 3, 4, 5]\n'),
@@ -49,13 +61,31 @@ def without_single_diagnostic(workflow):
         ('      BENCH_VALSCOPE: "false"\n', "      BENCH_VALSCOPE: ${{ inputs.profiling != 'lifecycle' && inputs.profiling != 'lifecycle-milestones' && inputs.profiling != 'lifecycle-compare-detail' && inputs.profiling != 'lifecycle-compare-prewarm-cpu' && inputs.profiling != 'lifecycle-kernel-faults' && (inputs.valscope == true || inputs.valscope == 'true') }}\n"),
         ('      BENCH_NO_SLACK: "true"\n', '      BENCH_NO_SLACK: ${{ inputs.no-slack }}\n'),
         ('      BENCH_METRICS: "false"\n', "      BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}\n"),
-        ('      BENCH_FEATURE_ENV: ""\n      BENCH_READ_READINESS: "true"\n', '      BENCH_FEATURE_ENV: ${{ inputs.feature-env }}\n'),
+        ('      BENCH_FEATURE_ENV: ""\n      BENCH_READ_READINESS: "false"\n', '      BENCH_FEATURE_ENV: ${{ inputs.feature-env }}\n'),
         ('      BENCH_RUN_PAIRS: "1"\n', "      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}\n"),
         ('      BENCH_RUN_SIDE: "feature"\n', "      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'lifecycle' || inputs.profiling == 'lifecycle-milestones' || inputs.profiling == 'lifecycle-compare-detail' || inputs.profiling == 'lifecycle-compare-prewarm-cpu' || inputs.profiling == 'lifecycle-kernel-faults') && inputs.baseline == '' && 'feature' || inputs.run-side || 'comparison' }}\n"),
     ]
     for current, previous in replacements:
         assert workflow.count(current) == 1
         workflow = workflow.replace(current, previous)
+    for current, previous in [
+        ('      BENCH_PRESET: "default"\n', '      BENCH_PRESET: ${{ inputs.preset }}\n'),
+        ('      BENCH_BLOAT: "100"\n', '      BENCH_BLOAT: ${{ inputs.bloat }}\n'),
+        ('      BENCH_TPS: "15000"\n', '      BENCH_TPS: ${{ inputs.tps }}\n'),
+        ('      BENCH_ACCOUNTS: "1000"\n', "      BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}\n"),
+        ('      BENCH_MAX_CONCURRENT_REQUESTS: "100"\n', "      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '500' }}\n"),
+        ('      BENCH_TOKEN_COUNT: "4"\n', "      BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}\n"),
+    ]:
+        assert workflow.count(current) == 1
+        workflow = workflow.replace(current, previous)
+    start = workflow.index('          if [ "$BENCH_LIFECYCLE" = "true" ]; then', workflow.index('- name: Generate e2e summary'))
+    end = workflow.index('          else\n            nu bench-e2e.nu summarize "$RESULTS_DIR"', start)
+    workflow = workflow[:start] + '''          if [ "$BENCH_LIFECYCLE" = "true" ]; then
+            printf 'Block lifecycle capture completed. Download the lifecycle artifact and open index.html for individual and p50/p90/p99 blocks.\\n' > "$RESULTS_DIR/summary.md"
+''' + workflow[end:]
+    start = workflow.index('\n      - name: Report unavailable confidence')
+    end = workflow.index('\n      - name: Publish ValScope static reports', start)
+    workflow = workflow[:start] + workflow[end:]
     return workflow
 
 
@@ -128,8 +158,11 @@ class Workflow(unittest.TestCase):
         args = '--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16'
         trial = {**env, 'BENCH_SELECTIVE_RETRY_TRIAL':'true',
                  'BENCH_FEATURE_ENV':'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES=1',
-                 'BENCH_RUN_SIDE':'comparison', 'BENCH_RUN_PAIRS':'2',
-                 'BENCH_DURATION':'15', 'BENCH_READ_READINESS':'true',
+                 'BENCH_RUN_SIDE':'comparison', 'BENCH_RUN_PAIRS':'6',
+                 'BENCH_DURATION':'60', 'BENCH_READ_READINESS':'false',
+                 'BENCH_PRESET':'default', 'BENCH_BLOAT':'100', 'BENCH_TPS':'15000',
+                 'BENCH_ACCOUNTS':'1000', 'BENCH_MAX_CONCURRENT_REQUESTS':'100',
+                 'BENCH_TOKEN_COUNT':'4',
                  'BENCH_BASELINE_ARGS':args, 'BENCH_FEATURE_ARGS':args,
                  'PREBUILT_BASELINE_REF':'a'*40, 'PREBUILT_FEATURE_REF':'a'*40}
         self.assertEqual(inputs(trial), ['baseline', 'feature'])
@@ -142,7 +175,7 @@ class Workflow(unittest.TestCase):
                            ('PREBUILT_BASELINE_REF','b'*40), ('PREBUILT_FEATURE_REF',''),
                            ('BENCH_RUN_SIDE','feature'), ('BENCH_RUN_PAIRS','1'),
                            ('BENCH_DURATION','30'), ('BENCH_DURATION','90'),
-                           ('BENCH_READ_READINESS','false')]:
+                           ('BENCH_READ_READINESS','true')]:
             with self.subTest(key=key, value=value), self.assertRaises(Rejected):
                 inputs({**trial, key:value})
         for key,value in [('BENCH_FORCE_BLOAT','true'),('BENCH_NO_CACHE','true'),('BENCH_TRACY','tracy'),('BENCH_LIFECYCLE','false'),('BENCH_VALSCOPE','true'),('BENCH_FEATURE_FEATURES','otlp'),('BENCH_FEATURE_ENV','RUSTFLAGS=native'),('BENCH_TXGEN_REF','main')]:
@@ -179,8 +212,9 @@ class Workflow(unittest.TestCase):
                     baseline_features='', feature_features='', baseline='a'*40, feature='a'*40,
                     baseline_args='--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16',
                     feature_args='--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 16',
-                    baseline_hardfork='', feature_hardfork='', run_side='comparison', run_pairs=2,
-                    duration=15, lifecycle_detail='milestones', lifecycle_scheduler=False,
+                    baseline_hardfork='', feature_hardfork='', run_side='comparison', run_pairs=6,
+                    duration=60, preset='default', bloat=100, tps=15000, accounts=1000,
+                    max_concurrent_requests=100, token_count=4, lifecycle_detail='milestones', lifecycle_scheduler=False,
                     lifecycle_prewarm_cpu='disabled')
         mutations=[{}, {'feature':'b'*40}, {'feature_args':'--engine.storage-worker-count 32 --engine.account-worker-count 32 --engine.prewarming-threads 15'},
                    {'feature_env':''}, {'baseline_env':'PRIVATE=1'}, {'duration':30},
@@ -191,21 +225,21 @@ class Workflow(unittest.TestCase):
             script=declarations+'\n'+guard+'\nprint ({admitted: true, inherited_toggle: ($env.RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES? | default "")} | to json --raw)'
             run=subprocess.run(['nu','--no-config-file','-c',script],capture_output=True,text=True,
                 env={**os.environ, 'BENCH_BINARY_MODE':'prebuilt_v1', 'BENCH_SELECTIVE_RETRY_TRIAL':'true',
-                     'BENCH_READ_READINESS':'true', 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES':'1'})
+                     'BENCH_READ_READINESS':'false', 'TEMPO_READ_READINESS':'1', 'RETH_EXPERIMENTAL_SELECTIVE_STORAGE_RETRIES':'1'})
             self.assertEqual(run.returncode==0, not mutation, mutation)
             if not mutation:
                 self.assertEqual(json.loads(run.stdout),
                                  {'admitted':True, 'inherited_toggle':''})
 
     @unittest.skipUnless(shutil.which('nu'), 'Nu required for phase ordering regression')
-    def test_selective_trial_two_pairs_alternate_order(self):
+    def test_selective_trial_six_pairs_alternate_order(self):
         source=(ROOT/'bench-e2e.nu').read_text()
         helper='def e2e-run-sides'+source.split('def e2e-run-sides',1)[1].split('\ndef e2e-write-summary-config',1)[0]
         run=subprocess.run(
-            ['nu','--no-config-file','-c',helper+'\ne2e-run-sides 2 comparison | to json --raw'],
+            ['nu','--no-config-file','-c',helper+'\ne2e-run-sides 6 comparison | to json --raw'],
             capture_output=True,text=True)
         self.assertEqual(run.returncode,0,run.stderr)
-        self.assertEqual(run.stdout.strip(),'["feature","baseline","baseline","feature"]')
+        self.assertEqual(run.stdout.strip(),'["feature","baseline","baseline","feature","feature","baseline","baseline","feature","feature","baseline","baseline","feature"]')
 
     @unittest.skipUnless(shutil.which('nu'),'Nu required for actual helper regression')
     def test_actual_snapshot_guard_never_calls_generation(self):

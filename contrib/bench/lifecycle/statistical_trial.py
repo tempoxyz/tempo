@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Fail-closed phase admission for the selective-retry statistical trial."""
+import argparse
+import json
+import math
+from pathlib import Path
+
+PAIRS = 6
+RUNS = [side for _ in range(PAIRS // 2) for side in ('feature', 'baseline', 'baseline', 'feature')]
+LABELS = [f'{side}-{1 + RUNS[:i].count(side)}' for i, side in enumerate(RUNS)]
+COUNTER_BASES = ('reth_tempo_payload_builder_payload_build_duration_seconds',
+                 'reth_tempo_payload_builder_gas_per_second',
+                 'reth_consensus_engine_beacon_new_payload_latency',
+                 'reth_consensus_engine_beacon_new_payload_gas_per_second')
+METRICS = {f'{base}_{suffix}' for base in COUNTER_BASES for suffix in ('sum', 'count')}
+CORE = ('block_time_mean', 'block_time_p50', 'block_time_p90', 'block_time_p99',
+        'builder_latency_p50', 'builder_latency_p90', 'builder_latency_p99', 'builder_gas_s',
+        'validation_latency_p50', 'validation_latency_p90', 'validation_latency_p99',
+        'validation_gas_s', 'tps', 'mgas_s')
+PER_RUN = CORE + ('summary_warmup_blocks', 'blocks', 'total_tx', 'ok', 'err', 'total_gas',
+                  'success_rate')
+
+
+def need(value):
+    if not value:
+        raise ValueError('statistical_trial_rejected')
+
+
+def load(path, limit):
+    need(path.is_file() and not path.is_symlink() and path.stat().st_size <= limit)
+    return json.loads(path.read_text())
+
+
+def finite(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def admit(root):
+    need((root / 'run-order.txt').read_text().splitlines() == LABELS)
+    need({p.name for p in root.glob('report-*.json')} == {f'report-{x}.json' for x in LABELS})
+    need({p.name for p in root.glob('report-*.samples.ndjson')} ==
+         {f'report-{x}.samples.ndjson' for x in LABELS})
+    need({p.name for p in root.glob('phase-range-*.json')} ==
+         {f'phase-range-{x}.json' for x in LABELS})
+    for label in LABELS:
+        receipt = load(root / f'phase-range-{label}.json', 4096)
+        need(set(receipt) == {'schema', 'phase', 'started_ms', 'finished_ms', 'stop_reason'} and
+             receipt['schema'] == 1 and receipt['phase'] == label and
+             receipt['stop_reason'] == 'load_finished' and
+             type(receipt['started_ms']) is int and type(receipt['finished_ms']) is int and
+             0 < receipt['started_ms'] <= receipt['finished_ms'])
+        report = load(root / f'report-{label}.json', 64 * 1024 * 1024)
+        blocks = report.get('blocks')
+        need(type(blocks) is list and 6 <= len(blocks) <= 100_000)
+        found = set()
+        samples = root / f'report-{label}.samples.ndjson'
+        need(samples.is_file() and not samples.is_symlink() and samples.stat().st_size <= 1024**3)
+        with samples.open() as source:
+            for line in source:
+                need(len(line) <= 1024 * 1024)
+                if any(name in line for name in METRICS):
+                    row = json.loads(line)
+                    if row.get('name') in METRICS and finite(row.get('value')):
+                        found.add(row['name'])
+        need(found == METRICS)
+
+
+def unavailable(root, attempted, reason='backpressure'):
+    need(type(attempted) is int and 0 <= attempted <= len(LABELS))
+    need(reason in ('backpressure', 'summary_admission'))
+    value = {'schema': 1, 'status': 'unavailable', 'reason': reason,
+             'attempted_phases': attempted, 'expected_phases': len(LABELS)}
+    public = root / 'lifecycle'
+    public.mkdir(exist_ok=True)
+    (public / 'summary.json').write_text(json.dumps(value, sort_keys=True, indent=2) + '\n')
+    (public / 'summary.md').write_text(
+        '# Benchmark confidence unavailable\n\n'
+        'The trial did not pass complete-result admission; no partial comparison was published.\n')
+
+
+def sanitize(root):
+    source = load(root / 'summary.json', 16 * 1024 * 1024)
+    rows = source.get('per_run')
+    need(type(rows) is list and len(rows) == len(LABELS))
+    clean_rows = []
+    for row, label in zip(rows, LABELS):
+        need(type(row) is dict and row.get('label') == label)
+        need(all(finite(row.get(field)) for field in PER_RUN) and
+             all(row[field] > 0 for field in CORE) and row['success_rate'] >= 99)
+        report = load(root / f'report-{label}.json', 64 * 1024 * 1024)
+        blocks = sorted(report['blocks'], key=lambda item: item.get('timestamp', item.get('timestamp_ms', -1)))[5:]
+        need(blocks)
+        timestamps = [item.get('timestamp', item.get('timestamp_ms')) for item in blocks]
+        need(all(finite(value) for value in timestamps))
+        receipt = load(root / f'phase-range-{label}.json', 4096)
+        clean_rows.append({'label': label, **{field: row[field] for field in PER_RUN},
+                           'phase_duration_ms': receipt['finished_ms'] - receipt['started_ms'],
+                           'timestamp_span_ms': max(timestamps) - min(timestamps),
+                           'first_retained_tx': blocks[0].get('tx_count'),
+                           'first_retained_gas': blocks[0].get('gas_used')})
+        need(all(finite(clean_rows[-1][field]) for field in
+                 ('phase_duration_ms', 'timestamp_span_ms', 'first_retained_tx', 'first_retained_gas')))
+    config = source.get('config')
+    need(type(config) is dict and config.get('duration') == 60 and config.get('run_pairs') == PAIRS and
+         config.get('summary_warmup_blocks') == 5 and config.get('preset') == 'default' and
+         config.get('bloat') == 102400 and config.get('tps') == 15000 and
+         config.get('token_count') == 4 and config.get('run_side') == 'comparison')
+    results = source.get('results')
+    need(type(results) is dict)
+    clean_results = {}
+    for side in ('baseline', 'feature'):
+        values = results.get(side)
+        need(type(values) is dict and all(finite(values.get(field)) for field in CORE + ('blocks',)) and
+             all(values[field] > 0 for field in CORE + ('blocks',)))
+        clean_results[side] = {field: values[field] for field in CORE + ('blocks',)}
+    deltas = results.get('deltas')
+    need(type(deltas) is dict and all(finite(deltas.get(field)) for field in CORE))
+    clean_results['deltas'] = {field: deltas[field] for field in CORE}
+    for name in ('baseline_ref', 'feature_ref'):
+        need(type(source.get(name)) is str and len(source[name]) == 40 and
+             all(char in '0123456789abcdef' for char in source[name]))
+    need(source['baseline_ref'] == source['feature_ref'])
+    public = {
+        'schema': 1,
+        'status': 'complete',
+        'baseline_ref': source['baseline_ref'],
+        'feature_ref': source['feature_ref'],
+        'config': {
+            'preset': 'default',
+            'bloat_mib': config.get('bloat'),
+            'tps': config.get('tps'),
+            'accounts': 1000,
+            'max_concurrent_requests': 100,
+            'token_count': 4,
+            'duration': 60,
+            'run_pairs': PAIRS,
+            'summary_warmup_blocks': 5,
+            'order': RUNS,
+            'storage_workers': 32,
+            'account_workers': 32,
+            'prewarming_threads': 16,
+            'read_readiness': 'disabled',
+            'control_flag': 'off',
+            'feature_flag': 'selective_storage_retries',
+        },
+        'results': clean_results,
+        'per_run': clean_rows,
+    }
+    need(all(value is None or finite(value) for key, value in public['config'].items()
+             if key in ('bloat', 'tps')))
+    (root / 'summary.json').write_text(json.dumps(public, sort_keys=True, indent=2) + '\n')
+    units = {field: ('ms' if 'latency' in field or 'block_time' in field else
+                     'gas/s' if field.endswith('gas_s') else
+                     'tx/s' if field == 'tps' else 'Mgas/s') for field in CORE}
+    lines = ['# Standard benchmark summary', '',
+             '| Metric | Unit | Baseline aggregate | Feature aggregate | Change |',
+             '|---|---|---:|---:|---:|']
+    for field in CORE:
+        lines.append(f"| {field} | {units[field]} | {clean_results['baseline'][field]} | "
+                     f"{clean_results['feature'][field]} | {clean_results['deltas'][field]:+.2f}% |")
+    lines += ['', 'Run-level confidence and estimator notes are in `run-inference.md`.', '']
+    (root / 'summary.md').write_text('\n'.join(lines))
+    public_dir = root / 'lifecycle'
+    public_dir.mkdir(exist_ok=True)
+    for name in ('summary.json', 'summary.md'):
+        (public_dir / name).write_bytes((root / name).read_bytes())
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest='cmd', required=True)
+    for name in ('admit', 'sanitize'):
+        child = sub.add_parser(name)
+        child.add_argument('root', type=Path)
+    child = sub.add_parser('unavailable')
+    child.add_argument('root', type=Path)
+    child.add_argument('attempted', type=int)
+    child.add_argument('reason', choices=('backpressure', 'summary_admission'), nargs='?', default='backpressure')
+    args = parser.parse_args()
+    try:
+        if args.cmd == 'admit':
+            admit(args.root)
+        elif args.cmd == 'sanitize':
+            sanitize(args.root)
+        else:
+            unavailable(args.root, args.attempted, args.reason)
+    except Exception:
+        raise SystemExit('statistical_trial_rejected') from None
