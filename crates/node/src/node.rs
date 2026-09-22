@@ -119,7 +119,8 @@ pub struct TempoNodeArgs {
     /// execution earlier to leave more room for `builder_finish`.
     #[arg(
         long = "builder.build-time-multiplier",
-        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
+        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER,
+        value_parser = parse_build_time_multiplier
     )]
     pub builder_build_time_multiplier: f64,
 }
@@ -899,6 +900,22 @@ where
 }
 
 /// Parses `value` as an address list, falling back to reading it as a file.
+/// Rejects multipliers the payload builder cannot use, so the node fails during argument
+/// parsing instead of panicking in `TempoPayloadBuilder::new`.
+fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
+    let multiplier: f64 = value
+        .parse()
+        .map_err(|error| format!("invalid build time multiplier `{value}`: {error}"))?;
+
+    if !multiplier.is_finite() || multiplier < 1.0 {
+        return Err(format!(
+            "build time multiplier must be finite and >= 1.0, got `{value}`"
+        ));
+    }
+
+    Ok(multiplier)
+}
+
 fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
     match value.parse::<AddressFilter>() {
         Ok(filter) => Ok(filter),
@@ -945,6 +962,44 @@ mod tests {
                 .max_txs_per_lane,
             32
         );
+    }
+
+    #[test]
+    fn build_time_multiplier_cli_rejects_values_the_builder_cannot_use() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+
+        let defaults = Args::try_parse_from(["tempo"]).unwrap();
+        assert_eq!(
+            defaults.node.builder_build_time_multiplier,
+            super::DEFAULT_BUILD_TIME_MULTIPLIER
+        );
+
+        for accepted in ["1", "1.0", "2.5"] {
+            let args = Args::try_parse_from(["tempo", "--builder.build-time-multiplier", accepted])
+                .unwrap_or_else(|error| panic!("`{accepted}` should be accepted: {error}"));
+            assert_eq!(
+                args.node.builder_build_time_multiplier,
+                accepted.parse::<f64>().unwrap()
+            );
+        }
+
+        for rejected in ["0.5", "0", "-1", "nan", "inf"] {
+            // `=` keeps clap from reading a negative value as another flag.
+            let argument = format!("--builder.build-time-multiplier={rejected}");
+            let error = match Args::try_parse_from(["tempo", &argument]) {
+                Ok(_) => panic!("`{rejected}` should be rejected"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("finite and >= 1.0"),
+                "unexpected error for `{rejected}`: {error}"
+            );
+        }
     }
 
     #[test]
