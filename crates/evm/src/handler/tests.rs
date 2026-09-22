@@ -1763,8 +1763,8 @@ fn test_2d_nonce_gas_limit_validation() {
                 });
                 if !spec.is_t0() && nonce == 0 && gas_limit < BASE_INTRINSIC_GAS + nonce_zero_total
                 {
-                    assert_eq!(result.result().stop, InstrStop::OutOfGas);
-                    assert_eq!(result.result().tx_gas_used(), gas_limit);
+                    assert!(result.result().status);
+                    assert_eq!(result.result().tx_gas_used(), BASE_INTRINSIC_GAS);
                 }
             } else {
                 assert!(
@@ -1780,6 +1780,64 @@ fn test_2d_nonce_gas_limit_validation() {
             }
         }
     }
+}
+
+/// Pre-T0 nonce charges could exceed the gas limit after validation. Historical execution
+/// succeeds with the unbounded budget, while receipt gas and fees are reduced to the gas floor.
+#[test]
+fn test_genesis_intrinsic_overflow_settlement() {
+    let gas_limit = 30_000;
+    let gas_price = 1_000_000_000_000;
+    let floor_gas = 21_000;
+    let balance = calc_gas_balance_spending(gas_limit, gas_price);
+    let mut evm = test_evm(TempoHardfork::Genesis);
+    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+        TIP20Setup::path_usd(SIGNER)
+            .with_issuer(SIGNER)
+            .with_mint(SIGNER, balance)
+            .apply()
+    })
+    .expect("pathUSD setup succeeds");
+
+    let env = aa_env_for(
+        SIGNER,
+        TempoTransaction {
+            chain_id: 1,
+            nonce_key: U256::ONE,
+            gas_limit,
+            max_priority_fee_per_gas: gas_price,
+            max_fee_per_gas: gas_price,
+            fee_token: Some(PATH_USD_ADDRESS),
+            calls: vec![call(Bytes::new())],
+            ..Default::default()
+        },
+    );
+    let result = evm
+        .transact(&Recovered::new_unchecked(env, SIGNER))
+        .expect("Genesis accepts nonce gas exceeding the validated limit")
+        .commit();
+
+    assert!(result.status, "historical execution succeeds: {result:?}");
+    assert_eq!(result.total_gas_spent, 0);
+    assert_eq!(result.refunded, 0);
+    assert_eq!(result.tx_gas_used(), floor_gas);
+    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+        assert_eq!(
+            NonceManager::new().nonces[SIGNER][U256::ONE]
+                .read()
+                .expect("nonce read succeeds"),
+            1,
+        );
+        assert_eq!(
+            TIP20Token::from_address(PATH_USD_ADDRESS)
+                .expect("pathUSD address")
+                .balances[SIGNER]
+                .read()
+                .expect("payer balance read succeeds"),
+            balance - calc_gas_balance_spending(floor_gas, gas_price),
+            "only the gas floor is charged; the rest of the upfront fee is returned",
+        );
+    });
 }
 
 /// TIP-1016: Standard CREATE state gas is charged at runtime rather than
