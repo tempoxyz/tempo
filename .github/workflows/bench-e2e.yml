@@ -397,7 +397,7 @@ jobs:
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_MODE: ${{ inputs.mode || 'e2e' }}
       BENCH_PRESET: ${{ inputs.preset }}
-      BENCH_DURATION: "30"
+      BENCH_DURATION: "15"
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}

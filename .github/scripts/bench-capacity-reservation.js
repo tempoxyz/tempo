@@ -47,7 +47,7 @@ function binding(context, env) {
     requireValue(['', 'true'].includes(trial));
     requireValue(env.BENCH_RUN_SIDE === (trial === 'true' ? 'comparison' : 'feature') && env.BENCH_RUN_PAIRS === '1');
     requireValue(env.BENCH_FEATURE_ENV === (trial === 'true' ? 'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1' : '') || (!trial && !env.BENCH_FEATURE_ENV));
-    requireValue(env.BENCH_DURATION === '30');
+    requireValue(env.BENCH_DURATION === (trial === 'true' ? '15' : '30'));
     requireValue(env.BENCH_READ_READINESS === 'true');
     requireValue(!env.BENCH_BASELINE_ENV && !env.BENCH_BENCH_ENV);
     requireValue(env.BENCH_LIFECYCLE_SCHEDULER === 'false');

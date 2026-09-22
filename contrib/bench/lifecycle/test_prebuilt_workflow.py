@@ -16,6 +16,9 @@ ROOT=Path(__file__).resolve().parents[3]
 
 def without_single_diagnostic(workflow):
     """Reverse only the reviewed single-slot readiness diagnostic job settings."""
+    assert workflow.count('      BENCH_DURATION: "15"\n') == 1
+    workflow = workflow.replace('      BENCH_DURATION: "15"\n',
+                                '      BENCH_DURATION: "30"\n')
     trial = '      BENCH_PROOF_GROUPING_TRIAL: "true"\n      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1"\n'
     assert workflow.count(trial) == 1
     workflow = workflow.replace(trial, '      BENCH_FEATURE_ENV: ""\n')
@@ -114,7 +117,7 @@ class Workflow(unittest.TestCase):
         trial = {**env, 'BENCH_PROOF_GROUPING_TRIAL':'true',
                  'BENCH_FEATURE_ENV':'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1',
                  'BENCH_RUN_SIDE':'comparison', 'BENCH_RUN_PAIRS':'1',
-                 'BENCH_DURATION':'30', 'BENCH_READ_READINESS':'true',
+                 'BENCH_DURATION':'15', 'BENCH_READ_READINESS':'true',
                  'PREBUILT_BASELINE_REF':'a'*40, 'PREBUILT_FEATURE_REF':'a'*40}
         self.assertEqual(inputs(trial), ['baseline', 'feature'])
         for key, value in [('BENCH_PROOF_GROUPING_TRIAL','false'),
@@ -123,7 +126,8 @@ class Workflow(unittest.TestCase):
                            ('BENCH_BASELINE_ENV','RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1'),
                            ('PREBUILT_BASELINE_REF','b'*40), ('PREBUILT_FEATURE_REF',''),
                            ('BENCH_RUN_SIDE','feature'), ('BENCH_RUN_PAIRS','2'),
-                           ('BENCH_DURATION','90'), ('BENCH_READ_READINESS','false')]:
+                           ('BENCH_DURATION','30'), ('BENCH_DURATION','90'),
+                           ('BENCH_READ_READINESS','false')]:
             with self.subTest(key=key, value=value), self.assertRaises(Rejected):
                 inputs({**trial, key:value})
         for key,value in [('BENCH_FORCE_BLOAT','true'),('BENCH_NO_CACHE','true'),('BENCH_TRACY','tracy'),('BENCH_LIFECYCLE','false'),('BENCH_VALSCOPE','true'),('BENCH_FEATURE_FEATURES','otlp'),('BENCH_FEATURE_ENV','RUSTFLAGS=native'),('BENCH_TXGEN_REF','main')]:
@@ -141,10 +145,11 @@ class Workflow(unittest.TestCase):
                     baseline_features='', feature_features='', baseline='a'*40, feature='a'*40,
                     baseline_args='--engine.prewarming-threads 16', feature_args='--engine.prewarming-threads 16',
                     baseline_hardfork='', feature_hardfork='', run_side='comparison', run_pairs=1,
-                    duration=30, lifecycle_detail='milestones', lifecycle_scheduler=False,
+                    duration=15, lifecycle_detail='milestones', lifecycle_scheduler=False,
                     lifecycle_prewarm_cpu='disabled')
         mutations=[{}, {'feature':'b'*40}, {'feature_args':'--engine.prewarming-threads 0'},
-                   {'feature_env':''}, {'baseline_env':'PRIVATE=1'}, {'duration':90},
+                   {'feature_env':''}, {'baseline_env':'PRIVATE=1'}, {'duration':30},
+                   {'duration':90},
                    {'run_pairs':2}, {'run_side':'feature'}, {'lifecycle':False}]
         for mutation in mutations:
             declarations='\n'.join('let '+key+' = ('+json.dumps(json.dumps(value))+' | from json)' for key,value in {**values,**mutation}.items())

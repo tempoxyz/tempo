@@ -22,7 +22,7 @@ class CapacityWorkflowTests(unittest.TestCase):
                 '      BENCH_LIFECYCLE: "true"\n',
                 '      BENCH_LIFECYCLE_SCHEDULER: "false"\n',
                 '      BENCH_LIFECYCLE_DETAIL: "milestones"\n',
-                '      BENCH_DURATION: "30"\n',
+                '      BENCH_DURATION: "15"\n',
                 '      BENCH_NO_SLACK: "true"\n',
                 '      BENCH_SAMPLY: "false"\n',
                 '      BENCH_TRACY: "off"\n',
@@ -55,11 +55,13 @@ class CapacityWorkflowTests(unittest.TestCase):
         for requirement in (
                 '$readiness_mode not-in ["false" "true"]', 'not $prebuilt',
                 'not $lifecycle', '$lifecycle_detail != "milestones"',
-                '$run_side != "feature"', '$run_pairs != 1', '$duration != 30',
+                '$run_side != "feature"', '$run_pairs != 1',
+                '$proof_grouping_trial and $duration != 15',
+                '(not $proof_grouping_trial) and $duration != 30',
                 '$lifecycle_scheduler', '$lifecycle_prewarm_cpu != "disabled"'):
             self.assertIn(requirement, guard)
         self.assertIn(
-            'Read-readiness requires a 30-second prebuilt milestone diagnostic capture', guard)
+            'Read-readiness requires a 15-second proof grouping trial or 30-second feature diagnostic', guard)
         self.assertLess(harness.index('let readiness_mode ='),
                         harness.index('let preset_spec =', harness.index('let readiness_mode =')))
 

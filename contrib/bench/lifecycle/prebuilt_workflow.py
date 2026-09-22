@@ -20,7 +20,7 @@ def inputs(env):
     if trial == 'true':
         need(env.get('BENCH_FEATURE_ENV') == 'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1')
         need(env.get('BENCH_RUN_SIDE') == 'comparison' and env.get('BENCH_RUN_PAIRS') == '1')
-        need(env.get('BENCH_DURATION') == '30' and env.get('BENCH_READ_READINESS') == 'true')
+        need(env.get('BENCH_DURATION') == '15' and env.get('BENCH_READ_READINESS') == 'true')
         need(env.get('PREBUILT_BASELINE_REF') == env.get('PREBUILT_FEATURE_REF'))
         need(re.fullmatch(r'[0-9a-f]{40}', env.get('PREBUILT_FEATURE_REF', '')))
     else:

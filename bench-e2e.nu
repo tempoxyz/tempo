@@ -1584,7 +1584,7 @@ def "main e2e" [
         not $prebuilt or ($env.BENCH_READ_READINESS? | default "false") != "true" or
         ($baseline | default "") !~ '^[0-9a-f]{40}$' or $baseline != $feature or
         $baseline_args != $feature_args or $baseline_hardfork != $feature_hardfork or
-        $run_side != "comparison" or $run_pairs != 1 or $duration != 30 or
+        $run_side != "comparison" or $run_pairs != 1 or $duration != 15 or
         $baseline_env != "" or $feature_env != "RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1"
     )) {
         error make {msg: "Proof grouping trial requires identical immutable inputs and the exact feature toggle"}
@@ -1596,10 +1596,11 @@ def "main e2e" [
     let readiness_mode = ($env.BENCH_READ_READINESS? | default "false")
     if $readiness_mode not-in ["false" "true"] or ($readiness_mode == "true" and (
         not $prebuilt or not $lifecycle or $lifecycle_detail != "milestones" or
-        ($run_side != "feature" and not $proof_grouping_trial) or $run_pairs != 1 or $duration != 30 or
+        ($run_side != "feature" and not $proof_grouping_trial) or $run_pairs != 1 or
+        ($proof_grouping_trial and $duration != 15) or ((not $proof_grouping_trial) and $duration != 30) or
         $lifecycle_scheduler or $lifecycle_prewarm_cpu != "disabled"
     )) {
-        error make {msg: "Read-readiness requires a 30-second prebuilt milestone diagnostic capture"}
+        error make {msg: "Read-readiness requires a 15-second proof grouping trial or 30-second feature diagnostic"}
     }
     if $lifecycle_scheduler and (not $lifecycle or $lifecycle_detail != "full" or $lifecycle_prewarm_cpu != "disabled" or $samply or $tracy != "off") {
         error make {msg: "Kernel fault diagnostic requires full lifecycle and no other observer"}
