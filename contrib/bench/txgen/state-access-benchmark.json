@@ -1,0 +1,39 @@
+{
+  "abi": [
+    {
+      "type": "function",
+      "name": "READS_PER_TX",
+      "inputs": [],
+      "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "touchPredictable",
+      "inputs": [
+        { "name": "salt", "type": "bytes32", "internalType": "bytes32" },
+        { "name": "pageCount", "type": "uint256", "internalType": "uint256" }
+      ],
+      "outputs": [
+        { "name": "accumulator", "type": "bytes32", "internalType": "bytes32" }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "touchStateDependent",
+      "inputs": [
+        { "name": "salt", "type": "bytes32", "internalType": "bytes32" },
+        { "name": "pageCount", "type": "uint256", "internalType": "uint256" }
+      ],
+      "outputs": [
+        { "name": "accumulator", "type": "bytes32", "internalType": "bytes32" }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    { "type": "error", "name": "NoPages", "inputs": [] }
+  ],
+  "deployedBytecode": {
+    "object": "0x608060405234801561000f575f5ffd5b506004361061003f575f3560e01c80630398a71d1461004357806347ff580114610068578063b1b5c73c1461007b575b5f5ffd5b61005661005136600461015a565b610084565b60405190815260200160405180910390f35b61005661007636600461015a565b6100a6565b61005661100081565b5f1980546001810182555f9161009b8583866100c4565b925050505b92915050565b5f19805460010181555f906100bc8483856100c4565b949350505050565b5f815f036100e55760405163755934b160e01b815260040160405180910390fd5b5f611000838686604051602001610106929190918252602082015260400190565b604051602081830303815290604052805190602001205f1c610128919061017a565b6101329190610199565b90505f5b61100081101561015157818101549290921891600101610136565b50509392505050565b5f5f6040838503121561016b575f5ffd5b50508035926020909101359150565b5f8261019457634e487b7160e01b5f52601260045260245ffd5b500690565b80820281158282048414176100a057634e487b7160e01b5f52601160045260245ffdfea2646970667358221220e81f0a0c048eff450efd229daf7175e73d7e87387dd62a8ee8eada1bdb28f4f164736f6c63430008230033"
+  }
+}

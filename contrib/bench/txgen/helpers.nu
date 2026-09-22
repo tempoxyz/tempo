@@ -539,6 +539,26 @@ def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mi
     print $"  Using existing recipient range ($TXGEN_HELPER_EXISTING_RECIPIENTS_START)..($recipient_end) from ($bloat_mib) MiB state bloat"
 }
 
+def --env txgen-configure-state-access-env [preset_path: string, bloat_mib: int] {
+    let preset_name = ($preset_path | path basename | str replace --regex '.yml$' "")
+    let uses_state_access_pages = if ($preset_path | path exists) {
+        (txgen-spec-effective-text $preset_path) =~ "TXGEN_STATE_ACCESS_PAGE_COUNT"
+    } else {
+        false
+    }
+    if not $uses_state_access_pages {
+        return
+    }
+    if $bloat_mib <= 0 {
+        error make { msg: $"preset ($preset_name) requires state-access bloat" }
+    }
+
+    # One 40-byte header precedes 64-byte slots; retain only complete 4096-slot pages.
+    let page_count = ($bloat_mib * 4) - 1
+    $env.TXGEN_STATE_ACCESS_PAGE_COUNT = ($page_count | into string)
+    print $"  Using ($page_count) state-access pages from ($bloat_mib) MiB bloat"
+}
+
 def txgen-rpc-call [rpc_url: string, payload: string] {
     let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
     if $result.exit_code != 0 {
@@ -763,6 +783,7 @@ def txgen-run-preset-pipeline [
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-keychain-env $accounts $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    txgen-configure-state-access-env $spec_path $bloat_mib
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let tx_count = [($tps * $duration) 1] | math max

@@ -36,6 +36,18 @@ const PAYMENTS_BLOAT_WORST_CASE = {
     rpc_cache_args: "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
     bench_env: "RUST_LOG=error"
 }
+const GENERAL_STATE_ACCESS_WORST_CASE = {
+    dependent_preset: "state_access_dependent"
+    predictable_preset: "state_access_predictable"
+    tps: 50000
+    duration: 7200
+    bloat: 100
+    accounts: 1000
+    gas_limit: "1000000000000"
+    general_gas_limit: "1000000000000"
+    rpc_cache_args: "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
+    bench_env: "RUST_LOG=error"
+}
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -1227,7 +1239,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --initial-db-size-bytes $initial_db_size_bytes
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
-                --skip-funding=($ctx.bloat > 0))
+                --skip-funding=($ctx.skip_funding))
             if not $bench_result.ok {
                 $bench_result.exit_code
             } else {
@@ -1424,6 +1436,7 @@ def "main e2e" [
     --scrape-interval-ms: int = 5000                    # Node metrics scrape interval; lower values create large sample archives
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --bloat-keccak-signable-shared                       # Make the full shared bloat account range signable
+    --state-access-bloat                                  # Fill the benchmark predeploy with direct-storage pages
     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
@@ -1516,6 +1529,14 @@ def "main e2e" [
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
+    if $state_access_bloat and $bloat_keccak_signable_shared {
+        print "Error: --state-access-bloat conflicts with --bloat-keccak-signable-shared"
+        exit 1
+    }
+    if $state_access_bloat and $bloat_mib <= 0 {
+        print "Error: --state-access-bloat requires non-zero --bloat"
+        exit 1
+    }
     e2e-validate-token-count $token_count
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
@@ -1555,7 +1576,7 @@ def "main e2e" [
     let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
     let b_ip = ($b_validator | split row ":" | get 0)
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let bloat_mode_suffix = if $bloat_keccak_signable_shared { "_full_signable" } else { "" }
+    let bloat_mode_suffix = if $state_access_bloat { "_state_access" } else if $bloat_keccak_signable_shared { "_full_signable" } else { "" }
     let role_mode_suffix = if $isolated_roles { "_isolated_roles" } else { "" }
     let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
     let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
@@ -1621,8 +1642,9 @@ def "main e2e" [
         let genesis_accounts = ([$accounts 3] | math max) + 1
         let committee = if $isolated_roles { $a_validator } else { $E2E_VALIDATORS }
         let follower_args = if $isolated_roles { ["--followers" $b_validator] } else { [] }
+        let state_access_args = if $state_access_bloat { ["--state-access-benchmark"] } else { [] }
         print $"Generating local e2e committee: ($committee)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
+        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args ...$state_access_args
 
         let trusted_peers = (trusted-peers-from-localnet $init_dir)
         if $trusted_peers == "" {
@@ -1635,9 +1657,14 @@ def "main e2e" [
             bench-clean-datadir $b_db
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
-            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            let signable_args = if $bloat_keccak_signable_shared { ["--keccak-signable-shared"] } else { [] }
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args ...$signable_args
+            let bloat_args = if $state_access_bloat {
+                ["--state-access"]
+            } else {
+                let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+                let signable_args = if $bloat_keccak_signable_shared { ["--keccak-signable-shared"] } else { [] }
+                $token_args | append $signable_args
+            }
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$bloat_args
         }
 
         let marker = {
@@ -1652,7 +1679,7 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: (if $isolated_roles { "single-proposer-certified-follower" } else { "single-runner" })
             state_hardfork: $snapshot_state_hardfork
-            bloat_address_mode: (if $bloat_keccak_signable_shared { "keccak-signable-shared" } else { "legacy" })
+            bloat_address_mode: (if $state_access_bloat { "state-access-raw-storage" } else if $bloat_keccak_signable_shared { "keccak-signable-shared" } else { "legacy" })
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator) true
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator) (not $isolated_roles)
@@ -1794,6 +1821,7 @@ def "main e2e" [
         max_concurrent_requests: $max_concurrent_requests
         scrape_interval_ms: $scrape_interval_ms
         bloat: $bloat_mib
+        skip_funding: ($bloat_mib > 0 and not $state_access_bloat)
         token_count: $token_count
         txgen: $txgen
         results_dir: $results_dir
@@ -1968,6 +1996,67 @@ def "main payments-bloat-worst-case" [
         --token-count $PAYMENTS_BLOAT_WORST_CASE.token_count
         --gas-limit $PAYMENTS_BLOAT_WORST_CASE.gas_limit
         --general-gas-limit $PAYMENTS_BLOAT_WORST_CASE.general_gas_limit
+        --run-pairs $run_pairs
+        --run-side $run_side
+        --baseline-args $baseline_node_args
+        --feature-args $feature_node_args
+        --baseline-env $baseline_env
+        --feature-env $feature_env
+        --bench-env $bench_env
+        --profile $profile
+        --force-bloat=($force_bloat)
+        --init-only=($init_only)
+        --no-cache=($no_cache))
+}
+
+
+# Worst-case general-gas workload: 4096 direct storage reads selected by state that
+# speculative execution cannot advance, on an isolated builder/certified follower.
+def "main general-state-access-worst-case" [
+    --baseline: string = "HEAD"                         # Baseline git SHA/ref
+    --feature: string = "HEAD"                          # Feature git SHA/ref
+    --predictable                                       # Use the calldata-determined control workload
+    --tps: int = $GENERAL_STATE_ACCESS_WORST_CASE.tps   # Target TPS
+    --duration: int = $GENERAL_STATE_ACCESS_WORST_CASE.duration # Duration in seconds
+    --run-pairs: int = 1                                # Number of baseline/feature run pairs
+    --run-side: string = "feature"                      # Phases to run: comparison or feature
+    --baseline-args: string = ""                        # Additional baseline node arguments
+    --feature-args: string = ""                         # Additional feature node arguments
+    --baseline-env: string = ""                         # Environment vars for baseline nodes
+    --feature-env: string = ""                          # Environment vars for feature nodes
+    --bench-env: string = $GENERAL_STATE_ACCESS_WORST_CASE.bench_env # Environment vars for txgen
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --force-bloat                                       # Rebuild the dedicated snapshots
+    --init-only                                         # Build snapshots without running load
+    --no-cache                                          # Skip binary cache
+] {
+    let preset = if $predictable {
+        $GENERAL_STATE_ACCESS_WORST_CASE.predictable_preset
+    } else {
+        $GENERAL_STATE_ACCESS_WORST_CASE.dependent_preset
+    }
+    let baseline_node_args = ([
+        $GENERAL_STATE_ACCESS_WORST_CASE.rpc_cache_args
+        $baseline_args
+    ] | where { |arg| ($arg | str trim) != "" } | str join " ")
+    let feature_node_args = ([
+        $GENERAL_STATE_ACCESS_WORST_CASE.rpc_cache_args
+        $feature_args
+    ] | where { |arg| ($arg | str trim) != "" } | str join " ")
+
+    (main e2e
+        --baseline $baseline
+        --feature $feature
+        --preset $preset
+        --tps $tps
+        --duration $duration
+        --accounts $GENERAL_STATE_ACCESS_WORST_CASE.accounts
+        --bloat $GENERAL_STATE_ACCESS_WORST_CASE.bloat
+        --state-access-bloat
+        --isolated-roles
+        --token-count 1
+        --gas-limit $GENERAL_STATE_ACCESS_WORST_CASE.gas_limit
+        --general-gas-limit $GENERAL_STATE_ACCESS_WORST_CASE.general_gas_limit
         --run-pairs $run_pairs
         --run-side $run_side
         --baseline-args $baseline_node_args

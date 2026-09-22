@@ -26,6 +26,7 @@ mod genesis_args;
 mod get_dkg_outcome;
 mod identity_transitions;
 mod shadowfork;
+mod state_access_benchmark;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {

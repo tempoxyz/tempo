@@ -80,6 +80,10 @@ pub(crate) struct GenerateStateBloat {
     /// allowing txgen to draw senders from the full funded pool.
     #[arg(long, default_value_t = false, conflicts_with = "keccak_signable")]
     keccak_signable_shared: bool,
+
+    /// Fill the state-access benchmark predeploy with raw storage slots.
+    #[arg(long)]
+    state_access: bool,
     /// Number of entries to process per chunk. Controls peak memory usage.
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
@@ -96,8 +100,13 @@ impl GenerateStateBloat {
             signable_count,
             keccak_signable,
             keccak_signable_shared,
+            state_access,
             chunk_size,
         } = self;
+
+        if state_access {
+            return generate_state_access_bloat(size, out, chunk_size);
+        }
 
         ensure!(
             !tokens.is_empty(),
@@ -282,6 +291,70 @@ impl GenerateStateBloat {
     }
 }
 
+fn state_access_page_count(size_mib: u64) -> u64 {
+    const HEADER_SIZE: u64 = 40;
+    const ENTRY_SIZE: u64 = 64;
+    let target_bytes = size_mib.saturating_mul(1024 * 1024);
+    target_bytes.saturating_sub(HEADER_SIZE)
+        / (ENTRY_SIZE * crate::state_access_benchmark::READS_PER_TX)
+}
+
+fn generate_state_access_bloat(size_mib: u64, out: PathBuf, chunk_size: usize) -> eyre::Result<()> {
+    ensure!(size_mib > 0, "size must be greater than 0");
+    ensure!(chunk_size > 0, "chunk_size must be greater than 0");
+
+    let page_count = state_access_page_count(size_mib);
+    ensure!(
+        page_count > 0,
+        "target size is too small for one {}-slot state-access page",
+        crate::state_access_benchmark::READS_PER_TX
+    );
+    let total_entries = page_count * crate::state_access_benchmark::READS_PER_TX;
+
+    println!("State-access bloat generation:");
+    println!("  Target size: {size_mib} MiB");
+    println!("  Address: {}", crate::state_access_benchmark::ADDRESS);
+    println!("  Pages: {page_count}");
+    println!(
+        "  Reads per page: {}",
+        crate::state_access_benchmark::READS_PER_TX
+    );
+    println!("  Storage entries: {total_entries}");
+    println!("  Output: {}", out.display());
+
+    let file = File::create(&out).wrap_err("failed to create output file")?;
+    let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file);
+    write_header(
+        &mut writer,
+        crate::state_access_benchmark::ADDRESS,
+        total_entries,
+    )?;
+
+    let pb = ProgressBar::new(total_entries);
+    let mut chunk_buf = Vec::with_capacity(chunk_size.saturating_mul(64));
+    let mut index = 0u64;
+    while index < total_entries {
+        let count = (total_entries - index).min(chunk_size as u64);
+        chunk_buf.clear();
+        for offset in 0..count {
+            let value = index + offset + 1;
+            chunk_buf.extend_from_slice(&U256::from(value - 1).to_be_bytes::<32>());
+            chunk_buf.extend_from_slice(&U256::from(value).to_be_bytes::<32>());
+        }
+        writer.write_all(&chunk_buf)?;
+        index += count;
+        pb.inc(count);
+    }
+
+    writer.flush()?;
+    pb.finish_with_message("done");
+    println!(
+        "Generated {} with {page_count} complete pages",
+        out.display()
+    );
+    Ok(())
+}
+
 /// Compute a reserved TIP20 token address from a token ID.
 /// Reserved addresses use the TIP20 prefix with the token ID in the last 8 bytes.
 fn token_address(token_id: u64) -> Address {
@@ -359,6 +432,13 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_state_access_page_count() {
+        assert_eq!(state_access_page_count(1), 3);
+        assert_eq!(state_access_page_count(1024), 4095);
+        assert_eq!(state_access_page_count(100 * 1024), 409_599);
+    }
 
     #[test]
     fn test_token_address() {

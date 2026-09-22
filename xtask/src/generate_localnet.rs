@@ -34,6 +34,10 @@ pub(crate) struct GenerateLocalnet {
     /// Followers are trusted execution peers but are not included in the genesis committee.
     #[arg(long, value_name = "<ip>:<port>", value_delimiter = ',')]
     followers: Vec<SocketAddr>,
+
+    /// Install the state-access benchmark runtime in the genesis allocation.
+    #[arg(long)]
+    state_access_benchmark: bool,
 }
 
 impl GenerateLocalnet {
@@ -43,18 +47,26 @@ impl GenerateLocalnet {
             force,
             genesis_args,
             followers,
+            state_access_benchmark,
         } = self;
 
         // Copy the seed here before genesis_args are consumed.
         let seed = genesis_args.seed;
 
-        let (genesis, consensus_config) = genesis_args
+        let (mut genesis, consensus_config) = genesis_args
             .generate_genesis()
             .await
             .wrap_err("failed to generate genesis")?;
 
         let consensus_config = consensus_config
             .ok_or_eyre("no consensus config generated; did you provide --validators?")?;
+
+        if state_access_benchmark {
+            genesis.alloc.insert(
+                crate::state_access_benchmark::ADDRESS,
+                crate::state_access_benchmark::genesis_account()?,
+            );
+        }
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
             format!("failed creating target directory at `{}`", output.display())
