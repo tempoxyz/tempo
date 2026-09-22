@@ -1164,8 +1164,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else { "" }
     let capture_detail = ($run.lifecycle_detail? | default $ctx.lifecycle_detail)
     let readiness_env = if ($env.BENCH_READ_READINESS? | default "false") == "true" {
-        if not $ctx.lifecycle or $capture_detail != "milestones" or $run_type != "feature" {
-            error make {msg: "Read-readiness capture requires feature milestone lifecycle"}
+        let trial_baseline = ($env.BENCH_PROOF_GROUPING_TRIAL? | default "") == "true" and $run_type == "baseline"
+        if not $ctx.lifecycle or $capture_detail != "milestones" or ($run_type != "feature" and not $trial_baseline) {
+            error make {msg: "Read-readiness capture requires an admitted milestone phase"}
         }
         "TEMPO_READ_READINESS=1 "
     } else { "" }

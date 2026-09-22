@@ -133,6 +133,25 @@ class Workflow(unittest.TestCase):
         for key,value in [('BENCH_FORCE_BLOAT','true'),('BENCH_NO_CACHE','true'),('BENCH_TRACY','tracy'),('BENCH_LIFECYCLE','false'),('BENCH_VALSCOPE','true'),('BENCH_FEATURE_FEATURES','otlp'),('BENCH_FEATURE_ENV','RUSTFLAGS=native'),('BENCH_TXGEN_REF','main')]:
             with self.subTest(key=key),self.assertRaises(Rejected):inputs({**env,key:value})
 
+    @unittest.skipUnless(shutil.which('nu'), 'Nu required for phase guard regression')
+    def test_actual_readiness_phase_guard_accepts_both_trial_sides(self):
+        import json
+        source=(ROOT/'bench-e2e.nu').read_text()
+        guard='let readiness_env ='+source.split('    let readiness_env =',1)[1].split('    let scheduler_env =',1)[0]
+        for mode, side, detail, lifecycle, accepted in [
+                ('true','feature','milestones',True,True),
+                ('true','baseline','milestones',True,True),
+                ('','feature','milestones',True,True),
+                ('','baseline','milestones',True,False),
+                ('true','other','milestones',True,False),
+                ('true','baseline','full',True,False),
+                ('true','baseline','milestones',False,False)]:
+            script='let ctx = {lifecycle: '+str(lifecycle).lower()+'}; let capture_detail = '+json.dumps(detail)+'; let run_type = '+json.dumps(side)+'; '+guard+'\nprint $readiness_env'
+            run=subprocess.run(['nu','--no-config-file','-c',script],capture_output=True,text=True,
+                env={**os.environ, 'BENCH_READ_READINESS':'true', 'BENCH_PROOF_GROUPING_TRIAL':mode})
+            self.assertEqual(run.returncode==0, accepted, (mode,side,detail,lifecycle))
+            if accepted:self.assertEqual(run.stdout.strip(), 'TEMPO_READ_READINESS=1')
+
     @unittest.skipUnless(shutil.which('nu'), 'Nu required for trial guard regression')
     def test_actual_trial_guard_only_admits_identical_short_comparison(self):
         import json
