@@ -40,9 +40,11 @@ const GENERAL_STATE_ACCESS_WORST_CASE = {
     dependent_preset: "state_access_dependent"
     predictable_preset: "state_access_predictable"
     tps: 50000
-    duration: 7200
+    duration: 1200
+    summary_warmup_seconds: 600
     bloat: 100
     accounts: 1000
+    max_transactions: 900
     gas_limit: "1000000000000"
     general_gas_limit: "1000000000000"
     rpc_cache_args: "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
@@ -2018,6 +2020,7 @@ def "main general-state-access-worst-case" [
     --predictable                                       # Use the calldata-determined control workload
     --tps: int = $GENERAL_STATE_ACCESS_WORST_CASE.tps   # Target TPS
     --duration: int = $GENERAL_STATE_ACCESS_WORST_CASE.duration # Duration in seconds
+    --summary-warmup-seconds: int = $GENERAL_STATE_ACCESS_WORST_CASE.summary_warmup_seconds # Initial seconds excluded from summary
     --run-pairs: int = 1                                # Number of baseline/feature run pairs
     --run-side: string = "feature"                      # Phases to run: comparison or feature
     --baseline-args: string = ""                        # Additional baseline node arguments
@@ -2037,10 +2040,12 @@ def "main general-state-access-worst-case" [
     }
     let baseline_node_args = ([
         $GENERAL_STATE_ACCESS_WORST_CASE.rpc_cache_args
+        $"--builder.max-transactions ($GENERAL_STATE_ACCESS_WORST_CASE.max_transactions)"
         $baseline_args
     ] | where { |arg| ($arg | str trim) != "" } | str join " ")
     let feature_node_args = ([
         $GENERAL_STATE_ACCESS_WORST_CASE.rpc_cache_args
+        $"--builder.max-transactions ($GENERAL_STATE_ACCESS_WORST_CASE.max_transactions)"
         $feature_args
     ] | where { |arg| ($arg | str trim) != "" } | str join " ")
 
@@ -2051,6 +2056,8 @@ def "main general-state-access-worst-case" [
         --tps $tps
         --duration $duration
         --accounts $GENERAL_STATE_ACCESS_WORST_CASE.accounts
+        --summary-warmup-blocks 0
+        --summary-warmup-seconds $summary_warmup_seconds
         --bloat $GENERAL_STATE_ACCESS_WORST_CASE.bloat
         --state-access-bloat
         --isolated-roles
