@@ -42,12 +42,8 @@ pub const PATH_USD_ADDRESS: Address = address!("0x20C000000000000000000000000000
 pub const DEFAULT_FEE_TOKEN: Address = PATH_USD_ADDRESS;
 /// TIP-1115 ordered fallback fee tokens. Changes require a protocol upgrade.
 ///
-/// pathUSD must remain first. Additional deployed USD TIP-20 addresses are TBD.
-// Benchmark-only second candidate: the localnet's predeployed alphaUSD.
-pub const FALLBACK_FEE_TOKENS: &[Address] = &[
-    PATH_USD_ADDRESS,
-    address!("20c0000000000000000000000000000000000001"),
-];
+/// Benchmark-only control: alphaUSD alone, matching the test's FeeAMM conversion.
+pub const FALLBACK_FEE_TOKENS: &[Address] = &[address!("20c0000000000000000000000000000000000001")];
 pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
 pub const TIP20_FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
 pub const STABLECOIN_DEX_ADDRESS: Address = address!("0xdec0000000000000000000000000000000000000");
