@@ -62,7 +62,7 @@ mod tests {
             admins: vec![Address::repeat_byte(1)],
             slippageBps: 100,
             routes: vec![
-                route.clone(),
+                route,
                 IFundingPolicyRegistry::Route {
                     tokens: vec![Address::repeat_byte(5)],
                     sources: vec![IFundingPolicyRegistry::Source {
