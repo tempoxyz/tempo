@@ -1,4 +1,4 @@
-use std::{future::Future, num::NonZeroUsize, pin::Pin, sync::Arc};
+use std::{future::Future, num::NonZeroUsize, sync::Arc};
 
 use commonware_consensus::{
     marshal::core::DigestFallback,
@@ -8,17 +8,16 @@ use commonware_cryptography::{
     bls12381::primitives::{group::Share, sharing::Sharing, variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Spawner, Storage, telemetry::metrics::histogram::Timed,
-};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
-use futures::{Stream, channel::mpsc};
+use futures::{Stream, StreamExt as _, channel::mpsc};
 use rand_core::CryptoRng;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_node::TempoFullNode;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
+use tokio::sync::oneshot;
 use tracing::Level;
 
 mod actor;
@@ -104,6 +103,9 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Chain specification used to select the ceremony transcript version.
     fn chain_spec(&self) -> Arc<TempoChainSpec>;
 
+    /// Notifies pending outcome requests that their parent state may now be available.
+    fn state_updates(&self) -> impl Stream<Item = ()> + Send + Unpin + 'static;
+
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
 
@@ -128,27 +130,18 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
 
 /// Marshal operations used by the DKG manager.
 pub(crate) trait Marshal: Clone + Send + Sync + 'static {
-    /// Stream of blocks from a requested tip through its ancestry.
-    type Ancestry: Stream<Item = Arc<Block>> + Send + Unpin + 'static;
-
     /// Makes a best-effort attempt to retrieve `height` from local storage.
     ///
     /// This lookup does not fetch the block from the network.
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send;
 
-    /// Returns a stream over the ancestry of the block identified by `start`.
-    ///
-    /// The fallback controls how the starting block is obtained, and the
-    /// supplied timer records the latency of any missing-parent fetches.
-    /// Returns `None` when the starting block cannot be found.
-    fn ancestry<C>(
+    /// Subscribes to a block, optionally fetching it from peers.
+    /// Dropping the receiver cancels the subscription.
+    fn subscribe_by_digest(
         &self,
-        clock: Arc<C>,
-        start: (DigestFallback, Digest),
-        fetch_duration: Timed,
-    ) -> impl Future<Output = Option<Self::Ancestry>> + Send
-    where
-        C: Clock;
+        digest: Digest,
+        fallback: DigestFallback,
+    ) -> oneshot::Receiver<Arc<Block>>;
 }
 
 /// Epoch transitions emitted by the DKG manager.
@@ -172,6 +165,11 @@ pub(crate) trait EpochManager: Send + Sync + 'static {
 impl ExecutionLayer for Arc<TempoFullNode> {
     fn chain_spec(&self) -> Arc<TempoChainSpec> {
         self.as_ref().chain_spec()
+    }
+
+    fn state_updates(&self) -> impl Stream<Item = ()> + Send + Unpin + 'static {
+        use reth_provider::CanonStateSubscriptions as _;
+        self.provider.canonical_state_stream().map(|_| ())
     }
 
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
@@ -227,29 +225,17 @@ impl ExecutionLayer for Arc<TempoFullNode> {
 }
 
 impl Marshal for crate::alias::marshal::Mailbox {
-    type Ancestry = Pin<Box<dyn Stream<Item = Arc<Block>> + Send>>;
-
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
         let mailbox = self.clone();
         async move { mailbox.get_block(height).await }
     }
 
-    fn ancestry<C>(
+    fn subscribe_by_digest(
         &self,
-        clock: Arc<C>,
-        start: (DigestFallback, Digest),
-        fetch_duration: Timed,
-    ) -> impl Future<Output = Option<Self::Ancestry>> + Send
-    where
-        C: Clock,
-    {
-        let mailbox = self.clone();
-        async move {
-            mailbox
-                .ancestry(clock, start, fetch_duration)
-                .await
-                .map(|stream| Box::pin(stream) as Self::Ancestry)
-        }
+        digest: Digest,
+        fallback: DigestFallback,
+    ) -> oneshot::Receiver<Arc<Block>> {
+        Self::subscribe_by_digest(self, digest, fallback)
     }
 }
 

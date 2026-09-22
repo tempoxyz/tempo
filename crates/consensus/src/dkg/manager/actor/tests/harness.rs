@@ -40,10 +40,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_parallel::Sequential;
-use commonware_runtime::{
-    Clock, Handle, IoBufs, Supervisor as _, deterministic::Context,
-    telemetry::metrics::histogram::Timed,
-};
+use commonware_runtime::{Handle, IoBufs, Supervisor as _, deterministic::Context};
 use commonware_utils::{
     Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
 };
@@ -55,6 +52,7 @@ use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{BlockBody, TempoHeader};
+use tokio::sync::oneshot;
 
 use super::super::{
     super::{Config, Mailbox, init},
@@ -575,6 +573,7 @@ impl CheckedSender for RecordingCheckedSender {
 #[derive(Clone)]
 pub(super) struct StubExecutionProvider {
     pub(super) chain_spec: Arc<TempoChainSpec>,
+    state_updates: Arc<Mutex<Vec<mpsc::UnboundedSender<()>>>>,
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
     next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
@@ -586,6 +585,7 @@ impl Default for StubExecutionProvider {
     fn default() -> Self {
         Self {
             chain_spec: DEV.clone(),
+            state_updates: Default::default(),
             headers: Default::default(),
             reads: Default::default(),
             next_players: Default::default(),
@@ -636,11 +636,26 @@ impl StubExecutionProvider {
     pub(super) fn fail_next_full_dkg_epoch(&self) {
         self.fail_next_full_dkg_epoch.store(true, Ordering::SeqCst);
     }
+
+    pub(super) fn restore_state(&self) {
+        self.fail_next_players.store(false, Ordering::SeqCst);
+        self.fail_next_full_dkg_epoch.store(false, Ordering::SeqCst);
+        self.state_updates
+            .lock()
+            .unwrap()
+            .retain(|sender| sender.unbounded_send(()).is_ok());
+    }
 }
 
 impl ExecutionLayer for StubExecutionProvider {
     fn chain_spec(&self) -> Arc<TempoChainSpec> {
         self.chain_spec.clone()
+    }
+
+    fn state_updates(&self) -> impl futures::Stream<Item = ()> + Send + Unpin + 'static {
+        let (sender, receiver) = mpsc::unbounded();
+        self.state_updates.lock().unwrap().push(sender);
+        receiver
     }
 
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
@@ -663,63 +678,76 @@ impl ExecutionLayer for StubExecutionProvider {
     }
 }
 
+type BlockSubscribers = BTreeMap<Digest, Vec<oneshot::Sender<Arc<Block>>>>;
+
 #[derive(Clone, Default)]
 pub(super) struct StubMarshal {
     blocks: Arc<Mutex<BTreeMap<Height, Block>>>,
     reads: Arc<Mutex<Vec<Height>>>,
-    ancestry_reads: Arc<Mutex<Vec<Digest>>>,
-    empty_ancestry: Arc<AtomicBool>,
+    subscriptions: Arc<Mutex<Vec<(Digest, DigestFallback)>>>,
+    pending: Arc<Mutex<BlockSubscribers>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl StubMarshal {
     pub(super) fn add_block(&self, block: Block) {
-        self.blocks.lock().unwrap().insert(block.height(), block);
+        self.blocks
+            .lock()
+            .unwrap()
+            .insert(block.height(), block.clone());
+        let block = Arc::new(block);
+        if let Some(subscribers) = self.pending.lock().unwrap().remove(&block.digest()) {
+            for subscriber in subscribers {
+                self.reads.lock().unwrap().push(block.height());
+                let _ = subscriber.send(block.clone());
+            }
+        }
     }
 
     pub(super) fn reads(&self) -> Vec<Height> {
         self.reads.lock().unwrap().clone()
     }
 
-    pub(super) fn ancestry_reads(&self) -> Vec<Digest> {
-        self.ancestry_reads.lock().unwrap().clone()
+    pub(super) fn subscriptions(&self) -> Vec<(Digest, DigestFallback)> {
+        self.subscriptions.lock().unwrap().clone()
     }
 
-    pub(super) fn return_empty_ancestry(&self) {
-        self.empty_ancestry.store(true, Ordering::SeqCst);
+    pub(super) fn close_subscriptions(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.pending.lock().unwrap().clear();
     }
 }
 
 impl Marshal for StubMarshal {
-    type Ancestry = futures::stream::Iter<std::vec::IntoIter<Arc<Block>>>;
-
     async fn get_block(&self, height: Height) -> Option<Block> {
         self.reads.lock().unwrap().push(height);
         self.blocks.lock().unwrap().get(&height).cloned()
     }
 
-    async fn ancestry<C>(
+    fn subscribe_by_digest(
         &self,
-        _clock: Arc<C>,
-        (_, digest): (DigestFallback, Digest),
-        _fetch_duration: Timed,
-    ) -> Option<Self::Ancestry>
-    where
-        C: Clock,
-    {
-        if self.empty_ancestry.load(Ordering::SeqCst) {
-            return Some(futures::stream::iter(Vec::new()));
+        digest: Digest,
+        fallback: DigestFallback,
+    ) -> oneshot::Receiver<Arc<Block>> {
+        let (sender, receiver) = oneshot::channel();
+        self.subscriptions.lock().unwrap().push((digest, fallback));
+        if self.closed.load(Ordering::SeqCst) {
+            return receiver;
         }
 
-        let block = self
-            .blocks
-            .lock()
-            .unwrap()
-            .values()
-            .find(|block| block.digest() == digest)
-            .cloned()?;
-        self.ancestry_reads.lock().unwrap().push(digest);
-        self.reads.lock().unwrap().push(block.height());
-        Some(futures::stream::iter(vec![Arc::new(block)]))
+        let blocks = self.blocks.lock().unwrap();
+        if let Some(block) = blocks.values().find(|block| block.digest() == digest) {
+            self.reads.lock().unwrap().push(block.height());
+            let _ = sender.send(Arc::new(block.clone()));
+        } else {
+            self.pending
+                .lock()
+                .unwrap()
+                .entry(digest)
+                .or_default()
+                .push(sender);
+        }
+        receiver
     }
 }
 

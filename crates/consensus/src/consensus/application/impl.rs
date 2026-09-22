@@ -13,7 +13,7 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epocher as _, FixedEpocher, HeightDelta},
+    types::{Epocher as _, FixedEpocher, HeightDelta, Round},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{
@@ -128,7 +128,11 @@ impl Inner {
             // At epoch boundary: include public ceremony outcome
             let outcome = self
                 .dkg_manager
-                .get_dkg_outcome(parent_digest, parent.height())
+                .subscribe_dkg_outcome(
+                    parent_digest,
+                    parent.height(),
+                    Round::new(round.epoch(), parent_view),
+                )
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
@@ -302,17 +306,21 @@ impl Inner {
                 "on last block of epoch; verifying that the boundary block \
                 contains the correct DKG outcome",
             );
-            let our_outcome = self
+            let our_outcome = match self
                 .dkg_manager
-                .get_dkg_outcome(
+                .subscribe_dkg_outcome(
                     context.parent.1,
                     block.height().saturating_sub(HeightDelta::new(1)),
+                    Round::new(round.epoch(), context.parent.0),
                 )
                 .await
-                .wrap_err(
-                    "failed getting public dkg ceremony outcome; cannot verify end \
-                    of epoch block",
-                )?;
+            {
+                Ok(outcome) => outcome,
+                Err(reason) => {
+                    warn!(%reason, "DKG outcome unavailable; abstaining");
+                    return std::future::pending().await;
+                }
+            };
             let block_outcome = OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
                 .wrap_err(
                     "failed decoding extra data header as DKG ceremony \
@@ -342,11 +350,17 @@ impl Inner {
             }
         } else if !block.header().extra_data().is_empty() {
             let bytes = block.header().extra_data().clone();
-            let dealer = self
+            let dealer = match self
                 .dkg_manager
                 .verify_dealer_log(round.epoch(), bytes)
                 .await
-                .wrap_err("failed request to verify DKG dealing")?;
+            {
+                Ok(dealer) => dealer.ok_or_eyre("invalid DKG dealer log")?,
+                Err(reason) => {
+                    warn!(%reason, "DKG dealer log verification unavailable; abstaining");
+                    return std::future::pending().await;
+                }
+            };
             ensure!(
                 &dealer == proposer,
                 "proposer `{proposer}` is not the dealer `{dealer}` of the dealing \

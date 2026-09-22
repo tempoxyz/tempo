@@ -6,7 +6,7 @@ mod startup;
 use std::time::Duration;
 
 use alloy_primitives::B256;
-use commonware_consensus::types::{Epoch, Height};
+use commonware_consensus::types::{Epoch, Height, Round as ConsensusRound, View};
 use commonware_cryptography::{
     bls12381::primitives::{
         group::{Private, Share},
@@ -16,8 +16,8 @@ use commonware_cryptography::{
 };
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
-use futures::channel::oneshot;
 use rand::{SeedableRng as _, rngs::StdRng};
+use tempo_primitives::TempoConsensusContext;
 
 use super::*;
 use harness::{
@@ -288,30 +288,10 @@ fn local_share_storage_failures_panic_and_allow_recovery() {
 }
 
 #[test]
-fn exhausted_ancestry_releases_pending_outcome_request() {
-    Runner::default().start(|_| async move {
-        let (response, receiver) = oneshot::channel();
-        let request = GetDkgOutcome {
-            digest: Digest(B256::repeat_byte(1)),
-            height: Height::new(1),
-            response,
-        };
-        let mut ancestry = AncestorStream::new();
-        ancestry.set((tracing::Span::none(), request), futures::stream::empty());
-
-        assert!(ancestry.next().await.is_none());
-        assert!(
-            matches!(receiver.now_or_never(), Some(Err(_))),
-            "an exhausted ancestry stream must fail its pending outcome request"
-        );
-    });
-}
-
-#[test]
-fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
+fn actor_drops_outcome_request_when_block_subscription_closes() {
     Runner::default().start(|mut context| async move {
         let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
-        let mut harness = Harness::builder(context.child("test"), "exhausted_ancestry")
+        let mut harness = Harness::builder(context.child("test"), "closed_subscription")
             .epoch_length(10)
             .build()
             .await;
@@ -320,7 +300,7 @@ fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
             .execution
             .add_header(outcome_header(Height::new(9), &state));
 
-        harness.marshal.return_empty_ancestry();
+        harness.marshal.close_subscriptions();
 
         harness.start().await;
 
@@ -335,11 +315,15 @@ fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
         let response = context
             .timeout(Duration::from_secs(1), async move {
                 request_mailbox
-                    .get_dkg_outcome(Digest(B256::repeat_byte(1)), Height::new(11))
+                    .subscribe_dkg_outcome(
+                        Digest(B256::repeat_byte(1)),
+                        Height::new(11),
+                        ConsensusRound::new(state.epoch, View::new(11)),
+                    )
                     .await
             })
             .await
-            .expect("an exhausted ancestry stream must not leave the outcome request pending");
+            .expect("a closed block subscription must not leave the outcome request pending");
 
         assert!(response.is_err());
     });
@@ -534,7 +518,11 @@ fn failed_dkg_outcomes_carry_share_forward() {
         let first_digest = Digest(B256::repeat_byte(1));
         let first_outcome = harness
             .mailbox()
-            .get_dkg_outcome(first_digest, Height::new(10))
+            .subscribe_dkg_outcome(
+                first_digest,
+                Height::new(10),
+                ConsensusRound::new(state.epoch, View::new(10)),
+            )
             .await
             .unwrap();
         assert_eq!(first_outcome.epoch(), state.epoch.next());
@@ -556,7 +544,11 @@ fn failed_dkg_outcomes_carry_share_forward() {
         let second_digest = Digest(B256::repeat_byte(2));
         let second_outcome = harness
             .mailbox()
-            .get_dkg_outcome(second_digest, Height::new(20))
+            .subscribe_dkg_outcome(
+                second_digest,
+                Height::new(20),
+                ConsensusRound::new(state.epoch.next(), View::new(20)),
+            )
             .await
             .unwrap();
         assert_eq!(second_outcome.epoch(), first_outcome.epoch().next());
@@ -812,7 +804,11 @@ fn epoch_shares_only_distributed_in_the_first_half() {
         let digest = Digest(B256::repeat_byte(1));
         let outcome = harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(15))
+            .subscribe_dkg_outcome(
+                digest,
+                Height::new(15),
+                ConsensusRound::new(state.epoch, View::new(15)),
+            )
             .await
             .unwrap();
 
@@ -990,7 +986,11 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         assert!(selected_logs.next().is_none());
         let actual = harness
             .mailbox()
-            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .subscribe_dkg_outcome(
+                Digest(previous.hash_slow()),
+                Height::new(18),
+                ConsensusRound::new(state.epoch, View::new(18)),
+            )
             .await
             .unwrap();
 
@@ -1003,14 +1003,18 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         assert_eq!(&actual, expected);
         assert_ne!(actual.output.revealed(), other.output.revealed());
         assert_ne!(actual.encode(), other.encode());
-        assert!(harness.marshal.ancestry_reads().is_empty());
+        assert!(harness.marshal.subscriptions().is_empty());
         harness.stop().await;
         assert_eq!(harness.storage().logs_for_epoch(state.epoch).count(), 4);
         // Reconstruct the round from persisted state and replay the same logs.
         harness.start().await;
         let restarted = harness
             .mailbox()
-            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .subscribe_dkg_outcome(
+                Digest(previous.hash_slow()),
+                Height::new(18),
+                ConsensusRound::new(state.epoch, View::new(18)),
+            )
             .await
             .unwrap();
         assert_eq!(restarted, actual);
@@ -1098,12 +1102,20 @@ fn two_actors_produce_the_same_new_dkg_output() {
         let digest = Digest(B256::repeat_byte(1));
         let first_outcome = first_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .subscribe_dkg_outcome(
+                digest,
+                Height::new(17),
+                ConsensusRound::new(state.epoch, View::new(17)),
+            )
             .await
             .unwrap();
         let second_outcome = second_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .subscribe_dkg_outcome(
+                digest,
+                Height::new(17),
+                ConsensusRound::new(state.epoch, View::new(17)),
+            )
             .await
             .unwrap();
 
@@ -1204,12 +1216,20 @@ fn reshare_produces_new_shares() {
         let digest = Digest(B256::repeat_byte(1));
         let first_outcome = first_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .subscribe_dkg_outcome(
+                digest,
+                Height::new(17),
+                ConsensusRound::new(state.epoch, View::new(17)),
+            )
             .await
             .unwrap();
         let second_outcome = second_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .subscribe_dkg_outcome(
+                digest,
+                Height::new(17),
+                ConsensusRound::new(state.epoch, View::new(17)),
+            )
             .await
             .unwrap();
 
@@ -1396,58 +1416,127 @@ fn acked_dealer_messages_not_re_exchanged_after_restart() {
 }
 
 #[test]
-fn outcome_requests_use_reshare_fallback_and_require_next_players() {
+fn outcome_requests_wait_for_execution_state() {
+    for fail_schedule in [true, false] {
+        Runner::default().start(move |mut context| async move {
+            let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+            let mut harness =
+                Harness::builder(context.child("test"), "outcome_execution_dependencies")
+                    .epoch_length(10)
+                    .build()
+                    .await;
+            harness.execution.set_next_players(state.players().clone());
+            harness
+                .execution
+                .add_header(outcome_header(Height::new(9), &state));
+            harness.start().await;
+            harness
+                .report_finalized_header(header(Height::new(10)))
+                .await;
+            harness
+                .report_finalized_header(header(Height::new(11)))
+                .await;
+
+            if fail_schedule {
+                harness.execution.fail_next_full_dkg_epoch();
+            } else {
+                harness.execution.fail_next_players();
+            }
+            let mailbox = harness.mailbox().clone();
+            let mut request = mailbox.subscribe_dkg_outcome(
+                Digest(B256::repeat_byte(1)),
+                Height::new(10),
+                ConsensusRound::new(state.epoch, View::new(10)),
+            );
+            // Registration is immediate, without polling the receiver. The
+            // actor remains responsive while retaining the outcome request.
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            assert!(futures::poll!(&mut request).is_pending());
+
+            // No new request or finalized block is needed: execution's state
+            // notification resumes the original request.
+            harness.execution.restore_state();
+            let outcome = request.await.unwrap();
+            assert_eq!(outcome.epoch(), state.epoch.next());
+            assert_eq!(outcome.output, state.output);
+            assert_eq!(outcome.next_players, state.players);
+            assert!(!outcome.is_next_full_dkg);
+        });
+    }
+}
+
+#[test]
+fn duplicate_outcome_requests_keep_all_live_waiters() {
     Runner::default().start(|mut context| async move {
         let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
-        let mut harness = Harness::builder(context.child("test"), "outcome_execution_dependencies")
+        let mut harness = Harness::builder(context.child("test"), "duplicate_outcomes")
             .epoch_length(10)
             .build()
             .await;
-
-        harness.execution.fail_next_full_dkg_epoch();
         harness.execution.set_next_players(state.players().clone());
         harness
             .execution
             .add_header(outcome_header(Height::new(9), &state));
-
         harness.start().await;
-
-        assert!(!harness.has_dealer_log(state.epoch).await);
-
         harness
             .report_finalized_header(header(Height::new(10)))
             .await;
         harness
             .report_finalized_header(header(Height::new(11)))
             .await;
-
-        let outcome = harness
-            .mailbox()
-            .get_dkg_outcome(Digest(B256::repeat_byte(1)), Height::new(10))
-            .await
-            .unwrap();
-
-        assert_eq!(outcome.epoch(), state.epoch.next());
-
-        // The incomplete ceremony fails forward by carrying the prior output
-        // into the next epoch.
-        assert_eq!(outcome.output, state.output);
-        assert_eq!(outcome.next_players, state.players);
-        assert!(!outcome.is_next_full_dkg);
-
         harness.execution.fail_next_players();
+        let mailbox = harness.mailbox().clone();
+        let digest = Digest(B256::repeat_byte(1));
+        let mut first = mailbox.subscribe_dkg_outcome(
+            digest,
+            Height::new(10),
+            ConsensusRound::new(state.epoch, View::new(10)),
+        );
+        let mut second = mailbox.subscribe_dkg_outcome(
+            digest,
+            Height::new(10),
+            ConsensusRound::new(state.epoch, View::new(10)),
+        );
+        let canceled = mailbox.subscribe_dkg_outcome(
+            digest,
+            Height::new(10),
+            ConsensusRound::new(state.epoch, View::new(10)),
+        );
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        drop(canceled);
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        harness.execution.restore_state();
+        let (first, second) = futures::join!(first, second);
+        assert_eq!(first.unwrap(), second.unwrap());
+    });
+}
 
+#[test]
+fn dealer_log_verification_distinguishes_unavailable_state_from_invalid_logs() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let mut harness = Harness::builder(context.child("test"), "dealer_log_availability")
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+
+        // The same malformed bytes have no verdict without the matching epoch.
         assert!(
             harness
                 .mailbox()
-                .get_dkg_outcome(Digest(B256::repeat_byte(2)), Height::new(10))
+                .verify_dealer_log(state.epoch.next(), vec![u8::MAX].into())
                 .await
                 .is_err()
         );
-
         assert!(
-            !harness.has_dealer_log(state.epoch).await,
-            "next-player lookup failure must not terminate the actor"
+            harness
+                .mailbox()
+                .verify_dealer_log(state.epoch, vec![u8::MAX].into())
+                .await
+                .unwrap()
+                .is_none()
         );
     });
 }
@@ -1474,7 +1563,7 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
             }
         }
 
-        // Notarized Blocks yielded by the AncestryStream
+        // Notarized blocks available through marshal subscriptions.
         let anchor = anchor.unwrap();
         let mut parent = anchor.digest();
         harness.marshal.add_block(anchor);
@@ -1490,7 +1579,11 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
 
         let outcome = harness
             .mailbox()
-            .get_dkg_outcome(parent, Height::new(8))
+            .subscribe_dkg_outcome(
+                parent,
+                Height::new(8),
+                ConsensusRound::new(state.epoch, View::new(80)),
+            )
             .await
             .unwrap();
 
@@ -1508,6 +1601,113 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
 }
 
 #[test]
+fn outcome_request_waits_for_blocks_without_stalling_actor() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_pending_blocks")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        harness.execution.set_next_players(state.players().clone());
+        for height in 0..=5 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+        let anchor = block(header(Height::new(5)));
+        let mut parent = anchor.digest();
+        harness.marshal.add_block(anchor);
+        let mut chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = parent.0;
+            let block = block(header);
+            parent = block.digest();
+            chain.push(block);
+        }
+        harness.start().await;
+        let mut response = harness.mailbox().subscribe_dkg_outcome(
+            parent,
+            Height::new(8),
+            ConsensusRound::new(state.epoch, View::new(80)),
+        );
+
+        // Both the starting block and its ancestors can arrive after the
+        // request. Waiting for either must leave the actor responsive.
+        for block in chain.into_iter().rev() {
+            let marshal = harness.marshal.clone();
+            let mailbox = harness.mailbox().clone();
+            let wait_ctx = context.child("wait_for_subscription");
+            let digest = block.digest();
+            let epoch = state.epoch;
+            context
+                .timeout(Duration::from_secs(1), async move {
+                    while !marshal
+                        .subscriptions()
+                        .iter()
+                        .any(|(subscribed, _)| *subscribed == digest)
+                    {
+                        wait_ctx.sleep(Duration::from_millis(1)).await;
+                    }
+                    assert!(mailbox.get_dealer_log(epoch).await.unwrap().is_none());
+                })
+                .await
+                .expect("waiting for a block must not stall the DKG actor");
+            assert!(futures::poll!(&mut response).is_pending());
+            harness.marshal.add_block(block);
+        }
+
+        // Block delivery alone wakes the actor; no further DKG messages or
+        // execution-state notifications are needed to complete the outcome.
+        let outcome = context
+            .timeout(Duration::from_secs(1), response)
+            .await
+            .expect("block delivery must resume the request")
+            .unwrap();
+        assert_eq!(outcome.output, state.output);
+    });
+}
+
+#[test]
+fn outcome_request_drops_ancestry_with_wrong_parent_height() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_wrong_parent_height")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        harness.execution.set_next_players(state.players().clone());
+        for height in 0..=5 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+        let ancestor = block(header(Height::new(6)));
+        let mut tip = header(Height::new(8));
+        tip.inner.parent_hash = ancestor.digest().0;
+        let tip = block(tip);
+        let digest = tip.digest();
+        harness.marshal.add_block(ancestor);
+        harness.marshal.add_block(tip);
+        harness.start().await;
+
+        let response = context
+            .timeout(
+                Duration::from_secs(1),
+                harness.mailbox().subscribe_dkg_outcome(
+                    digest,
+                    Height::new(8),
+                    ConsensusRound::new(state.epoch, View::new(80)),
+                ),
+            )
+            .await
+            .expect("a mismatched ancestor must close the outcome subscription");
+        assert!(response.is_err());
+        assert!(!harness.has_dealer_log(state.epoch).await);
+    });
+}
+
+#[test]
 fn outcome_request_switches_notarized_ancestry_branches() {
     Runner::default().start(|context| async move {
         let mut harness = Harness::builder(context.child("test"), "outcome_notarized_fork")
@@ -1518,10 +1718,18 @@ fn outcome_request_switches_notarized_ancestry_branches() {
             .await;
         let state = harness.initial_state().clone();
         harness.execution.set_next_players(state.players().clone());
+        let proposer =
+            crate::utils::public_key_to_tempo_primitive(state.players().iter().next().unwrap());
 
         let mut anchor = None;
         for height in 0..=5 {
-            let header = header(Height::new(height));
+            let mut header = header(Height::new(height));
+            header.consensus_context = Some(TempoConsensusContext {
+                epoch: 0,
+                view: height * 10,
+                parent_view: height.saturating_sub(1) * 10,
+                proposer,
+            });
             harness.execution.add_header(header.clone());
             if height == 5 {
                 anchor = Some(block(header));
@@ -1541,6 +1749,16 @@ fn outcome_request_switches_notarized_ancestry_branches() {
             let mut header = header(Height::new(height));
             header.inner.parent_hash = first_parent.0;
             header.inner.timestamp = 1;
+            header.consensus_context = Some(TempoConsensusContext {
+                epoch: 0,
+                view: height * 10 + 1,
+                parent_view: if height == 6 {
+                    50
+                } else {
+                    (height - 1) * 10 + 1
+                },
+                proposer,
+            });
             let block = block(header);
             first_parent = block.digest();
             first_chain.push(first_parent);
@@ -1549,7 +1767,11 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let first_outcome = harness
             .mailbox()
-            .get_dkg_outcome(first_parent, Height::new(8))
+            .subscribe_dkg_outcome(
+                first_parent,
+                Height::new(8),
+                ConsensusRound::new(state.epoch, View::new(81)),
+            )
             .await
             .unwrap();
 
@@ -1560,6 +1782,16 @@ fn outcome_request_switches_notarized_ancestry_branches() {
             let mut header = header(Height::new(height));
             header.inner.parent_hash = second_parent.0;
             header.inner.timestamp = 2;
+            header.consensus_context = Some(TempoConsensusContext {
+                epoch: 0,
+                view: height * 10 + 5,
+                parent_view: if height == 6 {
+                    50
+                } else {
+                    (height - 1) * 10 + 5
+                },
+                proposer,
+            });
             let block = block(header);
             second_parent = block.digest();
             second_chain.push(second_parent);
@@ -1568,32 +1800,45 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let second_outcome = harness
             .mailbox()
-            .get_dkg_outcome(second_parent, Height::new(8))
+            .subscribe_dkg_outcome(
+                second_parent,
+                Height::new(8),
+                ConsensusRound::new(state.epoch, View::new(85)),
+            )
             .await
             .unwrap();
 
         assert_eq!(first_outcome.output, state.output);
         assert_eq!(second_outcome.output, state.output);
-        let ancestry_reads = vec![
-            first_chain[2],
-            first_chain[1],
-            first_chain[0],
-            anchor_digest,
-            second_chain[2],
-            second_chain[1],
-            second_chain[0],
+        let fetch_round = |view| DigestFallback::FetchByRound {
+            round: ConsensusRound::new(Epoch::new(0), View::new(view)),
+        };
+        // Use each branch's parent views, including skipped views, rather
+        // than deriving the fetch round from the height or the child's view.
+        let subscriptions = vec![
+            (first_chain[2], fetch_round(81)),
+            (first_chain[1], fetch_round(71)),
+            (first_chain[0], fetch_round(61)),
+            (anchor_digest, fetch_round(50)),
+            (second_chain[2], fetch_round(85)),
+            (second_chain[1], fetch_round(75)),
+            (second_chain[0], fetch_round(65)),
         ];
 
-        assert_eq!(harness.marshal.ancestry_reads(), ancestry_reads);
+        assert_eq!(harness.marshal.subscriptions(), subscriptions);
 
         // DKG Outcomes are cached, thus we can request the outcome without re-reading state
         let cached_first_outcome = harness
             .mailbox()
-            .get_dkg_outcome(first_parent, Height::new(8))
+            .subscribe_dkg_outcome(
+                first_parent,
+                Height::new(8),
+                ConsensusRound::new(state.epoch, View::new(81)),
+            )
             .await
             .unwrap();
 
         assert_eq!(cached_first_outcome, first_outcome);
-        assert_eq!(harness.marshal.ancestry_reads(), ancestry_reads);
+        assert_eq!(harness.marshal.subscriptions(), subscriptions);
     });
 }

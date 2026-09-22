@@ -6,7 +6,7 @@ use std::{
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
-    Block as _, Heightable as _,
+    Block as _, CertifiableBlock as _, Heightable as _,
     types::{Epoch, Height},
 };
 use commonware_cryptography::{
@@ -1128,7 +1128,7 @@ impl Player {
     }
 }
 
-/// Contains a block's height, parent, digest, and dealer log, if there was one.
+/// Contains a block's height, parent digest and round, digest, and optional dealer log.
 #[derive(Clone, Debug)]
 pub(super) struct ReducedBlock {
     // The block height.
@@ -1136,6 +1136,9 @@ pub(super) struct ReducedBlock {
 
     // The block parent.
     pub(super) parent: Digest,
+
+    // The round the parent was notarized in.
+    pub(super) parent_round: commonware_consensus::types::Round,
 
     // The block digest (hash).
     pub(super) digest: Digest,
@@ -1177,9 +1180,14 @@ impl ReducedBlock {
                 }
             })
         };
+        let context = block.context();
         Self {
             height: block.height(),
             parent: block.parent(),
+            parent_round: commonware_consensus::types::Round::new(
+                context.round.epoch(),
+                context.parent.0,
+            ),
             digest: block.digest(),
             log,
         }

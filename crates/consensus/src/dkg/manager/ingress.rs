@@ -3,7 +3,7 @@ use commonware_actor::Feedback;
 use commonware_consensus::{
     Reporter,
     marshal::Update,
-    types::{Epoch, Height},
+    types::{Epoch, Height, Round},
 };
 use commonware_cryptography::{
     bls12381::{dkg::feldman_desmedt::SignedDealerLog, primitives::variant::MinSig},
@@ -47,32 +47,41 @@ impl Mailbox {
             .wrap_err("actor dropped channel before responding with signed dealer log")
     }
 
-    pub(crate) async fn get_dkg_outcome(
+    /// Registers an outcome subscription, returning its receiver immediately.
+    ///
+    /// `round` is the notarized round of `digest`, used to fetch the starting block.
+    /// The actor responds once ancestry and execution state are available.
+    /// Dropping the receiver cancels the subscription. The channel closes
+    /// without a value if the actor cannot serve the request or shuts down.
+    pub(crate) fn subscribe_dkg_outcome(
         &self,
         digest: Digest,
         height: Height,
-    ) -> eyre::Result<OnchainDkgOutcome> {
+        round: Round,
+    ) -> oneshot::Receiver<OnchainDkgOutcome> {
         let (response, rx) = oneshot::channel();
-        self.inner
-            .unbounded_send(Message::in_current_span(GetDkgOutcome {
+        // A closed mailbox drops the sender, so the receiver reports cancellation.
+        let _ = self
+            .inner
+            .unbounded_send(Message::in_current_span(SubscribeDkgOutcome {
                 digest,
                 height,
+                round,
                 response,
-            }))
-            .wrap_err("failed sending message to actor")?;
-        rx.await
-            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+            }));
+        rx
     }
 
     /// Verifies the `dealing` based on the current status of the DKG actor.
     ///
     /// This method is intended to be called by the application when verifying
     /// the dealing found in a proposal.
+    /// Returns `None` for an invalid log and an error if verification is unavailable.
     pub(crate) async fn verify_dealer_log(
         &self,
         epoch: Epoch,
         bytes: Bytes,
-    ) -> eyre::Result<PublicKey> {
+    ) -> eyre::Result<Option<PublicKey>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(VerifyDealerLog {
@@ -83,8 +92,6 @@ impl Mailbox {
             .wrap_err("failed sending message to actor")?;
         rx.await
             .wrap_err("actor dropped channel before responding with ceremony info")
-            // TODO: replace by Result::flatten once MRSV >= 1.89
-            .and_then(|res| res)
     }
 }
 
@@ -107,7 +114,7 @@ pub(super) enum Command {
 
     // From application
     GetDealerLog(GetDealerLog),
-    GetDkgOutcome(GetDkgOutcome),
+    SubscribeDkgOutcome(SubscribeDkgOutcome),
     VerifyDealerLog(VerifyDealerLog),
 }
 
@@ -129,9 +136,9 @@ impl From<VerifyDealerLog> for Command {
     }
 }
 
-impl From<GetDkgOutcome> for Command {
-    fn from(value: GetDkgOutcome) -> Self {
-        Self::GetDkgOutcome(value)
+impl From<SubscribeDkgOutcome> for Command {
+    fn from(value: SubscribeDkgOutcome) -> Self {
+        Self::SubscribeDkgOutcome(value)
     }
 }
 
@@ -140,16 +147,17 @@ pub(super) struct GetDealerLog {
     pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PrivateKey>>>,
 }
 
-pub(super) struct GetDkgOutcome {
+pub(super) struct SubscribeDkgOutcome {
     pub(super) digest: Digest,
     pub(super) height: Height,
+    pub(super) round: Round,
     pub(super) response: oneshot::Sender<OnchainDkgOutcome>,
 }
 
 pub(super) struct VerifyDealerLog {
     pub(super) bytes: Bytes,
     pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<eyre::Result<PublicKey>>,
+    pub(super) response: oneshot::Sender<Option<PublicKey>>,
 }
 
 impl Reporter for Mailbox {

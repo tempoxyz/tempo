@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc, task::Poll};
+use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
@@ -33,14 +33,18 @@ use commonware_runtime::{
         histogram::{Buckets, Timed},
     },
 };
-use commonware_utils::{Acknowledgement, N3f1, NZU32, acknowledgement::Exact};
+use commonware_utils::{
+    Acknowledgement, N3f1, NZU32,
+    acknowledgement::Exact,
+    futures::{AbortablePool, Aborter},
+};
 
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure, eyre};
 use futures::{
-    FutureExt as _, Stream, StreamExt as _,
+    FutureExt as _, StreamExt as _,
     channel::mpsc,
     future::{Ready, ready},
-    stream::{FusedStream, FuturesOrdered},
+    stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
 use tempo_chainspec::TempoHardforks as _;
@@ -59,7 +63,7 @@ use state::{Dealer, Player, Round, ShareState, State};
 
 use super::{
     Command, EpochManager, ExecutionLayer, Marshal,
-    ingress::{GetDkgOutcome, VerifyDealerLog},
+    ingress::{SubscribeDkgOutcome, VerifyDealerLog},
 };
 
 /// Wire message type for DKG protocol communication.
@@ -341,8 +345,11 @@ where
                 )
             })?;
 
-        let ancestry_ctx = Arc::new(self.context.child("ancestry_stream"));
-        let mut ancestry_stream = AncestorStream::<TMarshal::Ancestry>::new();
+        let fetch_ctx = Arc::new(self.context.child("ancestor_fetch"));
+        let mut outcome_requests = BTreeMap::<Digest, PendingOutcome>::new();
+        let mut fetches = AbortablePool::default();
+        // Subscribe before reading state so a concurrent FCU cannot leave a request asleep.
+        let mut state_updates = self.config.execution_node.state_updates();
 
         info_span!("start_dkg", epoch = %state.epoch).in_scope(|| {
             info!(
@@ -356,6 +363,16 @@ where
         });
 
         loop {
+            self.serve_dkg_outcomes(
+                storage,
+                &player_state,
+                &round,
+                &state,
+                &mut outcome_requests,
+                &mut fetches,
+                &fetch_ctx,
+            )
+            .await;
             let mut shutdown = self.context.stopped().fuse();
             select!(
                 biased;
@@ -465,38 +482,17 @@ where
                             });
                         }
 
-                        Command::GetDkgOutcome(request) => {
-                            if let Some(target) = ancestry_stream.tip()
-                            && target == request.digest
-                            {
-                                ancestry_stream.update_receiver((msg.cause, request));
-                                continue;
-                            }
-                            if let Ok(Some((hole, request))) = self
-                                .handle_get_dkg_outcome(
-                                    &msg.cause,
-                                    storage,
-                                    &player_state,
-                                    &round,
-                                    &state,
-                                    request,
-                                )
-                                .await
-                            {
-                                let stream = match self
-                                    .config
-                                    .marshal
-                                    .ancestry(
-                                        ancestry_ctx.clone(),
-                                        (DigestFallback::Wait, hole),
-                                        self.metrics.ancestor_fetch_duration.clone(),
-                                    )
-                                    .await
-                                {
-                                    Some(stream) => stream,
-                                    None => break Err(eyre!("marshal mailbox is closed")),
-                                };
-                                ancestry_stream.set((msg.cause, request), stream);
+                        Command::SubscribeDkgOutcome(request) => {
+                            let epoch = self.config.epoch_strategy.containing(request.height)
+                                .expect("our strategy covers all heights").epoch();
+                            if epoch == state.epoch {
+                                outcome_requests.entry(request.digest)
+                                    .or_insert_with(|| PendingOutcome {
+                                        cause: msg.cause,
+                                        requests: Vec::new(),
+                                        fetch: None,
+                                    })
+                                    .requests.push(request);
                             }
                         }
                         Command::VerifyDealerLog(verify) => {
@@ -509,30 +505,25 @@ where
                     }
                 }
 
-                Some(notarized_block) = ancestry_stream.next() => {
-                    storage.cache_notarized_block(&round, notarized_block);
-                    let (cause, request) = ancestry_stream
-                        .take_request()
-                        .expect("if the stream is yielding blocks, there must be a receiver");
-                    if let Ok(Some((hole, request))) = self
-                        .handle_get_dkg_outcome(&cause, storage, &player_state, &round, &state, request)
-                        .await
-                    {
-                        let stream = match self
-                            .config
-                            .marshal
-                            .ancestry(
-                                ancestry_ctx.clone(),
-                                (DigestFallback::Wait, hole),
-                                self.metrics.ancestor_fetch_duration.clone(),
-                            )
-                            .await
-                        {
-                            Some(stream) => stream,
-                            None => break Err(eyre!("marshal mailbox is closed")),
-                        };
-                        ancestry_stream.set((cause, request), stream);
+                completion = fetches.next_completed() => {
+                    if let Ok((digest, block)) = completion {
+                        match block {
+                            Some(block) => {
+                                if let Some(pending) = outcome_requests.get_mut(&digest) {
+                                    pending.fetch = None;
+                                    storage.cache_notarized_block(&round, (*block).clone());
+                                }
+                            }
+                            None => {
+                                // This ancestry cannot supply the requested outcome.
+                                outcome_requests.remove(&digest);
+                            }
+                        }
                     }
+                }
+
+                update = state_updates.next() => {
+                    update.ok_or_eyre("execution state notification stream closed")?;
                 }
             )
         }
@@ -695,11 +686,9 @@ where
         }: VerifyDealerLog,
     ) {
         if state.epoch != epoch {
-            let _ = response.send(Err(eyre!(
-                "requested dealer log for epoch `{epoch}`, but current round \
-                is for epoch `{}`",
-                state.epoch
-            )));
+            // Missing local ceremony state says nothing about the log's validity.
+            // Dropping the response makes the application abstain from certification.
+            warn!(%epoch, current_epoch = %state.epoch, "cannot verify dealer log for another epoch");
             return;
         }
         let res = SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
@@ -715,10 +704,11 @@ where
         .inspect(|_| {
             self.metrics.dealings_read.metric().inc();
         })
-        .inspect_err(|_| {
+        .inspect_err(|reason| {
+            warn!(%reason, "invalid DKG dealer log");
             self.metrics.bad_dealings.metric().inc();
         });
-        let _ = response.send(res);
+        let _ = response.send(res.ok());
     }
 
     /// Handles a finalized block.
@@ -1068,7 +1058,86 @@ where
         Ok(())
     }
 
-    /// Attempts to serve a `GetDkgOutcome` request by finalizing the DKG outcome.
+    /// Serves ready outcome subscriptions and fetches ancestry for those still waiting.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "subscription handling uses the state scoped to the current epoch"
+    )]
+    async fn serve_dkg_outcomes<TStorageContext>(
+        &mut self,
+        storage: &mut state::Storage<TStorageContext>,
+        player_state: &Option<Player>,
+        round: &Round,
+        state: &State,
+        outcome_requests: &mut BTreeMap<Digest, PendingOutcome>,
+        fetches: &mut AbortablePool<'static, (Digest, Option<Arc<Block>>)>,
+        fetch_ctx: &Arc<TContext>,
+    ) where
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
+    {
+        for (digest, pending) in outcome_requests.iter_mut() {
+            pending
+                .requests
+                .retain(|request| !request.response.is_canceled());
+            let Some(request) = pending.requests.first() else {
+                continue;
+            };
+            match self
+                .handle_subscribe_dkg_outcome(
+                    &pending.cause,
+                    storage,
+                    player_state,
+                    round,
+                    state,
+                    request,
+                )
+                .await
+            {
+                Ok(Outcome::Ready(outcome)) => {
+                    for request in pending.requests.drain(..) {
+                        let _ = request.response.send(outcome.clone());
+                    }
+                }
+                Ok(Outcome::NeedsAncestor(height, hole, round)) => {
+                    if pending.fetch.is_none() {
+                        let receiver = self
+                            .config
+                            .marshal
+                            .subscribe_by_digest(hole, DigestFallback::FetchByRound { round });
+                        let timer = self
+                            .metrics
+                            .ancestor_fetch_duration
+                            .timer(fetch_ctx.as_ref());
+                        let context = fetch_ctx.clone();
+                        let cause = pending.cause.clone();
+                        let digest = *digest;
+                        pending.fetch = Some(fetches.push(async move {
+                            let block = receiver.await.ok().filter(|block| {
+                                timer.observe(context.as_ref());
+                                if block.height() == height && block.digest() == hole {
+                                    true
+                                } else {
+                                    warn!(parent: &cause,
+                                        expected.height = %height, expected.digest = %hole,
+                                        actual.height = %block.height(), actual.digest = %block.digest(),
+                                        "fetched DKG ancestor does not match the requested block",
+                                    );
+                                    false
+                                }
+                            });
+                            (digest, block)
+                        }));
+                    }
+                }
+                // The handler logs the unavailable execution state. Keep the
+                // request pending and retry after the next actor event.
+                Err(_) => {}
+            }
+        }
+        outcome_requests.retain(|_, pending| !pending.requests.is_empty());
+    }
+
+    /// Attempts to serve a `SubscribeDkgOutcome` request by finalizing the DKG outcome.
     ///
     /// A DKG outcome can be finalized in one of the following cases:
     ///
@@ -1076,10 +1145,9 @@ where
     /// 2. if all blocks in an epoch were observed (finalized + notarized leading
     /// up to `request.digest`).
     ///
-    /// If the DKG was finalized this way, this method will return `None`.
-    /// Otherwise will return `Some((digest, request))` if the block identified
-    /// by `digest` was missing and needs to be fetched first to ensure all
-    /// blocks in an epoch were observed.
+    /// Returns the outcome once both the ceremony and the parent's execution
+    /// state are available, or identifies the next missing ancestor. Execution
+    /// read errors leave the registered request pending.
     #[instrument(
         parent = cause,
         skip_all,
@@ -1090,15 +1158,15 @@ where
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_get_dkg_outcome<TStorageContext>(
+    async fn handle_subscribe_dkg_outcome<TStorageContext>(
         &mut self,
         cause: &Span,
         storage: &mut state::Storage<TStorageContext>,
         player_state: &Option<Player>,
         round: &Round,
         state: &State,
-        request: GetDkgOutcome,
-    ) -> eyre::Result<Option<(Digest, GetDkgOutcome)>>
+        request: &SubscribeDkgOutcome,
+    ) -> eyre::Result<Outcome>
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
@@ -1137,6 +1205,7 @@ where
                 );
                 let mut notarized_logs = BTreeMap::new();
                 let (mut height, mut digest) = (request.height, request.digest);
+                let mut ancestor_round = request.round;
                 while height >= epoch_info.first()
                     && Some(height)
                         >= storage
@@ -1159,12 +1228,13 @@ where
                             break;
                         };
                         digest = block.parent;
+                        ancestor_round = block.parent_round;
                     } else {
                         debug!(
                             missing = %digest,
                             "cannot yet finalize the DKG because a block is missing"
                         );
-                        return Ok(Some((digest, request)));
+                        return Ok(Outcome::NeedsAncestor(height, digest, ancestor_round));
                     }
                 }
                 for (dealer, log) in notarized_logs {
@@ -1250,8 +1320,8 @@ where
             .config
             .execution_node
             .next_full_dkg_epoch(request.digest)
-            // in theory it should never fail, but if it does, just stick to reshare.
-            .is_ok_and(|epoch| epoch == next_epoch.get());
+            .wrap_err("could not determine the next full DKG epoch")?
+            == next_epoch.get();
         info!(
             will_be_re_dkg,
             %next_epoch,
@@ -1264,19 +1334,12 @@ where
             .next_players(request.digest)
             .wrap_err("could not determine who the next players are supposed to be")?;
 
-        request
-            .response
-            .send(OnchainDkgOutcome {
-                epoch: next_epoch.get(),
-                output,
-                next_players,
-                is_next_full_dkg: will_be_re_dkg,
-            })
-            .map_err(|_| {
-                eyre!("requester went away before speculative DKG outcome could be sent")
-            })?;
-
-        Ok(None)
+        Ok(Outcome::Ready(OnchainDkgOutcome {
+            epoch: next_epoch.get(),
+            output,
+            next_players,
+            is_next_full_dkg: will_be_re_dkg,
+        }))
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
@@ -1687,7 +1750,7 @@ impl Metrics {
 
         let ancestor_fetch_duration = Timed::new(context.histogram(
             "ancestor_fetch_duration",
-            "Histogram of time taken to fetch a block via the DKG ancestry stream, in seconds",
+            "Histogram of time taken to fetch a block for a DKG outcome, in seconds",
             Buckets::LOCAL,
         ));
 
@@ -1718,81 +1781,15 @@ impl Metrics {
     }
 }
 
-/// A wrapper around an ancestry stream held in an option to make it easier to
-/// use with select macros.
-///
-/// Invariant: the inner stream and its matching original request are set and
-/// cleared together.
-struct AncestorStream<T> {
-    pending_request: Option<(Span, GetDkgOutcome)>,
-    inner: Option<T>,
+struct PendingOutcome {
+    cause: Span,
+    requests: Vec<SubscribeDkgOutcome>,
+    fetch: Option<Aborter>,
 }
 
-impl<T> AncestorStream<T>
-where
-    T: Stream<Item = Arc<Block>> + Unpin,
-{
-    fn new() -> Self {
-        Self {
-            pending_request: None,
-            inner: None,
-        }
-    }
-
-    fn take_request(&mut self) -> Option<(Span, GetDkgOutcome)> {
-        self.inner.take();
-        self.pending_request.take()
-    }
-
-    fn set(&mut self, pending_request: (Span, GetDkgOutcome), stream: T) {
-        self.pending_request.replace(pending_request);
-        self.inner.replace(stream);
-    }
-
-    fn tip(&self) -> Option<Digest> {
-        self.pending_request.as_ref().map(|(_, req)| req.digest)
-    }
-
-    fn update_receiver(&mut self, pending_request: (Span, GetDkgOutcome)) {
-        self.pending_request.replace(pending_request);
-    }
-}
-
-impl<T> Stream for AncestorStream<T>
-where
-    T: Stream<Item = Arc<Block>> + Unpin,
-{
-    type Item = Block;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let item = {
-            let this = match self.inner.as_mut() {
-                Some(inner) => inner,
-                None => return Poll::Ready(None),
-            };
-            this.poll_next_unpin(cx)
-        };
-        match futures::ready!(item) {
-            None => {
-                self.inner.take();
-                self.pending_request.take();
-                Poll::Ready(None)
-            }
-            Some(block) => Poll::Ready(Some((*block).clone())),
-        }
-    }
-}
-
-impl<T> FusedStream for AncestorStream<T>
-where
-    T: Stream<Item = Arc<Block>> + Unpin,
-{
-    fn is_terminated(&self) -> bool {
-        self.inner.is_none()
-    }
+enum Outcome {
+    Ready(OnchainDkgOutcome),
+    NeedsAncestor(Height, Digest, commonware_consensus::types::Round),
 }
 
 fn read_dealer_log(
