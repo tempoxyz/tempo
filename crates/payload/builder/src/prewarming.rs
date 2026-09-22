@@ -403,6 +403,13 @@ where
         // Record storage actions for future replay
         if self.parallel {
             evm.ext_mut().actions.enable();
+            // Enabling replaces the disabled recorder, so reconnect native precompiles
+            // to the same action buffer used by protocol nonce and fee operations.
+            evm.set_precompiles(tempo_precompiles::TempoPrecompiles::new(
+                evm.config_spec_id(),
+                evm.ext().actions.clone(),
+                evm.ext().non_creditable_slots.clone(),
+            ));
         }
 
         Some(evm)
@@ -847,6 +854,85 @@ mod tests {
             None
         });
         pool.clear();
+    }
+
+    #[test]
+    fn parallel_prewarm_records_native_transfer_balance_changes() {
+        use tempo_precompiles::{
+            PATH_USD_ADDRESS,
+            storage::{StorageCtx, StorageKey},
+            tip20::{ITIP20, TIP20Token, tip20_slots},
+        };
+
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_env.block.basefee = U256::ZERO;
+        let mut evm = context.evm_for_ctx().expect("prewarm EVM");
+        let sender = Address::repeat_byte(0x31);
+        let recipient = Address::repeat_byte(0x32);
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
+            token
+                .initialize(sender, "pathUSD", "pathUSD", "USD", Address::ZERO, sender)
+                .unwrap();
+            token.increment_balance(sender, U256::from(1000)).unwrap();
+        });
+        evm.state_mut().commit_transaction();
+        evm.state_mut().clear_transaction_state();
+        evm.ext().actions.clear();
+
+        // transfer(address,uint256), matching a payment transaction eligible for replay.
+        let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
+        input.extend_from_slice(&recipient.into_word().0);
+        input.extend_from_slice(&U256::from(100).to_be_bytes::<32>());
+        let tx = TempoTransaction {
+            chain_id: 42431,
+            fee_token: Some(PATH_USD_ADDRESS),
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: input.into(),
+            }],
+            nonce_key: U256::ONE,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        let tx = tempo_evm::TempoTxEnv::from(Recovered::new_unchecked(envelope, sender));
+        let result = evm
+            .transact(&Recovered::new_unchecked(tx, sender))
+            .expect("transfer transaction")
+            .commit();
+        assert!(result.status, "native transfer failed: {result:?}");
+        let actions = evm.ext().actions.take().expect("enabled recorder");
+        let sender_slot = sender.mapping_slot(tip20_slots::BALANCES);
+        let recipient_slot = recipient.mapping_slot(tip20_slots::BALANCES);
+        assert!(actions.contains(&StorageAction::Sstore(
+            PATH_USD_ADDRESS,
+            sender_slot,
+            U256::from(1000),
+            U256::from(900),
+        )));
+        assert!(actions.contains(&StorageAction::Sstore(
+            PATH_USD_ADDRESS,
+            recipient_slot,
+            U256::ZERO,
+            U256::from(100),
+        )));
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            let token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
+            assert_eq!(
+                token
+                    .balance_of(ITIP20::balanceOfCall { account: sender })
+                    .unwrap(),
+                U256::from(900)
+            );
+            assert_eq!(
+                token
+                    .balance_of(ITIP20::balanceOfCall { account: recipient })
+                    .unwrap(),
+                U256::from(100)
+            );
+        });
     }
 
     #[test]

@@ -131,7 +131,7 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
-/// T3 keeps the broader all-persisted-rows accounting from current main. T4 narrows this to rows
+/// T3 charges for all persisted scope rows. T4 narrows this to rows
 /// that actually create storage, so repeated same-tx set length rewrites no longer count as fresh
 /// SSTORE-set rows. The helper bookkeeping around scope persistence is charged separately via a
 /// rounded surcharge.
@@ -710,7 +710,7 @@ fn prepare_keychain(
     let same_tx_authorization =
         key_authorization.is_some_and(|authorization| authorization.key_id == access_key);
 
-    if same_tx_authorization {
+    let state = if same_tx_authorization {
         // Same-tx auth+use path: the access key does not exist in storage yet, so the fee
         // check must use the inline limits directly. `collectFeePreTx` cannot enforce this
         // because `transaction_key` is intentionally not set until after authorization.
@@ -734,63 +734,64 @@ fn prepare_keychain(
         } else {
             None
         };
-        return Ok(KeychainState {
+        KeychainState {
             access_key: Some(access_key),
             same_tx_authorization,
             fee_key,
             loaded_key: None,
-        });
-    }
-
-    // Existing-key path:
-    // - ordinary keychain txs must validate the acting access key before fees are paid
-    // - T6 delegated key authorizations also validate the acting key here, then reuse
-    //   the loaded admin/signature-type facts below when the sidecar signer is the same key
-    let timestamp = host.block().timestamp.to::<u64>();
-
-    // Extract the signature type from the inner signature to validate it matches
-    // the key_type stored in the keychain. This prevents using a signature of one
-    // type to authenticate as a key registered with a different type.
-    // Only validate signature type on T1+ to maintain backward compatibility
-    // with historical blocks during re-execution.
-    let expected_signature_type = (key_authorization.is_some() || host.config_spec_id().is_t1())
-        .then_some(u8::from(keychain_signature.signature.signature_type()));
-    let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        let mut keychain = AccountKeychain::new();
-        let key = keychain
-            .validate_keychain_authorization(
-                keychain_signature.user_address,
-                access_key,
-                timestamp,
-                expected_signature_type,
-            )
-            .map_err(keychain_error)?;
-        if key_authorization.is_some() && !key.is_admin {
-            // T6 adds admin delegation: a keychain signer may authorize a different
-            // child key only if the acting transaction key is itself an active admin key.
-            return Err(invalid(
-                TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys,
-            ));
         }
-        // Set the transaction key in the keychain precompile.
-        // The TIP20 precompile will read this during fee collection and
-        // execution to enforce spending limits for existing keys.
-        keychain
-            .set_transaction_key(access_key)
-            .map_err(keychain_error)?;
-        Ok::<_, HandlerError>(LoadedTxAccessKey {
-            key_id: access_key,
-            key,
-        })
-    })?;
+    } else {
+        // Existing-key path:
+        // - ordinary keychain txs must validate the acting access key before fees are paid
+        // - T6 delegated key authorizations also validate the acting key here, then reuse
+        //   the loaded admin/signature-type facts below when the sidecar signer is the same key
+        let timestamp = host.block().timestamp.to::<u64>();
 
-    host.ext_mut().key_expiry = Some(loaded.key.expiry);
-    let fee_key = loaded.key.enforce_limits.then_some(loaded.key_id);
-    let state = KeychainState {
-        access_key: Some(access_key),
-        same_tx_authorization,
-        fee_key,
-        loaded_key: Some(loaded),
+        // Extract the signature type from the inner signature to validate it matches
+        // the key_type stored in the keychain. This prevents using a signature of one
+        // type to authenticate as a key registered with a different type.
+        // Only validate signature type on T1+ to maintain backward compatibility
+        // with historical blocks during re-execution.
+        let expected_signature_type = (key_authorization.is_some()
+            || host.config_spec_id().is_t1())
+        .then_some(u8::from(keychain_signature.signature.signature_type()));
+        let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+            let mut keychain = AccountKeychain::new();
+            let key = keychain
+                .validate_keychain_authorization(
+                    keychain_signature.user_address,
+                    access_key,
+                    timestamp,
+                    expected_signature_type,
+                )
+                .map_err(keychain_error)?;
+            if key_authorization.is_some() && !key.is_admin {
+                // T6 adds admin delegation: a keychain signer may authorize a different
+                // child key only if the acting transaction key is itself an active admin key.
+                return Err(invalid(
+                    TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys,
+                ));
+            }
+            // Set the transaction key in the keychain precompile.
+            // The TIP20 precompile will read this during fee collection and
+            // execution to enforce spending limits for existing keys.
+            keychain
+                .set_transaction_key(access_key)
+                .map_err(keychain_error)?;
+            Ok::<_, HandlerError>(LoadedTxAccessKey {
+                key_id: access_key,
+                key,
+            })
+        })?;
+
+        host.ext_mut().key_expiry = Some(loaded.key.expiry);
+        let fee_key = loaded.key.enforce_limits.then_some(loaded.key_id);
+        KeychainState {
+            access_key: Some(access_key),
+            same_tx_authorization,
+            fee_key,
+            loaded_key: Some(loaded),
+        }
     };
 
     // T6 stateless signer/account checks run in `validate_env`. This state-aware phase only
@@ -979,7 +980,7 @@ fn apply_key_authorization(
 
 #[derive(Clone, Copy, Debug)]
 struct AppliedAuthorization {
-    existed: bool,
+    refund_eligible: bool,
     delegated_before_tx: bool,
     delegated_now: bool,
     clearing: bool,
@@ -1005,7 +1006,9 @@ fn apply_one_authorization(
         .account(&authority, false)
         .map_err(HandlerError::Fatal)?;
     account.warm();
-    let existed = account.exists();
+    // Historically, the sender was touched before authorization processing, making even an
+    // initially absent sender eligible for the pre-T1 refund when authorizing itself.
+    let refund_eligible = account.exists() || account.is_touched();
     let nonce = account.nonce();
     let code = account.load_code().map_err(HandlerError::Fatal)?;
     let delegated_now = !code.is_empty();
@@ -1022,7 +1025,7 @@ fn apply_one_authorization(
     let clearing = authorization.address.is_zero();
     account.set_delegation(authorization.address);
     Ok(Some(AppliedAuthorization {
-        existed,
+        refund_eligible,
         delegated_before_tx,
         delegated_now,
         clearing,
@@ -1053,14 +1056,14 @@ fn apply_authorization_list(
             continue;
         };
 
-        if applied.existed {
+        if applied.refund_eligible {
             regular_refund = regular_refund.saturating_add(regular_per_auth);
         }
         if !eip8037 {
             continue;
         }
         let mut refund = 0u64;
-        if applied.existed {
+        if applied.refund_eligible {
             refund = refund.saturating_add(new_account);
         }
         if applied.clearing {
@@ -1152,6 +1155,7 @@ fn apply_nonce(
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
+    account.touch();
     let protocol_nonce = account.nonce();
     if tx.nonce_key.is_zero() {
         if nonce_check && protocol_nonce != tx.nonce {
@@ -1503,26 +1507,6 @@ fn handle_aa(
         intrinsic_gas(request.host, request.tx.inner())?;
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
-    // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
-    // This case would create a new account for caller.
-    // We only check first call of the transaction because CREATE is only allowed
-    // to appear as the first call in the batch (validated in `validate_calls`)
-    if !tx.nonce_key.is_zero()
-        && tx.calls.first().is_some_and(|call| call.to.is_create())
-        && request
-            .host
-            .state_mut()
-            .account_info_untracked(&caller)
-            .map_err(HandlerError::Fatal)?
-            .is_none_or(|account| account.nonce == 0)
-    {
-        intrinsic = intrinsic.saturating_add(u64::from(
-            request.host.version().gas_params[GasId::NewAccountCost],
-        ));
-        initial_state_gas = initial_state_gas
-            .saturating_add(request.host.version().gas_params.new_account_state_gas());
-    }
-
     // For T0+, include 2D nonce gas in validation (charged upfront)
     // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
     // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
@@ -1544,6 +1528,30 @@ fn handle_aa(
         intrinsic = intrinsic.saturating_add(nonce_gas);
         initial_state_gas = initial_state_gas.saturating_add(nonce_state_gas);
     }
+    // Add additional gas for CREATE tx with 2D nonce and account nonce zero.
+    // This case would create a new account for caller.
+    // We only check first call of the transaction because CREATE is only allowed
+    // to appear as the first call in the batch (validated in `validate_calls`)
+    if !tx.nonce_key.is_zero()
+        && tx.calls.first().is_some_and(|call| call.to.is_create())
+        && request
+            .host
+            .state_mut()
+            .account_info_untracked(&caller)
+            .map_err(HandlerError::Fatal)?
+            .is_none_or(|account| account.nonce == 0)
+    {
+        intrinsic = intrinsic.saturating_add(u64::from(
+            request.host.version().gas_params[GasId::NewAccountCost],
+        ));
+        initial_state_gas = initial_state_gas
+            .saturating_add(request.host.version().gas_params.new_account_state_gas());
+
+        // Recheck the complete cost here, including Genesis nonce gas added after
+        // initial validation. This CREATE case must not use the unbounded gas fallback.
+        validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
+    }
+
     validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     warm_base_accounts(request.host, caller, tx.calls[0].to);
@@ -1616,7 +1624,7 @@ fn handle_aa(
     }
 
     // At Genesis, adding 2D nonce gas after validation could underflow the execution budget.
-    // Preserve main's historical fallback: execute with u64::MAX, but settle against the
+    // Preserve the historical fallback: execute with u64::MAX, but settle against the
     // original transaction limit below so unused gas saturates to zero spent before the floor.
     let (execution_gas, mut reservoir) =
         if !spec.is_t0() && intrinsic.saturating_add(initial_state_gas) > tx.gas_limit {
