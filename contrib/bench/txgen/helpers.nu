@@ -819,6 +819,7 @@ def txgen-run-preset-pipeline [
         "--rpc" $generate_rpc_url
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
+    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
     let bench_send_base_cmd = [
         $txgen_bench_bin
         "send"
@@ -828,6 +829,8 @@ def txgen-run-preset-pipeline [
         "--retries" 0
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
     ]
+        # Deferred envelopes need the same workload's signing keys at send time.
+        | append (if "--defer-signing" in $txgen_extra_args { ["--late-signing-spec" $spec_path] } else { [] })
     let bench_base_cmd = [
         ...$bench_send_base_cmd
         ...$metrics_url_args
@@ -872,7 +875,6 @@ def txgen-run-preset-pipeline [
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
     let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
