@@ -654,6 +654,18 @@ impl AA2dPool {
         regular.chain(expiring)
     }
 
+    /// Returns pending transactions in the address's sequential 2D nonce lane.
+    pub(crate) fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
+        self.by_id
+            .range(AASequenceId::new(address, nonce_key).range())
+            .filter(|(_, tx)| tx.is_pending())
+            .map(|(_, tx)| tx.inner.transaction.clone())
+    }
+
     /// Returns an iterator over all transaction hashes in this pool
     pub(crate) fn all_transaction_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
         self.by_hash.keys().copied()
