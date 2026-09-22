@@ -130,6 +130,24 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
             );
         }
         let source = IFundingSource::new(SOURCE, provider.clone());
+        let candidates = source
+            .discover(
+                owner.address(),
+                PATH_USD_ADDRESS,
+                U256::from(50 * UNIT),
+                U256::from(50 * UNIT),
+                assets.to_vec().abi_encode().into(),
+            )
+            .call()
+            .await?;
+        assert_eq!(candidates.len(), 2);
+        for (candidate, asset) in candidates.iter().zip(assets) {
+            assert_eq!(candidate.availableAmount, U256::from(50 * UNIT));
+            assert_eq!(
+                <(Address, U256)>::abi_decode_validate(&candidate.requestData)?,
+                (asset, U256::from(50 * UNIT))
+            );
+        }
         let quote = source
             .quote(
                 owner.address(),
@@ -150,7 +168,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                     owner.address(),
                     PATH_USD_ADDRESS,
                     quote.amountOut,
-                    quote.data
+                    quote.requestData
                 )
                 .call()
                 .await
@@ -175,7 +193,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                 },
                 FundingSource {
                     address: SOURCE,
-                    data: (assets[1], U256::MAX).abi_encode().into(),
+                    data: candidates[1].requestData.clone(),
                 },
             ],
         };
