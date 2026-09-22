@@ -4,6 +4,7 @@ use super::{
     unique_tx_identifier_from_signable,
 };
 use crate::{TempoAddressExt, TempoTransaction};
+use alloc::vec::Vec;
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
