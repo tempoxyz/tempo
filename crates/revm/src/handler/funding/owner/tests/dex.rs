@@ -501,7 +501,7 @@ fn signed_requirements_use_the_normal_and_inspected_batch_paths() {
                 sources: [request(a, U256::from(30 * UNIT)), request(b, U256::MAX)]
                     .into_iter()
                     .map(|source| FundingSource {
-                        address: tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS,
+                        target: tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS,
                         data: source.data,
                     })
                     .collect(),

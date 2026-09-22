@@ -88,7 +88,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         .sources
                         .iter()
                         .map(|source| ITIP20Funder::Source {
-                            target: source.address,
+                            target: source.target,
                             data: source.data.clone(),
                         })
                         .collect(),

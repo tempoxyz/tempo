@@ -23,7 +23,7 @@ interface IFundingPolicy {
         Route[] routes;
     }
 
-    struct Candidate {
+    struct SourceCandidate {
         address target;
         bytes data;
         uint256 availableAmount;
@@ -33,7 +33,7 @@ interface IFundingPolicy {
         address token;
         uint256 amount;
         uint16 slippageBps;
-        Candidate[] sources;
+        SourceCandidate[] sources;
     }
 
     error TokenNotAllowed(address token);
@@ -145,12 +145,12 @@ mod tests {
             amount: U256::from(50),
             slippageBps: 100,
             sources: vec![
-                IFundingPolicy::Candidate {
+                IFundingPolicy::SourceCandidate {
                     target: Address::repeat_byte(2),
                     data: Bytes::from_static(&[1]),
                     availableAmount: U256::from(30),
                 },
-                IFundingPolicy::Candidate {
+                IFundingPolicy::SourceCandidate {
                     target: Address::repeat_byte(2),
                     data: Bytes::from_static(&[2]),
                     availableAmount: U256::from(40),

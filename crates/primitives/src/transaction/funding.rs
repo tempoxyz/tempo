@@ -13,7 +13,7 @@ use alloy_rlp::{Buf, Decodable, Encodable};
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct FundingSource {
     /// Contract or precompile implementing IFundingSource.
-    pub address: Address,
+    pub target: Address,
     /// Signed source arguments, including any input cap.
     pub data: Bytes,
 }
@@ -131,7 +131,7 @@ mod tests {
             token: Address::repeat_byte(1),
             amount: U256::from(50),
             sources: vec![FundingSource {
-                address: Address::repeat_byte(2),
+                target: Address::repeat_byte(2),
                 data: Bytes::from_static(&[0xab]),
             }],
             slippage_bps: Some(100),
@@ -150,6 +150,28 @@ mod tests {
         let token = json.as_object_mut().unwrap().remove("token").unwrap();
         json["asset"] = token;
         assert!(serde_json::from_value::<FundingRequirement>(json).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn funding_source_json_uses_target() {
+        let source = requirement().sources.remove(0);
+        let json = serde_json::json!({
+            "target": "0x0202020202020202020202020202020202020202",
+            "data": "0xab",
+        });
+        assert_eq!(serde_json::to_value(&source).unwrap(), json);
+        assert_eq!(
+            serde_json::from_value::<FundingSource>(json).unwrap(),
+            source
+        );
+        assert!(
+            serde_json::from_value::<FundingSource>(serde_json::json!({
+                "address": "0x0202020202020202020202020202020202020202",
+                "data": "0xab",
+            }))
+            .is_err()
+        );
     }
 
     fn transaction() -> TempoTransaction {
@@ -304,7 +326,7 @@ mod tests {
         tx.require_funds.as_mut().unwrap()[0]
             .sources
             .push(FundingSource {
-                address: Address::repeat_byte(3),
+                target: Address::repeat_byte(3),
                 data: Bytes::new(),
             });
         tx.require_funds.as_mut().unwrap().push(FundingRequirement {
@@ -315,7 +337,7 @@ mod tests {
         let mutations: &[fn(&mut Vec<FundingRequirement>)] = &[
             |v| v[0].token = Address::ZERO,
             |v| v[0].amount += U256::from(1),
-            |v| v[0].sources[0].address = Address::ZERO,
+            |v| v[0].sources[0].target = Address::ZERO,
             |v| v[0].sources[0].data = Bytes::from_static(&[0xcd]),
             |v| v[0].sources.swap(0, 1),
             |v| v.swap(0, 1),

@@ -65,7 +65,7 @@ impl AddressFilter {
                     .as_ref()?
                     .iter()
                     .flat_map(|entry| &entry.sources)
-                    .map(|source| source.address)
+                    .map(|source| source.target)
                     .find(|address| self.contains(address))
             });
 
@@ -141,7 +141,7 @@ mod tests {
         let tx = TempoTransaction {
             require_funds: Some(vec![FundingRequirement {
                 sources: vec![FundingSource {
-                    address: source,
+                    target: source,
                     data: Bytes::new(),
                 }],
                 ..Default::default()
