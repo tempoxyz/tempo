@@ -787,10 +787,15 @@ jobs:
 
             let dashboardSection = '';
             try {
-              const clickhouseRunId = fs.readFileSync(`${resultsDir}/clickhouse-run-id.txt`, 'utf8').trim();
-              if (clickhouseRunId) {
-                const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
-                dashboardSection = `\n\n### Internal dashboard\n\n[Internal dashboard](${dashboardUrl})\n`;
+              if (fs.existsSync(`${resultsDir}/clickhouse-run-id.txt`)) {
+                // The wrapper report uses the workflow ID; txgen's report has the ClickHouse UUID.
+                const phase = process.env.BENCH_INPUT_CLICKHOUSE_RUN;
+                const report = JSON.parse(fs.readFileSync(`${resultsDir}/${phase}/txgen-report.json`, 'utf8'));
+                const clickhouseRunId = report.benchmark_id;
+                if (clickhouseRunId) {
+                  const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
+                  dashboardSection = `\n\n### Internal dashboard\n\n[Internal dashboard](${dashboardUrl})\n`;
+                }
               }
             } catch (e) {
               core.info(`Unable to read ClickHouse run ID for internal dashboard: ${e.message}`);
