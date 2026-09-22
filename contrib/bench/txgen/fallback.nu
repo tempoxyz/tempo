@@ -13,6 +13,22 @@ def fallback-read [rpc: string, to: string, selector: string, address: string] {
     fallback-rpc $rpc eth_call [{to: $to, data: $"0x($selector)($word)"} latest]
 }
 
+def fallback-skip-counters [metrics_urls: list<string>] {
+    $metrics_urls | where {|url| $url =~ '^[ab]:http'} | each {|entry|
+        let node = ($entry | str substring 0..0)
+        let url = ($entry | str substring 2..)
+        let lines = (http get --raw $url | lines | where {|line| $line | str starts-with 'reth_tempo_payload_builder_pool_transactions_skipped_total{'})
+        let counters = [invalid_tx invalid_replay nonce_too_low] | each {|reason|
+            let matching = ($lines | where {|line| $line | str contains $'reason="($reason)"'})
+            let total = if ($matching | is-empty) { 0 } else {
+                $matching | each {|line| $line | split row --regex '\s+' | get 1 | into float} | math sum | into int
+            }
+            {reason: $reason, count: $total}
+        }
+        {node: $node, counters: $counters}
+    }
+}
+
 def fallback-send [txgen: string, bench: string, spec: string, rpc: string, count: int] {
     let generate = (txgen-shell-join [$txgen generate -s $spec -n $count --seed 99 --rpc $rpc])
     let send = (txgen-shell-join [$bench send --rpc-url $rpc --tps 1000 --max-concurrent 20 --retries 0 --drain-timeout 0])
@@ -117,9 +133,13 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
     })
     let dir = [$base_dir .. .. .. .. .bench-tmp fallback $phase] | path join | path expand
     mkdir $dir
-    let setup_path = [$dir setup.yml] | path join
-    $workload | insert setup {steps: $steps} | to yaml | save -f $setup_path
-    fallback-send $txgen $bench $setup_path $rpc 0
+    # Establish the shared recipient balance with a fixed payer first. Otherwise
+    # whichever payer wins pool ordering pays the first-write storage gas.
+    for batch in [{name: first, steps: ($steps | first 1)}, {name: remaining, steps: ($steps | skip 1)}] {
+        let setup_path = [$dir $"setup-($batch.name).yml"] | path join
+        $workload | insert setup {steps: $batch.steps} | to yaml | save -f $setup_path
+        fallback-send $txgen $bench $setup_path $rpc 0
+    }
 
     # Both sides must start with identical balances and FeeAMM reserves.
     mut balances = []
@@ -141,11 +161,12 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
     let pool = (fallback-rpc $rpc eth_call [{to: $fee_manager, data: $"0x531aa03e($alpha_word)($path_word)"} latest])
     let initial_state = {payers: $balances, alpha_pathusd_pool: $pool}
     let state_digest = ($initial_state | to json -r | hash sha256)
+    $initial_state | to json | save -f $"($report_path).initial-state.json"
+    print $"INITIAL_STATE_PROOF ($phase): ($state_digest), pool=($pool)"
     let state_digest_path = ($report_path | path dirname | path join fallback-state.sha256)
     if ($state_digest_path | path exists) {
         if (open --raw $state_digest_path | str trim) != $state_digest { error make {msg: "Fallback payer balances or FeeAMM reserves differ between trials"} }
     } else { $state_digest | save $state_digest_path }
-    $initial_state | to json | save -f $"($report_path).initial-state.json"
     let workload_path = [$dir workload.yml] | path join
     $workload | to yaml | save -f $workload_path
     let start = (fallback-rpc $rpc eth_blockNumber [] | into int)

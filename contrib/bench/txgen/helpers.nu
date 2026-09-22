@@ -936,6 +936,9 @@ def txgen-run-preset-pipeline [
     let fallback_start_block = if $preset_name == "tip1115-fallback" {
         fallback-rpc $generate_rpc_url eth_blockNumber [] | into int
     } else { 0 }
+    let fallback_skips_before = if $preset_name == "tip1115-fallback" {
+        fallback-skip-counters $metrics_url
+    } else { [] }
     let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
@@ -949,6 +952,18 @@ def txgen-run-preset-pipeline [
     }
 
     if $preset_name == "tip1115-fallback" {
+        let after = (fallback-skip-counters $metrics_url)
+        let skips = ($after | enumerate | each {|node|
+            $node.item.counters | enumerate | each {|counter|
+                let before = ($fallback_skips_before | get $node.index | get counters | get $counter.index | get count)
+                {node: $node.item.node, reason: $counter.item.reason, count: ($counter.item.count - $before)}
+            }
+        } | flatten)
+        $skips | to json | save -f $"($report_path).skip-proof.json"
+        print $"SKIP_PROOF ($skips | to json -r)"
+        if ($skips | where reason != nonce_too_low | where count != 0 | length) > 0 {
+            error make {msg: "Fallback measurement contains invalid transaction or replay skips"}
+        }
         let report = (open $report_path)
         if $report.sent != $tx_count or $report.failed != 0 or $report.run_stats.total_txs != $tx_count {
             error make {msg: $"Incomplete fixed workload: expected=($tx_count), sent=($report.sent), included=($report.run_stats.total_txs), failed=($report.failed)"}
