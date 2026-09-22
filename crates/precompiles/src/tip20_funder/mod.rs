@@ -27,7 +27,7 @@ pub enum FundingMathError {
 pub struct InputRate(U256);
 
 impl InputRate {
-    /// Validates a source's fixed-point rate. No-input plans do not have a rate.
+    /// Validates a source's fixed-point rate. No-input quotes do not have a rate.
     pub fn new(rate: U256) -> Result<Self, FundingMathError> {
         if rate.is_zero() {
             return Err(FundingMathError::InvalidRate);
@@ -55,7 +55,7 @@ impl InputRate {
             .ok_or(FundingMathError::Overflow)
     }
 
-    /// Returns the rate encoded in a funding plan.
+    /// Returns the rate encoded in a funding quote.
     pub const fn get(self) -> U256 {
         self.0
     }
