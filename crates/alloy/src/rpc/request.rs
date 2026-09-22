@@ -610,7 +610,7 @@ mod tests {
             "requireFunds": [{
                 "token": "0x0000000000000000000000000000000000000002",
                 "amount": "0x32", "slippageBps": "0x0",
-                "sources": [{"address": "0x0000000000000000000000000000000000000003", "data": "0xabcd"}]
+                "sources": [{"target": "0x0000000000000000000000000000000000000003", "data": "0xabcd"}]
             }]
         });
         let request: TempoTransactionRequest = serde_json::from_value(value.clone()).unwrap();
