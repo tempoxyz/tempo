@@ -852,3 +852,48 @@ jobs:
       - name: Check benchmark result
         if: always() && (steps.fetch_tempo_binaries.outcome == 'failure' || steps.generate_initial_validator_state.outcome == 'failure' || steps.initialize_validator_state.outcome == 'failure' || steps.benchmark.outcome == 'failure')
         run: exit 1
+
+      - name: Fetch PR reporting token
+        id: pr-report-token
+        if: always() && github.event_name == 'workflow_dispatch' && steps.checkout_benchmark_repo.outcome == 'success'
+        continue-on-error: true
+        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        with:
+          scope: tempoxyz/tempo
+          policy: bench-e2e
+
+      - name: Post multiregion results to PR
+        if: always() && steps.pr-report-token.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_JOB_STATUS: ${{ job.status }}
+        with:
+          github-token: ${{ steps.pr-report-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { data: feature } = await github.rest.repos.getCommit({
+              ...context.repo,
+              ref: process.env.BENCH_INPUT_FEATURE || 'main',
+            });
+            const { data: prs } = await github.rest.pulls.list({
+              ...context.repo,
+              head: `${context.repo.owner}:${process.env.GITHUB_REF_NAME}`,
+              state: 'open',
+            });
+            const pr = prs.find(pr => pr.head.sha === context.sha && pr.head.sha === feature.sha);
+            if (!pr) {
+              core.info('No open PR matches the dispatched branch and benchmark feature revision.');
+              return;
+            }
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const summaryPath = `${process.env.BENCH_RESULTS_DIR}/summary.md`;
+            const summary = fs.existsSync(summaryPath)
+              ? fs.readFileSync(summaryPath, 'utf8')
+              : 'No benchmark summary was produced; see the run logs.';
+            const body = `### Multiregion benchmark\n\nStatus: **${process.env.BENCH_JOB_STATUS}**. [View run](${runUrl})\n\n${summary}`;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: pr.number,
+              body,
+            });
