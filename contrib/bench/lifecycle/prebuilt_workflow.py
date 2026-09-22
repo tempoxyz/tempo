@@ -14,7 +14,17 @@ def inputs(env):
     for name in ('BENCH_LIFECYCLE','BENCH_NO_SLACK'):need(env.get(name)=='true')
     for name in ('BENCH_FORCE_BLOAT','BENCH_NO_CACHE','BENCH_SAMPLY','BENCH_OTLP','BENCH_VALSCOPE'):need(env.get(name)=='false')
     need(env.get('BENCH_TRACY')=='off' and env.get('BENCH_TXGEN_REF')==TOOLS)
-    for name in ('BENCH_BASELINE_FEATURES','BENCH_FEATURE_FEATURES','BENCH_BASELINE_ENV','BENCH_FEATURE_ENV','BENCH_BENCH_ENV'):need(env.get(name,'')=='')
+    for name in ('BENCH_BASELINE_FEATURES','BENCH_FEATURE_FEATURES','BENCH_BASELINE_ENV','BENCH_BENCH_ENV'):need(env.get(name,'')=='')
+    trial = env.get('BENCH_PROOF_GROUPING_TRIAL', '')
+    need(trial in ('', 'true'))
+    if trial == 'true':
+        need(env.get('BENCH_FEATURE_ENV') == 'RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1')
+        need(env.get('BENCH_RUN_SIDE') == 'comparison' and env.get('BENCH_RUN_PAIRS') == '1')
+        need(env.get('BENCH_DURATION') == '30' and env.get('BENCH_READ_READINESS') == 'true')
+        need(env.get('PREBUILT_BASELINE_REF') == env.get('PREBUILT_FEATURE_REF'))
+        need(re.fullmatch(r'[0-9a-f]{40}', env.get('PREBUILT_FEATURE_REF', '')))
+    else:
+        need(env.get('BENCH_FEATURE_ENV', '') == '')
     need(env.get('BENCH_FEATURES')=='jemalloc,asm-keccak,keccak-cache-global')
     sides={'feature':['feature'],'baseline':['baseline'],'comparison':['baseline','feature']}
     need(env.get('BENCH_RUN_SIDE') in sides)
@@ -26,6 +36,8 @@ def main():
     plan_path=Path(PLAN_PATH);data=plan_path.read_bytes()
     need(digest(data)==env.get('BENCH_PREBUILT_PLAN_SHA256'));plan=validate_plan(data)
     need({side for side,index in plan['arms'].items() if index is not None}==set(required))
+    if env.get('BENCH_PROOF_GROUPING_TRIAL') == 'true':
+        need(plan['arms']['baseline'] == plan['arms']['feature'])
     for side in required:
         m=json.loads(plan['artifacts'][plan['arms'][side]]['manifest_json'])
         need(m['binaries']['tempo']['source_sha']==env.get('PREBUILT_'+side.upper()+'_REF'))

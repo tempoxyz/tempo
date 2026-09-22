@@ -29,10 +29,10 @@ class CapacityWorkflowTests(unittest.TestCase):
                 '      BENCH_OTLP: "false"\n',
                 '      BENCH_VALSCOPE: "false"\n',
                 '      BENCH_METRICS: "false"\n',
-                '      BENCH_FEATURE_ENV: ""\n',
+                '      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1"\n',
                 '      BENCH_READ_READINESS: "true"\n',
                 '      BENCH_RUN_PAIRS: "1"\n',
-                '      BENCH_RUN_SIDE: "feature"\n'):
+                '      BENCH_RUN_SIDE: "comparison"\n'):
             self.assertEqual(workflow.count(line), 1, line)
 
     def test_read_readiness_is_forwarded_to_both_feature_validators(self):
@@ -59,7 +59,7 @@ class CapacityWorkflowTests(unittest.TestCase):
                 '$lifecycle_scheduler', '$lifecycle_prewarm_cpu != "disabled"'):
             self.assertIn(requirement, guard)
         self.assertIn(
-            'Read-readiness requires one 30-second prebuilt feature milestone capture', guard)
+            'Read-readiness requires a 30-second prebuilt milestone diagnostic capture', guard)
         self.assertLess(harness.index('let readiness_mode ='),
                         harness.index('let preset_spec =', harness.index('let readiness_mode =')))
 

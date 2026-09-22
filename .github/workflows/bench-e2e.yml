@@ -428,11 +428,12 @@ jobs:
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
-      BENCH_FEATURE_ENV: ""
+      BENCH_PROOF_GROUPING_TRIAL: "true"
+      BENCH_FEATURE_ENV: "RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1"
       BENCH_READ_READINESS: "true"
       BENCH_RUN_PAIRS: "1"
       # An explicit instrumented baseline enables a same-runner lifecycle pair.
-      BENCH_RUN_SIDE: "feature"
+      BENCH_RUN_SIDE: "comparison"
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}

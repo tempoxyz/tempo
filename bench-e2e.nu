@@ -1578,16 +1578,28 @@ def "main e2e" [
     if $prebuilt != (($env.BENCH_BINARY_MODE? | default "build_v1") == "prebuilt_v1") {
         error make {msg: "Prebuilt workflow and binary route must agree"}
     }
-    if $prebuilt and (not $lifecycle or $profile != "profiling" or not $no_default_features or $force_bloat or $init_only or $no_cache or $samply or $tracy != "off" or $valscope_static_report or $baseline_env != "" or $feature_env != "" or $bench_env != "" or $baseline_features != "" or $feature_features != "") {
+    let proof_grouping_mode = ($env.BENCH_PROOF_GROUPING_TRIAL? | default "")
+    let proof_grouping_trial = $proof_grouping_mode == "true"
+    if $proof_grouping_mode not-in ["" "true"] or ($proof_grouping_trial and (
+        not $prebuilt or ($env.BENCH_READ_READINESS? | default "false") != "true" or
+        ($baseline | default "") !~ '^[0-9a-f]{40}$' or $baseline != $feature or
+        $baseline_args != $feature_args or $baseline_hardfork != $feature_hardfork or
+        $run_side != "comparison" or $run_pairs != 1 or $duration != 30 or
+        $baseline_env != "" or $feature_env != "RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING=1"
+    )) {
+        error make {msg: "Proof grouping trial requires identical immutable inputs and the exact feature toggle"}
+    }
+    if $proof_grouping_trial { hide-env -i RETH_EXPERIMENTAL_PROOF_BACKLOG_GROUPING }
+    if $prebuilt and (not $lifecycle or $profile != "profiling" or not $no_default_features or $force_bloat or $init_only or $no_cache or $samply or $tracy != "off" or $valscope_static_report or $baseline_env != "" or ($feature_env != "" and not $proof_grouping_trial) or $bench_env != "" or $baseline_features != "" or $feature_features != "") {
         error make {msg: "Unsupported prebuilt execution inputs"}
     }
     let readiness_mode = ($env.BENCH_READ_READINESS? | default "false")
     if $readiness_mode not-in ["false" "true"] or ($readiness_mode == "true" and (
         not $prebuilt or not $lifecycle or $lifecycle_detail != "milestones" or
-        $run_side != "feature" or $run_pairs != 1 or $duration != 30 or
+        ($run_side != "feature" and not $proof_grouping_trial) or $run_pairs != 1 or $duration != 30 or
         $lifecycle_scheduler or $lifecycle_prewarm_cpu != "disabled"
     )) {
-        error make {msg: "Read-readiness requires one 30-second prebuilt feature milestone capture"}
+        error make {msg: "Read-readiness requires a 30-second prebuilt milestone diagnostic capture"}
     }
     if $lifecycle_scheduler and (not $lifecycle or $lifecycle_detail != "full" or $lifecycle_prewarm_cpu != "disabled" or $samply or $tracy != "off") {
         error make {msg: "Kernel fault diagnostic requires full lifecycle and no other observer"}

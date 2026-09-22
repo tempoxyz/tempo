@@ -30,7 +30,7 @@ class PrewarmHarness(unittest.TestCase):
         workflow=(ROOT/'.github/workflows/bench-e2e.yml').read_text()
         for setting in ('BENCH_LIFECYCLE: "true"', 'BENCH_LIFECYCLE_DETAIL: "milestones"',
                         'BENCH_LIFECYCLE_PREWARM_CPU: "disabled"',
-                        'BENCH_READ_READINESS: "true"', 'BENCH_RUN_SIDE: "feature"'):
+                        'BENCH_READ_READINESS: "true"', 'BENCH_RUN_SIDE: "comparison"'):
             self.assertIn(setting, workflow)
         snippet=workflow.split('          cmd=(nu bench-e2e.nu e2e)',1)[1].split('          quote_arg()',1)[0]
         script='set -e\ncmd=(nu bench-e2e.nu e2e)\n'+snippet+'\nprintf "%s\\0" "${cmd[@]}"\n'
