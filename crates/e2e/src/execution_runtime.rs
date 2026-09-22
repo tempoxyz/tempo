@@ -45,7 +45,7 @@ use reth_node_core::{
 };
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
@@ -143,12 +143,23 @@ impl Builder {
             .insert_value("epochLength".to_string(), epoch_length)
             .unwrap();
 
-        // Override the fixture even when unset: its T12 default is active at genesis.
-        genesis
-            .config
-            .extra_fields
-            .insert_value("t12Time".to_string(), t12_time)
-            .unwrap();
+        if let Some(t12_time) = t12_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t12Time".to_string(), t12_time)
+                .unwrap();
+
+            // Later forks would bypass the T12 transition being tested.
+            for &fork in TempoHardfork::VARIANTS {
+                if fork > TempoHardfork::T12 {
+                    genesis
+                        .config
+                        .extra_fields
+                        .remove(&format!("{}Time", fork.name().to_lowercase()));
+                }
+            }
+        }
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
