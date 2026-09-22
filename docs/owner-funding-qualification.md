@@ -22,7 +22,7 @@ Each scenario waits for all four validators to finalize the receipt's height. It
 
 ## Measured gas
 
-Measured with Rust 1.95.0 on the T13 fixture above. The standalone demo and E2E test returned identical gas for all seven scenarios. Transactions run in the listed order, so these are reproducible scenario measurements, not isolated estimates for arbitrary liquidity or storage state.
+Measured with Rust 1.95.0 on the T13 fixture above. The four-validator E2E test measured all seven scenarios using discovered request data. Transactions run in the listed order, so these are reproducible scenario measurements, not isolated estimates for arbitrary liquidity or storage state.
 
 | Scenario | Total gas | Additional gas versus subsequent direct transfer |
 | --- | ---: | ---: |
@@ -30,8 +30,8 @@ Measured with Rust 1.95.0 on the T13 fixture above. The standalone demo and E2E 
 | Subsequent direct transfer | 40,954 | 0 |
 | Requirement already covered | 44,137 | 3,183 |
 | One source, 50 units, omitted slippage | 621,183 | 580,229 |
-| Two sources, 30 + 20 units, 100 bps | 766,677 | 725,723 |
-| Funding succeeds, payment reverts | 508,321 | — |
+| Two sources, 30 + 20 units, 100 bps | 766,341 | 725,387 |
+| Funding succeeds, payment reverts | 507,985 | — |
 | First source supplies 30, requirement remains unmet | 435,130 | — |
 
 The first transaction's 250,000-gas nonce-initialization charge is unrelated to funding. Both failure rows retain normal fees while reverting source inputs, DEX credits, output transfers, and funding events. These numbers do not establish worst-case gas bounds for fragmented books.
