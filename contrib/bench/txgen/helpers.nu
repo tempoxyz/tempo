@@ -929,9 +929,7 @@ def txgen-run-preset-pipeline [
     }
 
     if $preset_name == "tip1115-fallback" {
-        let expected = if ($benchmark_run | str starts-with "feature") {
-            "0x20c0000000000000000000000000000000000001"
-        } else { "0x20c0000000000000000000000000000000000000" }
+        let expected = "0x20c0000000000000000000000000000000000001"
         let proof = (fallback-proof $generate_rpc_url $fallback_start_block $expected)
         $proof | to json | save -f $"($report_path).measured-fallback-proof.json"
         print $"MEASURED_FALLBACK_PROOF ($proof | to json -r)"

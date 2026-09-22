@@ -52,7 +52,13 @@ def fallback-proof [rpc: string, start: int, expected_token: string] {
                     if $receipt.status != "0x1" or ($receipt.feeToken | str downcase) != $expected_token {
                         error make {msg: "Probe did not succeed using the expected fallback token"}
                     }
-                    return {transaction_hash: $receipt.transactionHash, status: $receipt.status, fee_token: $receipt.feeToken, explicit_fee_token: false, call_selector: "0x095ea7b3"}
+                    let header = (fallback-rpc $rpc eth_getBlockByNumber [$block false])
+                    let validator_token = (fallback-read $rpc "0xfeec000000000000000000000000000000000000" "6dc54a7a" $header.miner)
+                    let validator_token = $"0x($validator_token | str substring 26.. | str downcase)"
+                    if $validator_token != "0x20c0000000000000000000000000000000000000" {
+                        error make {msg: "Fallback benchmark validator must prefer pathUSD"}
+                    }
+                    return {transaction_hash: $receipt.transactionHash, status: $receipt.status, fee_token: $receipt.feeToken, validator: $header.miner, validator_fee_token: $validator_token, explicit_fee_token: false, call_selector: "0x095ea7b3"}
                 }
             }
             $next = $next + 1
@@ -67,8 +73,7 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
     let alpha = "0x20c0000000000000000000000000000000000001"
     let pathusd = "0x20c0000000000000000000000000000000000000"
     let fee_manager = "0xfeec000000000000000000000000000000000000"
-    let use_alpha = ($phase | str starts-with "feature")
-    let expected = if $use_alpha { $alpha } else { $pathusd }
+    let expected = $alpha
     let addresses_result = (^$txgen addresses -s $spec_path -f shell | complete)
     if $addresses_result.exit_code != 0 { error make {msg: "Cannot derive fallback fixture accounts"} }
     let addresses = ($addresses_result.stdout | str trim | split row ' ' | where {|a| $a != ''})
@@ -82,7 +87,7 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
     let workload = ($original | update include $includes)
     let steps = ($addresses | enumerate | each {|entry|
         let balance = (fallback-read $rpc $pathusd "70a08231" $entry.item)
-        let amount = if $use_alpha { $balance } else { "0" }
+        let amount = $balance
         {id: $"drain_pathusd_($entry.index)", tx: {
             type: tempo, from: {pool: users, select: {index: $entry.index}}, gas_limit: 1000000,
             max_fee_per_gas: 100000000000, max_priority_fee_per_gas: 100000000000,
@@ -96,7 +101,7 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
     $workload | insert setup {steps: $steps} | to yaml | save -f $setup_path
     fallback-send $txgen $bench $setup_path $rpc 0
 
-    # Assert every sender reaches the final fallback, and the feature must skip pathUSD.
+    # Both sides have identical balances and FeeAMM routes; only the candidate list differs.
     for address in $addresses {
         let preference = (fallback-read $rpc $fee_manager "ed498fa8" $address)
         let path_balance = (fallback-read $rpc $pathusd "70a08231" $address)
@@ -105,7 +110,7 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
         let funded = if ($significant | str length) > 4 { true } else {
             ($selected_balance | into int) >= 30000
         }
-        if not ($preference =~ '^0x0+$') or ($use_alpha and not ($path_balance =~ '^0x0+$')) or not $funded {
+        if not ($preference =~ '^0x0+$') or not ($path_balance =~ '^0x0+$') or not $funded {
             error make {msg: $"Fallback preconditions failed for ($address): preference=($preference), pathUSD=($path_balance), selected=($selected_balance)"}
         }
     }
@@ -114,7 +119,7 @@ def txgen-prepare-fallback [spec_path: string, txgen: string, bench: string, rpc
     let start = (fallback-rpc $rpc eth_blockNumber [] | into int)
     fallback-send $txgen $bench $workload_path $rpc 1
     let proof = (fallback-proof $rpc $start $expected)
-    let evidence = {phase: $phase, accounts_checked: $accounts, stored_preferences: 0, feature_pathusd_zero: $use_alpha, probe: $proof}
+    let evidence = {phase: $phase, accounts_checked: $accounts, stored_preferences: 0, all_payer_pathusd_zero: true, probe: $proof}
     $evidence | to json | save -f $"($report_path).fallback-proof.json"
     print $"FALLBACK_PROOF ($evidence | to json -r)"
     $workload_path

@@ -1,5 +1,5 @@
 # Benchmark-only: approve does not trigger TIP-20 fee-token inference.
-# fallback.nu drains pathUSD only on the feature side before measurement.
+# fallback.nu drains pathUSD on both sides before measurement.
 include:
   - tip20/base.yml
   - tip20/fee-amm-liquidity.yml
