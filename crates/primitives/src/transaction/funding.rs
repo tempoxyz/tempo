@@ -394,15 +394,18 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "reth-codec")]
-    #[test]
-    fn funding_compact_roundtrip() {
-        use reth_codecs::Compact;
-        let tx = transaction();
-        let mut bytes = vec![];
-        let len = tx.to_compact(&mut bytes);
-        let (decoded, rest) = TempoTransaction::from_compact(&bytes, len);
-        assert!(rest.is_empty());
-        assert_eq!(decoded, tx);
+    #[cfg(all(test, feature = "reth-codec"))]
+    mod compact {
+        use super::*;
+        #[test]
+        fn funding_compact_roundtrip() {
+            use reth_codecs::Compact;
+            let tx = transaction();
+            let mut bytes = vec![];
+            let len = tx.to_compact(&mut bytes);
+            let (decoded, rest) = TempoTransaction::from_compact(&bytes, len);
+            assert!(rest.is_empty());
+            assert_eq!(decoded, tx);
+        }
     }
 }
