@@ -234,3 +234,54 @@ fn token_support_is_independent_of_balances_and_liquidity() {
         assert!(source.supports_token(call).is_err());
     });
 }
+
+#[test]
+fn token_support_rejects_non_parity_and_missing_routes() {
+    let (mut storage, source, input) = setup();
+    StorageCtx::enter(&mut storage, || {
+        let eur = TIP20Setup::create("Euro", "EUR", ACCOUNT)
+            .currency("EUR")
+            .apply()
+            .unwrap()
+            .address();
+        let no_pair = TIP20Setup::create("No pair", "NONE", ACCOUNT)
+            .apply()
+            .unwrap()
+            .address();
+        for inputs in [vec![eur], vec![no_pair]] {
+            assert!(
+                !source
+                    .supports_token(IFundingSource::supportsTokenCall {
+                        token: PATH_USD_ADDRESS,
+                        policyData: inputs.abi_encode().into(),
+                    })
+                    .unwrap()
+            );
+        }
+        assert!(
+            source
+                .supports_token(IFundingSource::supportsTokenCall {
+                    token: PATH_USD_ADDRESS,
+                    policyData: vec![eur, no_pair, input].abi_encode().into(),
+                })
+                .unwrap()
+        );
+        TIP20Setup::config(PATH_USD_ADDRESS)
+            .with_admin(ACCOUNT)
+            .with_role(ACCOUNT, TIP20Token::pause_role())
+            .apply()
+            .unwrap();
+        TIP20Token::from_address(PATH_USD_ADDRESS)
+            .unwrap()
+            .pause(ACCOUNT, ITIP20::pauseCall {})
+            .unwrap();
+        assert!(
+            !source
+                .supports_token(IFundingSource::supportsTokenCall {
+                    token: PATH_USD_ADDRESS,
+                    policyData: vec![input].abi_encode().into(),
+                })
+                .unwrap()
+        );
+    });
+}
