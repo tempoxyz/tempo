@@ -2809,29 +2809,27 @@ mod keychain {
     }
 
     #[test]
-    fn funding_policy_authorization_is_rejected_until_binding_is_active() {
+    fn funding_policy_authorization_is_rejected_before_t13() {
         use core::num::NonZeroU64;
         use tempo_primitives::transaction::FundingPolicyAuthorization;
-        for spec in [TempoHardfork::T12] {
-            let (signer, user) = generate_keypair();
-            let key = Address::random();
-            let signed = sign_key_auth(
-                &signer,
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
-                    .with_funding_policy(FundingPolicyAuthorization::Id(NonZeroU64::MIN)),
-            );
-            let (mut evm, handler) = make_evm(user, key, Some(signed), spec, None, false);
-            let result = handler.validate_env(&mut evm);
-            assert!(
-                matches!(
-                    result,
-                    Err(EVMError::Transaction(
-                        TempoInvalidTransaction::DelegatedFundingNotActivated
-                    ))
-                ),
-                "{result:?}"
-            );
-        }
+        let (signer, user) = generate_keypair();
+        let key = Address::random();
+        let signed = sign_key_auth(
+            &signer,
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                .with_funding_policy(FundingPolicyAuthorization::Id(NonZeroU64::MIN)),
+        );
+        let (mut evm, handler) = make_evm(user, key, Some(signed), TempoHardfork::T12, None, false);
+        let result = handler.validate_env(&mut evm);
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(
+                    TempoInvalidTransaction::DelegatedFundingNotActivated
+                ))
+            ),
+            "{result:?}"
+        );
     }
 
     #[test]

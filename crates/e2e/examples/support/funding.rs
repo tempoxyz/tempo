@@ -191,6 +191,8 @@ pub(super) async fn run_demo(
             .await?
             .status()
     );
+    let access_key = PrivateKeySigner::from_bytes(&B256::with_last_byte(113))?;
+    let shared_key = PrivateKeySigner::from_bytes(&B256::with_last_byte(114))?;
     let mut input_balances = [500u64, 500];
     let mut delivered = 1u64;
     let mut observations = Vec::new();
@@ -202,6 +204,11 @@ pub(super) async fn run_demo(
         "two_sources",
         "payment_revert",
         "funding_revert",
+        "delegated_inline",
+        "delegated_reuse",
+        "delegated_revert",
+        "delegated_existing_id",
+        "delegated_payment_revert",
     ]
     .into_iter()
     .enumerate()
@@ -228,7 +235,7 @@ pub(super) async fn run_demo(
                 entry.sources.truncate(1);
                 entry.sources[0].data = (assets[0], U256::MAX).abi_encode().into();
             }
-            "payment_revert" => {
+            "payment_revert" | "delegated_payment_revert" => {
                 tx.calls[0].input = ITIP20::transferCall {
                     to: recipient,
                     amount: U256::from(51 * UNIT),
@@ -239,7 +246,40 @@ pub(super) async fn run_demo(
             "funding_revert" => tx.require_funds.as_mut().unwrap()[0].sources.truncate(1),
             _ => {}
         }
-        let bytes = signed(tx, &owner, &maker);
+        let executing_key = if matches!(
+            scenario,
+            "delegated_existing_id" | "delegated_payment_revert"
+        ) {
+            &shared_key
+        } else {
+            &access_key
+        };
+        let bytes = if scenario.starts_with("delegated") {
+            if scenario == "delegated_inline" {
+                tx.key_authorization = Some(funding_key(
+                    tx.chain_id,
+                    &owner,
+                    access_key.address(),
+                    &assets,
+                ));
+            }
+            if scenario == "delegated_existing_id" {
+                let mut auth =
+                    funding_key(tx.chain_id, &owner, shared_key.address(), &assets).authorization;
+                auth.funding_policy = Some(
+                    tempo_primitives::transaction::FundingPolicyAuthorization::Id(
+                        core::num::NonZeroU64::MIN,
+                    ),
+                );
+                let signature = owner.sign_hash_sync(&auth.signature_hash())?;
+                tx.key_authorization =
+                    Some(auth.into_signed(PrimitiveSignature::Secp256k1(signature)));
+            }
+            tx.require_funds.as_mut().unwrap()[0].slippage_bps = None;
+            signed_access(tx, owner.address(), executing_key, &maker)
+        } else {
+            signed(tx, &owner, &maker)
+        };
         let receipt = rpc
             .send_raw_transaction(&bytes)
             .await?
@@ -251,7 +291,7 @@ pub(super) async fn run_demo(
         let expected_events = match scenario {
             "covered" => 1,
             "one_source" => 2,
-            "two_sources" => 3,
+            "two_sources" | "delegated_inline" | "delegated_reuse" | "delegated_existing_id" => 3,
             _ => 0,
         };
         assert_eq!(
@@ -270,7 +310,10 @@ pub(super) async fn run_demo(
             if scenario == "one_source" {
                 input_balances[0] -= 50;
             }
-            if scenario == "two_sources" {
+            if matches!(
+                scenario,
+                "two_sources" | "delegated_inline" | "delegated_reuse" | "delegated_existing_id"
+            ) {
                 input_balances[0] -= 30;
                 input_balances[1] -= 20;
             }
@@ -321,6 +364,43 @@ pub(super) async fn run_demo(
                 serde_json::to_value(&receipt)?,
                 "{scenario}: receipt differs"
             );
+            if scenario.starts_with("delegated") {
+                use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain};
+                let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, peer.clone());
+                assert_eq!(
+                    keychain
+                        .getFundingPolicyId(owner.address(), executing_key.address())
+                        .block(height.into())
+                        .call()
+                        .await?,
+                    1
+                );
+                let remaining = keychain
+                    .getRemainingLimitWithPeriod(
+                        owner.address(),
+                        executing_key.address(),
+                        PATH_USD_ADDRESS,
+                    )
+                    .block(height.into())
+                    .call()
+                    .await?
+                    .remaining;
+                assert_eq!(
+                    remaining,
+                    U256::from(
+                        if matches!(
+                            scenario,
+                            "delegated_inline"
+                                | "delegated_existing_id"
+                                | "delegated_payment_revert"
+                        ) {
+                            50 * UNIT
+                        } else {
+                            0
+                        }
+                    )
+                );
+            }
             let token = ITIP20::new(PATH_USD_ADDRESS, peer.clone());
             assert_eq!(
                 token
@@ -381,4 +461,70 @@ pub(super) async fn run_demo(
         serde_json::to_string(&observations)?
     );
     Ok(())
+}
+
+fn signed_access(
+    mut tx: TempoTransaction,
+    account: Address,
+    key: &PrivateKeySigner,
+    sponsor: &PrivateKeySigner,
+) -> Vec<u8> {
+    use tempo_primitives::transaction::tt_signature::KeychainSignature;
+    tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+    let signature = key
+        .sign_hash_sync(&KeychainSignature::signing_hash(
+            tx.signature_hash(),
+            account,
+        ))
+        .unwrap();
+    tx.fee_payer_signature = Some(
+        sponsor
+            .sign_hash_sync(&tx.fee_payer_signature_hash(account))
+            .unwrap(),
+    );
+    let envelope: TempoTxEnvelope = tx
+        .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+            account,
+            PrimitiveSignature::Secp256k1(signature),
+        )))
+        .into();
+    envelope.encoded_2718()
+}
+
+fn funding_key(
+    chain_id: u64,
+    owner: &PrivateKeySigner,
+    key: Address,
+    assets: &[Address],
+) -> tempo_primitives::transaction::SignedKeyAuthorization {
+    use tempo_primitives::transaction::{
+        CallScope, FundingPolicy, FundingPolicyAuthorization, FundingPolicyRoute, KeyAuthorization,
+        SelectorRule, SignatureType, TokenLimit,
+    };
+    let auth = KeyAuthorization::unrestricted(chain_id, SignatureType::Secp256k1, key)
+        .with_limits(vec![TokenLimit {
+            token: PATH_USD_ADDRESS,
+            limit: U256::from(100 * UNIT),
+            period: 0,
+        }])
+        .with_allowed_calls(vec![CallScope {
+            target: PATH_USD_ADDRESS,
+            selector_rules: vec![SelectorRule {
+                selector: ITIP20::transferCall::SELECTOR,
+                recipients: vec![],
+            }],
+        }])
+        .with_funding_policy(FundingPolicyAuthorization::Inline(FundingPolicy {
+            admins: vec![owner.address()],
+            slippage_bps: 100,
+            routes: vec![FundingPolicyRoute {
+                token: PATH_USD_ADDRESS,
+                sources: vec![FundingSource {
+                    target: SOURCE,
+                    data: assets.to_vec().abi_encode().into(),
+                }],
+            }],
+        }));
+    let signature = owner.sign_hash_sync(&auth.signature_hash()).unwrap();
+    auth.into_signed(PrimitiveSignature::Secp256k1(signature))
 }

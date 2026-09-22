@@ -356,34 +356,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                     .is_err()
             );
         }
-        let mut denied = tx.clone();
-        denied.nonce = 3;
-        denied.require_funds = Some(vec![FundingRequirement {
-            token: PATH_USD_ADDRESS,
-            amount: U256::ZERO,
-            sources: vec![],
-            slippage_bps: None,
-        }]);
-        let signature = owner.sign_hash_sync(&denied.signature_hash())?;
-        let envelope: TempoTxEnvelope = denied
-            .into_signed(TempoSignature::Keychain(
-                tempo_primitives::transaction::tt_signature::KeychainSignature::new(
-                    owner.address(),
-                    PrimitiveSignature::Secp256k1(signature),
-                ),
-            ))
-            .into();
-        let error = rpc
-            .send_raw_transaction(&envelope.encoded_2718())
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("access key funding is not activated"),
-            "{error}"
-        );
-        let mut invalidated = tx;
+        let mut invalidated = tx.clone();
         invalidated.nonce = 3;
         invalidated.require_funds = Some(vec![
             FundingRequirement {
@@ -418,6 +391,171 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
             output.balanceOf(recipient).call().await?,
             U256::from(100 * UNIT)
         );
+        use tempo_contracts::precompiles::{
+            ACCOUNT_KEYCHAIN_ADDRESS, FUNDING_POLICY_ADDRESS, IAccountKeychain, IFundingPolicy,
+        };
+        let key = PrivateKeySigner::from_bytes(&B256::with_last_byte(113))?;
+        let auth = funding_key(tx.chain_id, &owner, key.address(), &assets);
+        let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, provider.clone());
+        let policies = IFundingPolicy::new(FUNDING_POLICY_ADDRESS, provider.clone());
+        for nonce in [4, 5] {
+            let mut delegated = tx.clone();
+            delegated.nonce = nonce;
+            if nonce == 4 {
+                delegated.key_authorization = Some(auth.clone());
+            }
+            delegated.require_funds.as_mut().unwrap()[0].slippage_bps = None;
+            let bytes = signed_access(delegated, owner.address(), &key, &maker);
+            let receipt = rpc
+                .send_raw_transaction(&bytes)
+                .await?
+                .get_receipt()
+                .await?;
+            assert!(receipt.status(), "delegated nonce {nonce}: {receipt:?}");
+            assert_eq!(
+                keychain
+                    .getFundingPolicyId(owner.address(), key.address())
+                    .call()
+                    .await?,
+                1
+            );
+            assert_eq!(policies.policyIdCounter().call().await?, 2);
+            assert_eq!(
+                keychain
+                    .getRemainingLimitWithPeriod(owner.address(), key.address(), PATH_USD_ADDRESS)
+                    .call()
+                    .await?
+                    .remaining,
+                U256::from((5 - nonce) * 50 * UNIT)
+            );
+        }
+        assert_eq!(
+            output.balanceOf(recipient).call().await?,
+            U256::from(200 * UNIT)
+        );
+        let mut replay = tx.clone();
+        replay.nonce = 6;
+        replay.key_authorization = Some(auth);
+        assert!(
+            rpc.send_raw_transaction(&signed_access(replay, owner.address(), &key, &maker))
+                .await
+                .is_err()
+        );
+        assert_eq!(policies.policyIdCounter().call().await?, 2);
+        let second = PrivateKeySigner::from_bytes(&B256::with_last_byte(114))?;
+        let mut failing = tx.clone();
+        failing.nonce = 6;
+        failing.key_authorization =
+            Some(funding_key(tx.chain_id, &owner, second.address(), &assets));
+        failing.calls[0].input = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(101 * UNIT),
+        }
+        .abi_encode()
+        .into();
+        let receipt = rpc
+            .send_raw_transaction(&signed_access(failing, owner.address(), &second, &maker))
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(!receipt.status());
+        assert_eq!(
+            keychain
+                .getFundingPolicyId(owner.address(), second.address())
+                .call()
+                .await?,
+            2
+        );
+        assert_eq!(policies.policyIdCounter().call().await?, 3);
+        assert_eq!(
+            keychain
+                .getRemainingLimitWithPeriod(owner.address(), second.address(), PATH_USD_ADDRESS)
+                .call()
+                .await?
+                .remaining,
+            U256::from(100 * UNIT)
+        );
+        assert!(output.balanceOf(owner.address()).call().await?.is_zero());
+        assert_eq!(
+            output.balanceOf(recipient).call().await?,
+            U256::from(200 * UNIT)
+        );
+        let mut update = tx.clone();
+        update.nonce = 7;
+        update.require_funds = None;
+        update.calls = vec![Call {
+            to: FUNDING_POLICY_ADDRESS.into(),
+            value: U256::ZERO,
+            input: IFundingPolicy::modifyPolicyCall {
+                policyId: 1,
+                slippageBps: 100,
+                routes: vec![],
+            }
+            .abi_encode()
+            .into(),
+        }];
+        assert!(
+            rpc.send_raw_transaction(&signed(update, &owner, &maker))
+                .await?
+                .get_receipt()
+                .await?
+                .status()
+        );
+        let mut denied = tx.clone();
+        denied.nonce = 8;
+        denied.require_funds = Some(vec![FundingRequirement {
+            token: PATH_USD_ADDRESS,
+            amount: U256::ZERO,
+            sources: vec![],
+            slippage_bps: None,
+        }]);
+        denied.calls[0].input = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::ZERO,
+        }
+        .abi_encode()
+        .into();
+        assert!(
+            !rpc.send_raw_transaction(&signed_access(denied, owner.address(), &key, &maker))
+                .await?
+                .get_receipt()
+                .await?
+                .status()
+        );
+        let third = PrivateKeySigner::from_bytes(&B256::with_last_byte(115))?;
+        let mut auth = funding_key(tx.chain_id, &owner, third.address(), &assets).authorization;
+        auth.funding_policy = Some(
+            tempo_primitives::transaction::FundingPolicyAuthorization::Id(
+                core::num::NonZeroU64::MIN,
+            ),
+        );
+        let auth_signature = owner.sign_hash_sync(&auth.signature_hash())?;
+        let mut bind = tx.clone();
+        bind.nonce = 9;
+        bind.require_funds = None;
+        bind.key_authorization =
+            Some(auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature)));
+        bind.calls[0].input = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::ZERO,
+        }
+        .abi_encode()
+        .into();
+        assert!(
+            rpc.send_raw_transaction(&signed_access(bind, owner.address(), &third, &maker))
+                .await?
+                .get_receipt()
+                .await?
+                .status()
+        );
+        assert_eq!(
+            keychain
+                .getFundingPolicyId(owner.address(), third.address())
+                .call()
+                .await?,
+            1
+        );
+        assert_eq!(policies.policyIdCounter().call().await?, 3);
     }
     Ok(())
 }
@@ -471,4 +609,70 @@ async fn funding_rpc_rejects_pre_t13_transactions() -> eyre::Result<()> {
         assert_eq!(rpc.get_transaction_count(owner.address()).await?, 0);
     }
     Ok(())
+}
+
+fn signed_access(
+    mut tx: TempoTransaction,
+    account: Address,
+    key: &PrivateKeySigner,
+    sponsor: &PrivateKeySigner,
+) -> Vec<u8> {
+    use tempo_primitives::transaction::tt_signature::KeychainSignature;
+    tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+    let signature = key
+        .sign_hash_sync(&KeychainSignature::signing_hash(
+            tx.signature_hash(),
+            account,
+        ))
+        .unwrap();
+    tx.fee_payer_signature = Some(
+        sponsor
+            .sign_hash_sync(&tx.fee_payer_signature_hash(account))
+            .unwrap(),
+    );
+    let envelope: TempoTxEnvelope = tx
+        .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+            account,
+            PrimitiveSignature::Secp256k1(signature),
+        )))
+        .into();
+    envelope.encoded_2718()
+}
+
+fn funding_key(
+    chain_id: u64,
+    owner: &PrivateKeySigner,
+    key: Address,
+    assets: &[Address],
+) -> tempo_primitives::transaction::SignedKeyAuthorization {
+    use tempo_primitives::transaction::{
+        CallScope, FundingPolicy, FundingPolicyAuthorization, FundingPolicyRoute, KeyAuthorization,
+        SelectorRule, SignatureType, TokenLimit,
+    };
+    let auth = KeyAuthorization::unrestricted(chain_id, SignatureType::Secp256k1, key)
+        .with_limits(vec![TokenLimit {
+            token: PATH_USD_ADDRESS,
+            limit: U256::from(100 * UNIT),
+            period: 0,
+        }])
+        .with_allowed_calls(vec![CallScope {
+            target: PATH_USD_ADDRESS,
+            selector_rules: vec![SelectorRule {
+                selector: ITIP20::transferCall::SELECTOR,
+                recipients: vec![],
+            }],
+        }])
+        .with_funding_policy(FundingPolicyAuthorization::Inline(FundingPolicy {
+            admins: vec![owner.address()],
+            slippage_bps: 100,
+            routes: vec![FundingPolicyRoute {
+                token: PATH_USD_ADDRESS,
+                sources: vec![FundingSource {
+                    target: SOURCE,
+                    data: assets.to_vec().abi_encode().into(),
+                }],
+            }],
+        }));
+    let signature = owner.sign_hash_sync(&auth.signature_hash()).unwrap();
+    auth.into_signed(PrimitiveSignature::Secp256k1(signature))
 }
