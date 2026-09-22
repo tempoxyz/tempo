@@ -450,6 +450,42 @@ fn startup_waits_for_valid_fcu_before_backfill() {
 }
 
 #[test_traced]
+fn verification_waits_for_execution_readiness_and_missing_ancestry() {
+    deterministic::Runner::default().start(|context| async move {
+        let parent = make_block(1, 1, GENESIS);
+        let candidate = make_block(2, 2, parent.digest());
+        let (p, c) = (parent.digest(), candidate.digest());
+        let execution = FakeExecution::new();
+        execution.set_finalized(0, GENESIS);
+        let startup_fcu = ForkchoiceState::from_finalized_head(GENESIS, GENESIS);
+        execution.script_fcu(startup_fcu, Ok(PayloadStatusEnum::Syncing));
+        let ready = execution.script_delayed_fcu(startup_fcu, Ok(PayloadStatusEnum::Valid));
+        let h = Harness::builder().execution(execution).start(&context);
+
+        // Keep the original request queued while the execution layer recovers.
+        let mut verify = Box::pin(h.verify(round(2), candidate));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| h.execution.fcus().len() == 2).await;
+        assert!(futures::poll!(&mut verify).is_pending());
+        assert!(h.execution.new_payloads().is_empty());
+        assert!(h.marshal.subscribe_log().is_empty());
+        ready.send(()).unwrap();
+
+        // Once ready, SYNCING for the candidate waits for its missing parent
+        // instead of completing verification with an invalid verdict.
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(p, round(1))])
+            .await;
+        assert!(futures::poll!(&mut verify).is_pending());
+        assert_eq!(h.execution.new_payloads(), vec![c]);
+        assert!(h.marshal.fulfill_subscription(p, parent));
+
+        assert!(verify.await.unwrap().is_some());
+        // Parent convergence can probe the parent again after verification.
+        assert!(h.execution.new_payloads().starts_with(&[c, p, c]));
+    });
+}
+
+#[test_traced]
 fn new_payload_transport_error_fails_startup() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
