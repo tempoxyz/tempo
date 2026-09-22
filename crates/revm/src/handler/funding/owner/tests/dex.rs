@@ -462,3 +462,78 @@ fn native_source_gas_matches_inspected_execution_and_exhaustion_reverts() {
     }
     assert_eq!(runs[0], runs[1]);
 }
+
+#[test]
+fn public_quotes_bound_availability_without_moving_funds() {
+    let (mut evm, input, _) = setup_dex();
+    let mut handler = TempoEvmHandler::new();
+    let mut gas = GasTracker::new(30_000_000, 30_000_000, 0);
+    for (owner, ceiling, cap, budget, expected) in [
+        (ACCOUNT, 50 * UNIT, 30 * UNIT, 50 * UNIT, 30 * UNIT),
+        (ACCOUNT, 10 * UNIT, 30 * UNIT, 50 * UNIT, 10 * UNIT),
+        (ACCOUNT, 50 * UNIT, 30 * UNIT, 20 * UNIT, 20 * UNIT),
+        (ACCOUNT, 50 * UNIT, 0, 50 * UNIT, 0),
+        (ACCOUNT, 0, 30 * UNIT, 50 * UNIT, 0),
+        (RECIPIENT, 50 * UNIT, 30 * UNIT, 50 * UNIT, 0),
+        (ACCOUNT, u64::MAX, 200 * UNIT, 200 * UNIT, 100 * UNIT),
+    ] {
+        let call = IFundingSource::quoteCall {
+            account: owner,
+            assetOut: PATH_USD_ADDRESS,
+            amountOut: if ceiling == u64::MAX {
+                U256::MAX
+            } else {
+                U256::from(ceiling)
+            },
+            maxCost: U256::from(budget),
+            data: (input, U256::from(cap)).abi_encode().into(),
+            policyData: Bytes::new(),
+            ownerAuthorized: true,
+        };
+        let result = handler
+            .execute_funding_call_with(
+                &mut evm,
+                &mut gas,
+                crate::handler::funding::FundingCall {
+                    caller: RECIPIENT,
+                    source: SOURCE,
+                    is_static: true,
+                    permission: None,
+                    data: call.abi_encode().into(),
+                },
+                TempoEvmHandler::run_exec_loop,
+            )
+            .unwrap();
+        assert!(result.instruction_result().is_ok(), "{result:?}");
+        let quote =
+            IFundingSource::quoteCall::abi_decode_returns_validate(result.output().data()).unwrap();
+        assert_eq!(quote.amountOut, U256::from(expected));
+        assert_eq!(quote.maxAmountIn, U256::from(cap.min(budget)));
+        let result = handler
+            .execute_funding_call_with(
+                &mut evm,
+                &mut gas,
+                crate::handler::funding::FundingCall {
+                    caller: RECIPIENT,
+                    source: SOURCE,
+                    is_static: false,
+                    permission: None,
+                    data: IFundingSource::fundCall {
+                        account: owner,
+                        assetOut: PATH_USD_ADDRESS,
+                        amountOut: quote.amountOut,
+                        data: quote.data,
+                    }
+                    .abi_encode()
+                    .into(),
+                },
+                TempoEvmHandler::run_exec_loop,
+            )
+            .unwrap();
+        assert!(!result.instruction_result().is_ok());
+        assert_eq!(balance(&mut evm, input, ACCOUNT), U256::from(200 * UNIT));
+        assert_eq!(balance(&mut evm, PATH_USD_ADDRESS, ACCOUNT), U256::ZERO);
+        assert_eq!(dex_balance(&mut evm, ACCOUNT, input), 0);
+        assert!(evm.inner.ctx.journaled_state.logs.is_empty());
+    }
+}
