@@ -137,9 +137,8 @@ mod tests {
     fn consensus_error_json() {
         let errors = [
             types::Response::<()>::NotReady,
-            types::Response::Missing("block"),
-            types::Response::Missing("certificate"),
-            types::Response::Missing("certifications"),
+            types::Response::Missing(types::MISSING_BLOCK),
+            types::Response::Missing(types::MISSING_CERTIFICATE),
         ]
         .map(|response| RpcResult::<()>::from(response).unwrap_err());
 
@@ -158,11 +157,6 @@ mod tests {
             "code": 204,
             "message": "the requested content was not available",
             "data": "certificate"
-          },
-          {
-            "code": 204,
-            "message": "the requested content was not available",
-            "data": "certifications"
           }
         ]
         "#);

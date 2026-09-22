@@ -7,7 +7,8 @@ use commonware_consensus::types::Height;
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tempo_node::rpc::consensus::{
-    CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, types::Response,
+    CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query,
+    types::{MISSING_BLOCK, MISSING_CERTIFICATE, Response},
 };
 use tokio::sync::broadcast;
 use tracing::{Level, instrument};
@@ -97,7 +98,7 @@ impl ConsensusFeed for FeedStateHandle {
                 .read()
                 .latest_finalized
                 .clone()
-                .map_or(Response::Missing("certifications"), Response::Success),
+                .map_or(Response::Missing(MISSING_CERTIFICATE), Response::Success),
             Query::Height(height) => 'process: {
                 let height = Height::new(height);
                 let Some(marshal) = self.marshal() else {
@@ -105,10 +106,10 @@ impl ConsensusFeed for FeedStateHandle {
                 };
 
                 let Some(finalization) = marshal.get_finalization(height).await else {
-                    break 'process Response::Missing("certificate");
+                    break 'process Response::Missing(MISSING_CERTIFICATE);
                 };
                 let Some(block) = marshal.get_block(height).await else {
-                    break 'process Response::Missing("block");
+                    break 'process Response::Missing(MISSING_BLOCK);
                 };
 
                 Response::Success(CertifiedBlock {

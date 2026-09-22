@@ -91,6 +91,12 @@ pub struct ConsensusState {
     pub notarized: Option<CertifiedBlock>,
 }
 
+/// Error data when a requested consensus certificate is missing.
+pub const MISSING_CERTIFICATE: &str = "certificate";
+
+/// Error data when a requested consensus block is missing.
+pub const MISSING_BLOCK: &str = "block";
+
 #[derive(Debug)]
 pub enum Response<T> {
     Success(T),
