@@ -128,7 +128,7 @@ fn run_batch(
                     amountOut: U256::from(50),
                     assetOut: ASSET,
                     maxCost: U256::from(50),
-                    data: U256::from(mode).abi_encode().into(),
+                    requestData: U256::from(mode).abi_encode().into(),
                     policyData: Bytes::new(),
                     ownerAuthorized: true,
                 }
@@ -154,7 +154,7 @@ fn run_batch(
                                 account: ACCOUNT,
                                 assetOut: ASSET,
                                 amountOut: U256::from(50),
-                                data: plan.data,
+                                requestData: plan.requestData,
                             }
                             .abi_encode()
                             .into(),
@@ -425,7 +425,7 @@ fn public_quotes_grant_no_funding_authority() {
             amountOut: U256::from(50),
             assetOut: ASSET,
             maxCost: U256::from(50),
-            data: U256::ZERO.abi_encode().into(),
+            requestData: U256::ZERO.abi_encode().into(),
             policyData: Bytes::new(),
             ownerAuthorized: true,
         }
@@ -446,9 +446,11 @@ fn public_quotes_grant_no_funding_authority() {
             account: ACCOUNT,
             assetOut: ASSET,
             amountOut: U256::from(50),
-            data: IFundingSource::quoteCall::abi_decode_returns_validate(result.output().unwrap())
-                .unwrap()
-                .data,
+            requestData: IFundingSource::quoteCall::abi_decode_returns_validate(
+                result.output().unwrap(),
+            )
+            .unwrap()
+            .data,
         }
         .abi_encode()
         .into();
