@@ -12,9 +12,11 @@ crate::sol! {
             bytes data;
         }
 
-        /// Validates source arguments against policy rules before granting input authority.
+        /// Estimates additional output without reserving liquidity or granting input authority.
+        /// @param account Input owner and output recipient to simulate.
+        /// @param amountOut Output ceiling; uint256.max requests maximum availability.
         /// @param maxCost Remaining aggregate cost budget in output base units.
-        /// @param ownerAuthorized Native owner authentication; policyData is empty in this mode.
+        /// @param ownerAuthorized Select owner rules with empty policyData; this flag grants no authority.
         /// @dev Public read-only estimate; grants no input authority.
         function quote(
             address account,
