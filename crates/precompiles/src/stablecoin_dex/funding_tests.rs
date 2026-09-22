@@ -26,10 +26,11 @@ fn funding_counts_wallet_and_internal_inputs_once_and_rolls_back() -> Result<()>
                 funder,
                 owner,
                 source,
-                &IFundingSource::Plan {
+                &IFundingSource::Quote {
                     assetIn: token.address(),
                     rate: RATE_SCALE,
                     maxAmountIn: U256::from(30),
+                    amountOut: U256::ZERO,
                     data: Default::default(),
                 },
                 U256::from(30),

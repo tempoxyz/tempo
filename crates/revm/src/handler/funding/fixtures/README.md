@@ -1,6 +1,6 @@
 # Funding callback fixture
 
-`FundingSource.sol` tests transaction-handler callbacks using standard EVM frames through compiled Solidity. It records callback arguments and provides failure modes for static writes, malformed plans, reverts, out-of-gas, nested rollback, and calls to the inactive protocol sender address. An application call checks that funding occurred before reverting, proving shared rollback.
+`FundingSource.sol` tests transaction-handler callbacks using standard EVM frames through compiled Solidity. It records callback arguments and provides failure modes for static writes, malformed quotes, reverts, out-of-gas, nested rollback, and calls to the inactive protocol sender address. An application call checks that funding occurred before reverting, proving shared rollback.
 
 Regenerate `FundingSource.hex` with Solidity 0.8.30, optimization enabled, and Cancun bytecode:
 

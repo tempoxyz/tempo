@@ -27,13 +27,9 @@ impl NativeDexFundingSource {
         Self { address, funder }
     }
 
-    fn validate_caller(&self, caller: Address) -> Result<()> {
+    fn validate_context(&self) -> Result<()> {
         // Exact per-order quotes and execution use the same rounding starting at T12.
-        if caller != self.funder
-            || caller.is_zero()
-            || self.address.is_zero()
-            || !StorageCtx.spec().is_t13()
-        {
+        if self.funder.is_zero() || self.address.is_zero() || !StorageCtx.spec().is_t13() {
             return Err(TIP20FunderError::InvalidFundingContext(
                 ITIP20Funder::InvalidFundingContext {},
             )
@@ -70,7 +66,7 @@ impl NativeDexFundingSource {
 
     fn decode(&self, data: &[u8]) -> Result<(Address, U256)> {
         <(Address, U256)>::abi_decode_validate(data).map_err(|_| {
-            TIP20FunderError::InvalidFundingPlan(ITIP20Funder::InvalidFundingPlan {
+            TIP20FunderError::InvalidFundingQuote(ITIP20Funder::InvalidFundingQuote {
                 source: self.address,
             })
             .into()
@@ -78,12 +74,8 @@ impl NativeDexFundingSource {
     }
 
     /// Data is ABI `(address assetIn, uint256 maxAmountIn)`; omitted caps encode as `uint256.max`.
-    pub fn prepare(
-        &self,
-        caller: Address,
-        call: IFundingSource::prepareCall,
-    ) -> Result<IFundingSource::Plan> {
-        self.validate_caller(caller)?;
+    pub fn quote(&self, call: IFundingSource::quoteCall) -> Result<IFundingSource::Quote> {
+        self.validate_context()?;
         if !call.ownerAuthorized || !call.policyData.is_empty() {
             return Err(TIP20FunderError::FundingNotAuthorized(
                 ITIP20Funder::FundingNotAuthorized {
@@ -96,46 +88,70 @@ impl NativeDexFundingSource {
         self.validate_route(asset_in, call.assetOut)?;
         // All native TIP-20 tokens have six decimals; approved parity therefore uses rate 1e18.
         let cap = cap.min(call.maxCost).min(U256::from(u128::MAX));
-        Ok(IFundingSource::Plan {
+        Ok(IFundingSource::Quote {
             assetIn: asset_in,
             rate: RATE_SCALE,
             maxAmountIn: cap,
+            amountOut: U256::from(self.available_output(
+                call.account,
+                asset_in,
+                call.assetOut,
+                call.amountOut,
+                cap,
+            )?),
             data: (asset_in, cap).abi_encode().into(),
         })
     }
 
     pub fn fund(&self, caller: Address, call: IFundingSource::fundCall) -> Result<()> {
-        self.validate_caller(caller)?;
+        self.validate_context()?;
+        if caller != self.funder {
+            return Err(TIP20FunderError::InvalidFundingContext(
+                ITIP20Funder::InvalidFundingContext {},
+            )
+            .into());
+        }
         require_active(self.funder, call.account, self.address)?;
         let (asset_in, cap) = self.decode(&call.data)?;
         self.validate_route(asset_in, call.assetOut)?;
-        let mut dex = StablecoinDEX::new();
-        let wallet = TIP20Token::from_address(asset_in)?.balance_of(ITIP20::balanceOfCall {
-            account: call.account,
-        })?;
-        let internal = U256::from(dex.balance_of(call.account, asset_in)?);
-        let available = wallet
-            .saturating_add(internal)
-            .min(cap)
-            .min(U256::from(u128::MAX))
-            .to::<u128>();
-        let requested = call.amountOut.min(U256::from(u128::MAX)).to::<u128>();
-        if available == 0 || requested == 0 {
-            return Ok(());
-        }
-        let contribution = executable_output(&dex, asset_in, call.assetOut, requested, available)?;
+        let contribution =
+            self.available_output(call.account, asset_in, call.assetOut, call.amountOut, cap)?;
         if contribution == 0 {
             return Ok(());
         }
+        let mut dex = StablecoinDEX::new();
         preserve_storage_credits(dex.address())?;
         dex.swap_exact_amount_out(
             call.account,
             asset_in,
             call.assetOut,
             contribution,
-            available,
+            cap.min(U256::from(u128::MAX)).to::<u128>(),
         )?;
         Ok(())
+    }
+    fn available_output(
+        &self,
+        account: Address,
+        asset_in: Address,
+        asset_out: Address,
+        amount_out: U256,
+        cap: U256,
+    ) -> Result<u128> {
+        let dex = StablecoinDEX::new();
+        let wallet =
+            TIP20Token::from_address(asset_in)?.balance_of(ITIP20::balanceOfCall { account })?;
+        let internal = U256::from(dex.balance_of(account, asset_in)?);
+        let available = wallet
+            .saturating_add(internal)
+            .min(cap)
+            .min(U256::from(u128::MAX))
+            .to::<u128>();
+        let requested = amount_out.min(U256::from(u128::MAX)).to::<u128>();
+        if available == 0 || requested == 0 {
+            return Ok(0);
+        }
+        executable_output(&dex, asset_in, asset_out, requested, available)
     }
 }
 
@@ -179,7 +195,7 @@ impl Precompile for NativeDexFundingSource {
         }
         dispatch!(calldata, |call| match call {
             IFundingSource::IFundingSourceCalls {
-                prepare(call) => view(call, |call| self.prepare(caller, call)),
+                quote(call) => view(call, |call| self.quote(call)),
                 fund(call) => mutate_void(call, caller, |caller, call| self.fund(caller, call)),
             }
         })
