@@ -30,8 +30,8 @@ keccak-const.workspace = true
 revm.workspace = true
 paste.workspace = true
 bitflags.workspace = true
+aws-lc-rs.workspace = true
 tempo-nitro-attestation.workspace = true
-tempo-zone-verifier.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -44,7 +44,6 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
-aws-lc-rs.workspace = true
 criterion.workspace = true
 base64.workspace = true
 alloy-signer.workspace = true
