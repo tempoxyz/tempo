@@ -649,6 +649,7 @@ impl TIP20Token {
         } else {
             RECEIVE_POLICY_GUARD_ADDRESS
         };
+        AccountKeychain::new().take_funding_credit(burn_from, self.address, amount)?;
         self._transfer(burn_from, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
@@ -672,6 +673,7 @@ impl TIP20Token {
         }
         self.check_role(msg_sender, ISSUER_ROLE)?;
 
+        AccountKeychain::new().take_funding_credit(msg_sender, self.address, amount)?;
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
@@ -694,7 +696,7 @@ impl TIP20Token {
     /// - `SpendingLimitExceeded` — new allowance exceeds access key spending limit
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
         // Check and update spending limits for access keys
-        AccountKeychain::new().authorize_approve(
+        let covered = AccountKeychain::new().authorize_approve(
             msg_sender,
             self.address,
             self.get_allowance(msg_sender, call.spender)?,
@@ -703,6 +705,12 @@ impl TIP20Token {
 
         // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
+        AccountKeychain::new().add_approval_credit(
+            msg_sender,
+            self.address,
+            call.spender,
+            covered,
+        )?;
 
         self.emit_event(TIP20Event::approval(msg_sender, call.spender, call.amount))?;
 
@@ -970,6 +978,7 @@ impl TIP20Token {
             return Err(TIP20Error::insufficient_allowance().into());
         }
 
+        AccountKeychain::new().retire_allowance_credit(owner, self.address, spender, amount)?;
         if allowed != U256::MAX {
             let new_allowance = allowed
                 .checked_sub(amount)
@@ -1098,6 +1107,7 @@ impl TIP20Token {
     }
 
     fn set_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
+        AccountKeychain::new().clamp_approval_credit(owner, self.address, spender, amount)?;
         self.allowances[owner][spender].write(amount)
     }
 
@@ -1396,7 +1406,7 @@ impl TIP20Token {
         // This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund.
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
-        self.check_and_update_spending_limit(from, amount)?;
+        AccountKeychain::new().authorize_fee(from, self.address, amount)?;
 
         // Update rewards for the sender and get their reward recipient
         let from_reward_recipient = self.update_rewards(from)?;
