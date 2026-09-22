@@ -1,10 +1,6 @@
 //! Tempo EVM Handler implementation.
 
-use std::{
-    cmp::Ordering,
-    fmt::Debug,
-    sync::{Arc, OnceLock},
-};
+use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_primitives::{Address, U256};
 use reth_evm::EvmInternals;
@@ -64,6 +60,7 @@ use crate::{
     error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
+    gas_params::key_authorization_gas_params,
     signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
 };
 
@@ -1510,23 +1507,8 @@ where
                 u64::MAX
             };
 
-            // Create gas_params with only sstore increase for key authorization
-            let gas_params = if spec.is_t1() {
-                static TABLE: OnceLock<GasParams> = OnceLock::new();
-                // only enabled SSTORE and warm storage read gas params for T1 fork in keychain.
-                TABLE
-                    .get_or_init(|| {
-                        let mut table = [0u64; 256];
-                        table[GasId::sstore_set_without_load_cost().as_usize()] =
-                            cfg.gas_params.get(GasId::sstore_set_without_load_cost());
-                        table[GasId::warm_storage_read_cost().as_usize()] =
-                            cfg.gas_params.get(GasId::warm_storage_read_cost());
-                        GasParams::new(Arc::new(table))
-                    })
-                    .clone()
-            } else {
-                cfg.gas_params.clone()
-            };
+            let gas_params =
+                key_authorization_gas_params(*spec, amsterdam_eip8037_enabled, &cfg.gas_params);
 
             // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
             let mut provider = EvmPrecompileStorageProvider::new(
