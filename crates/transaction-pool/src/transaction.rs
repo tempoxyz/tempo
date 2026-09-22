@@ -3,7 +3,7 @@ use alloy_consensus::{
     BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
 };
 use alloy_eips::{
-    eip2718::{Decodable2718, Encodable2718, Typed2718},
+    eip2718::{Encodable2718, Typed2718},
     eip2930::AccessList,
     eip4844::env_settings::KzgSettings,
     eip7594::BlobTransactionSidecarVariant,
@@ -17,7 +17,7 @@ use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
-    error::{PoolTransactionError, RawPoolTransactionError},
+    error::PoolTransactionError,
 };
 use std::{
     convert::Infallible,
@@ -93,10 +93,9 @@ impl TempoPooledTransaction {
 
     /// Create a new pooled transaction with optional precomputed transaction metadata.
     ///
-    /// Raw transaction recovery can compute the signer and expiring nonce hash in one pass for
-    /// expiring AA transactions, and it already knows the encoded byte length. This constructor
-    /// preserves those values while keeping [`Self::new`] as the default path for callers that
-    /// already have a recovered transaction.
+    /// Sender recovery can compute the signer and expiring nonce hash in one pass for expiring AA
+    /// transactions. This constructor preserves those values while keeping [`Self::new`] as the
+    /// default path for callers that already have a recovered transaction.
     fn new_with(
         transaction: Recovered<TempoTxEnvelope>,
         expiring_nonce_hash: Option<B256>,
@@ -815,26 +814,15 @@ impl PoolTransaction for TempoPooledTransaction {
         Self::new(tx)
     }
 
-    fn recover_raw_transaction(data: &[u8]) -> Result<Self, RawPoolTransactionError> {
-        if data.is_empty() {
-            return Err(RawPoolTransactionError::EmptyRawTransactionData);
-        }
-
-        let encoded_length = data.len();
-        let transaction = Self::Pooled::decode_2718_exact(data)
-            .map_err(|_| RawPoolTransactionError::FailedToDecodeSignedTransaction)?;
-
-        let (signer, expiring_nonce_hash) = match &transaction {
-            TempoTxEnvelope::AA(tx) => tx
-                .recover_signer_with_expiring_nonce_hash()
-                .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
-            _ => (
-                transaction
-                    .recover_signer()
-                    .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
-                None,
-            ),
+    fn try_recover(transaction: Self::Pooled) -> Result<Self, Self::Pooled> {
+        let recovered = match &transaction {
+            TempoTxEnvelope::AA(tx) => tx.recover_signer_with_expiring_nonce_hash(),
+            _ => transaction.recover_signer().map(|signer| (signer, None)),
         };
+        let Ok((signer, expiring_nonce_hash)) = recovered else {
+            return Err(transaction);
+        };
+        let encoded_length = transaction.encode_2718_len();
 
         Ok(Self::new_with(
             Recovered::new_unchecked(transaction, signer),
@@ -992,6 +980,7 @@ mod tests {
     use alloy_sol_types::SolCall;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb_sized;
+    use reth_evm::SenderRecoveryCache;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
@@ -1024,7 +1013,42 @@ mod tests {
         let encoded_length = raw.len();
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
+        let cache = SenderRecoveryCache::new(4);
+        for cache_opt in [None, Some(&cache), Some(&cache)] {
+            // Decode a fresh envelope each time to exercise both cache misses and hits.
+            let decoded = TempoPooledTransaction::decode_raw_transaction(&raw).unwrap();
+            let recovered = TempoPooledTransaction::try_recover_with_cache_opt(decoded, cache_opt)
+                .expect("sender recovery failed");
+            assert_eq!(recovered.sender(), sender);
+            assert_eq!(recovered.hash(), pooled.hash());
+            assert_eq!(recovered.encoded_length(), encoded_length);
+            assert_eq!(recovered.expiring_nonce_hash, pooled.expiring_nonce_hash);
+            if let Some(cache) = cache_opt {
+                assert_eq!(cache.get(pooled.hash()), Some(sender));
+            }
+        }
         (pooled, envelope, sender, encoded_length)
+    }
+
+    #[test]
+    fn failed_sender_recovery_is_not_cached() {
+        let transaction: TempoTxEnvelope = AASigned::new_unhashed(
+            TempoTransaction::default(),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+                U256::ZERO,
+                U256::ZERO,
+                false,
+            ))),
+        )
+        .into();
+        let cache = SenderRecoveryCache::new(4);
+        for cache_opt in [None, Some(&cache)] {
+            let rejected =
+                TempoPooledTransaction::try_recover_with_cache_opt(transaction.clone(), cache_opt)
+                    .unwrap_err();
+            assert_eq!(rejected, transaction);
+            assert_eq!(cache.get(transaction.tx_hash()), None);
+        }
     }
 
     #[test]

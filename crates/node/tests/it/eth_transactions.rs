@@ -6,9 +6,13 @@ use alloy::{
     rpc::types::TransactionRequest,
     signers::{SignerSync, local::MnemonicBuilder},
 };
+use alloy_eips::eip2718::Encodable2718;
 use alloy_network::TransactionResponse;
-use reth_primitives_traits::SignerRecoverable;
-use reth_rpc_eth_api::helpers::{EthTransactions, LoadState};
+use reth_primitives_traits::{SignerRecoverable, transaction::TxHashRef};
+use reth_rpc_eth_api::{
+    EthApiTypes,
+    helpers::{EthTransactions, LoadState, LoadTransaction},
+};
 use reth_transaction_pool::{TransactionOrigin, TransactionPool, pool::AddedTransactionState};
 use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -142,5 +146,65 @@ async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Re
         1
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rpc_shares_sender_recovery_cache_with_execution() -> eyre::Result<()> {
+    let mut setup = TestNodeBuilder::new()
+        .with_sender_recovery_cache()
+        .build_with_node_access()
+        .await?;
+    let eth_api = setup.node.rpc.inner.eth_api().clone();
+    let cache = eth_api
+        .eth_api_settings()
+        .sender_recovery_cache
+        .as_ref()
+        .expect("RPC sender recovery cache enabled");
+    let execution_cache = setup
+        .node
+        .inner
+        .evm_config
+        .inner
+        .sender_recovery_cache
+        .as_ref()
+        .expect("execution sender recovery cache enabled")
+        .clone();
+    let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let tx = TempoTransaction {
+        chain_id: 1337,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 1_000_000,
+        calls: vec![Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let signature = wallet.sign_hash_sync(&tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+    let hash = *envelope.tx_hash();
+    let raw: Bytes = envelope.encoded_2718().into();
+    assert_eq!(cache.get(&hash), None);
+    assert_eq!(execution_cache.get(&hash), None);
+
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    assert_eq!(*provider.send_raw_transaction(&raw).await?.tx_hash(), hash);
+    assert_eq!(cache.get(&hash), Some(wallet.address()));
+    assert_eq!(execution_cache.get(&hash), Some(wallet.address()));
+
+    // Raw tracing and bundle simulation use the same recovery helper with a warm cache.
+    let recovered = eth_api.recover_raw_transactions::<TempoTxEnvelope>([&raw, &raw])?;
+    assert!(recovered.iter().all(|tx| tx.signer() == wallet.address()));
+    assert!(eth_api.recover_raw_pool_transaction(&[]).is_err());
+    let mut trailing = raw.to_vec();
+    trailing.push(0);
+    assert!(eth_api.recover_raw_pool_transaction(&trailing).is_err());
+
+    setup.node.advance_block().await?;
+    assert!(eth_api.transaction_receipt(hash).await?.is_some());
     Ok(())
 }

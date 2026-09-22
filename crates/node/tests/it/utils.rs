@@ -281,7 +281,7 @@ use alloy::{
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use eyre::WrapErr;
-use reth_e2e_test_utils::setup;
+use reth_e2e_test_utils::{E2ETestSetupBuilder, setup};
 use reth_ethereum::tasks::Runtime;
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
@@ -459,6 +459,7 @@ pub(crate) struct TestNodeBuilder {
     custom_validator: Option<Address>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
+    sender_recovery_cache: bool,
 }
 
 impl TestNodeBuilder {
@@ -474,6 +475,7 @@ impl TestNodeBuilder {
             custom_validator: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
+            sender_recovery_cache: false,
         }
     }
 
@@ -522,6 +524,12 @@ impl TestNodeBuilder {
         self
     }
 
+    /// Enable the shared sender recovery cache.
+    pub(crate) fn with_sender_recovery_cache(mut self) -> Self {
+        self.sender_recovery_cache = true;
+        self
+    }
+
     /// Build a single node with direct access (NodeHelperType)
     pub(crate) async fn build_with_node_access(self) -> eyre::Result<SingleNodeSetup> {
         if self.node_count != 1 {
@@ -539,12 +547,16 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, _wallet) = setup::<TempoNode>(
+        let (mut nodes, _wallet) = E2ETestSetupBuilder::<TempoNode, _>::new(
             1,
             Arc::new(chain_spec),
-            self.is_dev,
             default_attributes_generator,
         )
+        .with_node_config_modifier(move |mut config| {
+            config.engine.sender_recovery_cache_enabled = self.sender_recovery_cache;
+            config.set_dev(self.is_dev)
+        })
+        .build()
         .await?;
 
         let node = nodes.remove(0);
