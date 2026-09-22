@@ -9,7 +9,7 @@ interface Token {
 // Compile deployed bytecode with solc 0.8.30, optimizer runs=200, evmVersion=cancun.
 contract OwnerFundingSource {
     address constant FUNDER = 0xFfFfFFfFfFffffFFFffFfFFfFFFfFffFffff1120;
-    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes data; }
+    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes requestData; }
     struct Request {
         address assetIn;
         uint256 rate;
@@ -34,7 +34,7 @@ contract OwnerFundingSource {
             uint256 capacity = maxCost * 1e18 / r.rate;
             if (cap > capacity) cap = capacity;
         }
-        return Quote(r.assetIn, r.rate, cap, r.mode == 10 ? amountOut + 1 : (r.deliver < amountOut ? r.deliver : amountOut), data);
+        return Quote(r.assetIn, r.rate, cap, r.mode == 10 ? amountOut + 1 : (r.deliver < amountOut ? r.deliver : amountOut), r.mode == 11 ? bytes("") : data);
     }
 
     function fund(address account, address assetOut, uint256 amountOut, bytes calldata data) external {
