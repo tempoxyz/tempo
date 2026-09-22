@@ -1215,21 +1215,21 @@ fn apply_nonce(
                 None
             };
             nonces
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                .check_and_mark_expiring_nonce(replay_hash, valid_before)
                 .map_err(|error| {
                     if valid_before <= timestamp {
                         invalid(TempoInvalidTransaction::NonceManagerError(format!(
                             "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
-                )))
+                        )))
                     } else if valid_before > timestamp.saturating_add(max_expiry_secs) {
                         let max_allowed = timestamp.saturating_add(max_expiry_secs);
                         invalid(TempoInvalidTransaction::NonceManagerError(format!(
                             "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
-                )))
+                        )))
                     } else {
                         invalid(TempoInvalidTransaction::NonceManagerError(error.to_string()))
                     }
-                    })?;
+                })?;
             if let Some(pointer) = previous_pointer {
                 nonces
                     .expiring_nonce_ring_ptr
