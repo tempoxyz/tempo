@@ -84,9 +84,12 @@ def retain_inputs(root, samples_by_label):
             config = load(root / 'summary-config.json', 64 * 1024, 'config')
             safe_config = {key: config.get(key) for key in ('bloat_mib', 'token_count', 'preset', 'tps',
                            'duration', 'summary_warmup_blocks', 'run_side')}
-            need(safe_config == {'bloat_mib': 102400, 'token_count': 4, 'preset': 'default',
-                 'tps': 15000, 'duration': 15, 'summary_warmup_blocks': 5,
-                 'run_side': 'comparison'}, 'config')
+            # Retain safe numeric inputs before validating exact experiment values.
+            # The runtime admission already pins the workload. Metadata mismatches
+            # must remain repairable offline rather than destroying the inputs.
+            need(safe_config['preset'] == 'default' and safe_config['run_side'] == 'comparison' and
+                 all(finite(safe_config[key]) and safe_config[key] >= 0 for key in
+                     ('bloat_mib', 'token_count', 'tps', 'duration', 'summary_warmup_blocks')), 'config')
             refs = [config.get(key) for key in ('baseline_label', 'feature_label')]
             need(refs[0] == refs[1] and type(refs[0]) is str and len(refs[0]) == 40 and
                  all(char in '0123456789abcdef' for char in refs[0]), 'config')
@@ -194,7 +197,7 @@ def sanitize(root):
     config = source.get('config')
     need(type(config) is dict and config.get('duration') == 15 and config.get('run_pairs') == PAIRS and
          config.get('summary_warmup_blocks') == 5 and config.get('preset') == 'default' and
-         config.get('bloat') == 102400 and config.get('tps') == 15000 and
+         config.get('bloat') == 100000 and config.get('tps') == 15000 and
          config.get('token_count') == 4 and config.get('run_side') == 'comparison')
     results = source.get('results')
     need(type(results) is dict)

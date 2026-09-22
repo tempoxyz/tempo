@@ -14,7 +14,7 @@ class StatisticalTrialTests(unittest.TestCase):
     def fixture(self, root, compressed=False):
         root.joinpath('run-order.txt').write_text('\n'.join(LABELS) + '\n')
         root.joinpath('summary-config.json').write_text(json.dumps({
-            'baseline_label':'a'*40,'feature_label':'a'*40,'bloat_mib':102400,
+            'baseline_label':'a'*40,'feature_label':'a'*40,'bloat_mib':100000,
             'token_count':4,'preset':'default','tps':15000,'duration':15,
             'summary_warmup_blocks':5,'run_side':'comparison','benchmark_id':'',
             'reference_epoch':0,'baseline_hardfork':'','feature_hardfork':'',
@@ -41,7 +41,7 @@ class StatisticalTrialTests(unittest.TestCase):
         root.joinpath('summary.json').write_text(json.dumps({
             'baseline_ref': 'a' * 40, 'feature_ref': 'a' * 40,
             'grafana_url': 'https://private.invalid/secret',
-            'config': {'preset': 'default', 'bloat': 102400, 'tps': 15000, 'duration': 15,
+            'config': {'preset': 'default', 'bloat': 100000, 'tps': 15000, 'duration': 15,
                        'run_pairs': 6, 'summary_warmup_blocks': 5, 'token_count': 4, 'run_side': 'comparison', 'derek_command': 'SECRET'},
             'results': {'baseline': {**result, 'blocks': 12, 'unknown_private': 7},
                         'feature': {**result, 'blocks': 12}, 'deltas': result},
@@ -78,6 +78,14 @@ class StatisticalTrialTests(unittest.TestCase):
     def test_compressed_inputs_complete_real_nu_summary_pipeline(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);self.fixture(root,compressed=True)
+            # Derive snapshot size from the actual harness, not a duplicated unit assumption.
+            source=(Path(__file__).resolve().parents[3]/'bench-e2e.nu').read_text()
+            begin=source.index('def e2e-bloat-gib-to-mib ')
+            end=source.index('\ndef ',begin+1)
+            size=subprocess.check_output(['nu','-c',source[begin:end]+'\ne2e-bloat-gib-to-mib 100'],text=True)
+            config=json.loads((root/'summary-config.json').read_text())
+            config['bloat_mib']=int(size.strip())
+            (root/'summary-config.json').write_text(json.dumps(config))
             admit(root)
             run=subprocess.run(['nu','bench-e2e.nu','summarize',str(root)],
                 cwd=Path(__file__).resolve().parents[3],capture_output=True,text=True)
