@@ -18,8 +18,9 @@
 //!
 //! Analysis compares completed pre-block, transaction, and post-block boundaries in order.
 //! It compares net committed effects at each boundary—not complete state equality, write history,
-//! or effects under identical evolving prefixes. A stopping state difference ends analysis after
-//! its boundary, while fee-associated and observation differences do not.
+//! or effects under identical evolving prefixes. Expectations classify individual differences;
+//! a state/context difference ends analysis after its boundary unless the first accepting rule
+//! establishes comparability. Expected differences and incomplete coverage are reported separately.
 
 mod analysis;
 mod fees;
@@ -55,7 +56,13 @@ use tokio::sync::broadcast::error::RecvError;
 /// Result of replaying one canonical block under candidate hardfork rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayOutcome {
+    /// All boundaries matched without differences.
     Match,
+    /// Every difference was accepted and all boundaries were compared.
+    Expected,
+    /// No unexplained finding, but subsequent comparisons could not be trusted.
+    Inconclusive,
+    /// At least one difference or execution failure remains unexplained.
     Findings,
 }
 
@@ -155,14 +162,14 @@ where
                             )
                         })
                         .await;
-                    metrics::histogram!("shadow_replay_execution_duration_seconds")
+                    metrics::histogram!("tempo_shadow_replay_execution_duration_seconds")
                         .record(started_at.elapsed().as_secs_f64());
 
                     // Entered only after the await so the span never leaks across a yield point.
                     let _guard = span.enter();
                     let err = match result {
                         Ok(Ok(_)) => {
-                            metrics::gauge!("shadow_replay_latest_completed_block").set(number as f64);
+                            metrics::gauge!("tempo_shadow_replay_latest_completed_block").set(number as f64);
                             metrics::counter!("tempo_shadow_replay_blocks_total").increment(1);
                             continue;
                         }
@@ -202,19 +209,39 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             return Err("re-execution does not reproduce canonical receipts".into());
         }
 
-        let report = Report::analyze(&real, &shadow);
-        if report.findings() == 0 && shadow.failure.is_none() {
-            debug!(target: "shadow_replay", "shadow replay match");
-            return Ok(ReplayOutcome::Match);
+        let canonical = self
+            .real_config
+            .chain_spec()
+            .tempo_hardfork_at(block.timestamp());
+        let rules = analysis::between(canonical, self.shadow_hardfork);
+        let report = Report::analyze(&real, &shadow, &rules);
+        let outcome = report.outcome(&shadow);
+        metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared")
+            .increment(report.boundaries_evaluated as u64);
+        metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "inconclusive")
+            .increment(report.boundaries_not_evaluated as u64);
+        for (&rule, &count) in &report.expected {
+            metrics::counter!("tempo_shadow_replay_expected_differences_total", "rule" => rule)
+                .increment(count as u64);
+        }
+        metrics::counter!("tempo_shadow_replay_unexplained_differences_total")
+            .increment(report.unexplained as u64);
+        if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
+            debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
+            return Ok(outcome);
         }
 
-        metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "divergence")
-            .increment(1);
+        let kind = if outcome == ReplayOutcome::Inconclusive {
+            "inconclusive"
+        } else {
+            "unexplained"
+        };
+        metrics::counter!("tempo_shadow_replay_findings_total", "kind" => kind).increment(1);
         let failure = shadow.failure.as_ref();
         let after_cutoff = failure
             .zip(report.cutoff)
             .is_some_and(|(failure, cutoff)| failure.boundary > cutoff);
-        error!(
+        warn!(
             target: "shadow_replay",
             block_number = block.number(),
             block_hash = ?block.hash(),
@@ -222,11 +249,12 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             shadow_failure_boundary = ?failure.map(|f| f.boundary),
             shadow_failure = failure.map(|f| f.error.as_str()).unwrap_or(""),
             failure_after_cutoff = after_cutoff,
+            ?outcome,
             real_completed_txs = real.txs.len(),
             shadow_completed_txs = shadow.txs.len(),
-            "shadow replay findings"
+            "Shadow replay needs review; differences are not confirmed regressions"
         );
-        Ok(ReplayOutcome::Findings)
+        Ok(outcome)
     }
 
     /// Executes `block` on top of its canonical parent in an isolated, disposable overlay.
@@ -298,11 +326,16 @@ struct ReceiptObservation {
 }
 
 /// Execution evidence retained for one successfully committed transaction.
+///
+/// Section/block gas consumption is tracked separately because it can diverge even when
+/// receipt gas is unchanged.
 #[derive(Debug)]
 struct ObservedTx {
     receipt: ReceiptObservation,
+    block_gas_used: u64,
     output_hash: B256,
     logs_hash: B256,
+    fee_logs_hash: B256,
     fee_slots: HashSet<(alloy_primitives::Address, alloy_primitives::U256)>,
     state: TransitionState,
 }
@@ -311,13 +344,16 @@ impl ObservedTx {
     fn from_result(result: &TempoTxResult, writes: FeeWrites) -> Self {
         let execution = &result.result().result;
         let logs = execution.logs();
-        let app: Vec<_> = logs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !writes.log_ranges.iter().any(|r| r.contains(i)))
-            .map(|(_, log)| log)
-            .collect();
+        let (mut app, mut fee) = (Vec::new(), Vec::new());
+        for (index, log) in logs.iter().enumerate() {
+            if writes.log_ranges.iter().any(|range| range.contains(&index)) {
+                fee.push(log);
+            } else {
+                app.push(log);
+            }
+        }
         Self {
+            block_gas_used: result.block_gas_used(),
             receipt: ReceiptObservation {
                 success: execution.is_success(),
                 gas_used: execution.tx_gas_used(),
@@ -325,6 +361,7 @@ impl ObservedTx {
             },
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
             logs_hash: hash_logs(&app),
+            fee_logs_hash: hash_logs(&fee),
             fee_slots: writes.slots,
             state: TransitionState::default(),
         }
