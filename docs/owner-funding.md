@@ -7,7 +7,7 @@ The protocol defines two fixed addresses in `tempo-contracts`:
 | Constant | Address | Purpose |
 | --- | --- | --- |
 | `TIP20_FUNDER_ADDRESS` | `0x1120000000000000000000000000000000000000` | Protocol funding caller and accounting identity. Solidity cannot initiate funding. |
-| `NATIVE_DEX_FUNDING_SOURCE_ADDRESS` | `0x1120000000000000000000000000000000000001` | Native DEX source implementing `discover`, `quote`, and `fund`. |
+| `NATIVE_DEX_FUNDING_SOURCE_ADDRESS` | `0x1120000000000000000000000000000000000001` | Native DEX source implementing `supportsToken`, `discover`, `quote`, and `fund`. |
 
 The native source requires initialized, unpaused TIP-20 tokens with matching currency metadata across the input, output, and every intermediate route token. The DEX currently supports USD pairs only. Newly created USD tokens need no funding allowlist entry, but must have a supported route and available liquidity.
 
@@ -15,7 +15,7 @@ Matching currency metadata establishes the protocol's 1:1 reference assumption, 
 
 Sign the full funding array with the owner key. Access key funding remains disabled, including requirements whose balances are already satisfied. The native source's `data` is ABI `(address assetIn, uint256 maxAmountIn)`; use `uint256.max` for an uncapped caller request. The protocol still applies the aggregate shortfall budget.
 
-Anyone can call `discover(account, token, amount, maxCost, config)` with ABI-encoded `address[] inputTokens` as `config`. Candidates preserve input order and contain nonempty `requestData` and independent `availableAmount` estimates. Discovery grants no authority.
+Anyone can call `discover(account, token, amount, maxCost, policyData)` with ABI-encoded `address[] inputTokens` as `policyData`. Candidates preserve input order and contain nonempty `requestData` and independent `availableAmount` estimates. Discovery grants no authority.
 
 Do not sum estimates: candidates can share liquidity or inputs. Use candidate `requestData` directly as transaction source `data`.
 
@@ -37,4 +37,4 @@ The tests cover a two-input DEX payment, sponsorship, simulation, estimation, tr
 
 See [owner funding qualification](owner-funding-qualification.md) for the four-validator demo, gas measurements, security coverage, and remaining release gates.
 
-Funding policy registry discovery is defined in the ABI but remains inactive with registry execution. ABI routes pair one output `token` with ordered sources. SDK token maps encode routes in ascending token-address order.
+Funding Policy discovery is defined in the ABI but remains inactive with policy execution. ABI routes pair one output `token` with ordered sources. SDK token maps encode routes in ascending token-address order.
