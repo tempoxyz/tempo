@@ -3,13 +3,27 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IFundingSource {
+        struct Candidate {
+            bytes requestData;
+            uint256 availableAmount;
+        }
+
+        /// Discovers independent funding candidates in configuration order without granting authority.
+        function discover(
+            address account,
+            address assetOut,
+            uint256 amountOut,
+            uint256 maxCost,
+            bytes calldata config
+        ) external view returns (Candidate[] memory candidates);
+
         struct Quote {
             address assetIn;
             /// Output base units per input base unit, scaled by 1e18 and rounded up.
             uint256 rate;
             uint256 maxAmountIn;
             uint256 amountOut;
-            bytes data;
+            bytes requestData;
         }
 
         /// Estimates additional output without reserving liquidity or granting input authority.
@@ -23,15 +37,15 @@ crate::sol! {
             address assetOut,
             uint256 amountOut,
             uint256 maxCost,
-            bytes calldata data,
+            bytes calldata requestData,
             bytes calldata policyData,
             bool ownerAuthorized
         ) external view returns (Quote memory result);
 
         /// Delivers up to amountOut to the authenticated account within its quoted input cap.
-        /// @param data Unmodified execution payload returned by quote.
+        /// @param requestData Unmodified execution payload returned by quote.
         /// @dev Only TIP20Funder may call, within the quoted native input permission.
-        function fund(address account, address assetOut, uint256 amountOut, bytes calldata data) external;
+        function fund(address account, address assetOut, uint256 amountOut, bytes calldata requestData) external;
     }
 }
 
@@ -48,7 +62,7 @@ mod tests {
             amountOut: U256::from(50),
             assetOut: address!("0000000000000000000000000000000000000001"),
             maxCost: U256::from(100),
-            data: bytes!("1234"),
+            requestData: bytes!("1234"),
             policyData: bytes!("ab"),
             ownerAuthorized: true,
         };
@@ -83,7 +97,7 @@ mod tests {
             account: address!("0000000000000000000000000000000000000001"),
             assetOut: address!("0000000000000000000000000000000000000002"),
             amountOut: U256::from(50),
-            data: bytes!("1234"),
+            requestData: bytes!("1234"),
         };
         let encoded = hex!(
             "0f9cd729"
@@ -108,7 +122,7 @@ mod tests {
             rate: U256::from(1_000_000_000_000_000_000u64),
             maxAmountIn: U256::from(30),
             amountOut: U256::from(29),
-            data: bytes!("1234"),
+            requestData: bytes!("1234"),
         };
         let encoded = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020"
@@ -128,6 +142,28 @@ mod tests {
         assert_eq!(
             IFundingSource::quoteCall::abi_decode_returns_validate(&encoded).unwrap(),
             plan
+        );
+    }
+    #[test]
+    fn discovery_returns_ordered_reusable_requests() {
+        let candidates = alloc::vec![
+            IFundingSource::Candidate {
+                requestData: bytes!("1234"),
+                availableAmount: U256::from(30)
+            },
+            IFundingSource::Candidate {
+                requestData: bytes!("abcd"),
+                availableAmount: U256::from(40)
+            },
+        ];
+        assert_eq!(
+            IFundingSource::discoverCall::SIGNATURE,
+            "discover(address,address,uint256,uint256,bytes)"
+        );
+        let encoded = IFundingSource::discoverCall::abi_encode_returns(&candidates);
+        assert_eq!(
+            IFundingSource::discoverCall::abi_decode_returns_validate(&encoded).unwrap(),
+            candidates
         );
     }
 }
