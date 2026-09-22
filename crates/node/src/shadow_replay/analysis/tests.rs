@@ -1,5 +1,5 @@
 use super::*;
-use crate::shadow_replay::{ObservedTx, ReceiptObservation};
+use crate::shadow_replay::ObservedTx;
 use alloy_primitives::B256;
 use reth_revm::{db::states::StorageSlot, state::AccountInfo};
 
@@ -14,8 +14,8 @@ const GAS: Expectation = Expectation {
             return None;
         };
         let (real, shadow) = (
-            &ctx.real.txs[index].as_ref().ok()?.receipt,
-            &ctx.shadow.txs[index].as_ref().ok()?.receipt,
+            ctx.real.txs[index].as_ref().ok()?,
+            ctx.shadow.txs[index].as_ref().ok()?,
         );
         (real.gas_used.checked_add(200) == Some(shadow.gas_used) && real.success == shadow.success)
             .then_some(())
@@ -62,17 +62,10 @@ fn evidence(gas: &[u64]) -> Evidence {
             .iter()
             .map(|&gas_used| {
                 Ok(ObservedTx {
-                    receipt: ReceiptObservation {
-                        success: true,
-                        gas_used,
-                        logs_hash: B256::ZERO,
-                    },
+                    success: true,
+                    gas_used,
                     block_gas_used: 21_000,
-                    output_hash: B256::ZERO,
-                    logs_hash: B256::ZERO,
-                    fee_logs_hash: B256::ZERO,
-                    fee_slots: HashSet::new(),
-                    state: TransitionState::default(),
+                    ..Default::default()
                 })
             })
             .collect(),
@@ -141,20 +134,14 @@ fn nearby_incorrect_amount_stays_unexplained() {
 
 #[test]
 fn accepted_gas_does_not_hide_unrelated_state_at_same_boundary() {
-    let stop = Expectation {
-        id: "test.stop-gas",
-        check: GAS.check,
-    };
-    for rule in [&GAS, &stop] {
-        let real = evidence(&[21_000, 21_000]);
-        let mut shadow = evidence(&[21_200, 21_000]);
-        write_slot(tx_mut(&mut shadow, 0), 800, false);
-        let report = Report::analyze(&real, &shadow, &[rule]);
-        assert_eq!(report.expected[rule.id], 1);
-        assert_eq!(report.unexplained, 1);
-        assert_eq!(report.boundaries_not_evaluated, 0);
-        assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
-    }
+    let real = evidence(&[21_000, 21_000]);
+    let mut shadow = evidence(&[21_200, 21_000]);
+    write_slot(tx_mut(&mut shadow, 0), 800, false);
+    let report = Report::analyze(&real, &shadow, &[&GAS]);
+    assert_eq!(report.expected[GAS.id], 1);
+    assert_eq!(report.unexplained, 1);
+    assert_eq!(report.boundaries_not_evaluated, 0);
+    assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
 }
 
 #[test]
@@ -172,7 +159,7 @@ fn pre_block_difference_does_not_hide_transaction_findings() {
             ..Default::default()
         },
     );
-    tx_mut(&mut shadow, 0).receipt.success = false;
+    tx_mut(&mut shadow, 0).success = false;
     let report = Report::analyze(&real, &shadow, &[]);
     assert_eq!(report.unexplained, 2);
     assert_eq!(report.boundaries_evaluated, 4);
@@ -185,7 +172,7 @@ fn expected_fee_change_does_not_hide_later_findings() {
     let mut shadow = evidence(&[21_200, 21_000]);
     write_slot(tx_mut(&mut real, 0), 900, true);
     write_slot(tx_mut(&mut shadow, 0), 700, true);
-    tx_mut(&mut shadow, 1).receipt.success = false;
+    tx_mut(&mut shadow, 1).success = false;
     let report = Report::analyze(&real, &shadow, &[&GAS, &FEE]);
     assert_eq!(report.expected["test.fee"], 1);
     assert_eq!(report.unexplained, 1);
@@ -245,7 +232,7 @@ fn rejected_probe_does_not_hide_later_transaction_findings() {
     let real = evidence(&[21_000, 21_000]);
     let mut shadow = evidence(&[21_000, 21_000]);
     shadow.txs[0] = Err("rejected".into());
-    tx_mut(&mut shadow, 1).receipt.success = false;
+    tx_mut(&mut shadow, 1).success = false;
 
     let report = Report::analyze(&real, &shadow, &[]);
 
@@ -352,7 +339,7 @@ fn compares_fee_logs_and_original_log_order_separately() {
     assert_eq!(report.samples[0].1.field.name, "fee_logs");
 
     let mut shadow = evidence(&[21_000]);
-    tx_mut(&mut shadow, 0).receipt.logs_hash = B256::repeat_byte(1);
+    tx_mut(&mut shadow, 0).receipt_logs_hash = B256::repeat_byte(1);
     let report = Report::analyze(&real, &shadow, &[]);
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.samples[0].1.field.name, "receipt_logs");

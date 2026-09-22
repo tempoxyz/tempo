@@ -304,10 +304,8 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
                     results = None;
                 }
                 executor.commit_transaction(result);
-                real.txs.push(Ok(ObservedTx {
-                    state: drain(executor.evm_mut().db_mut()),
-                    ..observed
-                }));
+                real.txs
+                    .push(Ok(observed.with_state(drain(executor.evm_mut().db_mut()))));
             }
             drop(results);
             if real.failure.is_none() {
@@ -369,10 +367,9 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
                 Ok(result) => {
                     let observed =
                         ObservedTx::from_result(&result, std::mem::take(&mut *writes.borrow_mut()));
-                    shadow.txs.push(Ok(ObservedTx {
-                        state: transition(result.into_result().state),
-                        ..observed
-                    }));
+                    shadow.txs.push(Ok(
+                        observed.with_state(transition(result.into_result().state))
+                    ));
                 }
                 Err(e) => {
                     let _ = std::mem::take(&mut *writes.borrow_mut());
@@ -425,21 +422,15 @@ fn transition(state: EvmState) -> TransitionState {
     evidence
 }
 
-/// Receipt-derivable transaction fields used for canonical validation and replay comparison.
-#[derive(Debug, PartialEq, Eq)]
-struct ReceiptObservation {
-    success: bool,
-    gas_used: u64,
-    logs_hash: B256,
-}
-
 /// Execution evidence retained for one successfully committed transaction.
 ///
 /// Section/block gas consumption is tracked separately because it can diverge even when
 /// receipt gas is unchanged.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ObservedTx {
-    receipt: ReceiptObservation,
+    success: bool,
+    gas_used: u64,
+    receipt_logs_hash: B256,
     block_gas_used: u64,
     output_hash: B256,
     logs_hash: B256,
@@ -452,7 +443,8 @@ impl ObservedTx {
     fn from_result(result: &TempoTxResult, writes: FeeWrites) -> Self {
         let execution = &result.result().result;
         let logs = execution.logs();
-        let (mut app, mut fee) = (Vec::new(), Vec::new());
+        let fee_logs = writes.log_ranges.iter().map(|range| range.len()).sum();
+        let (mut app, mut fee) = (Vec::with_capacity(logs.len()), Vec::with_capacity(fee_logs));
         for (index, log) in logs.iter().enumerate() {
             if writes.log_ranges.iter().any(|range| range.contains(&index)) {
                 fee.push(log);
@@ -462,17 +454,20 @@ impl ObservedTx {
         }
         Self {
             block_gas_used: result.block_gas_used(),
-            receipt: ReceiptObservation {
-                success: execution.is_success(),
-                gas_used: execution.tx_gas_used(),
-                logs_hash: hash_logs(logs),
-            },
+            success: execution.is_success(),
+            gas_used: execution.tx_gas_used(),
+            receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
             logs_hash: hash_logs(&app),
             fee_logs_hash: hash_logs(&fee),
             fee_slots: writes.slots,
             state: TransitionState::default(),
         }
+    }
+
+    fn with_state(mut self, state: TransitionState) -> Self {
+        self.state = state;
+        self
     }
 }
 
@@ -524,12 +519,9 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
         };
         let gas_used = receipt.cumulative_gas_used - previous_gas;
         previous_gas = receipt.cumulative_gas_used;
-        tx.receipt
-            == ReceiptObservation {
-                success: receipt.success,
-                gas_used,
-                logs_hash: hash_logs(&receipt.logs),
-            }
+        tx.success == receipt.success
+            && tx.gas_used == gas_used
+            && tx.receipt_logs_hash == hash_logs(&receipt.logs)
     })
 }
 

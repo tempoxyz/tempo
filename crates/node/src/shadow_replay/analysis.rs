@@ -4,10 +4,7 @@ use self::expectations::{Context, Expectation};
 use super::{Boundary, Evidence, ReplayOutcome};
 use alloy_primitives::{Address, U256};
 use reth_revm::db::{TransitionAccount, TransitionState};
-use std::{
-    collections::{BTreeMap, HashSet},
-    fmt::Debug,
-};
+use std::{collections::BTreeMap, fmt::Debug};
 
 mod expectations;
 pub(super) use expectations::between;
@@ -62,13 +59,13 @@ impl Report {
             match shadow {
                 Ok(shadow) => {
                     let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
-                    diff.record("success", |tx| tx.receipt.success);
+                    diff.record("success", |tx| tx.success);
                     diff.record("output", |tx| tx.output_hash);
                     diff.record("logs", |tx| tx.logs_hash);
                     diff.record("fee_logs", |tx| tx.fee_logs_hash);
                     // Preserve ordering between fee and application logs.
-                    diff.record("receipt_logs", |tx| tx.receipt.logs_hash);
-                    diff.record("gas", |tx| tx.receipt.gas_used);
+                    diff.record("receipt_logs", |tx| tx.receipt_logs_hash);
+                    diff.record("gas", |tx| tx.gas_used);
                     diff.record("block_gas", |tx| tx.block_gas_used);
                     report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
                 }
@@ -157,13 +154,12 @@ impl Report {
         shadow: &TransitionState,
         rules: &[&Expectation],
     ) {
-        let addresses: HashSet<_> = real
-            .transitions
-            .keys()
-            .chain(shadow.transitions.keys())
-            .copied()
-            .collect();
-        for address in addresses {
+        for &address in real.transitions.keys().chain(
+            shadow
+                .transitions
+                .keys()
+                .filter(|address| !real.transitions.contains_key(*address)),
+        ) {
             let real = AccountDelta(real.transitions.get(&address));
             let shadow = AccountDelta(shadow.transitions.get(&address));
             let mut diff = Comparison::new(self, ctx, rules, Some(address), &real, &shadow);
@@ -174,8 +170,10 @@ impl Report {
             diff.record("storage_reset", |a| {
                 a.0.is_some_and(|a| a.storage_was_destroyed)
             });
-            let slots: HashSet<_> = real.slots().chain(shadow.slots()).copied().collect();
-            for slot in slots {
+            for &slot in real.slots().chain(shadow.slots().filter(|slot| {
+                real.0
+                    .is_none_or(|account| !account.storage.contains_key(*slot))
+            })) {
                 diff.slot = Some(slot);
                 diff.record("storage", |a| a.storage(slot));
             }
