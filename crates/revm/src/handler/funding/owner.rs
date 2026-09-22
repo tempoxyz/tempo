@@ -34,8 +34,8 @@ fn invalid_context() -> TempoPrecompileError {
     TIP20FunderError::InvalidFundingContext(ITIP20Funder::InvalidFundingContext {}).into()
 }
 
-fn invalid_plan(source: Address) -> TempoPrecompileError {
-    TIP20FunderError::InvalidFundingPlan(ITIP20Funder::InvalidFundingPlan { source }).into()
+fn invalid_quote(source: Address) -> TempoPrecompileError {
+    TIP20FunderError::InvalidFundingQuote(ITIP20Funder::InvalidFundingQuote { source }).into()
 }
 
 fn funding_balance(asset: Address, account: Address) -> tempo_precompiles::error::Result<U256> {
@@ -197,7 +197,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                             source: request.target,
                             is_static: true,
                             permission: None,
-                            data: IFundingSource::prepareCall {
+                            data: IFundingSource::quoteCall {
+                                account,
+                                amountOut: requirement.amount - balance,
                                 assetOut: requirement.token,
                                 maxCost: remaining_cost,
                                 data: request.data.clone(),
@@ -213,10 +215,13 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         return Err(FundingFailure::Frame(Box::new(result)));
                     }
                     let (plan, permission) = self.funding_storage(evm, gas, || {
-                        let plan = IFundingSource::prepareCall::abi_decode_returns_validate(
+                        let plan = IFundingSource::quoteCall::abi_decode_returns_validate(
                             result.output().data(),
                         )
-                        .map_err(|_| invalid_plan(request.target))?;
+                        .map_err(|_| invalid_quote(request.target))?;
+                        if plan.amountOut > requirement.amount - balance {
+                            return Err(invalid_quote(request.target));
+                        }
                         let permission = FundingPermission::new(
                             funder,
                             account,
@@ -226,9 +231,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         )?;
                         if !plan.assetIn.is_zero() {
                             let rate = InputRate::new(plan.rate)
-                                .map_err(|_| invalid_plan(request.target))?;
+                                .map_err(|_| invalid_quote(request.target))?;
                             if plan.maxAmountIn > rate.input_capacity(remaining_cost) {
-                                return Err(invalid_plan(request.target));
+                                return Err(invalid_quote(request.target));
                             }
                         }
                         Ok((plan, permission))

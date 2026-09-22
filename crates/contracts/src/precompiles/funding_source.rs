@@ -1,31 +1,34 @@
 crate::sol! {
-    /// TIP-1120 source preparation and synchronous funding hooks.
+    /// TIP-1120 source quoting and synchronous funding hooks.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IFundingSource {
-        struct Plan {
+        struct Quote {
             address assetIn;
             /// Output base units per input base unit, scaled by 1e18 and rounded up.
             uint256 rate;
             uint256 maxAmountIn;
+            uint256 amountOut;
             bytes data;
         }
 
         /// Validates source arguments against policy rules before granting input authority.
         /// @param maxCost Remaining aggregate cost budget in output base units.
         /// @param ownerAuthorized Native owner authentication; policyData is empty in this mode.
-        /// @dev Only TIP20Funder may call, using STATICCALL.
-        function prepare(
+        /// @dev Public read-only estimate; grants no input authority.
+        function quote(
+            address account,
             address assetOut,
+            uint256 amountOut,
             uint256 maxCost,
             bytes calldata data,
             bytes calldata policyData,
             bool ownerAuthorized
-        ) external view returns (Plan memory plan);
+        ) external view returns (Quote memory result);
 
-        /// Delivers up to amountOut to the authenticated account within its prepared input cap.
-        /// @param data Unmodified execution payload returned by prepare.
-        /// @dev Only TIP20Funder may call, within the prepared native input permission.
+        /// Delivers up to amountOut to the authenticated account within its quoted input cap.
+        /// @param data Unmodified execution payload returned by quote.
+        /// @dev Only TIP20Funder may call, within the quoted native input permission.
         function fund(address account, address assetOut, uint256 amountOut, bytes calldata data) external;
     }
 }
@@ -37,8 +40,10 @@ mod tests {
     use alloy_sol_types::{SolCall, SolValue};
 
     #[test]
-    fn funding_prepare_abi_vector() {
-        let call = IFundingSource::prepareCall {
+    fn funding_quote_abi_vector() {
+        let call = IFundingSource::quoteCall {
+            account: address!("0000000000000000000000000000000000000003"),
+            amountOut: U256::from(50),
             assetOut: address!("0000000000000000000000000000000000000001"),
             maxCost: U256::from(100),
             data: bytes!("1234"),
@@ -46,20 +51,26 @@ mod tests {
             ownerAuthorized: true,
         };
         let encoded = hex!(
-            "d645c5d8"
+            "0000000000000000000000000000000000000000000000000000000000000003"
             "0000000000000000000000000000000000000000000000000000000000000001"
+            "0000000000000000000000000000000000000000000000000000000000000032"
             "0000000000000000000000000000000000000000000000000000000000000064"
-            "00000000000000000000000000000000000000000000000000000000000000a0"
             "00000000000000000000000000000000000000000000000000000000000000e0"
+            "0000000000000000000000000000000000000000000000000000000000000120"
             "0000000000000000000000000000000000000000000000000000000000000001"
             "0000000000000000000000000000000000000000000000000000000000000002"
             "1234000000000000000000000000000000000000000000000000000000000000"
             "0000000000000000000000000000000000000000000000000000000000000001"
             "ab00000000000000000000000000000000000000000000000000000000000000"
         );
-        assert_eq!(call.abi_encode(), encoded);
         assert_eq!(
-            IFundingSource::prepareCall::abi_decode_validate(&encoded).unwrap(),
+            IFundingSource::quoteCall::SIGNATURE,
+            "quote(address,address,uint256,uint256,bytes,bytes,bool)"
+        );
+        assert_eq!(call.abi_encode()[4..], encoded);
+        let encoded = call.abi_encode();
+        assert_eq!(
+            IFundingSource::quoteCall::abi_decode_validate(&encoded).unwrap(),
             call
         );
     }
@@ -89,11 +100,12 @@ mod tests {
     }
 
     #[test]
-    fn funding_plan_abi_vector() {
-        let plan = IFundingSource::Plan {
+    fn funding_quote_return_abi_vector() {
+        let plan = IFundingSource::Quote {
             assetIn: address!("0000000000000000000000000000000000000002"),
             rate: U256::from(1_000_000_000_000_000_000u64),
             maxAmountIn: U256::from(30),
+            amountOut: U256::from(29),
             data: bytes!("1234"),
         };
         let encoded = hex!(
@@ -101,17 +113,18 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000002"
             "0000000000000000000000000000000000000000000000000de0b6b3a7640000"
             "000000000000000000000000000000000000000000000000000000000000001e"
-            "0000000000000000000000000000000000000000000000000000000000000080"
+            "000000000000000000000000000000000000000000000000000000000000001d"
+            "00000000000000000000000000000000000000000000000000000000000000a0"
             "0000000000000000000000000000000000000000000000000000000000000002"
             "1234000000000000000000000000000000000000000000000000000000000000"
         );
         assert_eq!(plan.abi_encode(), encoded);
         assert_eq!(
-            IFundingSource::Plan::abi_decode_validate(&encoded).unwrap(),
+            IFundingSource::Quote::abi_decode_validate(&encoded).unwrap(),
             plan
         );
         assert_eq!(
-            IFundingSource::prepareCall::abi_decode_returns_validate(&encoded).unwrap(),
+            IFundingSource::quoteCall::abi_decode_returns_validate(&encoded).unwrap(),
             plan
         );
     }

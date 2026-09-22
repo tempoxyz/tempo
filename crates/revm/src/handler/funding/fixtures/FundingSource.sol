@@ -7,7 +7,7 @@ interface Token {
 }
 
 contract FundingSource {
-    struct Plan { address assetIn; uint256 rate; uint256 maxAmountIn; bytes data; }
+    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes data; }
     address constant FUNDER = address(type(uint160).max - 0xeedf);
     address constant ACCOUNT = address(0x2000);
     uint256 public calls;
@@ -19,16 +19,16 @@ contract FundingSource {
     error SourceFailure(uint256 mode);
 
     // Intentionally non-view: mode 1 proves that the caller actually uses STATICCALL.
-    function prepare(address assetOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
-        external returns (Plan memory)
+    function quote(address account_, address assetOut, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
+        external returns (Quote memory)
     {
-        require(msg.sender == FUNDER && tx.origin == ACCOUNT);
+        require(account_ == ACCOUNT);
         require(ownerAuthorized && policyData.length == 0);
         uint256 mode = abi.decode(data, (uint256));
         if (mode == 1) calls++;
         if (mode == 2) revert SourceFailure(mode);
         if (mode == 3) assembly { return(0, 1) }
-        return Plan(assetOut, 1e18, maxCost, abi.encode(mode, bytes32("prepared")));
+        return Quote(assetOut, 1e18, maxCost, amountOut, abi.encode(mode, bytes32("prepared")));
     }
 
     function fund(address account_, address assetOut, uint256 amountOut, bytes calldata data) external {
