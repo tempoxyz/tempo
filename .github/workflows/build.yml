@@ -37,7 +37,7 @@ jobs:
       - name: Checkout exact validator runtime
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 398f7dc99ee16aeff0aa5a5d6fbb42f29e76fa67
+          ref: c12558ecc1d3eae03b5f9288b50d9b7f9192268e
           path: runtime
           persist-credentials: false
       - name: Checkout exact workload tools
