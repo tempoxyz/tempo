@@ -1009,10 +1009,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
 
-    # Convert only disposable restored DBs, using the exact phase binary. Never
-    # promote the converted layout: the next phase must recover the same v2 state.
+    # Restore the pristine layout cache without ever replacing the v2 source in
+    # the virgin snapshot. Uncached comparisons retain the offline conversion path.
     for datadir in [$ctx.a.datadir $ctx.b.datadir] {
-        bash scripts/bench-prepare-storage-layout.sh $run.tempo $datadir
+        if $run_type == "feature" and $ctx.storage_layout_cache_key != "" {
+            bash scripts/bench-cache-storage-layout.sh activate $run.tempo $datadir $ctx.storage_layout_cache_key
+        } else {
+            bash scripts/bench-prepare-storage-layout.sh $run.tempo $datadir
+        }
         if $env.LAST_EXIT_CODE != 0 { error make {msg: "benchmark storage layout preparation failed"} }
     }
     # Conversion reads/writes much more data than restoring the baseline. Start
@@ -1682,6 +1686,27 @@ def "main e2e" [
     } | ignore
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
     let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    # Convert once per job, then snapshot both layouts under separate paths. The
+    # ordinary db/ remains v2, including for later jobs using an unsharded binary.
+    mut storage_layout_cache_key = ""
+    if $needs_baseline and $needs_feature {
+        let baseline_help = (run-external $baseline_tempo "--help" | complete)
+        let feature_help = (run-external $feature_tempo "--help" | complete)
+        if $baseline_help.exit_code != 0 or $feature_help.exit_code != 0 {
+            error make {msg: "could not inspect benchmark database layouts"}
+        }
+        if ($feature_help.stdout | str contains "bench-shard-storage") and not ($baseline_help.stdout | str contains "bench-shard-storage") {
+            $storage_layout_cache_key = $"($benchmark_id):($timestamp):($baseline):($feature)"
+            for datadir in [$a_db $b_db] {
+                bash scripts/bench-cache-storage-layout.sh prepare $feature_tempo $datadir $storage_layout_cache_key
+                if $env.LAST_EXIT_CODE != 0 { error make {msg: "could not prepare pristine sharded snapshot"} }
+            }
+            bench-promote-at $E2E_A_STATE_PATH $a_db
+            bench-promote-at $E2E_B_STATE_PATH $b_db
+            bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+            bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+        }
+    }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
@@ -1700,6 +1725,7 @@ def "main e2e" [
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
+        storage_layout_cache_key: $storage_layout_cache_key
         genesis: $genesis_path
         trusted_peers: $trusted_peers
         a: {

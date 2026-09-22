@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - ".github/**"
+      - "scripts/bench-*-storage-layout.sh"
+      - "bench-e2e.nu"
   push:
     branches:
       - main
     paths:
       - ".github/**"
+      - "scripts/bench-*-storage-layout.sh"
+      - "bench-e2e.nu"
   schedule:
     - cron: "17 9 * * 1"
   workflow_dispatch:
@@ -32,6 +36,7 @@ jobs:
         run: |
           bash .github/scripts/bench-state-test.sh
           bash .github/scripts/bench-upload-charts-test.sh
+          bash .github/scripts/bench-storage-layout-test.sh
           node --test .github/scripts/docker-pr.test.js
           node --test .github/scripts/docker-pr-status.test.js
 
