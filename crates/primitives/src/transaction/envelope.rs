@@ -293,10 +293,10 @@ impl TempoTxEnvelope {
                     && tx.require_funds.as_ref().is_none_or(Vec::is_empty)
                     && tx.access_list.is_empty()
                     && tx.tempo_authorization_list.is_empty()
-                    && tx
-                        .key_authorization
-                        .as_ref()
-                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                    && tx.key_authorization.as_ref().is_none_or(|auth| {
+                        auth.funding_policy.is_none()
+                            && auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN
+                    })
                     && tx
                         .calls
                         .iter()
@@ -1196,6 +1196,7 @@ mod tests {
                     witness: None,
                     is_admin: false,
                     account: None,
+                    funding_policy: None,
                 }
                 .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature())),
             ),
@@ -1226,6 +1227,23 @@ mod tests {
         let tx = envelope.as_aa().unwrap().tx();
         let key_auth = tx.key_authorization.as_ref().unwrap();
         assert!(key_auth.length() > KEY_AUTHORIZATION_MAX_RLP_LEN);
+    }
+
+    #[test]
+    fn payment_optimization_excludes_funding_policy_installation() {
+        use crate::transaction::FundingPolicyAuthorization;
+        use core::num::NonZeroU64;
+        let envelope = aa_with_key_authorization(None);
+        let mut tx = envelope.as_aa().unwrap().tx().clone();
+        let original = tx.key_authorization.take().unwrap();
+        tx.key_authorization = Some(
+            original
+                .authorization
+                .with_funding_policy(FundingPolicyAuthorization::Id(NonZeroU64::MIN))
+                .into_signed(original.signature),
+        );
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        assert!(!envelope.is_payment_v2());
     }
 
     #[test]

@@ -2463,6 +2463,7 @@ mod compact_tests {
                     witness: None,
                     is_admin: false,
                     account: None,
+                    funding_policy: None,
                 }
                 .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
                     r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),

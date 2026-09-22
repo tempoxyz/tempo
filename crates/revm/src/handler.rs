@@ -2058,6 +2058,10 @@ where
                     .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
 
+                if key_auth.funding_policy.is_some() {
+                    return Err(TempoInvalidTransaction::DelegatedFundingNotActivated.into());
+                }
+
                 if key_auth.has_witness() && !cfg.spec.is_t5() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "key authorization witnesses are not active before T5".to_string(),

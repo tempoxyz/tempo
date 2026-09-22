@@ -1,4 +1,4 @@
-use super::SignatureType;
+use super::{FundingPolicyAuthorization, SignatureType};
 use crate::transaction::PrimitiveSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
@@ -174,7 +174,7 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// The transaction must be signed by the root key, or by an active admin key when authorizing for
 /// the admin key's account.
 ///
-/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?, is_admin?, account?]`
+/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?, is_admin?, account?, funding_policy?]`
 /// - Non-optional fields come first, followed by optional (trailing) fields
 /// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
@@ -234,11 +234,17 @@ pub struct KeyAuthorization {
     /// Required for admin-signed authorizations so signatures cannot be replayed across accounts
     /// that share the same admin key. Root-signed authorizations may omit it.
     pub account: Option<Address>,
+
+    /// Existing shared policy ID or an inline policy installed with this key.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub funding_policy: Option<FundingPolicyAuthorization>,
 }
 
 impl KeyAuthorization {
-    /// Create a fully unrestricted key authorization: no expiry, no spending limits, no call
-    /// scopes.
+    /// Create a key without expiry, spending limits, or call scopes. Funding requires a separate policy.
     pub fn unrestricted(chain_id: u64, key_type: SignatureType, key_id: Address) -> Self {
         Self {
             chain_id,
@@ -250,6 +256,7 @@ impl KeyAuthorization {
             witness: None,
             is_admin: false,
             account: None,
+            funding_policy: None,
         }
     }
 
@@ -307,6 +314,12 @@ impl KeyAuthorization {
         self
     }
 
+    /// Attach an existing or inline funding policy to this key.
+    pub fn with_funding_policy(mut self, policy: FundingPolicyAuthorization) -> Self {
+        self.funding_policy = Some(policy);
+        self
+    }
+
     /// Returns whether this authorization creates an admin key.
     pub fn is_admin(&self) -> bool {
         self.is_admin
@@ -352,7 +365,8 @@ impl KeyAuthorization {
             || self.has_call_scopes()
             || self.has_witness()
             || self.is_admin
-            || self.account.is_some())
+            || self.account.is_some()
+            || self.funding_policy.is_some())
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
@@ -388,6 +402,10 @@ impl KeyAuthorization {
     /// Calculates a heuristic for the in-memory size of the key authorization
     pub fn size(&self) -> usize {
         size_of::<Self>()
+            + self
+                .funding_policy
+                .as_ref()
+                .map_or(0, FundingPolicyAuthorization::heap_size)
             + self
                 .limits
                 .as_ref()
@@ -500,6 +518,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
             is_admin: u.arbitrary()?,
             account: u.arbitrary()?,
+            funding_policy: u.arbitrary()?,
         })
     }
 }
@@ -551,6 +570,7 @@ mod rlp {
         witness: Option<B256>,
         is_admin: Option<NonZeroU64>,
         account: Option<Address>,
+        funding_policy: Option<FundingPolicyAuthorization>,
     }
 
     /// Borrowing counterpart of [`KeyAuthorizationWire`] used for encoding, so that computing
@@ -567,6 +587,7 @@ mod rlp {
         witness: Option<B256>,
         is_admin: Option<NonZeroU64>,
         account: Option<Address>,
+        funding_policy: Option<&'a FundingPolicyAuthorization>,
     }
 
     impl<'a> From<&'a KeyAuthorization> for KeyAuthorizationWireRef<'a> {
@@ -581,6 +602,7 @@ mod rlp {
                 witness,
                 is_admin,
                 account,
+                funding_policy,
             } = value;
 
             Self {
@@ -593,6 +615,7 @@ mod rlp {
                 witness: *witness,
                 is_admin: is_admin.then_some(NonZeroU64::MIN),
                 account: *account,
+                funding_policy: funding_policy.as_ref(),
             }
         }
     }
@@ -617,6 +640,7 @@ mod rlp {
                 witness: value.witness,
                 is_admin: value.is_admin.is_some(),
                 account: value.account,
+                funding_policy: value.funding_policy,
             })
         }
     }
@@ -671,6 +695,7 @@ mod rlp {
                     witness: authorization.witness,
                     is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
                     account: authorization.account,
+                    funding_policy: authorization.funding_policy.clone(),
                 };
                 let encoded = alloy_rlp::encode(&authorization);
                 prop_assert_eq!(authorization.length(), encoded.len());
@@ -791,6 +816,7 @@ mod tests {
             witness: None,
             is_admin: false,
             account: None,
+            funding_policy: None,
         }
     }
 
@@ -1063,6 +1089,7 @@ mod tests {
             witness: None,
             is_admin: false,
             account: None,
+            funding_policy: None,
         }
     }
 

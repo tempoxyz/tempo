@@ -2809,6 +2809,32 @@ mod keychain {
     }
 
     #[test]
+    fn funding_policy_authorization_is_rejected_until_binding_is_active() {
+        use core::num::NonZeroU64;
+        use tempo_primitives::transaction::FundingPolicyAuthorization;
+        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_funding_policy(FundingPolicyAuthorization::Id(NonZeroU64::MIN)),
+            );
+            let (mut evm, handler) = make_evm(user, key, Some(signed), spec, None, false);
+            let result = handler.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::DelegatedFundingNotActivated
+                    ))
+                ),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_key_authorization_invalid_signature_rejected() {
         let (_, user) = generate_keypair();
         let key = Address::random();
