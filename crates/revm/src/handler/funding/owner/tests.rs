@@ -582,8 +582,8 @@ fn out_of_gas_rolls_back_every_completed_stage() {
 }
 
 #[test]
-fn validates_plans_and_rejects_output_balance_decreases() {
-    for mode in 0..5 {
+fn validates_quotes_and_rejects_output_balance_decreases() {
+    for mode in 0..6 {
         let (mut evm, output) = setup(TempoHardfork::T5);
         let (asset, request) = match mode {
             0 => (
@@ -599,6 +599,7 @@ fn validates_plans_and_rejects_output_balance_decreases() {
                 source_with_input(SOURCE, Address::ZERO, U256::ZERO, U256::ONE, 0, 50, 0, 0),
             ),
             3 => (output, source(RECIPIENT, 0, 50, 0, 0)),
+            5 => (output, source(SOURCE, 0, 50, 0, 10)),
             // Consume the very output balance being measured.
             _ => (PATH_USD_ADDRESS, source(SOURCE, 1, 0, 0, 0)),
         };
@@ -615,10 +616,10 @@ fn validates_plans_and_rejects_output_balance_decreases() {
             0,
         );
         assert!(!result.instruction_result().is_ok());
-        if mode < 4 {
+        if mode != 4 {
             assert_eq!(
                 result.output().data().as_ref(),
-                ITIP20Funder::InvalidFundingPlan {
+                ITIP20Funder::InvalidFundingQuote {
                     source: if mode == 3 { RECIPIENT } else { SOURCE }
                 }
                 .abi_encode()
