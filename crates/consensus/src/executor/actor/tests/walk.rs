@@ -698,7 +698,7 @@ fn valid_ancestor_stops_verification_but_convergence_walks_to_finality() {
 }
 
 #[test_traced]
-fn syncing_with_a_conflicting_finalized_parent_is_rejected() {
+fn syncing_with_a_conflicting_finalized_parent_abandons_verification() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
         let finalized = make_block(1, 1, GENESIS);
@@ -711,7 +711,7 @@ fn syncing_with_a_conflicting_finalized_parent_is_rejected() {
         h.execution
             .script_new_payload(digest, Ok(PayloadStatusEnum::Syncing));
 
-        assert!(h.verify(round(3), candidate).await.unwrap().is_none());
+        assert!(h.verify(round(3), candidate).await.is_err());
         assert_eq!(h.execution.new_payloads(), vec![digest]);
         assert!(h.marshal.subscribe_log().is_empty());
         assert_eq!(h.execution.head(), GENESIS);
@@ -719,7 +719,7 @@ fn syncing_with_a_conflicting_finalized_parent_is_rejected() {
 }
 
 #[test_traced]
-fn verification_walk_rejects_an_ancestor_on_a_conflicting_branch() {
+fn verification_walk_abandons_an_ancestor_on_a_conflicting_branch() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
         let finalized = make_block(1, 1, GENESIS);
@@ -734,7 +734,7 @@ fn verification_walk_rejects_an_ancestor_on_a_conflicting_branch() {
         assert!(futures::poll!(&mut verify).is_pending());
         h.wait_until(|| h.marshal.fulfill_subscription(p, parent.clone()))
             .await;
-        assert!(verify.await.unwrap().is_none());
+        assert!(verify.await.is_err());
         assert_eq!(h.execution.new_payloads(), vec![c, p]);
         assert_eq!(h.marshal.subscribe_log(), vec![(p, round(3))]);
         assert_eq!(h.execution.head(), GENESIS);
@@ -1023,7 +1023,7 @@ fn advancing_finalized_round_cancels_a_fetch_above_the_finalized_height() {
             h.marshal.open_subscriptions().is_empty() && h.execution.new_payloads() == vec![c, c]
         })
         .await;
-        assert!(verify.await.unwrap().is_none());
+        assert!(verify.await.is_err());
         h.run_for(Duration::from_millis(10)).await;
         assert_eq!(h.execution.new_payloads(), vec![c, c]);
         assert_eq!(h.marshal.subscribe_log(), vec![(p, round(2))]);
@@ -1066,7 +1066,7 @@ fn advancing_finalized_round_discards_an_ancestor_above_the_finalized_height() {
         assert_eq!(h.execution.new_payloads(), vec![c, f]);
         release.send(()).unwrap();
         acknowledged.await.unwrap();
-        assert!(verify.await.unwrap().is_none());
+        assert!(verify.await.is_err());
         assert_eq!(h.execution.new_payloads(), vec![c, f, c]);
         assert_eq!(h.marshal.subscribe_log(), vec![(p, round(3))]);
     });

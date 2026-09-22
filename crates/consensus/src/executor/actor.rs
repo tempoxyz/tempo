@@ -698,7 +698,13 @@ where
                 return Ok(());
             }
             WalkOutcome::TargetValid => Some(verification.duration),
-            WalkOutcome::Invalid | WalkOutcome::ConflictsWithFinality => None,
+            WalkOutcome::Invalid => None,
+            WalkOutcome::ConflictsWithFinality => {
+                // The local finality boundary can change while a walk runs. It
+                // is not an execution-invalid verdict that certification may cache.
+                self.remove_verification(round);
+                return Ok(());
+            }
             WalkOutcome::Accepted => {
                 self.remove_verification(round);
                 bail!("payload was accepted without execution while verifying block");

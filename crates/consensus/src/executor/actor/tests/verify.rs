@@ -269,7 +269,7 @@ fn syncing_below_the_finalized_tip_abandons_verification() {
             .script_new_payload(d2, Ok(PayloadStatusEnum::Syncing));
         // Requested from a round above finality, so the request is kept and
         // the walk itself has to notice the conflict.
-        assert!(h.verify(round(4), b2.clone()).await.unwrap().is_none());
+        assert!(h.verify(round(4), b2.clone()).await.is_err());
         assert_eq!(h.execution.new_payloads(), vec![d1, d2]);
         assert!(h.marshal.subscribe_log().is_empty());
 
