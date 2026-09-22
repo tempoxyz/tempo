@@ -240,4 +240,35 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    fn local_observer_uses_native_policy_without_fork_activation() {
+        let mut call = call();
+        let portal = portal_address(call.zoneId);
+        assert_eq!(portal, tempo_zone_verifier::portal_address(call.zoneId));
+        let commitment = batch_commitment(1, &call);
+        let (proof, root, pcrs) = attestation::tests::fixture(commitment.as_ref());
+        call.proof = proof.into();
+        // No EVM, StorageCtx, precompile registration, or activated T13 is needed by the observer.
+        let verify = |chain_id, measurements| {
+            tempo_zone_verifier::verify_with_root(
+                chain_id,
+                BLOCK_TIMESTAMP,
+                portal,
+                &call,
+                &root,
+                measurements,
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap()
+        };
+        assert!(verify(1, Some(pcrs)));
+        assert!(!verify(2, Some(pcrs)));
+        assert!(!verify(1, None));
+        for index in 0..3 {
+            let mut wrong_pcrs = pcrs;
+            wrong_pcrs[index][0] ^= 1;
+            assert!(!verify(1, Some(wrong_pcrs)));
+        }
+    }
 }
