@@ -153,11 +153,11 @@ pub(super) async fn run_demo(
         slippage_bps: Some(100),
         sources: vec![
             FundingSource {
-                address: SOURCE,
+                target: SOURCE,
                 data: (assets[0], U256::from(30 * UNIT)).abi_encode().into(),
             },
             FundingSource {
-                address: SOURCE,
+                target: SOURCE,
                 data: candidates[1].requestData.clone(),
             },
         ],
