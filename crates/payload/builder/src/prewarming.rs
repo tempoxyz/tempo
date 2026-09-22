@@ -1064,7 +1064,7 @@ mod tests {
                 )),
                 executor: executor.clone(),
             };
-            wait_until(|| log.lock().unwrap().empty_polls > 0);
+            wait_until(|| !prewarming.transactions_rx.is_empty());
 
             // Hold all workers so only the consumer's refill can schedule this burst.
             let started = Arc::new(Barrier::new(workers + 1));
