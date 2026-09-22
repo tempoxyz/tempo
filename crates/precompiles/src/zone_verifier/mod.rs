@@ -1,20 +1,25 @@
 //! TIP-1098 native Nitro-backed Zone verifier.
 
+#[cfg(test)]
 mod attestation;
 pub mod dispatch;
 
+#[cfg(test)]
+use crate::zone_factory::portal_address;
+use crate::{error::Result, storage::StorageCtx};
+use alloy::primitives::Address;
+#[cfg(test)]
 use alloy::{
-    primitives::{Address, B256, U256, keccak256},
+    primitives::{B256, U256, keccak256},
     sol_types::SolStruct,
 };
-use tempo_contracts::precompiles::{IZoneVerifier, NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
+#[cfg(test)]
+use tempo_contracts::precompiles::NitroBatchAttestation;
+use tempo_contracts::precompiles::{IZoneVerifier, ZONE_VERIFIER_ADDRESS};
 use tempo_precompiles_macros::contract;
-
-use self::attestation::{AWS_NITRO_ROOT_DER, verify_attestation_with_root};
-use crate::{error::Result, zone_factory::portal_address};
-
-const CONFIG_V1: &[u8] = &[1];
-const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
+use tempo_zone_verifier::AWS_NITRO_ROOT_DER;
+#[cfg(test)]
+use tempo_zone_verifier::{CONFIG_V1, batch_commitment};
 
 /// Production measurements remain deliberately unset until the reproducible T13 EIF is finalized.
 const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
@@ -34,68 +39,16 @@ impl ZoneVerifier {
         root_der: &[u8],
         approved_pcrs: Option<[[u8; 48]; 3]>,
     ) -> Result<bool> {
-        // The zone ID binds the portal domain only when the caller is its canonical portal.
-        if portal != portal_address(call.zoneId)
-            || call.verifierConfig.as_ref() != CONFIG_V1
-            || call.proof.is_empty()
-        {
-            return Ok(false);
-        }
-
-        let block_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let Some(attestation) =
-            verify_attestation_with_root(call.proof.as_ref(), block_timestamp, root_der)?
-        else {
-            return Ok(false);
-        };
-
-        let Some(approved_pcrs) = approved_pcrs else {
-            return Ok(false);
-        };
-        if !approved_pcrs.iter().enumerate().all(|(index, expected)| {
-            attestation
-                .pcrs
-                .iter()
-                .find(|pcr| usize::from(pcr.index) == index)
-                .is_some_and(|pcr| pcr.value.as_slice() == expected)
-        }) {
-            return Ok(false);
-        }
-
-        let max_timestamp = block_timestamp
-            .saturating_mul(1_000)
-            .saturating_add(MAX_FUTURE_SKEW_MILLIS);
-        if attestation.timestamp > max_timestamp || attestation.user_data.len() != 32 {
-            return Ok(false);
-        }
-
-        let commitment = batch_commitment(self.storage.chain_id(), &call);
-        Ok(attestation.user_data.as_slice() == commitment.as_slice())
+        tempo_zone_verifier::verify_with_root(
+            self.storage.chain_id(),
+            self.storage.timestamp().saturating_to::<u64>(),
+            portal,
+            &call,
+            root_der,
+            approved_pcrs,
+            |gas| StorageCtx.deduct_gas(gas),
+        )
     }
-}
-
-fn batch_commitment(chain_id: u64, call: &IZoneVerifier::verifyCall) -> B256 {
-    NitroBatchAttestation {
-        parentChainId: U256::from(chain_id),
-        verifier: ZONE_VERIFIER_ADDRESS,
-        zoneId: call.zoneId,
-        tempoBlockNumber: call.tempoBlockNumber,
-        anchorBlockNumber: call.anchorBlockNumber,
-        anchorBlockHash: call.anchorBlockHash,
-        expectedWithdrawalBatchIndex: call.expectedWithdrawalBatchIndex,
-        nextZoneHeight: call.nextZoneHeight,
-        prevBlockHash: call.blockTransition.prevBlockHash,
-        nextBlockHash: call.blockTransition.nextBlockHash,
-        prevProcessedHash: call.depositQueueTransition.prevProcessedHash,
-        nextProcessedHash: call.depositQueueTransition.nextProcessedHash,
-        prevDepositNumber: call.depositQueueTransition.prevDepositNumber,
-        nextDepositNumber: call.depositQueueTransition.nextDepositNumber,
-        prevProcessedTokenCount: call.tokenEnablementTransition.prevProcessedTokenCount,
-        nextProcessedTokenCount: call.tokenEnablementTransition.nextProcessedTokenCount,
-        withdrawalQueueHash: call.withdrawalQueueHash,
-        verifierConfigHash: keccak256(&call.verifierConfig),
-    }
-    .eip712_hash_struct()
 }
 
 #[cfg(test)]

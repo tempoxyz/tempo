@@ -1,0 +1,21 @@
+[package]
+name = "tempo-zone-verifier"
+description = "Shared native and observational Nitro Zone proof verification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+aws-lc-rs.workspace = true
+tempo-contracts = { workspace = true, default-features = false }
+tempo-nitro-attestation.workspace = true
+
+[dev-dependencies]
+base64.workspace = true

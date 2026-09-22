@@ -32,6 +32,7 @@ paste.workspace = true
 bitflags.workspace = true
 aws-lc-rs.workspace = true
 tempo-nitro-attestation.workspace = true
+tempo-zone-verifier.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true

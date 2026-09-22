@@ -29,6 +29,7 @@ members = [
   "crates/faucet",
   "crates/node",
   "crates/nitro-attestation",
+  "crates/zone-verifier",
   "crates/payload/builder",
   "crates/payload/types",
   "crates/precompiles",
@@ -129,6 +130,7 @@ aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc",
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
 tempo-nitro-attestation = { path = "crates/nitro-attestation", default-features = false }
+tempo-zone-verifier = { path = "crates/zone-verifier" }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
