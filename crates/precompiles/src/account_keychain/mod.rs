@@ -1990,16 +1990,13 @@ mod tests {
                     }
                     if !matches!(code_kind, ParentCode::Empty) {
                         let code = match code_kind {
-                            ParentCode::Bytecode => vec![0x00],
+                            ParentCode::Bytecode => Bytecode::new_raw(vec![0x00].into()),
                             ParentCode::Delegation => {
-                                [vec![0xef, 0x01, 0x00], Address::repeat_byte(0x33).to_vec()]
-                                    .concat()
+                                Bytecode::new_eip7702(Address::repeat_byte(0x33))
                             }
                             ParentCode::Empty => unreachable!(),
                         };
-                        keychain
-                            .storage
-                            .set_code(parent, Bytecode::new_raw(code.into()))?;
+                        keychain.storage.set_code(parent, code)?;
                     }
                     let result = keychain.authorize_key(
                         parent,
