@@ -67,6 +67,7 @@ impl EvmFactory for TempoEvmFactory {
         #[cfg(feature = "test-utils")]
         {
             let mut evm = TempoEvm::new(db, input);
+            evm.precompile_overrides = self.precompile_overrides;
             if let Some(overrides) = self.precompile_overrides {
                 overrides(evm.components_mut().2);
             }
@@ -97,6 +98,8 @@ impl EvmFactory for TempoEvmFactory {
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
     inspect: bool,
+    #[cfg(feature = "test-utils")]
+    precompile_overrides: Option<fn(&mut PrecompilesMap)>,
 }
 
 impl<DB: Database> TempoEvm<DB> {
@@ -114,6 +117,8 @@ impl<DB: Database> TempoEvm<DB> {
         Self {
             inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
+            #[cfg(feature = "test-utils")]
+            precompile_overrides: None,
         }
     }
 }
@@ -168,6 +173,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
             inspect: true,
+            #[cfg(feature = "test-utils")]
+            precompile_overrides: self.precompile_overrides,
         }
     }
 
@@ -179,6 +186,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner: self.inner.with_fee_manager(fee_manager),
             inspect: self.inspect,
+            #[cfg(feature = "test-utils")]
+            precompile_overrides: self.precompile_overrides,
         }
     }
 
@@ -199,6 +208,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         let mut actions = self.inner.actions().clone();
         actions.enable();
         self.inner = self.inner.with_actions(actions);
+        #[cfg(feature = "test-utils")]
+        if let Some(overrides) = self.precompile_overrides {
+            overrides(&mut self.inner.inner.precompiles);
+        }
         self
     }
 
@@ -441,6 +454,15 @@ mod tests {
         assert!(plain.components().2.get(&address).is_none());
         assert!(inspected.components().2.get(&address).is_none());
         assert!(plain.components().2.get(&PATH_USD_ADDRESS).is_some());
+        assert!(plain.with_actions().components().2.get(&address).is_none());
+        assert!(
+            inspected
+                .with_actions()
+                .components()
+                .2
+                .get(&address)
+                .is_none()
+        );
         assert!(
             TempoEvmFactory::default()
                 .create_evm(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T13))
