@@ -408,7 +408,7 @@ mod test {
             }
 
             // trailing bytes break the exact length match, unlike a non-validating decode
-            let mut trailing = calldata.clone();
+            let mut trailing = calldata;
             trailing.push(0);
             assert!(PaymentSlots::classify(&trailing).is_none());
         }

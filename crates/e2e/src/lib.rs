@@ -322,7 +322,7 @@ pub async fn setup_validators(
         nodes.push(TestingNode::new(
             uid,
             private_key,
-            oracle.clone(),
+            oracle,
             share,
             network_identity.clone(),
             feed_state,
