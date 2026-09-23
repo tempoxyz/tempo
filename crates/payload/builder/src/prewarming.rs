@@ -17,6 +17,8 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
+mod payment_hints;
+
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
@@ -185,6 +187,18 @@ impl BestTransactionsPrewarming {
             let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
 
             if prewarm.is_stopped() {
+                return None;
+            }
+
+            // Read the shared parent-state cache directly: advisory prefetching
+            // must not warm the EVM journal or replace reusable action replay.
+            if !prewarm.parallel
+                && payment_hints::prewarm(
+                    evm.db_mut(),
+                    &tx.transaction,
+                    prewarm.evm_env.block_env.beneficiary,
+                )
+            {
                 return None;
             }
 
@@ -596,6 +610,14 @@ mod tests {
     }
 
     fn test_payment_tx(sender: Address, gas_limit: u64) -> BestTransaction {
+        test_payment_tx_calls(sender, gas_limit, 1)
+    }
+
+    fn test_payment_tx_calls(
+        sender: Address,
+        gas_limit: u64,
+        call_count: usize,
+    ) -> BestTransaction {
         let mut token = [0u8; 20];
         token[..2].copy_from_slice(&[0x20, 0xc0]);
         let token = Address::from(token);
@@ -607,11 +629,14 @@ mod tests {
             chain_id: 42431,
             fee_token: Some(token),
             gas_limit,
-            calls: vec![Call {
-                to: TxKind::Call(token),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
+            calls: vec![
+                Call {
+                    to: TxKind::Call(token),
+                    value: U256::ZERO,
+                    input: input.into(),
+                };
+                call_count
+            ],
             nonce_key: U256::ONE,
             ..Default::default()
         };
@@ -625,6 +650,74 @@ mod tests {
             origin: TransactionOrigin::External,
             authority_ids: None,
         })
+    }
+
+    #[test]
+    fn payment_hints_include_balances_and_nonce_without_executing() {
+        use tempo_precompiles::{
+            NONCE_PRECOMPILE_ADDRESS, storage::StorageKey, tip20::tip20_slots,
+        };
+        let sender = Address::repeat_byte(0x42);
+        let tx = test_payment_tx(sender, 100_000);
+        let token = tx.transaction.effective_fee_token();
+        let mut hints = Vec::new();
+        assert!(payment_hints::visit(
+            &tx.transaction,
+            Address::ZERO,
+            |address, slot| {
+                hints.push((address, slot));
+            }
+        ));
+        assert!(hints.contains(&(token, Some(sender.mapping_slot(tip20_slots::BALANCES)))));
+        assert!(hints.contains(&(
+            token,
+            Some(Address::ZERO.mapping_slot(tip20_slots::BALANCES))
+        )));
+        assert!(hints.contains(&(NONCE_PRECOMPILE_ADDRESS, tx.transaction.nonce_key_slot())));
+        assert!(hints.len() <= payment_hints::MAX_READS);
+    }
+
+    #[test]
+    fn non_payment_keeps_execution_prewarming() {
+        let tx = test_tx(Address::ZERO, 0);
+        assert!(!payment_hints::visit(
+            &tx.transaction,
+            Address::ZERO,
+            |_, _| { panic!("non-payment must not issue payment reads") }
+        ));
+    }
+
+    #[test]
+    fn payment_hint_work_is_bounded_and_large_batches_fall_back() {
+        let mut reads = 0;
+        let tx = test_payment_tx_calls(Address::ZERO, 1_000_000, 16);
+        assert!(payment_hints::visit(
+            &tx.transaction,
+            Address::ZERO,
+            |_, _| reads += 1
+        ));
+        assert!(reads <= payment_hints::MAX_READS);
+        let tx = test_payment_tx_calls(Address::ZERO, 1_000_000, 17);
+        assert!(!payment_hints::visit(
+            &tx.transaction,
+            Address::ZERO,
+            |_, _| { panic!("large call batch must use ordinary prewarming") }
+        ));
+    }
+
+    #[test]
+    fn payment_hints_do_not_warm_the_execution_journal() {
+        use reth_revm::context::JournalTr;
+        let context = prewarming_context(TaskExecutor::test(), false);
+        let mut evm = context.evm_for_ctx().unwrap();
+        let tx = test_payment_tx(Address::ZERO, 100_000);
+        assert!(evm.ctx().journaled_state.evm_state().is_empty());
+        assert!(payment_hints::prewarm(
+            evm.db_mut(),
+            &tx.transaction,
+            Address::ZERO
+        ));
+        assert!(evm.ctx().journaled_state.evm_state().is_empty());
     }
 
     struct TestPrewarming {
