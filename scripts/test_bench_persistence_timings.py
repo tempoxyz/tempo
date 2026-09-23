@@ -39,6 +39,20 @@ class MetricsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.delta({"values": [[0, "5"]]})
 
+    def test_aligns_late_registered_tables_with_persistence_counts(self):
+        blocks = row(m.P + "persisted_blocks_total", 100)
+        blocks["values"] = [[0, "0"], [5, "50"], [10, "100"]]
+        busy = row(m.P + "save_blocks_duration_seconds_sum", 10)
+        busy["values"] = [[0, "0"], [5, "5"], [10, "10"]]
+        table = row(m.T + "_sum", 1, table="HashedStorages", shard="0")
+        table["values"] = [[5, "2"], [10, "3"]]
+        count = row(m.T + "_count", 1, table="HashedStorages", shard="0")
+        count["values"] = [[5, "2"], [10, "3"]]
+        report = m.analyze({"resultType": "matrix", "result": [blocks, busy, table, count]})["phases"][0]
+        self.assertEqual(report["persisted_blocks"], 50)
+        self.assertEqual(report["compared_start"], 5)
+        self.assertEqual(report["tables"][0]["task_ms_per_persisted_block"], 20)
+
 
 if __name__ == "__main__":
     unittest.main()
