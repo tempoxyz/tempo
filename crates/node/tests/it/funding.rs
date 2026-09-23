@@ -183,6 +183,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         );
         assert!(output.balanceOf(owner.address()).call().await?.is_zero());
         let requirement = FundingRequirement {
+            policy_rules: None,
             token: PATH_USD_ADDRESS,
             amount: U256::from(50 * UNIT),
             slippage_bps: Some(100),
@@ -360,6 +361,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         invalidated.nonce = 3;
         invalidated.require_funds = Some(vec![
             FundingRequirement {
+                policy_rules: None,
                 token: assets[0],
                 amount: U256::from(145 * UNIT),
                 sources: vec![],
@@ -596,6 +598,7 @@ async fn funding_rpc_rejects_pre_t13_transactions() -> eyre::Result<()> {
             max_fee_per_gas: 20_000_000_000,
             fee_token: Some(PATH_USD_ADDRESS),
             require_funds: Some(vec![FundingRequirement {
+                policy_rules: None,
                 token: PATH_USD_ADDRESS,
                 amount: U256::ZERO,
                 sources: vec![],

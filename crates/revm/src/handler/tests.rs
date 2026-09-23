@@ -4497,6 +4497,7 @@ fn funding_intrinsic_prices_signed_extension_bytes() {
     )
     .unwrap();
     env.require_funds = vec![FundingRequirement {
+        policy_rules: None,
         token: Address::repeat_byte(1),
         amount: U256::from(1),
         sources: vec![],

@@ -16,6 +16,7 @@ pub(in crate::handler) struct FundingRequirement {
     pub token: Address,
     pub amount: U256,
     pub slippage_bps: Option<u16>,
+    pub policy_rules: Option<Bytes>,
     pub sources: Vec<ITIP20Funder::Source>,
 }
 
@@ -81,6 +82,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             .map(|entry| {
                 Ok(FundingRequirement {
                     token: entry.token,
+                    policy_rules: entry.policy_rules.clone(),
                     amount: entry.amount,
                     slippage_bps: entry
                         .slippage_bps

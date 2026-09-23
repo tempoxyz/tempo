@@ -13,79 +13,58 @@ crate::sol!(
 mod tests {
     use super::*;
     use alloc::vec;
-    use alloy_primitives::{Address, Bytes, U256};
+    use alloy_primitives::{Address, Bytes};
     use alloy_sol_types::{SolCall, SolValue};
 
     #[test]
-    fn policy_encoding_binds_routes_tokens_and_source_rules() {
-        let route = IFundingPolicy::Route {
-            token: Address::repeat_byte(2),
-            sources: vec![IFundingPolicy::Source {
-                target: Address::repeat_byte(4),
-                data: Bytes::from_static(&[0xaa]),
+    fn rules_encoding_binds_routes_and_source_order() {
+        let rules = IFundingPolicy::Rules {
+            maxSlippageBps: 100,
+            routes: vec![IFundingPolicy::Route {
+                token: Address::repeat_byte(2),
+                sources: vec![
+                    IFundingPolicy::Source {
+                        target: Address::repeat_byte(3),
+                        data: Bytes::from_static(&[1]),
+                    },
+                    IFundingPolicy::Source {
+                        target: Address::repeat_byte(3),
+                        data: Bytes::from_static(&[2]),
+                    },
+                ],
             }],
         };
-        let policy = IFundingPolicy::Policy {
-            admins: vec![Address::repeat_byte(1)],
-            slippageBps: 100,
-            routes: vec![
-                route,
-                IFundingPolicy::Route {
-                    token: Address::repeat_byte(5),
-                    sources: vec![IFundingPolicy::Source {
-                        target: Address::repeat_byte(4),
-                        data: Bytes::from_static(&[0xbb]),
-                    }],
-                },
-            ],
-        };
-        let encoded = policy.abi_encode_params();
-        assert_eq!(&encoded[..32], &U256::from(96).to_be_bytes::<32>());
-        assert_eq!(&encoded[32..64], &U256::from(100).to_be_bytes::<32>());
-        assert_eq!(&encoded[64..96], &U256::from(160).to_be_bytes::<32>());
-        assert_eq!(&encoded[160..192], &U256::from(2).to_be_bytes::<32>());
+        let encoded = rules.abi_encode();
+        assert_eq!(
+            IFundingPolicy::Rules::abi_decode_validate(&encoded).unwrap(),
+            rules
+        );
+        let mutations: &[fn(&mut IFundingPolicy::Rules)] = &[
+            |r| r.maxSlippageBps = 0,
+            |r| r.routes[0].token = Address::repeat_byte(4),
+            |r| r.routes[0].sources.reverse(),
+            |r| r.routes[0].sources[0].data = Bytes::new(),
+        ];
+        for mutate in mutations {
+            let mut changed = rules.clone();
+            mutate(&mut changed);
+            assert_ne!(encoded, changed.abi_encode());
+        }
         let call = IFundingPolicy::createPolicyCall {
-            policy: policy.clone(),
+            admins: vec![Address::repeat_byte(1)],
+            rules,
         };
         assert_eq!(
             IFundingPolicy::createPolicyCall::SIGNATURE,
-            "createPolicy((address[],uint16,(address,(address,bytes)[])[]))"
+            "createPolicy(address[],(uint16,(address,(address,bytes)[])[]))"
         );
         assert_eq!(
             IFundingPolicy::createPolicyCall::abi_decode_validate(&call.abi_encode()).unwrap(),
             call
         );
-        for change in 0..4 {
-            let mut changed = policy.clone();
-            match change {
-                0 => changed.routes.reverse(),
-                1 => changed.routes[0].token = Address::repeat_byte(3),
-                2 => changed.routes[0].sources[0].data = Bytes::new(),
-                _ => changed.routes.clear(),
-            }
-            assert_ne!(encoded, changed.abi_encode_params());
-            assert_eq!(
-                IFundingPolicy::Policy::abi_decode_params_validate(&changed.abi_encode_params())
-                    .unwrap(),
-                changed
-            );
-        }
-    }
-
-    #[test]
-    fn modify_policy_replaces_routes_without_admins() {
-        let call = IFundingPolicy::modifyPolicyCall {
-            policyId: 7,
-            slippageBps: 100,
-            routes: vec![],
-        };
         assert_eq!(
-            IFundingPolicy::modifyPolicyCall::SIGNATURE,
-            "modifyPolicy(uint64,uint16,(address,(address,bytes)[])[])"
-        );
-        assert_eq!(
-            IFundingPolicy::modifyPolicyCall::abi_decode_validate(&call.abi_encode()).unwrap(),
-            call
+            IFundingPolicy::setRulesCall::SIGNATURE,
+            "setRules(uint64,(uint16,(address,(address,bytes)[])[]))"
         );
     }
 }

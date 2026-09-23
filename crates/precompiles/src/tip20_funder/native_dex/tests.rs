@@ -172,7 +172,7 @@ fn policy_quotes_preserve_input_and_tighten_reusable_caps() {
     StorageCtx::enter(&mut storage, || {
         let mut call = quote(input, U256::from(30), U256::from(50));
         call.ownerAuthorized = false;
-        call.policyData = vec![input].abi_encode().into();
+        call.policyData = (input, U256::MAX).abi_encode().into();
         let first = source.quote(call.clone()).unwrap();
         call.requestData = first.requestData;
         call.maxCost = U256::from(20);
@@ -181,7 +181,7 @@ fn policy_quotes_preserve_input_and_tighten_reusable_caps() {
             source.decode(&second.requestData).unwrap(),
             (input, U256::from(20))
         );
-        call.policyData = vec![PATH_USD_ADDRESS].abi_encode().into();
+        call.policyData = (PATH_USD_ADDRESS, U256::MAX).abi_encode().into();
         assert!(source.quote(call).is_err());
     });
 }
@@ -195,14 +195,14 @@ fn discovery_omits_zero_capacity_and_rejects_invalid_configuration() {
             assetOut: PATH_USD_ADDRESS,
             amountOut: U256::from(50),
             maxCost: U256::from(50),
-            policyData: vec![input].abi_encode().into(),
+            policyData: (input, U256::MAX).abi_encode().into(),
         };
         assert!(source.discover(call.clone()).unwrap().is_empty());
-        call.policyData = Vec::<Address>::new().abi_encode().into();
+        call.policyData = (input, U256::ZERO).abi_encode().into();
         assert!(source.discover(call.clone()).unwrap().is_empty());
         call.policyData = Bytes::new();
         assert!(source.discover(call.clone()).is_err());
-        call.policyData = vec![Address::ZERO].abi_encode().into();
+        call.policyData = (Address::ZERO, U256::MAX).abi_encode().into();
         assert!(source.discover(call).is_err());
     });
 }
@@ -213,7 +213,7 @@ fn token_support_is_independent_of_balances_and_liquidity() {
     StorageCtx::enter(&mut storage, || {
         let mut call = IFundingSource::supportsTokenCall {
             token: PATH_USD_ADDRESS,
-            policyData: vec![Address::ZERO, input].abi_encode().into(),
+            policyData: (input, U256::MAX).abi_encode().into(),
         };
         assert!(source.supports_token(call.clone()).unwrap());
         assert_eq!(
@@ -223,11 +223,11 @@ fn token_support_is_independent_of_balances_and_liquidity() {
                 .amountOut,
             U256::ZERO
         );
-        for inputs in [vec![], vec![PATH_USD_ADDRESS], vec![Address::ZERO]] {
-            call.policyData = inputs.abi_encode().into();
+        for input in [PATH_USD_ADDRESS, Address::ZERO] {
+            call.policyData = (input, U256::MAX).abi_encode().into();
             assert!(!source.supports_token(call.clone()).unwrap());
         }
-        call.policyData = vec![input].abi_encode().into();
+        call.policyData = (input, U256::MAX).abi_encode().into();
         call.token = Address::ZERO;
         assert!(!source.supports_token(call.clone()).unwrap());
         call.policyData = Bytes::from_static(b"malformed");
@@ -248,12 +248,12 @@ fn token_support_rejects_non_parity_and_missing_routes() {
             .apply()
             .unwrap()
             .address();
-        for inputs in [vec![eur], vec![no_pair]] {
+        for input in [eur, no_pair] {
             assert!(
                 !source
                     .supports_token(IFundingSource::supportsTokenCall {
                         token: PATH_USD_ADDRESS,
-                        policyData: inputs.abi_encode().into(),
+                        policyData: (input, U256::MAX).abi_encode().into(),
                     })
                     .unwrap()
             );
@@ -262,7 +262,7 @@ fn token_support_rejects_non_parity_and_missing_routes() {
             source
                 .supports_token(IFundingSource::supportsTokenCall {
                     token: PATH_USD_ADDRESS,
-                    policyData: vec![eur, no_pair, input].abi_encode().into(),
+                    policyData: (input, U256::MAX).abi_encode().into(),
                 })
                 .unwrap()
         );
@@ -279,9 +279,37 @@ fn token_support_rejects_non_parity_and_missing_routes() {
             !source
                 .supports_token(IFundingSource::supportsTokenCall {
                     token: PATH_USD_ADDRESS,
-                    policyData: vec![input].abi_encode().into(),
+                    policyData: (input, U256::MAX).abi_encode().into(),
                 })
                 .unwrap()
         );
     });
+}
+
+#[test]
+fn verification_binds_input_and_cap_without_storage() {
+    let source = NativeDexFundingSource::new();
+    for (input, cap, expected) in [
+        (ACCOUNT, 30, true),
+        (ACCOUNT, 31, false),
+        (SOURCE, 30, false),
+    ] {
+        assert_eq!(
+            source
+                .verify(IFundingSource::verifyCall {
+                    requestData: (input, U256::from(cap)).abi_encode().into(),
+                    policyData: (ACCOUNT, U256::from(30)).abi_encode().into(),
+                })
+                .unwrap(),
+            expected
+        );
+    }
+    assert!(
+        source
+            .verify(IFundingSource::verifyCall {
+                requestData: Bytes::new(),
+                policyData: (ACCOUNT, U256::MAX).abi_encode().into(),
+            })
+            .is_err()
+    );
 }

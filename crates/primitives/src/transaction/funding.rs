@@ -40,11 +40,18 @@ pub struct FundingRequirement {
         )
     )]
     pub slippage_bps: Option<u64>,
+    /// Canonical ABI-encoded rules matching the access key policy commitment.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub policy_rules: Option<Bytes>,
 }
 
 impl FundingRequirement {
     pub fn size(&self) -> usize {
         size_of::<Self>()
+            + self.policy_rules.as_ref().map_or(0, |rules| rules.len())
             + self
                 .sources
                 .iter()
@@ -59,7 +66,8 @@ impl Encodable for FundingRequirement {
         let payload_length = self.token.length()
             + self.amount.length()
             + self.sources.length()
-            + alloy_rlp::list_length::<u64, u64>(tolerance);
+            + alloy_rlp::list_length::<u64, u64>(tolerance)
+            + self.policy_rules.as_ref().map_or(0, Encodable::length);
         alloy_rlp::Header {
             list: true,
             payload_length,
@@ -69,13 +77,17 @@ impl Encodable for FundingRequirement {
         self.amount.encode(out);
         self.sources.encode(out);
         alloy_rlp::encode_list::<u64, u64>(tolerance, out);
+        if let Some(rules) = &self.policy_rules {
+            rules.encode(out);
+        }
     }
 
     fn length(&self) -> usize {
         let payload_length = self.token.length()
             + self.amount.length()
             + self.sources.length()
-            + alloy_rlp::list_length::<u64, u64>(self.slippage_bps.as_slice());
+            + alloy_rlp::list_length::<u64, u64>(self.slippage_bps.as_slice())
+            + self.policy_rules.as_ref().map_or(0, Encodable::length);
         alloy_rlp::Header {
             list: true,
             payload_length,
@@ -99,6 +111,15 @@ impl Decodable for FundingRequirement {
         let sources = Vec::<FundingSource>::decode(&mut payload)?;
         // A zero-or-one-element list preserves the distinction between omission and explicit zero.
         let tolerance = Vec::<u64>::decode(&mut payload)?;
+        let policy_rules = if payload.is_empty() {
+            None
+        } else {
+            let rules = Bytes::decode(&mut payload)?;
+            if rules.is_empty() {
+                return Err(alloy_rlp::Error::Custom("empty funding policy rules"));
+            }
+            Some(rules)
+        };
         if !payload.is_empty() || tolerance.len() > 1 {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
@@ -114,6 +135,7 @@ impl Decodable for FundingRequirement {
             amount,
             sources,
             slippage_bps,
+            policy_rules,
         })
     }
 }
@@ -128,6 +150,7 @@ mod tests {
 
     fn requirement() -> FundingRequirement {
         FundingRequirement {
+            policy_rules: None,
             token: Address::repeat_byte(1),
             amount: U256::from(50),
             sources: vec![FundingSource {
@@ -188,6 +211,27 @@ mod tests {
 
     fn signature() -> TempoSignature {
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+    }
+
+    #[test]
+    fn policy_rules_roundtrip_and_empty_rejection() {
+        for rules in [Bytes::from_static(&[1]), Bytes::from(vec![42; 608])] {
+            let entry = FundingRequirement {
+                policy_rules: Some(rules),
+                ..requirement()
+            };
+            let encoded = alloy_rlp::encode(&entry);
+            assert_eq!(entry.length(), encoded.len());
+            assert_eq!(
+                FundingRequirement::decode(&mut encoded.as_slice()).unwrap(),
+                entry
+            );
+        }
+        let entry = FundingRequirement {
+            policy_rules: Some(Bytes::new()),
+            ..requirement()
+        };
+        assert!(FundingRequirement::decode(&mut alloy_rlp::encode(entry).as_slice()).is_err());
     }
 
     #[test]
@@ -336,6 +380,7 @@ mod tests {
         let signed = AASigned::new_unhashed(tx.clone(), signature());
         let mutations: &[fn(&mut Vec<FundingRequirement>)] = &[
             |v| v[0].token = Address::ZERO,
+            |v| v[0].policy_rules = Some(Bytes::from_static(&[1])),
             |v| v[0].amount += U256::from(1),
             |v| v[0].sources[0].target = Address::ZERO,
             |v| v[0].sources[0].data = Bytes::from_static(&[0xcd]),
