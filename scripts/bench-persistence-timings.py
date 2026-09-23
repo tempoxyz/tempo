@@ -99,6 +99,8 @@ def analyze(document):
             "mean_static_file_writes_ms": mean("reth_storage_providers_database_save_blocks_sf"),
             "mean_rocksdb_writes_ms": mean("reth_storage_providers_database_save_blocks_rocksdb"),
             "mean_validator_execution_ms": mean("reth_sync_execution_execution_histogram"),
+            "mean_new_payload_processing_ms": mean("reth_sync_block_validation_total_duration"),
+            "mean_state_root_wait_ms": mean("reth_sync_block_validation_state_root_histogram"),
             "mean_payload_build_ms": mean("reth_tempo_payload_builder_payload_build_duration_seconds"),
             "mean_produced_block_interval_ms": mean("reth_tempo_payload_builder_block_time_millis", 1),
             "tables": tables,
