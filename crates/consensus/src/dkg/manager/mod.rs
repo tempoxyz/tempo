@@ -1,6 +1,7 @@
 use std::{future::Future, num::NonZeroUsize, sync::Arc};
 
 use commonware_consensus::{
+    Heightable as _,
     marshal::core::DigestFallback,
     types::{Epoch, FixedEpocher, Height},
 };
@@ -110,22 +111,22 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
 
     /// Determines the validator set selected for the epoch after the block
-    /// identified by `digest`.
+    /// `parent`.
     ///
-    /// This is used while constructing or verifying a proposal, so `digest`
-    /// must identify that proposal's parent. If the corresponding execution
-    /// state is unavailable, the proposal cannot be constructed or verified.
-    fn next_players(&self, digest: Digest) -> eyre::Result<ordered::Set<PublicKey>>;
+    /// This is used while constructing or verifying a proposal, so `parent`
+    /// must be that proposal's parent. If the corresponding execution state
+    /// is unavailable, the proposal cannot be constructed or verified.
+    fn next_players(&self, parent: &Block) -> eyre::Result<ordered::Set<PublicKey>>;
 
     /// Reads the epoch scheduled for the next full DKG ceremony from the
-    /// validator configuration at `digest`.
+    /// validator configuration at `parent`.
     ///
     /// This determines whether the next ceremony creates a new polynomial
     /// instead of resharing the current one. It is used while constructing or
-    /// verifying a proposal, so `digest` must identify that proposal's parent.
+    /// verifying a proposal, so `parent` must be that proposal's parent.
     /// If the corresponding execution state is unavailable, the proposal
     /// cannot be constructed or verified.
-    fn next_full_dkg_epoch(&self, digest: Digest) -> eyre::Result<u64>;
+    fn next_full_dkg_epoch(&self, parent: &Block) -> eyre::Result<u64>;
 }
 
 /// Marshal operations used by the DKG manager.
@@ -190,11 +191,18 @@ impl ExecutionLayer for Arc<TempoFullNode> {
             .map_err(Report::new)
     }
 
-    #[tracing::instrument(skip_all, fields(%digest), err(level = Level::WARN))]
-    fn next_players(&self, digest: Digest) -> eyre::Result<ordered::Set<PublicKey>> {
-        let (_, _, next_players) =
-            read_validator_config_at_block_hash(self.as_ref(), digest.0, read_active_peers)
-                .wrap_err("failed reading peers from validator config v2")?;
+    #[tracing::instrument(
+        skip_all,
+        fields(parent.height = %parent.height()),
+        err(level = Level::WARN),
+    )]
+    fn next_players(&self, parent: &Block) -> eyre::Result<ordered::Set<PublicKey>> {
+        let (_, _, next_players) = read_validator_config_at_block_hash(
+            self.as_ref(),
+            parent.digest().0,
+            read_active_peers,
+        )
+        .wrap_err("failed reading peers from validator config v2")?;
         let next_players = next_players.into_keys();
 
         tracing::debug!(?next_players, "determined next players");
@@ -203,14 +211,14 @@ impl ExecutionLayer for Arc<TempoFullNode> {
 
     #[tracing::instrument(
         skip_all,
-        fields(%digest),
+        fields(parent.height = %parent.height()),
         err(level = Level::WARN),
         ret
     )]
-    fn next_full_dkg_epoch(&self, digest: Digest) -> eyre::Result<u64> {
+    fn next_full_dkg_epoch(&self, parent: &Block) -> eyre::Result<u64> {
         read_validator_config_at_block_hash(
             self.as_ref(),
-            digest.0,
+            parent.digest().0,
             |config: &ValidatorConfigV2| {
                 config
                     .get_next_network_identity_rotation_epoch()

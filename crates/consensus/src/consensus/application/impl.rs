@@ -13,7 +13,7 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epocher as _, FixedEpocher, HeightDelta, Round},
+    types::{Epocher as _, FixedEpocher},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{
@@ -105,7 +105,7 @@ impl Inner {
         &self,
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
-        parent: &Block,
+        parent: &Arc<Block>,
         propose_start: Instant,
     ) -> eyre::Result<Block> {
         self.executor
@@ -128,11 +128,7 @@ impl Inner {
             // At epoch boundary: include public ceremony outcome
             let outcome = self
                 .dkg_manager
-                .subscribe_dkg_outcome(
-                    parent_digest,
-                    parent.height(),
-                    Round::new(round.epoch(), parent_view),
-                )
+                .subscribe_dkg_outcome(parent.clone())
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
@@ -265,10 +261,14 @@ impl Inner {
 
     /// Checks the header of a proposal before it is handed to the execution
     /// layer: the consensus context it claims and the DKG data in `extra_data`.
+    ///
+    /// `ancestry` yields the parent of `block` next. Only the DKG outcome of
+    /// a boundary block needs the parent, so only then is it read.
     #[instrument(skip_all, err(Display))]
     async fn verify_header(
         &self,
         block: &Block,
+        mut ancestry: impl Ancestry<Block>,
         context: &Context<Digest, PublicKey>,
     ) -> eyre::Result<()> {
         let epoch_info = self
@@ -303,15 +303,11 @@ impl Inner {
                 "on last block of epoch; verifying that the boundary block \
                 contains the correct DKG outcome",
             );
-            let our_outcome = match self
-                .dkg_manager
-                .subscribe_dkg_outcome(
-                    context.parent.1,
-                    block.height().saturating_sub(HeightDelta::new(1)),
-                    Round::new(round.epoch(), context.parent.0),
-                )
-                .await
-            {
+            let Some(parent) = ancestry.next().await else {
+                warn!("ancestry ended before yielding the parent; abstaining");
+                return std::future::pending().await;
+            };
+            let our_outcome = match self.dkg_manager.subscribe_dkg_outcome(parent).await {
                 Ok(outcome) => outcome,
                 Err(reason) => {
                     warn!(%reason, "DKG outcome unavailable; abstaining");
@@ -434,7 +430,7 @@ where
         };
         tracing::Span::current().record("digest", tracing::field::display(block.digest()));
 
-        if let Err(reason) = self.verify_header(&block, &context).await {
+        if let Err(reason) = self.verify_header(&block, ancestry, &context).await {
             warn!(%reason, "header could not be verified; failing block");
             return false;
         }

@@ -4,7 +4,7 @@ use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
-    Heightable as _,
+    CertifiableBlock as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
@@ -483,10 +483,14 @@ where
                         }
 
                         Command::SubscribeDkgOutcome(request) => {
-                            let epoch = self.config.epoch_strategy.containing(request.height)
-                                .expect("our strategy covers all heights").epoch();
+                            let epoch = self
+                                .config
+                                .epoch_strategy
+                                .containing(request.parent.height())
+                                .expect("our strategy covers all heights")
+                                .epoch();
                             if epoch == state.epoch {
-                                outcome_requests.entry(request.digest)
+                                outcome_requests.entry(request.parent.digest())
                                     .or_insert_with(|| PendingOutcome {
                                         cause: msg.cause,
                                         requests: Vec::new(),
@@ -1143,7 +1147,7 @@ where
     ///
     /// 1. if the DKG actor has observed as many dealer logs as there are dealers.
     /// 2. if all blocks in an epoch were observed (finalized + notarized leading
-    /// up to `request.digest`).
+    /// up to `request.parent`).
     ///
     /// Returns the outcome once both the ceremony and the parent's execution
     /// state are available, or identifies the next missing ancestor. Execution
@@ -1154,7 +1158,7 @@ where
         fields(
             as_player = player_state.is_some(),
             our.epoch = %round.epoch(),
-            for_block = %request.digest,
+            for_block = %request.parent.digest(),
         ),
         err(level = Level::WARN),
     )]
@@ -1173,7 +1177,7 @@ where
         let epoch_info = self
             .config
             .epoch_strategy
-            .containing(request.height)
+            .containing(request.parent.height())
             .expect("our strategy covers all epochs");
 
         ensure!(
@@ -1183,7 +1187,7 @@ where
         );
 
         let output = if let Some((output, _)) = storage
-            .get_dkg_outcome(&state.epoch, &request.digest)
+            .get_dkg_outcome(&state.epoch, &request.parent.digest())
             .cloned()
         {
             output
@@ -1204,8 +1208,8 @@ where
                     logs read from notarized blocks and concluding DKG that way",
                 );
                 let mut notarized_logs = BTreeMap::new();
-                let (mut height, mut digest) = (request.height, request.digest);
-                let mut ancestor_round = request.round;
+                let (mut height, mut digest) = (request.parent.height(), request.parent.digest());
+                let mut ancestor_round = request.parent.context().round;
                 while height >= epoch_info.first()
                     && Some(height)
                         >= storage
@@ -1310,7 +1314,7 @@ where
                 }
             };
 
-            storage.cache_dkg_outcome(state.epoch, request.digest, output.clone(), share);
+            storage.cache_dkg_outcome(state.epoch, request.parent.digest(), output.clone(), share);
             output
         };
 
@@ -1319,7 +1323,7 @@ where
         let will_be_re_dkg = self
             .config
             .execution_node
-            .next_full_dkg_epoch(request.digest)
+            .next_full_dkg_epoch(&request.parent)
             .wrap_err("could not determine the next full DKG epoch")?
             == next_epoch.get();
         info!(
@@ -1331,7 +1335,7 @@ where
         let next_players = self
             .config
             .execution_node
-            .next_players(request.digest)
+            .next_players(&request.parent)
             .wrap_err("could not determine who the next players are supposed to be")?;
 
         Ok(Outcome::Ready(OnchainDkgOutcome {

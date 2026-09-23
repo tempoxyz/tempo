@@ -1,10 +1,8 @@
+use std::sync::Arc;
+
 use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
-use commonware_consensus::{
-    Reporter,
-    marshal::Update,
-    types::{Epoch, Height, Round},
-};
+use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
 use commonware_cryptography::{
     bls12381::{dkg::feldman_desmedt::SignedDealerLog, primitives::variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
@@ -15,7 +13,7 @@ use futures::channel::{mpsc, oneshot};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tracing::{Span, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::consensus::block::Block;
 
 /// A mailbox to handle finalized blocks.
 ///
@@ -47,26 +45,24 @@ impl Mailbox {
             .wrap_err("actor dropped channel before responding with signed dealer log")
     }
 
-    /// Registers an outcome subscription, returning its receiver immediately.
+    /// Registers a subscription for the outcome that a boundary block on top
+    /// of `parent` must contain, returning its receiver immediately.
     ///
-    /// `round` is the notarized round of `digest`, used to fetch the starting block.
-    /// The actor responds once ancestry and execution state are available.
-    /// Dropping the receiver cancels the subscription. The channel closes
-    /// without a value if the actor cannot serve the request or shuts down.
+    /// If the actor must fetch `parent` from peers, it uses the round in the
+    /// consensus context of `parent`. The actor responds once ancestry and
+    /// execution state are available. Dropping the receiver cancels the
+    /// subscription. The channel closes without a value if the actor cannot
+    /// serve the request or shuts down.
     pub(crate) fn subscribe_dkg_outcome(
         &self,
-        digest: Digest,
-        height: Height,
-        round: Round,
+        parent: Arc<Block>,
     ) -> oneshot::Receiver<OnchainDkgOutcome> {
         let (response, rx) = oneshot::channel();
         // A closed mailbox drops the sender, so the receiver reports cancellation.
         let _ = self
             .inner
             .unbounded_send(Message::in_current_span(SubscribeDkgOutcome {
-                digest,
-                height,
-                round,
+                parent,
                 response,
             }));
         rx
@@ -148,9 +144,7 @@ pub(super) struct GetDealerLog {
 }
 
 pub(super) struct SubscribeDkgOutcome {
-    pub(super) digest: Digest,
-    pub(super) height: Height,
-    pub(super) round: Round,
+    pub(super) parent: Arc<Block>,
     pub(super) response: oneshot::Sender<OnchainDkgOutcome>,
 }
 

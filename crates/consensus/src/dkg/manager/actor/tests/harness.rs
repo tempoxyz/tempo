@@ -17,12 +17,13 @@ use crate::{
     test_utils::{dkg_fixture, make_certificate},
 };
 use alloy_consensus::{Header, Sealable as _};
+use alloy_primitives::B256;
 use commonware_actor::{Feedback, Unreliable};
 use commonware_codec::Encode as _;
 use commonware_consensus::{
     Heightable as _, Reporter as _,
     marshal::{Update, core::DigestFallback},
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round as ConsensusRound},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -51,7 +52,7 @@ use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_primitives::{BlockBody, TempoHeader};
+use tempo_primitives::{BlockBody, TempoConsensusContext, TempoHeader};
 use tokio::sync::oneshot;
 
 use super::super::{
@@ -663,14 +664,14 @@ impl ExecutionLayer for StubExecutionProvider {
         Ok(self.headers.lock().unwrap().get(&height).cloned())
     }
 
-    fn next_players(&self, _digest: Digest) -> eyre::Result<ordered::Set<PublicKey>> {
+    fn next_players(&self, _parent: &Block) -> eyre::Result<ordered::Set<PublicKey>> {
         if self.fail_next_players.load(Ordering::SeqCst) {
             eyre::bail!("next players unavailable");
         }
         Ok(self.next_players.lock().unwrap().clone())
     }
 
-    fn next_full_dkg_epoch(&self, _digest: Digest) -> eyre::Result<u64> {
+    fn next_full_dkg_epoch(&self, _parent: &Block) -> eyre::Result<u64> {
         if self.fail_next_full_dkg_epoch.load(Ordering::SeqCst) {
             eyre::bail!("full DKG schedule unavailable");
         }
@@ -804,6 +805,23 @@ pub(super) fn header(height: Height) -> TempoHeader {
         },
         ..Default::default()
     }
+}
+
+/// Returns a block at `height`, proposed in `round`, whose digest differs for
+/// each `tag`. Use it for requests whose parent is not a block that the test
+/// reports.
+pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Arc<Block> {
+    let mut header = header(height);
+    header.inner.mix_hash = B256::repeat_byte(tag);
+    header.consensus_context = Some(TempoConsensusContext {
+        epoch: round.epoch().get(),
+        view: round.view().get(),
+        parent_view: round.view().get().saturating_sub(1),
+        proposer: crate::utils::public_key_to_tempo_primitive(
+            &PrivateKey::from_seed(0).public_key(),
+        ),
+    });
+    Arc::new(block(header))
 }
 
 pub(super) fn block(header: TempoHeader) -> Block {
