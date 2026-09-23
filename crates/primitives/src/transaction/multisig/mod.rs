@@ -357,41 +357,16 @@ impl MultisigSignature {
         Ok(())
     }
 
-    /// Decodes bounded primitive approvals before any cryptographic work.
+    /// Decodes the wire fields and validates the witness without cryptography.
     pub(crate) fn decode_rlp(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let outer = alloy_rlp::Header::decode(buf)?;
-        if !outer.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
+        #[derive(alloy_rlp::RlpDecodable)]
+        struct WireSignature {
+            account: Address,
+            config: MultisigConfig,
+            signatures: Vec<PrimitiveSignature>,
         }
-        let body = *buf;
-        let (mut fields, rest) = body.split_at(outer.payload_length);
-
-        let account = <Address as alloy_rlp::Decodable>::decode(&mut fields)?;
-        let config = <MultisigConfig as alloy_rlp::Decodable>::decode(&mut fields)?;
-
-        let mut sig_fields = alloy_rlp::Header::decode_bytes(&mut fields, true)?;
-        let mut signatures = Vec::new();
-        while !sig_fields.is_empty() {
-            if signatures.len() == MAX_MULTISIG_SIGNATURES {
-                return Err(alloy_rlp::Error::Custom("too many multisig signatures"));
-            }
-            let bytes = alloy_rlp::Header::decode_bytes(&mut sig_fields, false)?;
-            if bytes.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES {
-                return Err(alloy_rlp::Error::Custom(
-                    "multisig owner signature too large",
-                ));
-            }
-            signatures
-                .push(PrimitiveSignature::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)?);
-        }
-        if !fields.is_empty() {
-            return Err(alloy_rlp::Error::Custom(
-                "unexpected trailing native multisig signature fields",
-            ));
-        }
-
-        *buf = rest;
-        Self::try_new(account, config, signatures)
+        let wire = <WireSignature as alloy_rlp::Decodable>::decode(buf)?;
+        Self::try_new(wire.account, wire.config, wire.signatures)
             .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))
     }
 }
