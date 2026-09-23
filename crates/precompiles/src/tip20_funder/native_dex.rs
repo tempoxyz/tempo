@@ -84,20 +84,18 @@ impl NativeDexFundingSource {
     pub fn supports_token(&self, call: IFundingSource::supportsTokenCall) -> Result<bool> {
         self.validate_context()?;
         let (input, _) = self.decode(&call.policyData)?;
-        {
-            match self.validate_route(input, call.token) {
-                Ok(()) => return Ok(true),
-                Err(TempoPrecompileError::TIP20Funder(TIP20FunderError::InvalidAsset(_)))
-                | Err(TempoPrecompileError::TIP20(
-                    TIP20Error::InvalidToken(_) | TIP20Error::ContractPaused(_),
-                ))
-                | Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::IdenticalTokens(_)
-                    | StablecoinDEXError::InvalidToken(_)
-                    | StablecoinDEXError::PairDoesNotExist(_),
-                )) => return Ok(false),
-                Err(error) => return Err(error),
-            }
+        match self.validate_route(input, call.token) {
+            Ok(()) => Ok(true),
+            Err(TempoPrecompileError::TIP20Funder(TIP20FunderError::InvalidAsset(_)))
+            | Err(TempoPrecompileError::TIP20(
+                TIP20Error::InvalidToken(_) | TIP20Error::ContractPaused(_),
+            ))
+            | Err(TempoPrecompileError::StablecoinDEX(
+                StablecoinDEXError::IdenticalTokens(_)
+                | StablecoinDEXError::InvalidToken(_)
+                | StablecoinDEXError::PairDoesNotExist(_),
+            )) => Ok(false),
+            Err(error) => Err(error),
         }
     }
 
@@ -111,24 +109,22 @@ impl NativeDexFundingSource {
         self.validate_asset(call.assetOut, &currency)?;
         let (asset_in, cap) = self.decode(&call.policyData)?;
         let mut candidates = Vec::new();
-        {
-            if asset_in == call.assetOut {
-                return Ok(candidates);
-            }
-            let quote = self.quote_input(
-                call.account,
-                call.assetOut,
-                call.amountOut,
-                call.maxCost,
-                asset_in,
-                cap,
-            )?;
-            if !quote.amountOut.is_zero() {
-                candidates.push(IFundingSource::Candidate {
-                    requestData: quote.requestData,
-                    availableAmount: quote.amountOut,
-                });
-            }
+        if asset_in == call.assetOut {
+            return Ok(candidates);
+        }
+        let quote = self.quote_input(
+            call.account,
+            call.assetOut,
+            call.amountOut,
+            call.maxCost,
+            asset_in,
+            cap,
+        )?;
+        if !quote.amountOut.is_zero() {
+            candidates.push(IFundingSource::Candidate {
+                requestData: quote.requestData,
+                availableAmount: quote.amountOut,
+            });
         }
         Ok(candidates)
     }
