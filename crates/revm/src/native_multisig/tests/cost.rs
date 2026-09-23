@@ -63,9 +63,9 @@ impl MaximumQuorums {
         // Valid low-s scalars from the same key, but the wrong prehash: parsing
         // succeeds and rejection requires the final P256 verification itself.
         let wrong: p256::ecdsa::Signature = keys[47].1.sign_prehash(&[0x99; 32]).unwrap();
-        let wrong = wrong.to_bytes();
-        last.r = B256::from_slice(&wrong[..32]);
-        last.s = normalize_p256_s(&wrong[32..]).unwrap();
+        let (r, s) = wrong.split_bytes();
+        last.r = B256::from_slice(&r);
+        last.s = normalize_p256_s(&s).unwrap();
         let invalid_final = MultisigSignature::try_new(
             roles[1].1.account(),
             roles[1].1.config().clone(),
@@ -102,12 +102,12 @@ impl MaximumQuorums {
         hash.update(&data);
         hash.update(Sha256::digest(&json));
         let signature: p256::ecdsa::Signature = key.sign_prehash(&hash.finalize()).unwrap();
-        let signature = signature.to_bytes();
+        let (r, s) = signature.split_bytes();
         data.extend(json);
         PrimitiveSignature::WebAuthn(WebAuthnSignature {
             webauthn_data: data.into(),
-            r: B256::from_slice(&signature[..32]),
-            s: normalize_p256_s(&signature[32..]).unwrap(),
+            r: B256::from_slice(&r),
+            s: normalize_p256_s(&s).unwrap(),
             pub_key_x: x,
             pub_key_y: y,
         })
