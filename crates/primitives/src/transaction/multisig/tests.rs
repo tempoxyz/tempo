@@ -1,8 +1,7 @@
 use super::*;
-#[cfg(feature = "serde")]
-use crate::transaction::KeychainVersion;
 use crate::transaction::{
-    AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
+    AccountSignature, KeychainSignature, KeychainVersion, PrimitiveSignature, TempoSignature,
+    derive_p256_address,
     tt_authorization::tests::generate_secp256k1_keypair,
     tt_signature::{
         P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, WebAuthnSignature, normalize_p256_s,
@@ -310,6 +309,10 @@ fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
         envelope.as_keychain().unwrap().key_id(&B256::ZERO).unwrap(),
         multisig.account()
     );
+    // Changing the version must reject the envelope even with a cached key ID.
+    let mut keychain = envelope.as_keychain().unwrap().clone();
+    keychain.version = KeychainVersion::V1;
+    assert!(keychain.key_id(&B256::ZERO).is_err());
     assert!(
         envelope
             .as_keychain()
@@ -330,7 +333,8 @@ fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
             envelope
         );
         json["version"] = serde_json::to_value(KeychainVersion::V1).unwrap();
-        assert!(serde_json::from_value::<TempoSignature>(json).is_err());
+        let legacy = serde_json::from_value::<TempoSignature>(json).unwrap();
+        assert!(legacy.as_keychain().unwrap().key_id(&B256::ZERO).is_err());
     }
 }
 
