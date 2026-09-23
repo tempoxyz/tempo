@@ -411,8 +411,8 @@ jobs:
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
-      BENCH_TXGEN_CORES: ${{ inputs.txgen-cores || '4' }}
-      BENCH_BASELINE_TXGEN_CORES: ${{ inputs.baseline-txgen-cores }}
+      BENCH_TXGEN_CORES: "2"
+      BENCH_BASELINE_TXGEN_CORES: "0"
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
