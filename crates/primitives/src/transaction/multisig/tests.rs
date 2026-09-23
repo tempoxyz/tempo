@@ -650,8 +650,7 @@ fn multisig_signature_encodes_complete_config() {
     let signature =
         MultisigSignature::try_new(account, config.clone(), vec![valid_owner_signature()]).unwrap();
 
-    let mut encoded = Vec::new();
-    signature.encode(&mut encoded);
+    let encoded = alloy_rlp::encode(&signature);
     assert_eq!(
         encoded,
         encoded_multisig(
@@ -700,8 +699,7 @@ fn multisig_config_validates_owner_count_after_decoding() {
             })
             .collect(),
     };
-    let mut encoded = Vec::new();
-    config.encode(&mut encoded);
+    let encoded = alloy_rlp::encode(&config);
 
     let mut input = encoded.as_slice();
     let decoded = MultisigConfig::decode(&mut input).unwrap();
@@ -813,8 +811,7 @@ fn multisig_signature_serde_roundtrips_rlp_bytes() {
     let signatures = vec![owner_signature];
 
     let signature = MultisigSignature::try_new(account, config, signatures).unwrap();
-    let mut encoded = Vec::with_capacity(signature.length());
-    signature.encode(&mut encoded);
+    let mut encoded = alloy_rlp::encode(&signature);
     let json = serde_json::to_value(&signature).unwrap();
     assert_eq!(
         json,
@@ -872,8 +869,7 @@ fn binary_multisig_deserializer_roundtrips_bytes() {
     );
     let signature = signature.as_multisig().unwrap();
 
-    let mut encoded = Vec::new();
-    signature.encode(&mut encoded);
+    let encoded = alloy_rlp::encode(signature);
     let decoded = MultisigSignature::deserialize(serde::de::value::BorrowedBytesDeserializer::<
         serde::de::value::Error,
     >::new(&encoded))
@@ -911,16 +907,14 @@ proptest! {
         if let Ok(decoded) = MultisigSignature::decode(&mut input) {
             prop_assert!(input.is_empty());
 
-            let mut reencoded = Vec::new();
-            decoded.encode(&mut reencoded);
+            let reencoded = alloy_rlp::encode(&decoded);
 
             let mut canonical_input = reencoded.as_slice();
             let canonical_decoded = MultisigSignature::decode(&mut canonical_input).unwrap();
             prop_assert!(canonical_input.is_empty());
             prop_assert_eq!(&canonical_decoded, &decoded);
 
-            let mut canonical_reencoded = Vec::new();
-            canonical_decoded.encode(&mut canonical_reencoded);
+            let canonical_reencoded = alloy_rlp::encode(&canonical_decoded);
             prop_assert_eq!(canonical_reencoded, reencoded);
         }
     }
