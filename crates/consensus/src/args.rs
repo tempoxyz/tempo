@@ -179,7 +179,12 @@ pub struct Args {
     /// recent percentile of the rest (`--consensus.network-reserve-percentile`):
     /// never less than `--consensus.network-budget`, never more than this.
     /// Set it equal to `--consensus.network-budget` for a fixed reservation.
-    #[arg(long = "consensus.network-budget-max", default_value = "250ms")]
+    ///
+    /// The 300ms default covers the far-away proposers of a 10 validator,
+    /// four region network, whose p75 network time was about 265-290ms; a
+    /// 250ms cap clamped them and cost p90 block time. It must stay below
+    /// `--consensus.target-block-time`.
+    #[arg(long = "consensus.network-budget-max", default_value = "300ms")]
     pub network_budget_max: PositiveDuration,
 
     /// Percentile of recent own-proposal network times the proposal budget
@@ -200,11 +205,23 @@ pub struct Args {
     /// The percentile over the last 16 own proposals, up to two minutes of
     /// them, lags a network that is getting slower, for example while blocks
     /// grow, so proposals made during the rise exceed their reservation far
-    /// more often than the percentile implies. With this flag one slow
-    /// proposal raises the reservation for the next one immediately, still
-    /// capped by `--consensus.network-budget-max`, and the next faster
-    /// proposal hands it back to the window percentile.
-    #[arg(long = "consensus.network-reserve-fast-rise", default_value_t = false)]
+    /// more often than the percentile implies. Fast rise follows one slow
+    /// proposal up for the next one immediately, still capped by
+    /// `--consensus.network-budget-max`, and the next faster proposal hands
+    /// the reservation back to the window percentile. On a 10 validator, four
+    /// region benchmark it cut the share of proposals whose network time
+    /// exceeded the reservation from 43% to 37% without costing throughput.
+    ///
+    /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
+    /// reserve the window percentile alone.
+    #[arg(
+        long = "consensus.network-reserve-fast-rise",
+        value_name = "BOOL",
+        num_args(0..=1),
+        default_missing_value = "true",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
     pub network_reserve_fast_rise: bool,
 
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
@@ -711,20 +728,36 @@ mod tests {
     fn network_reserve_flags_reach_the_estimator_config() {
         let multiplier = tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
         let config = parse(&["--dev"]).consensus.estimator_config(multiplier);
+        assert_eq!(config.network_budget_max, Duration::from_millis(300));
+        assert_eq!(
+            config.network_budget_max,
+            tempo_payload_types::DEFAULT_NETWORK_BUDGET_MAX
+        );
         assert_eq!(config.network_reserve_percentile, 75);
-        assert!(!config.network_reserve_fast_rise);
+        assert!(config.network_reserve_fast_rise);
 
+        // A bare fast rise flag enables it, whether another flag follows or not.
         let args = parse(&[
             "--dev",
+            "--consensus.network-reserve-fast-rise",
             "--consensus.network-reserve-percentile",
             "90",
-            "--consensus.network-reserve-fast-rise",
         ])
         .consensus;
         args.validate_simplex_timing().unwrap();
         let config = args.estimator_config(multiplier);
         assert_eq!(config.network_reserve_percentile, 90);
         assert!(config.network_reserve_fast_rise);
+        assert!(
+            parse(&["--dev", "--consensus.network-reserve-fast-rise"])
+                .consensus
+                .network_reserve_fast_rise
+        );
+
+        // An explicit value turns it off.
+        let args = parse(&["--dev", "--consensus.network-reserve-fast-rise=false"]).consensus;
+        args.validate_simplex_timing().unwrap();
+        assert!(!args.estimator_config(multiplier).network_reserve_fast_rise);
 
         for percentile in ["49", "101"] {
             let err = parse(&[

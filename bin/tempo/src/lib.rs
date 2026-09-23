@@ -1134,10 +1134,10 @@ mod tests {
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.15);
         assert_eq!(
             node_cmd.ext.consensus.network_budget_max.into_duration(),
-            Duration::from_millis(250)
+            Duration::from_millis(300)
         );
         assert_eq!(node_cmd.ext.consensus.network_reserve_percentile, 75);
-        assert!(!node_cmd.ext.consensus.network_reserve_fast_rise);
+        assert!(node_cmd.ext.consensus.network_reserve_fast_rise);
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",

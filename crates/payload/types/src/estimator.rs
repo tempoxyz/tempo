@@ -29,7 +29,7 @@
 //! commit landing on a block, one slow finish) therefore moves the estimate by
 //! at most one window slot instead of resetting it to the outlier, while a
 //! sustained change still takes over within a fraction of the window. The
-//! network reservation can opt out of that damping on the way up, see
+//! network reservation skips that damping on the way up by default, see
 //! [`EstimatorConfig::network_reserve_fast_rise`].
 
 use std::{
@@ -52,10 +52,12 @@ pub const DEFAULT_NETWORK_BUDGET: Duration = Duration::from_millis(50);
 /// Largest network reservation the estimator may learn on its own.
 ///
 /// The cap bounds how much of the block time propagation may claim before an
-/// operator has to look at the network rather than the estimator. It is
-/// roughly the propagation and vote round trip measured on a 10 validator,
-/// four region deployment with 2.6 MB blocks.
-pub const DEFAULT_NETWORK_BUDGET_MAX: Duration = Duration::from_millis(250);
+/// operator has to look at the network rather than the estimator. On a 10
+/// validator, four region GCP network the far-away (Asia) proposers measured
+/// a p75 of about 265 to 290 ms of propagation plus vote time to the next
+/// leader. A 250 ms cap clamped them and cost p90 block time, while a 320 ms
+/// cap bound on only 1% of proposals.
+pub const DEFAULT_NETWORK_BUDGET_MAX: Duration = Duration::from_millis(300);
 /// Percentile of recent network samples reserved when no configuration is given.
 pub const DEFAULT_NETWORK_RESERVE_PERCENTILE: u8 = 75;
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
@@ -150,16 +152,17 @@ pub struct EstimatorConfig {
     /// and `network_budget_max`.
     pub network_reserve_percentile: u8,
     /// Reserve at least the most recent network sample, not only the window
-    /// percentile.
+    /// percentile. On by default.
     ///
     /// The percentile over the last 16 own proposals, up to two minutes of
     /// them, lags a network that is getting slower, for example while blocks
     /// grow, so the proposals made during the rise exceed their reservation
-    /// far more often than the percentile implies. With fast rise a single
-    /// slow sample lifts the reservation immediately, still clamped to
-    /// `network_budget_max`, and the next faster sample hands it back to the
-    /// window percentile: the reservation rises instantly and decays through
-    /// the window.
+    /// far more often than the percentile implies. Fast rise follows a slow
+    /// sample up immediately, still clamped to `network_budget_max`, and
+    /// decays through the window: the next faster sample hands the
+    /// reservation back to the window percentile. On a 10 validator, four
+    /// region benchmark it cut the share of proposals whose network time
+    /// exceeds the reservation from 43% to 37% without costing throughput.
     pub network_reserve_fast_rise: bool,
     /// Initial ratio of total replayable build work over work at tx cutoff.
     pub build_time_multiplier: f64,
@@ -172,7 +175,7 @@ impl Default for EstimatorConfig {
             network_budget: DEFAULT_NETWORK_BUDGET,
             network_budget_max: DEFAULT_NETWORK_BUDGET_MAX,
             network_reserve_percentile: DEFAULT_NETWORK_RESERVE_PERCENTILE,
-            network_reserve_fast_rise: false,
+            network_reserve_fast_rise: true,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -1045,12 +1048,18 @@ mod tests {
         assert!(config().with_network_budget_max(ms(40)).validate().is_err());
         assert!(config().with_build_time_multiplier(0.9).validate().is_err());
         assert_eq!(config().initial_proposal_return_budget(), ms(500));
+        // The cap defaults to 300 ms; a floor above it lifts the cap with it.
+        assert_eq!(config().network_budget_max, ms(300));
+        assert_eq!(
+            EstimatorConfig::new(ms(550), ms(320)).network_budget_max,
+            ms(320)
+        );
     }
 
     #[test]
     fn config_validation_bounds_the_network_reserve_percentile() {
         assert_eq!(config().network_reserve_percentile, 75);
-        assert!(!config().network_reserve_fast_rise);
+        assert!(config().network_reserve_fast_rise);
         for percentile in [50, 75, 100] {
             assert!(
                 config()
@@ -1286,7 +1295,7 @@ mod tests {
                 returned_ms + 700,
             );
         }
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(250));
+        assert_eq!(estimator.proposal_budget().network_reserve, ms(300));
         assert_eq!(estimator.snapshot().network_observed, Some(ms(500)));
 
         // A nullified proposal is not a sample.
@@ -1337,9 +1346,14 @@ mod tests {
         // Ten proposals with 100 to 190 ms of network time, out of order.
         let samples = [150, 110, 190, 130, 170, 100, 180, 120, 160, 140];
         // The rank rounds up: the 75th percentile of ten samples is the 8th
-        // smallest, the 90th the 9th.
+        // smallest, the 90th the 9th. Fast rise is off so that the last
+        // sample, which is the median, cannot stand in for the percentile.
         for (percentile, expected) in [(50, 140), (75, 170), (90, 180), (100, 190)] {
-            let estimator = Estimator::new(config().with_network_reserve_percentile(percentile));
+            let estimator = Estimator::new(
+                config()
+                    .with_network_reserve_percentile(percentile)
+                    .with_network_reserve_fast_rise(false),
+            );
             let now = Instant::now();
             for (view, network) in (1..).zip(samples) {
                 own_proposal(&estimator, now, view, ms(network));
@@ -1352,7 +1366,7 @@ mod tests {
 
     #[test]
     fn network_reserve_fast_rise_follows_a_slow_sample_up_at_once() {
-        let plain = Estimator::new(config());
+        let plain = Estimator::new(config().with_network_reserve_fast_rise(false));
         let fast = Estimator::new(config().with_network_reserve_fast_rise(true));
         let now = Instant::now();
         // Feeds the same own proposal to both estimators, returns their reserves.
@@ -1391,7 +1405,7 @@ mod tests {
         let snapshot = estimator.snapshot();
         assert_eq!(snapshot.network_last_sample, Some(ms(400)));
         assert_eq!(snapshot.network_observed, Some(ms(400)));
-        assert_eq!(snapshot.network_reserve, ms(250));
+        assert_eq!(snapshot.network_reserve, ms(300));
 
         // Without a newer sample the slow one still counts at exactly the
         // window's ttl, as it would in the window, and is ignored once it is
@@ -1399,7 +1413,7 @@ mod tests {
         // built on other proposers' parents.
         let sampled_at = now + Duration::from_secs(7) + ms(400);
         estimator.on_child_block_built(sampled_at + NETWORK_SAMPLE_TTL, (0, 20), 21, 0);
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(250));
+        assert_eq!(estimator.proposal_budget().network_reserve, ms(300));
         estimator.on_child_block_built(sampled_at + NETWORK_SAMPLE_TTL + ms(1), (0, 21), 22, 0);
         let snapshot = estimator.snapshot();
         assert_eq!(snapshot.network_last_sample, None);
