@@ -59,7 +59,6 @@ impl BestTransactionsPrewarming {
                         commands_rx,
                         commands_tx,
                         prewarm,
-                        next_expiring_nonce_offset: 0,
                     },
                 );
             });
@@ -90,14 +89,6 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                    let offset = ctx.next_expiring_nonce_offset;
-                    ctx.next_expiring_nonce_offset += 1;
-                    Some(offset)
-                } else {
-                    None
-                };
-
                 let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
@@ -110,7 +101,7 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    let tx = Self::prewarm_transaction(prewarm, tx);
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -172,7 +163,6 @@ impl BestTransactionsPrewarming {
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
-        expiring_nonce_offset: Option<usize>,
     ) -> PrewarmedTransaction
     where
         Provider: StateProviderFactory + Clone + 'static,
@@ -188,10 +178,7 @@ impl BestTransactionsPrewarming {
                 return None;
             }
 
-            let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-            }
+            let tx_env = tx.transaction.clone_tx_env();
 
             let result = match evm.transact_raw(tx_env) {
                 Ok(result) => result.result,
@@ -312,7 +299,6 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    next_expiring_nonce_offset: usize,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -991,7 +977,6 @@ mod tests {
             let failed = BestTransactionsPrewarming::prewarm_transaction(
                 context.clone(),
                 test_payment_tx(sender, 0),
-                None,
             );
             assert!(failed.replay.is_none());
             WorkerPool::with_worker_mut(|worker| {
@@ -1005,7 +990,6 @@ mod tests {
             let successful = BestTransactionsPrewarming::prewarm_transaction(
                 context,
                 test_payment_tx(sender, 500_000),
-                None,
             );
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());

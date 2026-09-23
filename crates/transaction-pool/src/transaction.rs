@@ -27,6 +27,7 @@ use std::{
 use tempo_contracts::precompiles::PaymentSlots;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
+    expiring_nonce::ExpiringNonceManager,
     nonce::NonceManager,
     storage::StorageKey,
     tip20::{TIP20Token, tip20_slots},
@@ -474,7 +475,7 @@ impl TempoPooledTransaction {
     pub fn expiring_nonce_slot(&self) -> Option<U256> {
         *self.expiring_nonce_slot.get_or_init(|| {
             let hash = self.expiring_nonce_hash()?;
-            Some(NonceManager::new().expiring_nonce_seen[hash].slot())
+            Some(ExpiringNonceManager::new().seen[hash].slot())
         })
     }
 

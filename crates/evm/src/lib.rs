@@ -14,6 +14,7 @@ use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
 pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
+mod nonce_prune;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
@@ -61,6 +62,7 @@ mod test_utils;
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
+    nonce_prune: Option<nonce_prune::PruneTask>,
     /// Inner evm config
     pub inner: EthEvmConfig<TempoChainSpec, TempoEvmFactory>,
 
@@ -90,6 +92,7 @@ impl TempoEvmConfig {
         let inner =
             EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
+            nonce_prune: None,
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
@@ -143,11 +146,27 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        let mut executor = TempoBlockExecutor::new(evm, ctx, self.chain_spec());
+        executor.nonce_prune = self
+            .nonce_prune
+            .as_ref()
+            .and_then(|task| task.lock().expect("nonce prune task poisoned").take());
+        executor
     }
 }
 
 impl ConfigureEvm for TempoEvmConfig {
+    fn with_background_state(
+        self,
+        env: &EvmEnvFor<Self>,
+        provider: impl FnOnce() -> reth_storage_api::errors::ProviderResult<
+            reth_storage_api::StateProviderBox,
+        > + Send
+        + 'static,
+    ) -> Result<Self, alloy_evm::block::BlockExecutionError> {
+        self.start_nonce_pruning(env.clone(), provider)
+    }
+
     type Primitives = TempoPrimitives;
     type Error = TempoEvmError;
     type NextBlockEnvCtx = TempoNextBlockEnvAttributes;

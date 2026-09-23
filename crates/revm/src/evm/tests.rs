@@ -3405,7 +3405,7 @@ fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
 
 /// Expiring nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
 #[test]
-fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::Result<()> {
+fn test_expiring_nonce_does_not_settle_storage_credits() -> eyre::Result<()> {
     use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 
     let key_pair = P256KeyPair::random();
@@ -3420,36 +3420,11 @@ fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::R
         .gas_limit(500_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let unindexed_tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-
-    let mut indexed_tx_env = unindexed_tx_env.clone();
-    indexed_tx_env
-        .tempo_tx_env
-        .as_mut()
-        .expect("expiring nonce tx must be AA")
-        .expiring_nonce_idx = Some(1);
-
-    let mut unindexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
-    let unindexed_result = unindexed_evm.transact_commit(unindexed_tx_env)?;
-    assert!(
-        unindexed_result.is_success(),
-        "unindexed expiring nonce tx should succeed"
-    );
-
-    let mut indexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
-    let indexed_result = indexed_evm.transact_commit(indexed_tx_env)?;
-    assert!(
-        indexed_result.is_success(),
-        "indexed expiring nonce tx should succeed"
-    );
-
+    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let mut evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
+    assert!(evm.transact_commit(tx_env)?.is_success());
     assert_eq!(
-        indexed_result.tx_gas_used(),
-        unindexed_result.tx_gas_used(),
-        "pointer restore must not create a TIP-1060 settlement discount"
-    );
-    assert_eq!(
-        storage_credit_balance(&indexed_evm, NONCE_PRECOMPILE_ADDRESS),
+        storage_credit_balance(&evm, tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS),
         0,
         "expiring nonce bookkeeping must not accrue storage credits"
     );

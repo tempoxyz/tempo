@@ -461,6 +461,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        let chain = builder.config().chain.clone();
+        let static_files = builder.config().datadir().static_files();
+        let builder = builder.map_database(|db| {
+            tempo_node::storage::TempoDatabase::new(db, chain, static_files)
+        });
         if let Some(value) = args.consensus.message_backlog {
             warn!(
                 flag = "--consensus.message-backlog",

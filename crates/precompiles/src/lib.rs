@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod expiring_nonce;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -70,12 +71,12 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    DEFAULT_FEE_TOKEN, EXPIRING_NONCE_PRECOMPILE_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -237,6 +238,10 @@ pub fn extend_tempo_precompiles(
             Some(TipFeeManager::create_precompile(&env))
         } else if *address == STABLECOIN_DEX_ADDRESS {
             Some(StablecoinDEX::create_precompile(&env))
+        } else if *address == EXPIRING_NONCE_PRECOMPILE_ADDRESS {
+            Some(expiring_nonce::ExpiringNonceManager::create_precompile(
+                &env,
+            ))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NonceManager::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
@@ -367,6 +372,13 @@ impl StablecoinDEX {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("StablecoinDEX", env: env, |input| { Self::new() })
+    }
+}
+
+impl expiring_nonce::ExpiringNonceManager {
+    /// Creates the EVM precompile for block-bucket replay protection.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("ExpiringNonceManager", env: env, |input| { Self::new() })
     }
 }
 

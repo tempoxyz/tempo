@@ -962,6 +962,11 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         None => tempo_node,
     };
 
+    let database = tempo_node::storage::TempoDatabase::new(
+        database,
+        node_config.chain.clone(),
+        node_config.datadir().static_files(),
+    );
     let node_handle = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
             .with_database(database)

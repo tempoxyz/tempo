@@ -32,7 +32,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+use tempo_precompiles::{EXPIRING_NONCE_PRECOMPILE_ADDRESS, NONCE_PRECOMPILE_ADDRESS};
 use tokio::sync::broadcast;
 
 type TxOrdering = TempoTipOrdering<TempoPooledTransaction>;
@@ -1475,19 +1475,25 @@ impl AA2dPool {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
 
-        let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
-            return (Vec::new(), Vec::new(), Vec::new());
-        };
-
         let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
         let mut included_expiring_nonce_hashes =
             std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
 
         // Process known 2D nonce slot changes.
-        for (slot, value) in nonce_state.storage.iter() {
+        for (slot, value) in state
+            .get(&NONCE_PRECOMPILE_ADDRESS)
+            .into_iter()
+            .flat_map(|account| &account.storage)
+        {
             if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
                 changes.insert(*seq_id, value.present_value.saturating_to());
             }
+        }
+        for (slot, value) in state
+            .get(&EXPIRING_NONCE_PRECOMPILE_ADDRESS)
+            .into_iter()
+            .flat_map(|account| &account.storage)
+        {
             // Detect included expiring nonce transactions via their
             // `expiring_nonce_seen` slot being set to a non-zero value.
             if !value.present_value.is_zero()
@@ -7232,7 +7238,7 @@ mod tests {
         );
         let mut state = AddressMap::default();
         state.insert(
-            NONCE_PRECOMPILE_ADDRESS,
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS,
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 

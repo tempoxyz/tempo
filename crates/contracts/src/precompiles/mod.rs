@@ -63,12 +63,17 @@ pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x10600000000000000000000
 pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
 
+/// Block-bucket replay protection (PoC).
+pub const EXPIRING_NONCE_PRECOMPILE_ADDRESS: Address =
+    address!("0x4E4F4E4345000000000000000000000000000001");
+
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
     (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
     (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),
     (NONCE_PRECOMPILE_ADDRESS, TempoHardfork::Genesis),
+    (EXPIRING_NONCE_PRECOMPILE_ADDRESS, TempoHardfork::Genesis),
     (ACCOUNT_KEYCHAIN_ADDRESS, TempoHardfork::Genesis),
     (VALIDATOR_CONFIG_ADDRESS, TempoHardfork::Genesis),
     (VALIDATOR_CONFIG_V2_ADDRESS, TempoHardfork::Genesis),
