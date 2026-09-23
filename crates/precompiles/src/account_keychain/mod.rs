@@ -1895,14 +1895,11 @@ mod tests {
                         keychain.set_tx_origin(parent)?;
                         if matches!(delegate_case, Delegate::Bytecode | Delegate::Delegation) {
                             let code = if delegate_case == Delegate::Bytecode {
-                                vec![0x60, 0x00]
+                                Bytecode::new_raw(vec![0x60, 0x00].into())
                             } else {
-                                [vec![0xef, 0x01, 0x00], Address::repeat_byte(0x33).to_vec()]
-                                    .concat()
+                                Bytecode::new_eip7702(Address::repeat_byte(0x33))
                             };
-                            keychain
-                                .storage
-                                .set_code(delegate, Bytecode::new_raw(code.into()))?;
+                            keychain.storage.set_code(delegate, code)?;
                         }
                         let calldata = match selector {
                             Selector::Authorize => authorizeKeyCall {
