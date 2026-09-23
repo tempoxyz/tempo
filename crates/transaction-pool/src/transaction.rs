@@ -177,15 +177,10 @@ impl TempoPooledTransaction {
 
     pub(crate) fn has_configurable_dependencies(&self) -> bool {
         self.authorization_parent().is_some()
-            || self.configurable_grant_recipient().is_some()
-            || self.inner().as_aa().is_some_and(|tx| {
-                tx.signature().as_multisig().is_some()
-                    || tx
-                        .tx()
-                        .key_authorization
-                        .as_ref()
-                        .is_some_and(|grant| grant.signature.as_multisig().is_some())
-            })
+            || self
+                .inner()
+                .as_aa()
+                .is_some_and(|tx| tx.signature().as_multisig().is_some())
     }
 
     /// A named configurable grant recipient must remain code-free, but need not be registered
