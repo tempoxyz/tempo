@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 #[cfg(any(test, feature = "serde"))]
 use alloy_primitives::Bytes;
 use alloy_primitives::{Address, B256, b256, keccak256};
-use alloy_rlp::Encodable as _;
 use core::mem::size_of;
 use tempo_contracts::SAFE_DEPLOYER_ADDRESS;
 
@@ -364,9 +363,7 @@ impl Serialize for MultisigSignature {
     where
         S: Serializer,
     {
-        let mut encoded = Vec::with_capacity(self.length());
-        self.encode(&mut encoded);
-        Bytes::from(encoded).serialize(serializer)
+        Bytes::from(alloy_rlp::encode(self)).serialize(serializer)
     }
 }
 
