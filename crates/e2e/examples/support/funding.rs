@@ -148,6 +148,7 @@ pub(super) async fn run_demo(
         );
     }
     let requirement = FundingRequirement {
+        policy_rules: None,
         token: PATH_USD_ADDRESS,
         amount: U256::from(50 * UNIT),
         slippage_bps: Some(100),
