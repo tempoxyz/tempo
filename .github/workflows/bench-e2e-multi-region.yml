@@ -1,90 +1,74 @@
-name: Read saved multiregion benchmark logs
+name: Queue sharded multiregion comparison
 on:
   workflow_dispatch:
 permissions:
   contents: read
-  id-token: write
+  actions: write
 jobs:
-  recover-logs:
+  queue-comparison:
     runs-on: depot-ubuntu-latest-8
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b
-      - name: Configure benchmark AWS credentials
-        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@bce53819ffa60fcdf8f0f349686d807e5a66a71b
+      - name: Wait for smoke success and teardown, then dispatch comparison once
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
-          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
-          aws-region: us-east-1
-      - name: Recover this experiment's saved load-generator logs
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          bucket=tempo-benchmark-artifacts-934822761402-us-east-1
-          prefix=runs/bench-e2e-multi-region-35883541989-1/artifacts/load-generator/baseline-1/
-          mkdir -p diagnostics
-          aws s3api list-objects-v2 --bucket "$bucket" --prefix "$prefix" \
-            --query 'Contents[?ends_with(Key, `-results.tar.gz`)].Key' --output json > result-keys.json
-          jq -r '.[]?' result-keys.json | while IFS= read -r key; do
-            [[ "$key" == "$prefix"*"-results.tar.gz" ]] || exit 1
-            aws s3 cp "s3://$bucket/$key" saved-results.tar.gz --only-show-errors
-            tar -tzf saved-results.tar.gz > diagnostics/archive-members.txt
-            for member in load-generator.log txgen-send.err txgen-generate.err load-generator-exit-code.txt; do
-              if tar -tzf saved-results.tar.gz | grep -Fx "./$member" >/dev/null; then
-                tar -xOzf saved-results.tar.gz "./$member" > "diagnostics/$member"
-              fi
-            done
-          done
-          test -s diagnostics/load-generator.log
-      - name: Read current experiment load-generator diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          instances=$(aws ec2 describe-instances --filters \
-            Name=tag:BenchmarkRunId,Values=bench-e2e-multi-region-35883541989-1 \
-            Name=tag:Role,Values=load-generator Name=instance-state-name,Values=running \
-            --query 'Reservations[].Instances[].InstanceId' --output json)
-          test "$(jq length <<< "$instances")" = 1
-          instance=$(jq -r '.[0]' <<< "$instances")
-          command='date -u; ps -eo pid,ppid,comm,wchan:30,etime,pcpu,pmem --sort=-pcpu | head -25; find /opt/tempo/load-generator -maxdepth 3 -type f \( -name txgen-send.err -o -name txgen-generate.err -o -name load-generator.log \) -exec tail -n 45 {} + | sed -E "s#(https?|wss?)://[^[:space:]]+#[endpoint]#g" | tail -c 20000'
-          params=$(jq -cn --arg command "$command" '{commands:[$command],executionTimeout:["60"]}')
-          command_id=$(aws ssm send-command --document-name AWS-RunShellScript \
-            --instance-ids "$instance" --comment 'Read-only diagnostics for benchmark 35883541989' \
-            --parameters "$params" --query Command.CommandId --output text)
-          aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance"
-          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance" \
-            --query StandardOutputContent --output text > diagnostics/current-load-generator.log
-      - name: Verify all ten sharded validator layout logs
-        shell: bash
-        run: |
-          set -euo pipefail
-          total=0
-          for region in us-east-1 us-west-2; do
-            instances=$(aws ec2 describe-instances --region "$region" --filters \
-              Name=tag:BenchmarkRunId,Values=bench-e2e-multi-region-35883541989-1 \
-              'Name=tag:Role,Values=validator*' Name=instance-state-name,Values=running \
-              --query 'Reservations[].Instances[].InstanceId' --output json)
-            test "$(jq length <<< "$instances")" = 5
-            mapfile -t ids < <(jq -r '.[]' <<< "$instances")
-            command='find /opt/tempo/artifacts -maxdepth 2 -name storage-layout-feature-1.log -exec tail -n 4 {} +'
-            params=$(jq -cn --arg command "$command" '{commands:[$command],executionTimeout:["60"]}')
-            command_id=$(aws ssm send-command --region "$region" --document-name AWS-RunShellScript \
-              --instance-ids "${ids[@]}" --comment 'Read sharded schema verification for benchmark 35883541989' \
-              --parameters "$params" --query Command.CommandId --output text)
-            for instance in "${ids[@]}"; do
-              aws ssm wait command-executed --region "$region" --command-id "$command_id" --instance-id "$instance"
-              aws ssm get-command-invocation --region "$region" --command-id "$command_id" --instance-id "$instance" \
-                --query StandardOutputContent --output text > "diagnostics/schema-$instance.log"
-              grep -F 'Verified schema 3 for feature-1' "diagnostics/schema-$instance.log"
-              total=$((total + 1))
-            done
-          done
-          test "$total" = 10
-      - name: Upload diagnostic logs
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: multiregion-saved-load-generator-logs
-          path: diagnostics/
-          retention-days: 7
+          script: |
+            const repo = context.repo;
+            const smoke = 35883541989;
+            const feature = 'db4581536bc0a95a3b815a66df7ea867940dfd91';
+            const ref = 'centaur/persistence-timings-sharded';
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+            let ready = false;
+            for (let attempt = 0; attempt < 60; attempt++) {
+              const {data: run} = await github.rest.actions.getWorkflowRun({...repo, run_id: smoke});
+              core.info('Smoke run ' + smoke + ': ' + run.status + ' / ' + run.conclusion);
+              if (run.status === 'completed') {
+                if (run.conclusion !== 'success') {
+                  throw new Error('Smoke did not succeed; full comparison will not be dispatched.');
+                }
+                const {data: jobs} = await github.rest.actions.listJobsForWorkflowRun({...repo, run_id: smoke});
+                const job = jobs.jobs.find(job => job.name === 'bench-e2e-multi-region');
+                for (const name of ['Start infrastructure teardown', 'Wait for infrastructure teardown']) {
+                  if (!job?.steps?.some(step => step.name === name && step.conclusion === 'success')) {
+                    throw new Error('Missing successful teardown: ' + name);
+                  }
+                }
+                ready = true;
+                break;
+              }
+              await sleep(30000);
+            }
+            if (!ready) throw new Error('Smoke still unfinished after 30 minutes; no new fleet started.');
+            const {data: branch} = await github.rest.repos.getBranch({...repo, branch: ref});
+            if (branch.commit.sha !== feature) throw new Error('Comparison branch changed; refusing stale dispatch.');
+            const started = new Date().toISOString();
+            await github.rest.actions.createWorkflowDispatch({
+              ...repo, workflow_id: 'bench-e2e-multi-region.yml', ref,
+              inputs: {
+                baseline: '701e7c37225f46da6582f88132774f73b11460a4',
+                feature, bloat: '100', 'run-pairs': '3',
+                'max-concurrent-requests': '500',
+                'txgen-ref': '1b1ecb1747527158dbadc23d960461d12b14e4ff',
+                valscope: 'false'
+              }
+            });
+            core.info('Dispatch accepted. Do not repeat this mutation.');
+            for (let attempt = 0; attempt < 20; attempt++) {
+              const {data: runs} = await github.rest.actions.listWorkflowRuns({
+                ...repo, workflow_id: 'bench-e2e-multi-region.yml',
+                branch: ref, event: 'workflow_dispatch', per_page: 20
+              });
+              const run = runs.workflow_runs.find(run => run.head_sha === feature && run.created_at >= started);
+              if (run) {
+                core.info('Full comparison: ' + run.html_url);
+                await core.summary.addHeading('Sharded multiregion comparison dispatched')
+                  .addLink('Full comparison run', run.html_url)
+                  .addRaw('\n10 validators, 5 default AWS regions, 100 GB preset, 90 seconds per phase, 3 pairs.\n')
+                  .write();
+                return;
+              }
+              await sleep(3000);
+            }
+            throw new Error('Dispatch accepted but run ID not observed yet. Check the Actions run list; do not redispatch.');
