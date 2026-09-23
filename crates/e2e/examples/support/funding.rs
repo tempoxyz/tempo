@@ -122,16 +122,20 @@ pub(super) async fn run_demo(
                 .status()
         );
     }
-    let candidates = IFundingSource::new(SOURCE, provider.clone())
-        .discover(
-            owner.address(),
-            PATH_USD_ADDRESS,
-            U256::from(50 * UNIT),
-            U256::from(50 * UNIT),
-            assets.to_vec().abi_encode().into(),
-        )
-        .call()
-        .await?;
+    let mut candidates = Vec::new();
+    for input in assets {
+        let found = IFundingSource::new(SOURCE, provider.clone())
+            .discover(
+                owner.address(),
+                PATH_USD_ADDRESS,
+                U256::from(50 * UNIT),
+                U256::from(50 * UNIT),
+                (input, U256::MAX).abi_encode().into(),
+            )
+            .call()
+            .await?;
+        candidates.extend(found);
+    }
     assert_eq!(candidates.len(), 2);
     for (candidate, asset) in candidates.iter().zip(assets) {
         assert_eq!(candidate.availableAmount, U256::from(50 * UNIT));
