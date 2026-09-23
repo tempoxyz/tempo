@@ -19,12 +19,12 @@
 mod analysis;
 mod fees;
 
-use alloy::consensus::BlockHeader as _;
+use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_evm::{
     Evm as _,
     block::{BlockExecutor as _, TxResult as _},
 };
-use alloy_primitives::{B256, keccak256};
+use alloy_primitives::{B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
 use fees::{FeeWrites, RecordingFeeManager};
@@ -45,6 +45,7 @@ use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
 };
+use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoEvmConfig, TempoTxResult};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
@@ -204,7 +205,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .chain_spec()
             .tempo_hardfork_at(block.timestamp());
         let rules = analysis::between(canonical, self.shadow_hardfork);
-        let report = Report::analyze(&real, &shadow, &rules, &block.body().transactions);
+        let report = Report::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
         metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared")
             .increment(report.boundaries_evaluated as u64);
@@ -436,14 +437,23 @@ enum TxOutcome {
 /// receipt gas is unchanged.
 #[derive(Debug, Default)]
 struct ObservedTx {
+    /// Whether execution succeeded, reverted, or halted.
     outcome: TxOutcome,
+    /// Gas consumed by the transaction for its receipt and fee charge.
     gas_used: u64,
+    /// Hash of the unmodified ordered logs, used to validate canonical receipts.
     receipt_logs_hash: B256,
+    /// Gas charged against the block, which can differ from receipt gas.
     block_gas_used: u64,
+    /// Hash of the transaction's output bytes (empty when there is no output).
     output_hash: B256,
-    logs_hash: B256,
-    fee_logs_hash: B256,
+    /// Positions of logs emitted by protocol fee hooks.
+    fee_log_ranges: Vec<std::ops::Range<usize>>,
+    /// Validated post-fee amount and full receipt hash with only that amount zeroed.
+    fee_normalized: Option<(U256, B256)>,
+    /// Storage slots touched by fee hooks, which may also have application writes.
     fee_slots: HashSet<(alloy_primitives::Address, alloy_primitives::U256)>,
+    /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
 }
 
@@ -451,15 +461,7 @@ impl ObservedTx {
     fn from_result(result: &TempoTxResult, writes: FeeWrites) -> Self {
         let execution = &result.result().result;
         let logs = execution.logs();
-        let fee_logs = writes.log_ranges.iter().map(|range| range.len()).sum();
-        let (mut app, mut fee) = (Vec::with_capacity(logs.len()), Vec::with_capacity(fee_logs));
-        for (index, log) in logs.iter().enumerate() {
-            if writes.log_ranges.iter().any(|range| range.contains(&index)) {
-                fee.push(log);
-            } else {
-                app.push(log);
-            }
-        }
+        let fee_normalized = normalized_fee_transfer(logs, &writes);
         Self {
             block_gas_used: result.block_gas_used(),
             outcome: match execution {
@@ -470,8 +472,8 @@ impl ObservedTx {
             gas_used: execution.tx_gas_used(),
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
-            logs_hash: hash_logs(&app),
-            fee_logs_hash: hash_logs(&fee),
+            fee_log_ranges: writes.log_ranges,
+            fee_normalized,
             fee_slots: writes.slots,
             state: TransitionState::default(),
         }
@@ -537,6 +539,31 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
     })
 }
 
+/// Only the post-fee hook's expected TIP-20 transfer amount can be normalized. Every other
+/// byte and the log positions remain committed by the returned full-receipt hash.
+fn normalized_fee_transfer(
+    logs: &[alloy_primitives::Log],
+    writes: &FeeWrites,
+) -> Option<(U256, B256)> {
+    let (index, token, payer, amount) = writes.post_tx_transfer?;
+    let log = logs.get(index)?;
+    if log.address != token || !writes.log_ranges.iter().any(|range| range.contains(&index)) {
+        return None;
+    }
+    let mut transfer = ITIP20::Transfer::decode_log_validate(log).ok()?;
+    if transfer.data.from != payer
+        || transfer.data.to != TIP_FEE_MANAGER_ADDRESS
+        || transfer.data.amount != amount
+        || transfer.data.encode_log_data() != log.data
+    {
+        return None;
+    }
+    transfer.data.amount = U256::ZERO;
+    let mut normalized = logs.to_vec();
+    normalized[index] = ITIP20::Transfer::encode_log(&transfer);
+    Some((amount, hash_logs(&normalized)))
+}
+
 fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
     let mut encoded = Vec::with_capacity(list_length(logs));
     encode_list(logs, &mut encoded);
@@ -559,6 +586,45 @@ mod tests {
         DatabaseCommit,
         state::{Account, AccountInfo, EvmStorageSlot, TransactionId},
     };
+
+    #[test]
+    fn fee_log_normalization_preserves_order_and_non_amount_fields() {
+        let token = Address::repeat_byte(1);
+        let payer = Address::repeat_byte(2);
+        let logs = |amount| {
+            vec![
+                alloy_primitives::Log::empty(),
+                alloy_primitives::Log {
+                    address: token,
+                    data: ITIP20::Transfer {
+                        from: payer,
+                        to: TIP_FEE_MANAGER_ADDRESS,
+                        amount,
+                    }
+                    .encode_log_data(),
+                },
+            ]
+        };
+        let writes = |amount| FeeWrites {
+            log_ranges: vec![1..2],
+            post_tx_transfer: Some((1, token, payer, amount)),
+            ..Default::default()
+        };
+        let (canonical, candidate) = (logs(U256::from(85)), logs(U256::from(79)));
+        let candidate_writes = writes(U256::from(79));
+        let (_, expected) = normalized_fee_transfer(&canonical, &writes(U256::from(85))).unwrap();
+        let (_, actual) = normalized_fee_transfer(&candidate, &candidate_writes).unwrap();
+        assert_eq!(actual, expected);
+        assert_ne!(hash_logs(&canonical), hash_logs(&candidate));
+
+        let mut changed = candidate.clone();
+        changed[0] = changed[1].clone();
+        let (_, changed_fees) = normalized_fee_transfer(&changed, &candidate_writes).unwrap();
+        assert_ne!(changed_fees, expected);
+        changed = candidate.clone();
+        changed.swap(0, 1);
+        assert!(normalized_fee_transfer(&changed, &candidate_writes).is_none());
+    }
 
     #[test]
     fn shadow_schedule_only_overrides_candidate() {

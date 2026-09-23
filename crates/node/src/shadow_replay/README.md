@@ -44,13 +44,17 @@ that could not execute are reported as incomplete coverage.
 ## Comparison model
 
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
-changes in order. Transaction comparisons cover success, output, application and fee logs, receipt
-log order, receipt and block gas, and net account and storage transitions. This compares observable
-effects at completed boundaries, not opcode traces or internal write history.
+changes in order. Transaction comparisons cover success, output, ordered receipt logs, receipt
+and block gas, and net account and storage transitions. This compares observable effects at
+completed boundaries, not opcode traces or internal write history.
 
 Because every shadow transaction starts from the same canonical prefix, findings at later
 transactions remain independent and are all compared. Fee provenance is recorded for classification
-but does not by itself exempt a state difference.
+but does not by itself exempt a state difference. The post-fee TIP-20 transfer amount is masked
+when hashing the full receipt only if both arms emit the verified transfer in the same position
+and each amount equals its gas-derived charge. All other log contents and positions must match;
+unsupported fee-log differences remain findings. Gas and state differences still require fork
+expectations.
 
 ## Expectations
 

@@ -14,6 +14,8 @@ use tempo_revm::{ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 pub(super) struct FeeWrites {
     pub(super) slots: HashSet<(Address, U256)>,
     pub(super) log_ranges: Vec<Range<usize>>,
+    /// Index and inputs of the post-transaction fee transfer, when the hook succeeded.
+    pub(super) post_tx_transfer: Option<(usize, Address, Address, U256)>,
 }
 
 /// Delegates protocol fee collection while recording hook-local storage writes and emitted logs.
@@ -99,7 +101,8 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for RecordingFeeManager {
         fee_token: Address,
         beneficiary: Address,
     ) -> tempo_precompiles::error::Result<U256> {
-        self.record(ctx, |ctx| {
+        let log_index = ctx.journal.logs().len();
+        let result = self.record(ctx, |ctx| {
             TempoFeeManager::new().collect_fee_post_tx(
                 ctx,
                 fee_payer,
@@ -108,6 +111,11 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for RecordingFeeManager {
                 fee_token,
                 beneficiary,
             )
-        })
+        });
+        if result.is_ok() {
+            self.0.borrow_mut().post_tx_transfer =
+                Some((log_index, fee_token, fee_payer, actual_spending));
+        }
+        result
     }
 }

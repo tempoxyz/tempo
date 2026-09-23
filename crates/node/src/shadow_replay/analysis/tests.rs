@@ -1,7 +1,11 @@
 use super::*;
 use crate::shadow_replay::{ObservedTx, TxOutcome};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Signature};
 use reth_revm::{db::states::StorageSlot, state::AccountInfo};
+use tempo_primitives::{
+    TempoTransaction,
+    transaction::{AASigned, PrimitiveSignature, TempoSignature},
+};
 
 // Synthetic checks exercise the classifier contract; these are NOT TIP-1016 validators.
 const GAS: Expectation = Expectation {
@@ -21,6 +25,14 @@ const GAS: Expectation = Expectation {
             .then_some(())
     },
 };
+
+fn block(txs: Vec<TempoTxEnvelope>) -> RecoveredBlock<Block> {
+    let mut block = Block::default();
+    block.header.inner.base_fee_per_gas = Some(0);
+    block.body.transactions = txs;
+    let senders = vec![Address::ZERO; block.body.transactions.len()];
+    RecoveredBlock::new_unhashed(block, senders)
+}
 
 fn evidence(gas: &[u64]) -> Evidence {
     Evidence {
@@ -74,7 +86,7 @@ fn equal_boundaries_do_not_invoke_rules() {
         check: |_, _| panic!("equal values"),
     };
     let real = evidence(&[21_000, 21_000]);
-    let report = Report::analyze(&real, &real, &[&rule], &[]);
+    let report = Report::analyze(&real, &real, &[&rule], &block(vec![]));
     assert_eq!(report.outcome(&real), ReplayOutcome::Match);
     assert_eq!(report.boundaries_evaluated, 4);
     assert_eq!(report.boundaries_not_evaluated, 0);
@@ -85,7 +97,7 @@ fn accepted_gas_does_not_hide_unrelated_state_at_same_boundary() {
     let real = evidence(&[21_000, 21_000]);
     let mut shadow = evidence(&[21_200, 21_000]);
     write_slot(tx_mut(&mut shadow, 0), 800, false);
-    let report = Report::analyze(&real, &shadow, &[&GAS], &[]);
+    let report = Report::analyze(&real, &shadow, &[&GAS], &block(vec![]));
     assert_eq!(report.expected[GAS.id], 1);
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.boundaries_not_evaluated, 0);
@@ -97,7 +109,7 @@ fn fee_provenance_alone_does_not_accept_a_change() {
     let real = evidence(&[21_000, 21_000]);
     let mut shadow = evidence(&[21_000, 21_000]);
     write_slot(tx_mut(&mut shadow, 0), 700, true);
-    let report = Report::analyze(&real, &shadow, &[], &[]);
+    let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.boundaries_not_evaluated, 0);
     let field = report.samples[0].1.field;
@@ -105,6 +117,51 @@ fn fee_provenance_alone_does_not_accept_a_change() {
     assert_eq!(field.address, Some(Address::ZERO));
     assert_eq!(field.slot, Some(U256::ZERO));
     assert!(field.fee_associated);
+}
+
+#[test]
+fn only_verified_fee_amount_is_masked_in_ordered_receipt_logs() {
+    let tx: TempoTxEnvelope = AASigned::new_unhashed(
+        TempoTransaction {
+            max_priority_fee_per_gas: 1_000_000_000_000,
+            max_fee_per_gas: 1_000_000_000_000,
+            ..Default::default()
+        },
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+    )
+    .into();
+    let original = B256::repeat_byte(1);
+    let changed = B256::repeat_byte(2);
+    let normalized = B256::repeat_byte(3);
+    let mut real = evidence(&[1_000]);
+    let mut shadow = evidence(&[1_200]);
+    for (tx, amount, hash) in [
+        (tx_mut(&mut real, 0), 1_000, original),
+        (tx_mut(&mut shadow, 0), 1_200, changed),
+    ] {
+        tx.receipt_logs_hash = hash;
+        tx.fee_log_ranges = vec![0..1];
+        tx.fee_normalized = Some((U256::from(amount), normalized));
+    }
+    let block = block(vec![tx]);
+    let report =
+        |shadow: &Evidence, rules: &[&Expectation]| Report::analyze(&real, shadow, rules, &block);
+    let accepted = report(&shadow, &[&GAS]);
+    assert_eq!(accepted.outcome(&shadow), ReplayOutcome::Expected);
+    assert_eq!(accepted.expected[GAS.id], 1);
+    assert_eq!(accepted.unexplained, 0);
+    // Without a reviewed gas rule, the fee change is still masked, but gas is a finding.
+    assert_eq!(report(&shadow, &[]).unexplained, 1);
+
+    let mut wrong = shadow;
+    tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().0 += U256::ONE;
+    assert_eq!(report(&wrong, &[&GAS]).unexplained, 1);
+    tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().0 -= U256::ONE;
+    tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = B256::repeat_byte(4);
+    assert_eq!(report(&wrong, &[&GAS]).unexplained, 1);
+    tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = normalized;
+    tx_mut(&mut wrong, 0).fee_log_ranges = vec![1..2];
+    assert_eq!(report(&wrong, &[&GAS]).unexplained, 1);
 }
 
 #[test]
@@ -120,7 +177,7 @@ fn first_accepting_rule_owns_attribution() {
     let real = evidence(&[21_000, 21_000]);
     let shadow = evidence(&[21_200, 21_000]);
     for rules in [[&GAS, &stop, &unreachable], [&stop, &GAS, &unreachable]] {
-        let report = Report::analyze(&real, &shadow, &rules, &[]);
+        let report = Report::analyze(&real, &shadow, &rules, &block(vec![]));
         assert_eq!(report.unexplained, 0);
         assert_eq!(report.expected, [(rules[0].id, 1)].into());
     }
@@ -133,7 +190,7 @@ fn rejected_shadow_tx_does_not_hide_later_transaction_findings() {
     shadow.txs[0] = Err("rejected".into());
     tx_mut(&mut shadow, 1).outcome = TxOutcome::Revert;
 
-    let report = Report::analyze(&real, &shadow, &[], &[]);
+    let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
 
     assert_eq!(report.unexplained, 2);
     assert_eq!(report.boundaries_evaluated, 4);
@@ -162,7 +219,7 @@ fn created_code_is_compared_even_when_both_accounts_are_created() {
             },
         );
     }
-    let report = Report::analyze(&real, &shadow, &[], &[]);
+    let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.samples[0].1.field.name, "code");
 }
@@ -174,7 +231,7 @@ fn sampling_does_not_truncate_counts() {
     for tx in &mut shadow.txs {
         tx.as_mut().unwrap().output_hash = B256::repeat_byte(1);
     }
-    let report = Report::analyze(&real, &shadow, &[], &[]);
+    let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
     assert_eq!(report.unexplained, 20);
     assert_eq!(report.samples.len(), MAX_SAMPLES);
     assert_eq!(report.boundaries_evaluated, 22);
@@ -193,7 +250,7 @@ fn storage_reset_is_compared_without_enumerated_slots() {
             ..Default::default()
         },
     );
-    let report = Report::analyze(&real, &shadow, &[], &[]);
+    let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.samples[0].1.field.name, "storage_reset");
     assert_eq!(report.boundaries_not_evaluated, 0);
@@ -220,7 +277,7 @@ fn accepted_post_block_change_is_expected() {
             (ctx.boundary == Boundary::PostBlock && field.name == "balance").then_some(())
         },
     };
-    let report = Report::analyze(&real, &shadow, &[&rule], &[]);
+    let report = Report::analyze(&real, &shadow, &[&rule], &block(vec![]));
     assert_eq!(report.boundaries_not_evaluated, 0);
     assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
 }

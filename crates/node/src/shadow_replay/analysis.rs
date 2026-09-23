@@ -1,11 +1,13 @@
 //! Classify independent boundary differences before formatting bounded samples.
 
 use self::expectations::{Context, Expectation};
-use super::{Boundary, Evidence, ReplayOutcome};
-use alloy_primitives::{Address, U256};
+use super::{Boundary, Evidence, ObservedTx, ReplayOutcome};
+use alloy::consensus::{BlockHeader as _, Transaction as _};
+use alloy_primitives::{Address, B256, U256};
+use reth_primitives_traits::RecoveredBlock;
 use reth_revm::db::{TransitionAccount, TransitionState};
 use std::{collections::BTreeMap, fmt::Debug};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{Block, TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
 mod expectations;
 pub(super) use expectations::between;
@@ -44,15 +46,16 @@ impl Report {
         real: &Evidence,
         shadow: &Evidence,
         rules: &[&Expectation],
-        txs: &[TempoTxEnvelope],
+        block: &RecoveredBlock<Block>,
     ) -> Self {
         let mut report = Self::default();
+        let base_fee = block.header().base_fee_per_gas();
         let context = |boundary| Context {
             boundary,
             real,
             shadow,
             tx: match boundary {
-                Boundary::Transaction(index) => txs.get(index),
+                Boundary::Transaction(index) => block.body().transactions.get(index),
                 _ => None,
             },
         };
@@ -71,10 +74,10 @@ impl Report {
                     let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
                     diff.record("success", |tx| tx.outcome == super::TxOutcome::Success);
                     diff.record("output", |tx| tx.output_hash);
-                    diff.record("logs", |tx| tx.logs_hash);
-                    diff.record("fee_logs", |tx| tx.fee_logs_hash);
-                    // Preserve ordering between fee and application logs.
-                    diff.record("receipt_logs", |tx| tx.receipt_logs_hash);
+                    // Keep all logs, in order; mask only a verified gas-derived fee amount.
+                    let (real_logs, shadow_logs) =
+                        receipt_log_hashes(real, shadow, ctx.tx, base_fee);
+                    diff.record_values("receipt_logs", real_logs, shadow_logs);
                     diff.record("gas", |tx| tx.gas_used);
                     diff.record("block_gas", |tx| tx.block_gas_used);
                     report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
@@ -210,6 +213,26 @@ pub(super) struct Difference {
     pub shadow: String,
 }
 
+/// Fall back to the raw hashes unless both fee transfers are verified and each amount
+/// follows from that arm's gas. An unexplained gas change is still reported separately.
+fn receipt_log_hashes(
+    real: &ObservedTx,
+    shadow: &ObservedTx,
+    tx: Option<&TempoTxEnvelope>,
+    base_fee: Option<u64>,
+) -> (B256, B256) {
+    let normalized = (|| {
+        let (real_amount, real_hash) = real.fee_normalized?;
+        let (shadow_amount, shadow_hash) = shadow.fee_normalized?;
+        let price = tx?.effective_gas_price(base_fee);
+        (real.fee_log_ranges == shadow.fee_log_ranges
+            && real_amount == calc_gas_balance_spending(real.gas_used, price)
+            && shadow_amount == calc_gas_balance_spending(shadow.gas_used, price))
+        .then_some((real_hash, shadow_hash))
+    })();
+    normalized.unwrap_or((real.receipt_logs_hash, shadow.receipt_logs_hash))
+}
+
 struct Comparison<'a, T> {
     report: &'a mut Report,
     ctx: &'a Context<'a>,
@@ -241,6 +264,10 @@ impl<'a, T> Comparison<'a, T> {
     }
 
     fn record<V: Debug + Eq>(&mut self, name: &'static str, get: impl Fn(&T) -> V) {
+        self.record_values(name, get(self.real), get(self.shadow));
+    }
+
+    fn record_values<V: Debug + Eq>(&mut self, name: &'static str, real: V, shadow: V) {
         self.report.record(
             self.ctx,
             Field {
@@ -249,8 +276,8 @@ impl<'a, T> Comparison<'a, T> {
                 slot: self.slot,
                 fee_associated: false,
             },
-            get(self.real),
-            get(self.shadow),
+            real,
+            shadow,
             self.rules,
         );
     }
