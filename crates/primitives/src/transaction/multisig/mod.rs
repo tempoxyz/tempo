@@ -356,19 +356,6 @@ impl MultisigSignature {
         }
         Ok(())
     }
-
-    /// Decodes the wire fields and validates the witness without cryptography.
-    pub(crate) fn decode_rlp(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        #[derive(alloy_rlp::RlpDecodable)]
-        struct WireSignature {
-            account: Address,
-            config: MultisigConfig,
-            signatures: Vec<PrimitiveSignature>,
-        }
-        let wire = <WireSignature as alloy_rlp::Decodable>::decode(buf)?;
-        Self::try_new(wire.account, wire.config, wire.signatures)
-            .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -395,8 +382,18 @@ impl<'de> Deserialize<'de> for MultisigSignature {
 }
 
 impl alloy_rlp::Decodable for MultisigSignature {
+    /// Decodes the signature and checks its configuration and size limits.
+    /// Does not verify owner signatures or account state.
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Self::decode_rlp(buf)
+        #[derive(alloy_rlp::RlpDecodable)]
+        struct WireSignature {
+            account: Address,
+            config: MultisigConfig,
+            signatures: Vec<PrimitiveSignature>,
+        }
+        let wire = <WireSignature as alloy_rlp::Decodable>::decode(buf)?;
+        Self::try_new(wire.account, wire.config, wire.signatures)
+            .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))
     }
 }
 
