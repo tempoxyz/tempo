@@ -17,6 +17,7 @@ jobs:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
       - name: Recover this experiment's saved load-generator logs
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -36,6 +37,24 @@ jobs:
             done
           done
           test -s diagnostics/load-generator.log
+      - name: Read current experiment load-generator diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          instances=$(aws ec2 describe-instances --filters \
+            Name=tag:BenchmarkRunId,Values=bench-e2e-multi-region-35883541989-1 \
+            Name=tag:Role,Values=load-generator Name=instance-state-name,Values=running \
+            --query 'Reservations[].Instances[].InstanceId' --output json)
+          test "$(jq length <<< "$instances")" = 1
+          instance=$(jq -r '.[0]' <<< "$instances")
+          command='date -u; ps -eo pid,ppid,comm,wchan:30,etime,pcpu,pmem --sort=-pcpu | head -25; find /opt/tempo/load-generator -maxdepth 3 -type f \( -name txgen-send.err -o -name txgen-generate.err -o -name load-generator.log \) -exec tail -n 45 {} + | sed -E "s#(https?|wss?)://[^[:space:]]+#[endpoint]#g" | tail -c 20000'
+          params=$(jq -cn --arg command "$command" '{commands:[$command],executionTimeout:["60"]}')
+          command_id=$(aws ssm send-command --document-name AWS-RunShellScript \
+            --instance-ids "$instance" --comment 'Read-only diagnostics for benchmark 35883541989' \
+            --parameters "$params" --query Command.CommandId --output text)
+          aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance"
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance" \
+            --query StandardOutputContent --output text > diagnostics/current-load-generator.log
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
