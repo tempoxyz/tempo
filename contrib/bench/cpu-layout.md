@@ -5,7 +5,7 @@ all their SMT siblings, for the local transaction generator, sender and metrics
 scraper. Both validators give up the same number of cores from their existing
 CPU groups, preserving the existing placement instead of moving either validator
 across groups. The runner's actual socket/core topology is checked before any
-snapshot changes; overlapping groups, offline CPUs and split SMT cores are errors.
+snapshot changes; overlapping groups, unavailable CPUs and split SMT cores are errors.
 
 On the current 16-core/32-thread runner layout, the default is:
 

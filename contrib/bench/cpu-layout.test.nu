@@ -30,6 +30,7 @@ assert error { bench-cpu-layout '0-15' '16-31' 4 $topology }
 assert error { bench-cpu-layout $a $b 4 ($topology | where cpu != 31) }
 assert error { bench-cpu-layout $a $b 4 ($topology | update 31 {cpu: 31, core: '15', socket: '0', online: false}) }
 assert error { bench-cpu-layout $a $b 4 ($topology | append $topology.0) }
+assert error { bench-cpu-layout $a $b 4 ($topology | update 31 {cpu: 31, core: '15', socket: '0', online: true, allowed: false}) }
 
 # Socket-local core IDs must not merge unrelated cores.
 let sockets = ($topology | each { |row| $row | update socket ($row.cpu mod 16 // 8 | into string) | update core ($row.cpu mod 8 | into string) })

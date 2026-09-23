@@ -14,12 +14,14 @@ export def expand-cpu-list [cpus: string] {
 }
 
 export def read-cpu-topology [] {
-    ^lscpu --all --parse=CPU,CORE,SOCKET,ONLINE
+    let allowed = (open /proc/self/status | lines | where { |line| $line starts-with 'Cpus_allowed_list:' } | first | split row ':' | last | str trim | expand-cpu-list $in)
+    with-env {LC_ALL: 'C'} { ^lscpu --all --parse=CPU,CORE,SOCKET,ONLINE }
     | lines
     | where { |line| not ($line starts-with '#') and $line != '' }
     | each { |line|
         let fields = ($line | split row ',')
-        {cpu: ($fields.0 | into int), core: $fields.1, socket: $fields.2, online: ($fields.3 == 'Y')}
+        let cpu = ($fields.0 | into int)
+        {cpu: $cpu, core: $fields.1, socket: $fields.2, online: ($fields.3 == 'Y'), allowed: ($cpu in $allowed)}
     }
 }
 
@@ -40,6 +42,9 @@ export def bench-cpu-layout [a: string, b: string, txgen_cores: int, topology: l
             let rows = ($topology | where cpu == $cpu)
             if ($rows | length) != 1 or not $rows.0.online {
                 error make {msg: $"CPU ($cpu) is missing, duplicated or offline"}
+            }
+            if not ($rows.0 | get -o allowed | default true) {
+                error make {msg: $"CPU ($cpu) is outside the runner's allowed CPU set"}
             }
             if $cpu in $seen { continue }
             let row = $rows.0
