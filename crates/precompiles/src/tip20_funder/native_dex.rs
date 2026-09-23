@@ -73,20 +73,18 @@ impl NativeDexFundingSource {
         })
     }
 
-    fn decode_policy_data(&self, policy_data: &[u8]) -> Result<Vec<Address>> {
-        Vec::<Address>::abi_decode_validate(policy_data).map_err(|_| {
-            TIP20FunderError::InvalidFundingQuote(ITIP20Funder::InvalidFundingQuote {
-                source: self.address,
-            })
-            .into()
-        })
+    /// Compares input and cap without reading balances, liquidity, or mutable state.
+    pub fn verify(&self, call: IFundingSource::verifyCall) -> Result<bool> {
+        let (input, cap) = self.decode(&call.requestData)?;
+        let (allowed_input, allowed_cap) = self.decode(&call.policyData)?;
+        Ok(input == allowed_input && cap <= allowed_cap)
     }
 
     /// Checks configured routes without reading account balances or orderbook liquidity.
     pub fn supports_token(&self, call: IFundingSource::supportsTokenCall) -> Result<bool> {
         self.validate_context()?;
-        let inputs = self.decode_policy_data(&call.policyData)?;
-        for input in inputs {
+        let (input, _) = self.decode(&call.policyData)?;
+        {
             match self.validate_route(input, call.token) {
                 Ok(()) => return Ok(true),
                 Err(TempoPrecompileError::TIP20Funder(TIP20FunderError::InvalidAsset(_)))
@@ -97,14 +95,13 @@ impl NativeDexFundingSource {
                     StablecoinDEXError::IdenticalTokens(_)
                     | StablecoinDEXError::InvalidToken(_)
                     | StablecoinDEXError::PairDoesNotExist(_),
-                )) => continue,
+                )) => return Ok(false),
                 Err(error) => return Err(error),
             }
         }
-        Ok(false)
     }
 
-    /// Policy data is ABI `address[] inputTokens`; estimates do not consume shared liquidity or inputs.
+    /// Policy data is ABI `(address tokenIn, uint256 maxAmountIn)`.
     pub fn discover(
         &self,
         call: IFundingSource::discoverCall,
@@ -112,11 +109,11 @@ impl NativeDexFundingSource {
         self.validate_context()?;
         let currency = TIP20Token::from_address(call.assetOut)?.currency()?;
         self.validate_asset(call.assetOut, &currency)?;
-        let inputs = self.decode_policy_data(&call.policyData)?;
+        let (asset_in, cap) = self.decode(&call.policyData)?;
         let mut candidates = Vec::new();
-        for asset_in in inputs {
+        {
             if asset_in == call.assetOut {
-                continue;
+                return Ok(candidates);
             }
             let quote = self.quote_input(
                 call.account,
@@ -124,7 +121,7 @@ impl NativeDexFundingSource {
                 call.amountOut,
                 call.maxCost,
                 asset_in,
-                U256::MAX,
+                cap,
             )?;
             if !quote.amountOut.is_zero() {
                 candidates.push(IFundingSource::Candidate {
@@ -143,8 +140,10 @@ impl NativeDexFundingSource {
         let authorized = if call.ownerAuthorized {
             call.policyData.is_empty()
         } else {
-            self.decode_policy_data(&call.policyData)?
-                .contains(&asset_in)
+            self.verify(IFundingSource::verifyCall {
+                requestData: call.requestData.clone(),
+                policyData: call.policyData.clone(),
+            })?
         };
         if !authorized {
             return Err(TIP20FunderError::FundingNotAuthorized(
@@ -279,6 +278,7 @@ impl Precompile for NativeDexFundingSource {
         }
         dispatch!(calldata, |call| match call {
             IFundingSource::IFundingSourceCalls {
+                verify(call) => view(call, |call| self.verify(call)),
                 supportsToken(call) => view(call, |call| self.supports_token(call)),
                 discover(call) => view(call, |call| self.discover(call)),
                 quote(call) => view(call, |call| self.quote(call)),

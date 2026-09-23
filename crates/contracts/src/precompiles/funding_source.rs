@@ -12,6 +12,9 @@ crate::sol! {
         /// @param policyData Source-specific rules or owner-selected configuration; malformed data reverts.
         function supportsToken(address token, bytes calldata policyData) external view returns (bool);
 
+        /// Tests request permissions using only the supplied request and policy data.
+        function verify(bytes calldata requestData, bytes calldata policyData) external view returns (bool);
+
         /// Discovers independent funding candidates in configuration order without granting authority.
         function discover(
             address account,
