@@ -130,10 +130,14 @@ fn rejects_nested_owner_and_oversized_json_list() {
     assert!(serde_json::from_value::<MultisigSimulationSpec>(json).is_err());
     let mut value = spec();
     value.approvals = vec![value.approvals[0].clone(); 9];
-    assert!(
-        serde_json::from_value::<MultisigSimulationSpec>(serde_json::to_value(value).unwrap())
-            .is_err()
+    let decoded: MultisigSimulationSpec =
+        serde_json::from_value(serde_json::to_value(value).unwrap()).unwrap();
+    assert_eq!(
+        decoded.validate_owners(Address::repeat_byte(9)),
+        Err(MultisigQuorumError::TooManySignatures.to_string())
     );
+    #[cfg(feature = "revm")]
+    assert!(create_mock_native_multisig_signature(Address::repeat_byte(9), &decoded).is_err());
 }
 
 #[cfg(feature = "revm")]

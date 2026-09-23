@@ -3,11 +3,7 @@ use super::revm_compat::create_mock_primitive_signature_with_webauthn_limit;
 #[cfg(feature = "revm")]
 use alloy_primitives::B256;
 use alloy_primitives::{Address, Bytes};
-use core::fmt;
-use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
-    de::{Error as _, SeqAccess, Visitor},
-};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 #[cfg(feature = "revm")]
 use tempo_primitives::transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigSignature, PrimitiveSignature,
@@ -28,7 +24,6 @@ pub struct MultisigSimulationSpec {
     #[serde(with = "serde_multisig_config")]
     pub config: MultisigConfig,
     /// Primitive owners in signing order.
-    #[serde(deserialize_with = "deserialize_approvals")]
     pub approvals: Vec<MultisigSimulationApproval>,
 }
 
@@ -93,41 +88,6 @@ mod serde_multisig_config {
         let encoded = Bytes::deserialize(deserializer)?;
         alloy_rlp::decode_exact(&encoded).map_err(D::Error::custom)
     }
-}
-
-fn deserialize_approvals<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<MultisigSimulationApproval>, D::Error> {
-    struct ApprovalsVisitor;
-    impl<'de> Visitor<'de> for ApprovalsVisitor {
-        type Value = Vec<MultisigSimulationApproval>;
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(
-                formatter,
-                "at most {MAX_MULTISIG_SIGNATURES} primitive approvals"
-            )
-        }
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            if seq
-                .size_hint()
-                .is_some_and(|size| size > MAX_MULTISIG_SIGNATURES)
-            {
-                return Err(A::Error::custom("too many multisig simulation approvals"));
-            }
-            let mut approvals = Vec::new();
-            while approvals.len() < MAX_MULTISIG_SIGNATURES {
-                let Some(approval) = seq.next_element()? else {
-                    return Ok(approvals);
-                };
-                approvals.push(approval);
-            }
-            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                return Err(A::Error::custom("too many multisig simulation approvals"));
-            }
-            Ok(approvals)
-        }
-    }
-    deserializer.deserialize_seq(ApprovalsVisitor)
 }
 
 /// Constructs bounded dummy approvals only after checking the claimed owner quorum.
