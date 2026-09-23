@@ -367,8 +367,8 @@ impl alloy_rlp::Encodable for PrimitiveSignature {
 
 impl alloy_rlp::Decodable for PrimitiveSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -787,8 +787,8 @@ impl alloy_rlp::Encodable for TempoSignature {
 
 impl alloy_rlp::Decodable for TempoSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -807,10 +807,7 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     let mut encoded_key = [0u8; 64];
     encoded_key[..32].copy_from_slice(pub_key_x.as_slice());
     encoded_key[32..].copy_from_slice(pub_key_y.as_slice());
-    let hash = keccak256(encoded_key);
-
-    // Take last 20 bytes as address
-    Address::from_slice(&hash[12..])
+    Address::from_raw_public_key(&encoded_key)
 }
 
 /// Concatenates byte slices into a fixed-size array without heap allocations.
@@ -1090,7 +1087,52 @@ mod tests {
         assert_eq!(input, &[0xcc, 0xdd]);
     }
 
+    // Compare both the result and cursor against the former owned-byte decoder.
+    fn assert_borrowed_decode_matches_owned(input: &[u8]) {
+        let mut primitive_input = input;
+        let mut tempo_input = input;
+        let mut owned_input = input;
+        let bytes = Bytes::decode(&mut owned_input);
+        let primitive = bytes.clone().and_then(|bytes| {
+            PrimitiveSignature::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        });
+        let tempo = bytes
+            .and_then(|bytes| TempoSignature::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom));
+        assert_eq!(PrimitiveSignature::decode(&mut primitive_input), primitive);
+        assert_eq!(TempoSignature::decode(&mut tempo_input), tempo);
+        assert_eq!(primitive_input, owned_input);
+        assert_eq!(tempo_input, owned_input);
+    }
+
+    #[test]
+    fn borrowed_signature_decode_malformed_rlp() {
+        for input in [
+            &[][..],
+            &[0x80],
+            &[0xc0],
+            &[0x81, 0x01],
+            &[0xb8, 0x01, 0x80],
+            &[0xb8, 0x40, 0x01],
+            &[0xf8, 0x38],
+            &[0x00, 0xaa],
+        ] {
+            assert_borrowed_decode_matches_owned(input);
+        }
+    }
+
     proptest! {
+        #[test]
+        fn borrowed_signature_decode_matches_owned(input in proptest::collection::vec(any::<u8>(), 0..2200)) {
+            assert_borrowed_decode_matches_owned(&input);
+            assert_borrowed_decode_matches_owned(&alloy_rlp::encode(&input));
+        }
+
+        #[test]
+        fn p256_address_matches_hash_and_truncate(x in any::<[u8; 32]>(), y in any::<[u8; 32]>()) {
+            let hash = keccak256([x, y].concat());
+            prop_assert_eq!(derive_p256_address(&B256::from(x), &B256::from(y)), Address::from_slice(&hash[12..]));
+        }
+
         #[test]
         fn proptest_primitive_signature_rlp_encoding(signature in arb::<PrimitiveSignature>()) {
             let bytes = signature.to_bytes();
@@ -1101,6 +1143,11 @@ mod tests {
             prop_assert_eq!(output.as_slice(), bytes.as_ref());
             prop_assert_eq!(PrimitiveSignature::from_bytes(&output).unwrap(), signature.clone());
             assert_rlp_encoding(&signature, &bytes);
+            let mut encoded = alloy_rlp::encode(&signature);
+            encoded.extend_from_slice(&[0xaa, 0xbb]);
+            assert_borrowed_decode_matches_owned(&encoded);
+            encoded.truncate(encoded.len() - 3);
+            assert_borrowed_decode_matches_owned(&encoded);
         }
 
         #[test]
@@ -1113,6 +1160,11 @@ mod tests {
             prop_assert_eq!(output.as_slice(), bytes.as_ref());
             prop_assert_eq!(TempoSignature::from_bytes(&output).unwrap(), signature.clone());
             assert_rlp_encoding(&signature, &bytes);
+            let mut encoded = alloy_rlp::encode(&signature);
+            encoded.extend_from_slice(&[0xaa, 0xbb]);
+            assert_borrowed_decode_matches_owned(&encoded);
+            encoded.truncate(encoded.len() - 3);
+            assert_borrowed_decode_matches_owned(&encoded);
         }
     }
 

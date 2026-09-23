@@ -204,7 +204,7 @@ pub struct KeyAuthorization {
     ///
     /// This uses `Option<NonZeroU64>` so `Some(0)` is unrepresentable and cannot silently
     /// roundtrip into `None`.
-    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub expiry: Option<NonZeroU64>,
 
     /// TIP20 spending limits for this key.
@@ -509,28 +509,21 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
 #[doc(hidden)]
 pub mod serde_nonzero_quantity_opt {
     use core::num::NonZeroU64;
+    use serde::{Deserializer, Serializer};
 
-    use serde::{Deserializer, Serializer, de::Error as _};
-
+    // Preserve the existing public helper signatures for downstream callers.
     pub fn serialize<S>(value: &Option<NonZeroU64>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        alloy_serde::quantity::opt::serialize(&value.map(NonZeroU64::get), serializer)
+        alloy_serde::quantity::opt::serialize(value, serializer)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        alloy_serde::quantity::opt::deserialize(deserializer).and_then(|value: Option<u64>| {
-            value
-                .map(|value| {
-                    NonZeroU64::new(value)
-                        .ok_or_else(|| D::Error::custom("expected non-zero quantity"))
-                })
-                .transpose()
-        })
+        alloy_serde::quantity::opt::deserialize(deserializer)
     }
 }
 
