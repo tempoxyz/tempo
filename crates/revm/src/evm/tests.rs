@@ -4581,3 +4581,249 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
 
     Ok(())
 }
+
+// TIP-1122 tests isolate the code-size limits from Tempo's unchanged gas cap.
+fn tip1122_evm(spec: TempoHardfork, caller: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+    let mut evm = create_funded_evm_at_spec_with_timestamp(caller, 0, spec);
+    fund_account_with_nonce(&mut evm, caller, 1);
+    evm.ctx.cfg.tx_gas_limit_cap = Some(100_000_000);
+    evm.ctx.block.inner.gas_limit = 200_000_000;
+    evm
+}
+
+fn tip1122_tx(caller: Address, kind: TxKind, data: Bytes, aa: bool) -> TempoTxEnv {
+    let mut tx = TempoTxEnv {
+        inner: TxEnv {
+            caller,
+            kind,
+            data: data.clone(),
+            gas_limit: 100_000_000,
+            nonce: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if aa {
+        tx.tempo_tx_env = Some(Box::new(crate::TempoBatchCallEnv {
+            aa_calls: vec![Call {
+                to: kind,
+                value: U256::ZERO,
+                input: data,
+            }],
+            ..Default::default()
+        }));
+    }
+    tx
+}
+
+#[test]
+fn tip1122_runtime_code_size_boundaries() {
+    let caller = Address::repeat_byte(0x42);
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for len in [24_576usize, 24_577, 65_536, 65_537] {
+            // Return len zero bytes from memory as the deployed runtime.
+            let initcode = Bytes::from(vec![
+                0x62,
+                (len >> 16) as u8,
+                (len >> 8) as u8,
+                len as u8,
+                0x5f,
+                0xf3,
+            ]);
+            for aa in [false, true] {
+                let mut evm = tip1122_evm(spec, caller);
+                let result = evm
+                    .transact(tip1122_tx(caller, TxKind::Create, initcode.clone(), aa))
+                    .unwrap();
+                let allowed = len <= if spec.is_t13() { 65_536 } else { 24_576 };
+                assert_eq!(
+                    result.result.is_success(),
+                    allowed,
+                    "{spec:?}, {len}, aa={aa}: {:?}",
+                    result.result
+                );
+                if allowed {
+                    let account = result.state.get(&caller.create(1)).unwrap();
+                    assert_eq!(
+                        account.info.code.as_ref().unwrap().original_bytes().len(),
+                        len
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn tip1122_initcode_size_boundaries() {
+    let caller = Address::repeat_byte(0x42);
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for len in [49_152usize, 49_153, 131_072, 131_073] {
+            for aa in [false, true] {
+                let mut evm = tip1122_evm(spec, caller);
+                let result = evm.transact(tip1122_tx(
+                    caller,
+                    TxKind::Create,
+                    Bytes::from(vec![0; len]),
+                    aa,
+                ));
+                let allowed = len <= if spec.is_t13() { 131_072 } else { 49_152 };
+                if allowed {
+                    assert!(
+                        result.unwrap().result.is_success(),
+                        "{spec:?}, {len}, aa={aa}"
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            result,
+                            Err(revm::context::result::EVMError::Transaction(
+                                TempoInvalidTransaction::EthInvalidTransaction(
+                                    InvalidTransaction::CreateInitCodeSizeLimit
+                                )
+                            ))
+                        ),
+                        "{spec:?}, {len}, aa={aa}: {result:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn tip1122_floor_settlement_includes_unexecuted_batch_calls() {
+    let caller = Address::repeat_byte(0x42);
+    let target = Address::repeat_byte(0x43);
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for revert in [false, true] {
+            for aa in [false, true] {
+                let mut evm = tip1122_evm(spec, caller);
+                let code = if revert {
+                    bytes!("5f5ffd")
+                } else {
+                    bytes!("00")
+                };
+                evm.ctx.db_mut().insert_account_info(
+                    target,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code)),
+                        ..Default::default()
+                    },
+                );
+                let mut tx =
+                    tip1122_tx(caller, TxKind::Call(target), Bytes::from(vec![0; 1000]), aa);
+                if let Some(batch) = &mut tx.tempo_tx_env {
+                    // All data is in the second call, which is unreachable if the first reverts.
+                    batch.aa_calls[0].input = Bytes::new();
+                    batch.aa_calls.push(Call {
+                        to: TxKind::Call(target),
+                        value: U256::ZERO,
+                        input: Bytes::from(vec![0; 1000]),
+                    });
+                }
+                let result = evm.transact(tx).unwrap().result;
+                assert_eq!(result.is_success(), !revert);
+                assert_eq!(
+                    result.tx_gas_used(),
+                    if spec.is_t13() { 85_000 } else { 31_000 },
+                    "{spec:?}, revert={revert}, aa={aa}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tip1122_internal_create_limits() {
+    let caller = Address::repeat_byte(0x42);
+    let creator = Address::repeat_byte(0x43);
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for create2 in [false, true] {
+            // Copy input into memory, deploy it, and return the created address (or zero).
+            let code = if create2 {
+                bytes!("365f5f375f365f5ff55f5260205ff3")
+            } else {
+                bytes!("365f5f37365f5ff05f5260205ff3")
+            };
+            for len in [24_576usize, 24_577, 65_536, 65_537] {
+                let mut evm = tip1122_evm(spec, caller);
+                evm.ctx.db_mut().insert_account_info(
+                    creator,
+                    AccountInfo {
+                        nonce: 1,
+                        code: Some(Bytecode::new_raw(code.clone())),
+                        ..Default::default()
+                    },
+                );
+                let initcode = Bytes::from(vec![
+                    0x62,
+                    (len >> 16) as u8,
+                    (len >> 8) as u8,
+                    len as u8,
+                    0x5f,
+                    0xf3,
+                ]);
+                let result = evm
+                    .transact(tip1122_tx(caller, TxKind::Call(creator), initcode, false))
+                    .unwrap();
+                assert!(result.result.is_success());
+                let deployed = U256::from_be_slice(result.result.output().unwrap()) != U256::ZERO;
+                assert_eq!(deployed, len <= if spec.is_t13() { 65_536 } else { 24_576 });
+            }
+            for len in [49_152usize, 49_153, 131_072, 131_073] {
+                let mut evm = tip1122_evm(spec, caller);
+                evm.ctx.db_mut().insert_account_info(
+                    creator,
+                    AccountInfo {
+                        nonce: 1,
+                        code: Some(Bytecode::new_raw(code.clone())),
+                        ..Default::default()
+                    },
+                );
+                let result = evm
+                    .transact(tip1122_tx(
+                        caller,
+                        TxKind::Call(creator),
+                        Bytes::from(vec![0; len]),
+                        false,
+                    ))
+                    .unwrap();
+                assert_eq!(
+                    result.result.is_success(),
+                    len <= if spec.is_t13() { 131_072 } else { 49_152 }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tip1122_canonical_factory_deployment_and_collision() {
+    use tempo_contracts::{
+        ARACHNID_CREATE2_FACTORY_ADDRESS as factory, contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+    };
+    let caller = Address::repeat_byte(0x42);
+    let initcode = bytes!("60015ff3"); // Deploy a single STOP byte.
+    let expected = factory.create2_from_code([0; 32], &initcode);
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        let mut evm = tip1122_evm(spec, caller);
+        evm.ctx.db_mut().insert_account_info(
+            factory,
+            AccountInfo {
+                nonce: 1,
+                code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
+                ..Default::default()
+            },
+        );
+        let input = Bytes::from([vec![0; 32], initcode.to_vec()].concat());
+        let mut tx = tip1122_tx(caller, TxKind::Call(factory), input, false);
+        let result = evm.transact_commit(tx.clone()).unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.output().unwrap().as_ref(), expected.as_slice());
+        tx.nonce = 2;
+        let collision = evm.transact_commit(tx).unwrap();
+        assert!(matches!(collision, ExecutionResult::Revert { .. }));
+        assert!(collision.output().unwrap().is_empty());
+    }
+}

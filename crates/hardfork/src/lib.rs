@@ -224,6 +224,8 @@ tempo_hardfork!(
         T12,
         /// T13 hardfork.
         ///
+        /// Includes TIP-1122: EIPs 7954, 7976, 8024, and 7997.
+        ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t13>.
         T13,
     }

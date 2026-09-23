@@ -4,6 +4,7 @@ use crate::{
     RevokedKeys, SpendingLimitUpdates, TempoTransactionPool, metrics::TempoPoolMaintenanceMetrics,
     transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
 };
+use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, Log, TxHash,
     map::{AddressMap, AddressSet, B256Set},
@@ -17,7 +18,7 @@ use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, Head
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
 use std::time::Instant;
-use tempo_chainspec::hardfork::TempoHardforks;
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -483,6 +484,7 @@ where
         + 'static,
 {
     let mut pending_staleness = PendingStalenessTracker::default();
+    let mut tip1122_active = false;
     let metrics = TempoPoolMaintenanceMetrics::default();
 
     // Subscribe to canonical chain events.
@@ -546,6 +548,27 @@ where
         // Exclude them from every snapshot-based maintenance phase so they follow the
         // normal mined path rather than being discarded from the pool.
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
+
+        // TIP-1122 changes transaction validity at T13. Recheck the floor for all
+        // subpools, including queued and 2D-nonce transactions admitted before the fork.
+        // Reset on a reorg below T13 so a subsequent activation is checked again.
+        let new_tip1122_active = pool
+            .client()
+            .chain_spec()
+            .tempo_hardfork_at(tip_timestamp)
+            .is_t13();
+        if new_tip1122_active && !tip1122_active {
+            let snapshot = all_txs.get_or_insert_with(|| pool.all_transactions());
+            let hashes: Vec<_> = snapshot
+                .iter()
+                .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                .filter(|tx| !covers_tip1122_calldata_floor(&tx.transaction))
+                .map(|tx| *tx.hash())
+                .collect();
+            removed_this_iteration.extend(hashes.iter().copied());
+            removed_txs.push(pool.remove_transactions(hashes));
+        }
+        tip1122_active = new_tip1122_active;
 
         // 4. Handle potentially invalidating updates
         // When a cached value changes of a token (transfer policy, or quote token) changes,
@@ -679,6 +702,22 @@ where
     }
 }
 
+/// Check the changed floor without rerunning state-dependent admission checks.
+fn covers_tip1122_calldata_floor(tx: &TempoPooledTransaction) -> bool {
+    let params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T13);
+    let floor = if let Some(aa) = tx.inner().as_aa() {
+        aa.tx()
+            .calls
+            .iter()
+            .fold(params.tx_floor_cost_base_gas(), |floor, call| {
+                floor + params.tx_floor_cost(&call.input) - params.tx_floor_cost_base_gas()
+            })
+    } else {
+        params.tx_floor_cost(tx.input())
+    };
+    tx.gas_limit() >= floor
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +726,32 @@ mod tests {
     use reth_primitives_traits::RecoveredBlock;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
+
+    #[test]
+    fn tip1122_pool_floor_counts_all_batch_inputs_once() {
+        use alloy_primitives::{Bytes, TxKind, U256};
+        use tempo_primitives::transaction::Call;
+        for byte in [0, 1] {
+            for limit in [84_999, 85_000, 85_001] {
+                let tx = TxBuilder::aa(Address::repeat_byte(1))
+                    .gas_limit(limit)
+                    .calls(vec![
+                        Call {
+                            to: TxKind::Call(Address::repeat_byte(2)),
+                            value: U256::ZERO,
+                            input: Bytes::from(vec![byte; 400]),
+                        },
+                        Call {
+                            to: TxKind::Call(Address::repeat_byte(3)),
+                            value: U256::ZERO,
+                            input: Bytes::from(vec![byte; 600]),
+                        },
+                    ])
+                    .build();
+                assert_eq!(covers_tip1122_calldata_floor(&tx), limit >= 85_000);
+            }
+        }
+    }
 
     mod pending_staleness_tracker_tests {
         use super::*;
