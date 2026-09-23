@@ -688,7 +688,7 @@ fn multisig_signature_decode_rejects_invalid_config() {
 }
 
 #[test]
-fn multisig_config_decode_bounds_owner_count() {
+fn multisig_config_validates_owner_count_after_decoding() {
     let config = MultisigConfig {
         salt: B256::ZERO,
         version: 0,
@@ -704,13 +704,17 @@ fn multisig_config_decode_bounds_owner_count() {
     config.encode(&mut encoded);
 
     let mut input = encoded.as_slice();
-    let mut payload = input;
-    alloy_rlp::Header::decode(&mut payload).unwrap();
-    assert!(matches!(
-        MultisigConfig::decode(&mut input),
-        Err(alloy_rlp::Error::Custom("too many multisig owners"))
-    ));
-    assert_eq!(input, payload);
+    let decoded = MultisigConfig::decode(&mut input).unwrap();
+    assert!(input.is_empty());
+    assert_eq!(decoded, config);
+    assert_eq!(decoded.validate(), Err(MultisigConfigError::TooManyOwners));
+
+    let encoded = encoded_multisig(
+        Address::repeat_byte(0x11),
+        &decoded,
+        vec![valid_owner_signature_bytes().to_vec()],
+    );
+    assert_multisig_decode_rejected(&encoded);
 }
 
 #[test]
