@@ -2050,6 +2050,7 @@ fn test_multicall_gas_refund_accounting() {
         GAS_LIMIT - INTRINSIC_GAS,
         0,
         calls,
+        TempoEvmHandler::run_exec_loop,
         |_handler, _evm, call_gas: &mut GasTracker| {
             let (spent, refund) = calls_gas[call_idx];
             call_idx += 1;
@@ -4398,6 +4399,7 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
             gas_limit,
             reservoir,
             calls,
+            TempoEvmHandler::run_exec_loop,
             |_handler, _evm, call_gas: &mut GasTracker| {
                 // Feed the batch executor deterministic per-call outcomes without running real EVM code.
                 let (instruction_result, spent) = call_results[call_idx];
@@ -4448,4 +4450,100 @@ fn funding_rejected_before_activation_in_execution_and_simulation() {
             ))
         ));
     }
+}
+
+#[test]
+fn funding_intrinsic_prices_signed_extension_bytes() {
+    use tempo_primitives::transaction::FundingRequirement;
+    let spec = TempoHardfork::T12;
+    let params = tempo_gas_params(spec);
+    let mut env = TempoBatchCallEnv {
+        aa_calls: vec![Call {
+            to: Address::ZERO.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let baseline = calculate_aa_batch_intrinsic_gas(
+        &env,
+        &params,
+        None::<std::iter::Empty<&alloy_eips::eip2930::AccessListItem>>,
+        spec,
+    )
+    .unwrap();
+    env.require_funds = vec![FundingRequirement {
+        policy_rules: None,
+        token: Address::repeat_byte(1),
+        amount: U256::from(1),
+        sources: vec![],
+        slippage_bps: None,
+    }];
+    let funded = calculate_aa_batch_intrinsic_gas(
+        &env,
+        &params,
+        None::<std::iter::Empty<&alloy_eips::eip2930::AccessListItem>>,
+        spec,
+    )
+    .unwrap();
+    // 27 nonzero bytes: requirement, outer list, and absent-key placeholder.
+    assert_eq!(
+        funded.initial_regular_gas - baseline.initial_regular_gas,
+        432
+    );
+    assert_eq!(funded.floor_gas - baseline.floor_gas, 1080);
+}
+
+#[test]
+fn funding_activation_and_simulated_access_keys() {
+    use tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS;
+    use tempo_primitives::transaction::FundingRequirement;
+    for (spec, key, expected) in [
+        (
+            TempoHardfork::T12,
+            None,
+            TempoInvalidTransaction::FundingNotActivated,
+        ),
+        (
+            TempoHardfork::T13,
+            Some(Address::repeat_byte(1)),
+            TempoInvalidTransaction::DelegatedFundingNotActivated,
+        ),
+    ] {
+        let mut test = TestHandlerEvm::aa(
+            spec,
+            TempoBatchCallEnv {
+                require_funds: vec![FundingRequirement::default()],
+                override_key_id: key,
+                ..Default::default()
+            },
+            |_| {},
+        );
+        assert_eq!(
+            test.evm
+                .inner
+                .precompiles
+                .get(&NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+                .is_some(),
+            spec.is_t13()
+        );
+        assert!(
+            matches!(test.validate_env(), Err(EVMError::Transaction(error)) if error == expected)
+        );
+    }
+}
+
+#[test]
+fn funding_source_survives_inspector_and_storage_action_changes() {
+    let test = TestHandlerEvm::tx(TempoHardfork::T13, |_| {});
+    let evm = test
+        .evm
+        .with_inspector(())
+        .with_actions(StorageActions::disabled());
+    assert!(
+        evm.inner
+            .precompiles
+            .get(&tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+            .is_some()
+    );
 }

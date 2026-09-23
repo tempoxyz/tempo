@@ -8,7 +8,7 @@ const MAKER: Address = address!("0000000000000000000000000000000000005000");
 const UNIT: u64 = 1_000_000;
 
 fn setup_dex() -> (TestEvm, Address, Address) {
-    let mut evm = evm(TempoHardfork::T12);
+    let mut evm = evm(TempoHardfork::T13);
     evm.inner
         .ctx
         .set_tx(TxEnv::new_system_tx_with_caller(ACCOUNT, RECIPIENT, Bytes::new()).into());
@@ -42,12 +42,12 @@ fn setup_dex() -> (TestEvm, Address, Address) {
         }
         (a, b)
     });
-    install(&mut evm, vec![a, b, PATH_USD_ADDRESS]);
+    install(&mut evm);
     evm.inner.ctx.journaled_state.logs.clear();
     (evm, a, b)
 }
 
-fn install(evm: &mut TestEvm, assets: Vec<Address>) {
+fn install(evm: &mut TestEvm) {
     let env = PrecompileEnv::new(
         &evm.inner.ctx.cfg,
         evm.actions.clone(),
@@ -55,7 +55,7 @@ fn install(evm: &mut TestEvm, assets: Vec<Address>) {
     );
     evm.inner.precompiles.extend_precompiles([(
         SOURCE,
-        NativeDexFundingSource::new(SOURCE, FUNDER, assets).create_precompile(&env),
+        NativeDexFundingSource::new(SOURCE, FUNDER).create_precompile(&env),
     )]);
 }
 
@@ -277,7 +277,7 @@ fn downstream_failure_reverts_book_fills_and_payment() {
 #[test]
 fn unsupported_assets_and_paused_inputs_fail_without_fallback() {
     for paused in [false, true] {
-        let (mut evm, a, b) = setup_dex();
+        let (mut evm, mut a, b) = setup_dex();
         if paused {
             StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                 TIP20Setup::config(a)
@@ -291,7 +291,13 @@ fn unsupported_assets_and_paused_inputs_fail_without_fallback() {
                     .unwrap();
             });
         } else {
-            install(&mut evm, vec![b, PATH_USD_ADDRESS]);
+            a = StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                TIP20Setup::create("Euro", "EUR", MAKER)
+                    .currency("EUR")
+                    .apply()
+                    .unwrap()
+                    .address()
+            });
         }
         evm.inner.ctx.journaled_state.logs.clear();
         let result = run(
@@ -313,9 +319,17 @@ fn unsupported_assets_and_paused_inputs_fail_without_fallback() {
 }
 
 #[test]
-fn funding_source_is_not_registered_by_default() {
-    let evm = evm(TempoHardfork::T12);
-    assert!(evm.inner.precompiles.get(&SOURCE).is_none());
+fn funding_source_registration_follows_t13() {
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        let evm = evm(spec);
+        assert_eq!(
+            evm.inner
+                .precompiles
+                .get(&tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+                .is_some(),
+            spec.is_t13()
+        );
+    }
 }
 
 #[test]
@@ -461,6 +475,56 @@ fn native_source_gas_matches_inspected_execution_and_exhaustion_reverts() {
         }
     }
     assert_eq!(runs[0], runs[1]);
+}
+
+#[test]
+fn signed_requirements_use_the_normal_and_inspected_batch_paths() {
+    use tempo_primitives::transaction::{FundingRequirement as SignedRequirement, FundingSource};
+    for inspect in [false, true] {
+        let (mut evm, a, b) = setup_dex();
+        let calls = vec![Call {
+            to: PATH_USD_ADDRESS.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: RECIPIENT,
+                amount: U256::from(50 * UNIT),
+            }
+            .abi_encode()
+            .into(),
+        }];
+        evm.inner.ctx.tx.tempo_tx_env = Some(Box::new(crate::TempoBatchCallEnv {
+            aa_calls: calls.clone(),
+            require_funds: vec![SignedRequirement {
+                policy_rules: None,
+                token: PATH_USD_ADDRESS,
+                amount: U256::from(50 * UNIT),
+                slippage_bps: Some(100),
+                sources: [request(a, U256::from(30 * UNIT)), request(b, U256::MAX)]
+                    .into_iter()
+                    .map(|source| FundingSource {
+                        target: tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS,
+                        data: source.data,
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        }));
+        let gas = GasTracker::new(LIMIT, LIMIT, 0);
+        let mut handler = TempoEvmHandler::new();
+        let result = if inspect {
+            handler.inspect_execute_multi_call(&mut evm, &gas, calls)
+        } else {
+            handler.execute_multi_call(&mut evm, &gas, calls)
+        }
+        .unwrap();
+        assert!(result.instruction_result().is_ok(), "{result:?}");
+        assert_eq!(
+            balance(&mut evm, PATH_USD_ADDRESS, RECIPIENT),
+            U256::from(50 * UNIT)
+        );
+        assert_eq!(balance(&mut evm, a, ACCOUNT), U256::from(170 * UNIT));
+        assert_eq!(balance(&mut evm, b, ACCOUNT), U256::from(180 * UNIT));
+    }
 }
 
 #[test]

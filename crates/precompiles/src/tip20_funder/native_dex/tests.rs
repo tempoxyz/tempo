@@ -11,7 +11,7 @@ const SOURCE: Address = address!("0000000000000000000000000000000000001000");
 const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
 
 fn setup() -> (HashMapStorageProvider, NativeDexFundingSource, Address) {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
     let input = StorageCtx::enter(&mut storage, || {
         TIP20Setup::path_usd(ACCOUNT).apply().unwrap();
         let input = TIP20Setup::create("Input", "IN", ACCOUNT)
@@ -21,11 +21,7 @@ fn setup() -> (HashMapStorageProvider, NativeDexFundingSource, Address) {
         StablecoinDEX::new().create_pair(input).unwrap();
         input
     });
-    (
-        storage,
-        NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, PATH_USD_ADDRESS]),
-        input,
-    )
+    (storage, NativeDexFundingSource::new(SOURCE, FUNDER), input)
 }
 
 fn quote(input: Address, cap: U256, budget: U256) -> IFundingSource::quoteCall {
@@ -80,7 +76,7 @@ fn quoting_rejects_unsupported_policy_and_malformed_data() {
             assert!(source.quote(call).is_err());
         }
     });
-    storage.set_spec(TempoHardfork::T11);
+    storage.set_spec(TempoHardfork::T12);
     StorageCtx::enter(&mut storage, || {
         assert!(
             source
@@ -124,7 +120,7 @@ fn fund_requires_matching_native_scope_even_when_no_input_available() {
 }
 
 #[test]
-fn all_route_assets_require_explicit_parity_approval() {
+fn currency_metadata_allows_new_usd_assets_and_rejects_non_parity_assets() {
     let (mut storage, source, input) = setup();
     StorageCtx::enter(&mut storage, || {
         let output = TIP20Setup::create("Output", "OUT", ACCOUNT)
@@ -134,13 +130,39 @@ fn all_route_assets_require_explicit_parity_approval() {
         StablecoinDEX::new().create_pair(output).unwrap();
         let mut call = quote(input, U256::MAX, U256::from(50));
         call.assetOut = output;
-        assert!(source.quote(call.clone()).is_err());
-        // Both endpoints are allowed, but the common quote token is not.
-        let endpoints_only = NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, output]);
-        assert!(endpoints_only.quote(call.clone()).is_err());
-        let all =
-            NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, output, PATH_USD_ADDRESS]);
-        assert!(all.quote(call).is_ok());
+        assert!(source.quote(call.clone()).is_ok());
+        let eur = TIP20Setup::create("Euro", "EUR", ACCOUNT)
+            .currency("EUR")
+            .apply()
+            .unwrap()
+            .address();
+        call.requestData = (eur, U256::MAX).abi_encode().into();
+        assert!(source.quote(call).is_err());
+    });
+}
+
+#[test]
+fn paused_intermediate_route_token_is_rejected() {
+    let (mut storage, source, input) = setup();
+    StorageCtx::enter(&mut storage, || {
+        let output = TIP20Setup::create("Output", "OUT", ACCOUNT)
+            .apply()
+            .unwrap()
+            .address();
+        StablecoinDEX::new().create_pair(output).unwrap();
+        let mut call = quote(input, U256::MAX, U256::from(50));
+        call.assetOut = output;
+        assert!(source.quote(call.clone()).is_ok());
+        TIP20Setup::config(PATH_USD_ADDRESS)
+            .with_admin(ACCOUNT)
+            .with_role(ACCOUNT, TIP20Token::pause_role())
+            .apply()
+            .unwrap();
+        TIP20Token::from_address(PATH_USD_ADDRESS)
+            .unwrap()
+            .pause(ACCOUNT, ITIP20::pauseCall {})
+            .unwrap();
+        assert!(source.quote(call).is_err());
     });
 }
 
@@ -214,8 +236,59 @@ fn token_support_is_independent_of_balances_and_liquidity() {
 }
 
 #[test]
+fn token_support_rejects_non_parity_and_missing_routes() {
+    let (mut storage, source, input) = setup();
+    StorageCtx::enter(&mut storage, || {
+        let eur = TIP20Setup::create("Euro", "EUR", ACCOUNT)
+            .currency("EUR")
+            .apply()
+            .unwrap()
+            .address();
+        let no_pair = TIP20Setup::create("No pair", "NONE", ACCOUNT)
+            .apply()
+            .unwrap()
+            .address();
+        for input in [eur, no_pair] {
+            assert!(
+                !source
+                    .supports_token(IFundingSource::supportsTokenCall {
+                        token: PATH_USD_ADDRESS,
+                        policyData: (input, U256::MAX).abi_encode().into(),
+                    })
+                    .unwrap()
+            );
+        }
+        assert!(
+            source
+                .supports_token(IFundingSource::supportsTokenCall {
+                    token: PATH_USD_ADDRESS,
+                    policyData: (input, U256::MAX).abi_encode().into(),
+                })
+                .unwrap()
+        );
+        TIP20Setup::config(PATH_USD_ADDRESS)
+            .with_admin(ACCOUNT)
+            .with_role(ACCOUNT, TIP20Token::pause_role())
+            .apply()
+            .unwrap();
+        TIP20Token::from_address(PATH_USD_ADDRESS)
+            .unwrap()
+            .pause(ACCOUNT, ITIP20::pauseCall {})
+            .unwrap();
+        assert!(
+            !source
+                .supports_token(IFundingSource::supportsTokenCall {
+                    token: PATH_USD_ADDRESS,
+                    policyData: (input, U256::MAX).abi_encode().into(),
+                })
+                .unwrap()
+        );
+    });
+}
+
+#[test]
 fn verification_binds_input_and_cap_without_storage() {
-    let source = NativeDexFundingSource::new(SOURCE, FUNDER, vec![]);
+    let source = NativeDexFundingSource::new(SOURCE, FUNDER);
     for (input, cap, expected) in [
         (ACCOUNT, 30, true),
         (ACCOUNT, 31, false),

@@ -1,4 +1,4 @@
-//! Native DEX funding hooks. No address is registered until funding activation.
+//! Native DEX funding hooks, activated at T13.
 
 use super::{RATE_SCALE, permission::require_active};
 use crate::{
@@ -15,26 +15,21 @@ use alloy_primitives::{Address, U256};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IFundingSource, ITIP20, ITIP20Funder, TIP20FunderError};
 
-/// Explicitly configured parity assets, not inferred from token names or currency metadata.
+/// Funding through initialized, unpaused tokens with matching currency metadata.
 #[derive(Clone)]
 pub struct NativeDexFundingSource {
     address: Address,
     funder: Address,
-    parity_assets: Vec<Address>,
 }
 
 impl NativeDexFundingSource {
-    pub fn new(address: Address, funder: Address, parity_assets: Vec<Address>) -> Self {
-        Self {
-            address,
-            funder,
-            parity_assets,
-        }
+    pub fn new(address: Address, funder: Address) -> Self {
+        Self { address, funder }
     }
 
     fn validate_context(&self) -> Result<()> {
         // Exact per-order quotes and execution use the same rounding starting at T12.
-        if self.funder.is_zero() || self.address.is_zero() || !StorageCtx.spec().is_t12() {
+        if self.funder.is_zero() || self.address.is_zero() || !StorageCtx.spec().is_t13() {
             return Err(TIP20FunderError::InvalidFundingContext(
                 ITIP20Funder::InvalidFundingContext {},
             )
@@ -43,30 +38,28 @@ impl NativeDexFundingSource {
         Ok(())
     }
 
-    fn validate_asset(&self, asset: Address) -> Result<()> {
+    fn validate_asset(&self, asset: Address, currency: &str) -> Result<()> {
         let invalid = || {
             TempoPrecompileError::from(TIP20FunderError::InvalidAsset(ITIP20Funder::InvalidAsset {
                 asset,
             }))
         };
-        if !self.parity_assets.contains(&asset) {
-            return Err(invalid());
-        }
         let token = TIP20Token::from_address(asset).map_err(|_| invalid())?;
-        if !token.is_initialized()? {
+        if !token.is_initialized()? || token.currency()? != currency {
             return Err(invalid());
         }
         token.check_not_paused()
     }
 
     fn validate_route(&self, asset_in: Address, asset_out: Address) -> Result<()> {
-        self.validate_asset(asset_in)?;
-        self.validate_asset(asset_out)?;
+        let currency = TIP20Token::from_address(asset_out)?.currency()?;
+        self.validate_asset(asset_in, &currency)?;
+        self.validate_asset(asset_out, &currency)?;
         let dex = StablecoinDEX::new();
         for (key, _) in dex.find_trade_path(asset_in, asset_out)? {
             let book = dex.books(key)?;
-            self.validate_asset(book.base)?;
-            self.validate_asset(book.quote)?;
+            self.validate_asset(book.base, &currency)?;
+            self.validate_asset(book.quote, &currency)?;
         }
         Ok(())
     }
@@ -112,7 +105,8 @@ impl NativeDexFundingSource {
         call: IFundingSource::discoverCall,
     ) -> Result<Vec<IFundingSource::Candidate>> {
         self.validate_context()?;
-        self.validate_asset(call.assetOut)?;
+        let currency = TIP20Token::from_address(call.assetOut)?.currency()?;
+        self.validate_asset(call.assetOut, &currency)?;
         let (asset_in, cap) = self.decode(&call.policyData)?;
         let mut candidates = Vec::new();
         if asset_in == call.assetOut {
