@@ -113,6 +113,7 @@ fn requirement(
     sources: Vec<ITIP20Funder::Source>,
 ) -> FundingRequirement {
     FundingRequirement {
+        policy_rules: None,
         token: asset,
         amount: U256::from(amount),
         slippage_bps: 0,

@@ -16,6 +16,7 @@ pub(in crate::handler) struct FundingRequirement {
     pub token: Address,
     pub amount: U256,
     pub slippage_bps: u16,
+    pub policy_rules: Option<Bytes>,
     pub sources: Vec<ITIP20Funder::Source>,
 }
 
@@ -81,6 +82,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             .map(|entry| {
                 Ok(FundingRequirement {
                     token: entry.token,
+                    policy_rules: entry.policy_rules.clone(),
                     amount: entry.amount,
                     slippage_bps: u16::try_from(entry.slippage_bps.unwrap_or_default())
                         .map_err(|_| TempoInvalidTransaction::InvalidFundingSlippage)?,
@@ -167,7 +169,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             for requirement in requirements {
                 let mut balance = self.funding_storage(evm, gas, || {
                     // Context and argument validation precede the existing-balance shortcut.
-                    if requirement.slippage_bps > 10_000
+                    if requirement.policy_rules.is_some()
+                        || requirement.slippage_bps > 10_000
                         || requirement
                             .sources
                             .iter()
