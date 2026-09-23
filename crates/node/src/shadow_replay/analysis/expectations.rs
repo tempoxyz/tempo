@@ -19,7 +19,8 @@ use tempo_contracts::{
     },
 };
 use tempo_precompiles::{
-    abi_decoder_config_for_spec, storage::StorageAction, tip_fee_manager::amm::compute_amount_out,
+    abi_decoder_config_for_spec, storage::StorageAction, storage_credits::StorageCredits,
+    tip_fee_manager::amm::compute_amount_out,
 };
 use tempo_primitives::{
     TempoAddressExt as _, TempoTxEnvelope, transaction::calc_gas_balance_spending,
@@ -137,10 +138,19 @@ const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
     },
 };
 
+/// Fields accepted by a precompile-scoped expectation, including its TIP-1060 credit balance.
+fn precompile_gas_or_storage(field: &Field, precompile: Address) -> bool {
+    matches!(field.name, "gas" | "block_gas")
+        || (field.name == "storage"
+            && (field.address == Some(precompile)
+                || (field.address == Some(STORAGE_CREDITS_ADDRESS)
+                    && field.slot == Some(StorageCredits::slot(precompile)))))
+}
+
 const T12_TIP20_CHANNEL: Expectation = Expectation {
     id: "t12.tip20-channel-reserve",
     check: |ctx, field| {
-        if matches!(field.name, "gas" | "block_gas")
+        if precompile_gas_or_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS)
             && ctx.call().any(|(kind, calldata)| {
                 kind.to() == Some(&TIP20_CHANNEL_RESERVE_ADDRESS)
                     && [
@@ -164,8 +174,7 @@ const T12_TIP20_CHANNEL: Expectation = Expectation {
 const T12_STABLECOIN_DEX: Expectation = Expectation {
     id: "t12.stablecoin-dex",
     check: |ctx, field| {
-        if matches!(field.name, "gas" | "block_gas" | "storage")
-            && (field.name != "storage" || field.address == Some(STABLECOIN_DEX_ADDRESS))
+        if precompile_gas_or_storage(field, STABLECOIN_DEX_ADDRESS)
             && ctx.call().any(|(kind, calldata)| {
                 kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
                     && [
