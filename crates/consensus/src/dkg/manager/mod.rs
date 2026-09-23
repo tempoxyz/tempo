@@ -104,7 +104,12 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Chain specification used to select the ceremony transcript version.
     fn chain_spec(&self) -> Arc<TempoChainSpec>;
 
-    /// Notifies pending outcome requests that their parent state may now be available.
+    /// Returns a stream that yields after each change of the canonical chain.
+    ///
+    /// Items carry no data. Several changes can produce one item, but at least
+    /// one item must follow each change. Changes before the call are not
+    /// reported. The stream must not end while the node runs, because the DKG
+    /// manager stops when it ends.
     fn state_updates(&self) -> impl Stream<Item = ()> + Send + Unpin + 'static;
 
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.

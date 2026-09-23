@@ -262,15 +262,14 @@ impl Inner {
     /// Checks the header of a proposal before it is handed to the execution
     /// layer: the consensus context it claims and the DKG data in `extra_data`.
     ///
-    /// `ancestry` yields the parent of `block` next. Only the DKG outcome of
-    /// a boundary block needs the parent, so only then is it read.
+    /// For a boundary block, this only decodes the DKG outcome and returns it.
+    /// [`Self::verify_boundary_outcome`] compares it after execution.
     #[instrument(skip_all, err(Display))]
     async fn verify_header(
         &self,
         block: &Block,
-        mut ancestry: impl Ancestry<Block>,
         context: &Context<Digest, PublicKey>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Option<OnchainDkgOutcome>> {
         let epoch_info = self
             .epoch_strategy
             .containing(block.height())
@@ -299,49 +298,15 @@ impl Inner {
         );
 
         if epoch_info.last() == block.height() {
-            info!(
-                "on last block of epoch; verifying that the boundary block \
-                contains the correct DKG outcome",
-            );
-            let Some(parent) = ancestry.next().await else {
-                warn!("ancestry ended before yielding the parent; abstaining");
-                return std::future::pending().await;
-            };
-            let our_outcome = match self.dkg_manager.subscribe_dkg_outcome(parent).await {
-                Ok(outcome) => outcome,
-                Err(reason) => {
-                    warn!(%reason, "DKG outcome unavailable; abstaining");
-                    return std::future::pending().await;
-                }
-            };
-            let block_outcome = OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
-                .wrap_err(
+            let proposed_outcome =
+                OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref()).wrap_err(
                     "failed decoding extra data header as DKG ceremony \
                     outcome; cannot verify end of epoch block",
                 )?;
-            if our_outcome != block_outcome {
-                // Emit the log here so that it's structured. The error would be annoying to read.
-                warn!(
-                    our.epoch = %our_outcome.epoch,
-                    our.players = ?our_outcome.players(),
-                    our.next_players = ?our_outcome.next_players(),
-                    our.sharing = ?our_outcome.sharing(),
-                    our.is_next_full_dkg = ?our_outcome.is_next_full_dkg,
-                    block.epoch = %block_outcome.epoch,
-                    block.players = ?block_outcome.players(),
-                    block.next_players = ?block_outcome.next_players(),
-                    block.sharing = ?block_outcome.sharing(),
-                    block.is_next_full_dkg = ?block_outcome.is_next_full_dkg,
-                    "our public dkg outcome does not match what's stored \
-                    in the block",
-                );
-                return Err(eyre!(
-                    "our public dkg outcome does not match what's \
-                    stored in the block header extra_data field; they must \
-                    match so that the end-of-block is valid",
-                ));
-            }
-        } else if !block.header().extra_data().is_empty() {
+            return Ok(Some(proposed_outcome));
+        }
+
+        if !block.header().extra_data().is_empty() {
             let bytes = block.header().extra_data().clone();
             let dealer = match self
                 .dkg_manager
@@ -361,6 +326,53 @@ impl Inner {
             );
         }
 
+        Ok(None)
+    }
+
+    /// Checks that a boundary block contains the DKG outcome that this node
+    /// calculates for the block's `parent`.
+    ///
+    /// Part of the outcome is read from the parent's state. The engine has
+    /// that state once it has executed the boundary block, also when the
+    /// parent is on a fork that is not canonical. So call this only after the
+    /// executor has accepted the boundary block. If the outcome is not
+    /// available, the future stays pending and the vote is not cast.
+    #[instrument(skip_all, err(Display))]
+    async fn verify_boundary_outcome(
+        &self,
+        parent: Arc<Block>,
+        proposed_outcome: &OnchainDkgOutcome,
+    ) -> eyre::Result<()> {
+        info!("verifying that the boundary block contains the correct DKG outcome");
+        let our_outcome = match self.dkg_manager.subscribe_dkg_outcome(parent).await {
+            Ok(outcome) => outcome,
+            Err(reason) => {
+                warn!(%reason, "DKG outcome unavailable; abstaining");
+                return std::future::pending().await;
+            }
+        };
+        if &our_outcome != proposed_outcome {
+            // Emit the log here so that it's structured. The error would be annoying to read.
+            warn!(
+                our.epoch = %our_outcome.epoch,
+                our.players = ?our_outcome.players(),
+                our.next_players = ?our_outcome.next_players(),
+                our.sharing = ?our_outcome.sharing(),
+                our.is_next_full_dkg = ?our_outcome.is_next_full_dkg,
+                proposed.epoch = %proposed_outcome.epoch,
+                proposed.players = ?proposed_outcome.players(),
+                proposed.next_players = ?proposed_outcome.next_players(),
+                proposed.sharing = ?proposed_outcome.sharing(),
+                proposed.is_next_full_dkg = ?proposed_outcome.is_next_full_dkg,
+                "our public dkg outcome does not match what's stored \
+                in the block",
+            );
+            return Err(eyre!(
+                "our public dkg outcome does not match what's \
+                stored in the block header extra_data field; they must \
+                match so that the end-of-block is valid",
+            ));
+        }
         Ok(())
     }
 }
@@ -430,10 +442,13 @@ where
         };
         tracing::Span::current().record("digest", tracing::field::display(block.digest()));
 
-        if let Err(reason) = self.verify_header(&block, ancestry, &context).await {
-            warn!(%reason, "header could not be verified; failing block");
-            return false;
-        }
+        let proposed_outcome = match self.verify_header(&block, &context).await {
+            Ok(proposed_outcome) => proposed_outcome,
+            Err(reason) => {
+                warn!(%reason, "header could not be verified; failing block");
+                return false;
+            }
+        };
 
         match self.executor.verify_block(context, (*block).clone()).await {
             Ok(Some(duration)) => {
@@ -451,12 +466,26 @@ where
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
                 wait_until_timestamp(&runtime, block.timestamp_millis()).await;
-                true
             }
-            Ok(None) => false,
+            Ok(None) => return false,
             Err(error) => {
                 warn!(%error, "executor could not verify the block; abstaining");
-                std::future::pending().await
+                return std::future::pending().await;
+            }
+        }
+
+        // Only a boundary block carries a DKG outcome, and only its check
+        // needs the parent. Compare it after `verify_block`: our outcome reads
+        // the parent's state, which the engine has only once it has executed
+        // the block.
+        match proposed_outcome {
+            None => true,
+            Some(outcome) => {
+                let Some(parent) = ancestry.next().await else {
+                    warn!("ancestry ended before yielding the parent; abstaining");
+                    return std::future::pending().await;
+                };
+                self.verify_boundary_outcome(parent, &outcome).await.is_ok()
             }
         }
     }

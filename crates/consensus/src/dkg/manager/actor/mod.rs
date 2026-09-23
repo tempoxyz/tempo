@@ -527,6 +527,17 @@ where
                 }
 
                 update = state_updates.next() => {
+                    // This branch only wakes the loop, so that the next pass
+                    // tries the pending outcome requests again.
+                    //
+                    // A request stays pending while its parent's state is
+                    // missing. In practice, this happens to a leader whose
+                    // parent the engine has not executed yet, for example
+                    // after a restart. The executor then executes the parent
+                    // and makes it the head, and that head change lands here.
+                    //
+                    // A verifier does not need this branch. It asks only after
+                    // the engine has executed the proposal, and so its parent.
                     update.ok_or_eyre("execution state notification stream closed")?;
                 }
             )
