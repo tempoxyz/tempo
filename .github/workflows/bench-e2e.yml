@@ -421,7 +421,7 @@ jobs:
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Reset workspace directory
         run: |
@@ -468,14 +468,14 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/github-sts@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           policy: bench-e2e
 
       - name: Fetch ValScope token via STS
         id: valscope-sts
         if: env.BENCH_VALSCOPE == 'true'
-        uses: tempoxyz/gh-actions/actions/github-sts@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/github-sts@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           scope: tempoxyz/valscope
           policy: tempo-bench-e2e
@@ -612,8 +612,8 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         continue-on-error: true
 
       - name: Install Node.js
@@ -1066,7 +1066,7 @@ jobs:
         id: github-sts-reporting
         if: always() && steps.github-sts.outcome == 'success'
         timeout-minutes: 2
-        uses: tempoxyz/gh-actions/actions/github-sts@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/github-sts@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           policy: bench-e2e
 
