@@ -97,7 +97,6 @@ mod serde_multisig_config {
         if !input.is_empty() {
             return Err(D::Error::custom("trailing native multisig config bytes"));
         }
-        config.validate().map_err(D::Error::custom)?;
         Ok(config)
     }
 }
