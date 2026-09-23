@@ -412,6 +412,7 @@ pub enum KeychainVersionError {
 /// Keychain signature wrapping another signature with a user address.
 /// This allows an access key to sign on behalf of a root account.
 /// V1 accepts only primitive signatures; V2 also accepts multisig.
+/// Serde permits V1 + multisig values; `key_id()` and execution validation reject them.
 ///
 /// No `Compact` impl — always wrapped in [`TempoSignature`] whose `Compact` delegates
 /// to `to_bytes()`/`from_bytes()` which encodes the version via the wire type byte
@@ -424,7 +425,7 @@ pub enum KeychainVersionError {
 /// The inner signature proves an authorized access key signed the transaction.
 /// The handler validates that user_address has authorized the access key in the KeyChain precompile.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
@@ -529,33 +530,6 @@ impl KeychainSignature {
         buf[1..33].copy_from_slice(sig_hash.as_slice());
         buf[33..].copy_from_slice(user_address.as_slice());
         keccak256(buf)
-    }
-}
-
-// Manual deserialization rejects V1 + multisig, which a derive would accept.
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for KeychainSignature {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Fields {
-            user_address: Address,
-            signature: AccountSignature,
-            #[serde(default)]
-            version: KeychainVersion,
-        }
-        let fields = Fields::deserialize(deserializer)?;
-        if fields.version == KeychainVersion::V1 && fields.signature.as_multisig().is_some() {
-            return Err(serde::de::Error::custom(
-                "multisig access keys require keychain V2",
-            ));
-        }
-        Ok(Self {
-            user_address: fields.user_address,
-            signature: fields.signature,
-            version: fields.version,
-            cached_key_id: OnceLock::new(),
-        })
     }
 }
 
