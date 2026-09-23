@@ -7,10 +7,11 @@ mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
+mod root_batch;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
-use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
+use root_batch::BatchSender;
 
 use crate::{
     budget::{
@@ -451,7 +452,7 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let (mut roots_tx, roots_rx) = self.spawn_roots_task();
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -727,7 +728,7 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((tx, receipt));
+            roots_tx.push((tx, receipt));
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -1086,11 +1087,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BestTransaction, TempoReceipt)>,
+        BatchSender<(BestTransaction, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+            crossbeam_channel::unbounded::<Vec<(BestTransaction, TempoReceipt)>>();
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
@@ -1105,7 +1106,7 @@ where
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                for (tx, receipt) in transactions_rx.into_iter().flatten() {
                     let (tx, sender) = tx.transaction.inner().clone().into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
@@ -1133,7 +1134,7 @@ where
                 });
             });
 
-        (transactions_tx, result_rx)
+        (BatchSender::new(transactions_tx), result_rx)
     }
 
     fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
