@@ -140,7 +140,7 @@ fn only_verified_fee_amount_is_masked_in_ordered_receipt_logs() {
         (tx_mut(&mut shadow, 0), 1_200, changed),
     ] {
         tx.receipt_logs_hash = hash;
-        tx.fee_log_ranges = vec![0..1];
+        tx.fee_log_ranges = std::iter::once(0..1).collect();
         tx.fee_normalized = Some((U256::from(amount), normalized));
     }
     let block = block(vec![tx]);
@@ -160,7 +160,7 @@ fn only_verified_fee_amount_is_masked_in_ordered_receipt_logs() {
     tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = B256::repeat_byte(4);
     assert_eq!(report(&wrong, &[&GAS]).unexplained, 1);
     tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = normalized;
-    tx_mut(&mut wrong, 0).fee_log_ranges = vec![1..2];
+    tx_mut(&mut wrong, 0).fee_log_ranges = std::iter::once(1..2).collect();
     assert_eq!(report(&wrong, &[&GAS]).unexplained, 1);
 }
 

@@ -63,8 +63,9 @@ replay selects checks in `(canonical fork, candidate fork]` after validating the
 
 A check receives existing execution evidence and a changed field descriptor. It returns `None` when
 it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns
-attribution. Checks run in fork order, then registration order. Fee-slot provenance alone never
-accepts a difference.
+attribution. Checks run in fork order, then registration order. `Context::call()` iterates every
+call in an AA batch (or the single call of a non-AA transaction), but cannot see internal EVM
+calls. Fee-slot provenance alone never accepts a difference.
 
 ## Adding an expectation
 

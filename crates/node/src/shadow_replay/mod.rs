@@ -606,7 +606,7 @@ mod tests {
             ]
         };
         let writes = |amount| FeeWrites {
-            log_ranges: vec![1..2],
+            log_ranges: std::iter::once(1..2).collect(),
             post_tx_transfer: Some((1, token, payer, amount)),
             ..Default::default()
         };
@@ -621,9 +621,9 @@ mod tests {
         changed[0] = changed[1].clone();
         let (_, changed_fees) = normalized_fee_transfer(&changed, &candidate_writes).unwrap();
         assert_ne!(changed_fees, expected);
-        changed = candidate.clone();
-        changed.swap(0, 1);
-        assert!(normalized_fee_transfer(&changed, &candidate_writes).is_none());
+        let mut swapped = candidate;
+        swapped.swap(0, 1);
+        assert!(normalized_fee_transfer(&swapped, &candidate_writes).is_none());
     }
 
     #[test]

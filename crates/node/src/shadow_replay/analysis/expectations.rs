@@ -6,7 +6,7 @@
 use super::{AccountDelta, Field};
 use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome};
 use alloy::{
-    primitives::{Address, KECCAK256_EMPTY, keccak256},
+    primitives::{Address, KECCAK256_EMPTY, TxKind, keccak256},
     sol_types::SolCall as _,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -46,14 +46,13 @@ impl Context<'_> {
         ))
     }
 
-    /// Borrows the direct call `(to, calldata)` from the canonical transaction.
-    fn call(&self) -> Option<(alloy::primitives::Address, &[u8])> {
-        let mut calls = self.tx?.calls();
-        let (kind, input) = calls.next()?;
-        if calls.next().is_some() {
-            return None;
-        }
-        Some((*kind.to()?, input.as_ref()))
+    /// Borrows all top-level calls (including AA subcalls) from the canonical transaction.
+    /// Internal EVM calls are not present in the transaction envelope.
+    fn call(&self) -> impl Iterator<Item = (TxKind, &[u8])> + '_ {
+        self.tx
+            .into_iter()
+            .flat_map(TempoTxEnvelope::calls)
+            .map(|(kind, input)| (kind, input.as_ref()))
     }
 }
 
@@ -104,8 +103,10 @@ fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
 const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
     id: "t12.allow-abi-suffix",
     check: |ctx, field| {
-        let (to, calldata) = ctx.call()?;
-        if !rejects_only_trailing_bytes(to, calldata) {
+        if !ctx.call().any(|(kind, calldata)| {
+            kind.to()
+                .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata))
+        }) {
             return None;
         }
 
@@ -122,8 +123,8 @@ const T12_TIP20_CHANNEL: Expectation = Expectation {
     id: "t12.tip20-channel-reserve",
     check: |ctx, field| {
         if matches!(field.name, "gas" | "block_gas")
-            && ctx.call().is_some_and(|(address, calldata)| {
-                address == TIP20_CHANNEL_RESERVE_ADDRESS
+            && ctx.call().any(|(kind, calldata)| {
+                kind.to() == Some(&TIP20_CHANNEL_RESERVE_ADDRESS)
                     && [
                         ITIP20ChannelReserve::openCall::SELECTOR,
                         ITIP20ChannelReserve::settleCall::SELECTOR,
@@ -146,8 +147,9 @@ const T12_STABLECOIN_DEX: Expectation = Expectation {
     id: "t12.stablecoin-dex",
     check: |ctx, field| {
         if matches!(field.name, "gas" | "block_gas" | "storage")
-            && ctx.call().is_some_and(|(address, calldata)| {
-                address == STABLECOIN_DEX_ADDRESS
+            && (field.name != "storage" || field.address == Some(STABLECOIN_DEX_ADDRESS))
+            && ctx.call().any(|(kind, calldata)| {
+                kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
                     && [
                         IStablecoinDEX::placeCall::SELECTOR,
                         IStablecoinDEX::placeFlipCall::SELECTOR,
