@@ -40,11 +40,22 @@ are displayed in the benchmark summary. Each raw sender report records its
 For sizing, hold node SHA, txgen SHA, resolved preset, offered TPS, tracing and
 profiling settings fixed. Compare 2/4/6 dedicated cores against the shared layout
 on the same host with an even number of run pairs. Check achieved included TPS,
-sender throughput/failures, pool-empty/build-budget stops and CPU utilization;
+sender throughput/failures, builder fill-idle time and CPU utilization;
 lower variance alone is not sufficient if the generator stops saturating the
 validators. Keep profiled runs separate from unprofiled confirmation runs.
+Pool-empty/build-budget stop counts alone cannot establish saturation: with a
+proposal budget the builder waits when the pool is empty, then may stop on its
+budget instead.
 
-Tests: `nu contrib/bench/cpu-layout.test.nu`.
+Targeted validation:
+
+```sh
+nu contrib/bench/cpu-layout.test.nu
+nu contrib/bench/txgen/cpu-affinity.test.nu
+node --test .github/scripts/bench-e2e-cpu-summary.test.js
+nu bench-e2e.nu e2e --help
+git diff --check
+```
 
 ## Initial sizing results
 
@@ -59,14 +70,36 @@ against the original shared allocation on the same host.
 | --- | --- | ---: | ---: | ---: | ---: |
 | [2](https://github.com/tempoxyz/tempo/actions/runs/35838124243) | ghr-euw-07 | 14,979 | 14,422 | -3.72% | 0.98% / 0.63% |
 | [4](https://github.com/tempoxyz/tempo/actions/runs/35838143865) | ghr-euw-05 | 15,126 | 13,664 | -9.67% | 0.77% / 0.63% |
+| [6](https://github.com/tempoxyz/tempo/actions/runs/35838148612) | ghr-euw-03 | 14,734 | 12,082 | -18.00% | 0.44% / 0.78% |
 
-Both summaries classify the overall result as mixed and TPS as a regression.
-Neither allocation had sender failures or pool-empty builder stops; both had
-more than 700 build-budget stops across their four feature repeats. This supports
-txgen keeping these validators fed, not an ability to sustain 50k included TPS.
+All three summaries classify the overall result as mixed and TPS as a regression.
+None had sender failures or pool-empty builder stops; all had
+more than 700 build-budget stops across their four feature repeats. These stop
+counts do not prove saturation. Builder fill-idle p50/p90/p99 changed from
+7/30/96 ms to 11/33/79 ms with two cores, and from 9/29/92 ms to 12/32/66 ms
+with four cores. The reserved logical CPUs averaged about 63% busy across the
+four 2-core repeats and 35% across the four 4-core repeats, using host CPU idle
+counter deltas over seconds 15-75. This includes system activity and is not a
+measure of txgen process utilization or a claim of 50k included TPS capacity.
 The shared-CPU [same-commit control](https://github.com/tempoxyz/tempo/actions/runs/35837783670)
 was already stable (0.45% / 1.36% TPS CV, no significant difference).
 Four repeats are not sufficient to establish a general variance reduction.
 
-Six-core sizing and an unprofiled confirmation are pending. Do not enable
-isolation by default based on these profiled measurements.
+The first shared/2-core validator-a profiles show similar hot work: Keccak,
+secp256k1, trie/cache operations, RocksDB compression and persistence. These
+node profiles include startup/shutdown and do not profile txgen, so they cannot
+identify generator CPU contention as the original variance cause.
+
+The [sampler-off confirmation](https://github.com/tempoxyz/tempo/actions/runs/35841742901)
+uses the same profiling build, node/txgen SHAs and workload with samply disabled,
+two balanced pairs and the final CPU availability validation on ghr-euw-06.
+Shared/2-core TPS was 15,400/14,965 (-2.82%, a TPS regression; overall mixed),
+with zero sender failures. Builder fill-idle p50/p90/p99 was 0/16/92 ms versus
+2/20/43 ms. Two pairs support the observed throughput direction but cannot
+establish a general variance reduction.
+
+Keep shared CPUs as the default. For this preset, two physical cores are the
+lowest tested dedicated allocation and show average CPU headroom, but other
+presets and higher achieved load need separate sizing. A separate load host
+would avoid taking physical cores from validators; that configuration was not
+tested here.
