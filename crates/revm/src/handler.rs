@@ -591,10 +591,10 @@ where
     fn execute_multi_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-        mut remaining_gas: u64,
-        mut reservoir: u64,
+        remaining_gas: u64,
+        reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
-        mut execute_single: F,
+        execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         F: FnMut(
@@ -603,10 +603,42 @@ where
             &mut GasTracker,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
+        self.execute_multi_call_with_prelude(
+            evm,
+            remaining_gas,
+            reservoir,
+            calls,
+            |_, _, _| Ok(None),
+            execute_single,
+        )
+    }
+
+    /// Runs a metered prelude and application calls under one rollback checkpoint.
+    /// The prelude returns a failed frame to abort the batch, or `None` to continue.
+    fn execute_multi_call_with_prelude<F, P>(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        mut remaining_gas: u64,
+        mut reservoir: u64,
+        calls: Vec<tempo_primitives::transaction::Call>,
+        mut prelude: P,
+        mut execute_single: F,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
+    where
+        P: FnMut(
+            &mut Self,
+            &mut TempoEvm<DB, I>,
+            &mut GasTracker,
+        )
+            -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>>,
+        F: FnMut(
+            &mut Self,
+            &mut TempoEvm<DB, I>,
+            &mut GasTracker,
+        ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
+    {
         // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
-        let mut accumulated_gas_refund = 0i64;
-        let mut accumulated_state_gas_spent = 0i64;
 
         // Intrinsic EIP-8037 CREATE state gas charged upfront for the whole
         // batch (see `calculate_batch_intrinsic_gas`), refunded when the batch
@@ -622,19 +654,66 @@ where
 
         let mut final_result = None;
 
-        if let Some(mut frame_result) =
-            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
-        {
+        let scope_result =
+            match self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+                    return Err(error);
+                }
+            };
+        if let Some(mut frame_result) = scope_result {
+            evm.ctx().journal_mut().checkpoint_revert(checkpoint);
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
             normalize_failed_batch_result_gas(
                 &mut frame_result,
                 evm.ctx().tx().gas_limit(),
-                accumulated_state_gas_spent,
+                0,
                 create_state_refund,
             );
             return Ok(frame_result);
         }
+
+        let mut prelude_gas = GasTracker::new(original_gas_limit, remaining_gas, reservoir);
+        let prelude_result = prelude(self, evm, &mut prelude_gas);
+        match prelude_result {
+            Err(error) => {
+                evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+                return Err(error);
+            }
+            Ok(Some(mut failure)) => {
+                evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+                // CREATE would normally consume the protocol nonce in its first frame.
+                let uses_protocol_nonce = evm
+                    .ctx()
+                    .tx()
+                    .tempo_tx_env
+                    .as_ref()
+                    .is_none_or(|aa| aa.nonce_key.is_zero());
+                if uses_protocol_nonce && calls.first().is_some_and(|call| call.to.is_create()) {
+                    let caller = evm.ctx().tx().caller();
+                    evm.ctx()
+                        .journal_mut()
+                        .load_account_with_code_mut(caller)?
+                        .data
+                        .bump_nonce();
+                }
+                normalize_failed_batch_result_gas(
+                    &mut failure,
+                    original_gas_limit,
+                    0,
+                    create_state_refund,
+                );
+                return Ok(failure);
+            }
+            Ok(None) => {}
+        }
+        remaining_gas = prelude_gas.remaining();
+        reservoir = prelude_gas.reservoir();
+        let mut accumulated_gas_refund = prelude_gas.refunded();
+        let mut accumulated_state_gas_spent = prelude_gas.state_gas_spent();
 
         for call in calls.iter() {
             // Update TxEnv to point to this specific call
@@ -663,7 +742,13 @@ where
                 tx.inner.gas_limit = original_gas_limit;
             }
 
-            let mut frame_result = frame_result?;
+            let mut frame_result = match frame_result {
+                Ok(result) => result,
+                Err(error) => {
+                    evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+                    return Err(error);
+                }
+            };
 
             // Check if call succeeded
             if !frame_result.instruction_result().is_ok() {
