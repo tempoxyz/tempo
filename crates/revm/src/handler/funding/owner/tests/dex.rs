@@ -541,30 +541,35 @@ fn public_quotes_bound_availability_without_moving_funds() {
 #[test]
 fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
     let (mut evm, a, b) = setup_dex();
-    let call = IFundingSource::discoverCall {
-        account: ACCOUNT,
-        assetOut: PATH_USD_ADDRESS,
-        amountOut: U256::from(50 * UNIT),
-        maxCost: U256::from(40 * UNIT),
-        policyData: vec![b, a, b].abi_encode().into(),
-    };
-    let result = TempoEvmHandler::new()
-        .execute_funding_call_with(
-            &mut evm,
-            &mut GasTracker::new(30_000_000, 30_000_000, 0),
-            crate::handler::funding::FundingCall {
-                caller: RECIPIENT,
-                source: SOURCE,
-                is_static: true,
-                permission: None,
-                data: call.abi_encode().into(),
-            },
-            TempoEvmHandler::run_exec_loop,
-        )
-        .unwrap();
-    assert!(result.instruction_result().is_ok(), "{result:?}");
-    let candidates =
-        IFundingSource::discoverCall::abi_decode_returns_validate(result.output().data()).unwrap();
+    let mut candidates = Vec::new();
+    for input in [b, a, b] {
+        let call = IFundingSource::discoverCall {
+            account: ACCOUNT,
+            assetOut: PATH_USD_ADDRESS,
+            amountOut: U256::from(50 * UNIT),
+            maxCost: U256::from(40 * UNIT),
+            policyData: (input, U256::MAX).abi_encode().into(),
+        };
+        let result = TempoEvmHandler::new()
+            .execute_funding_call_with(
+                &mut evm,
+                &mut GasTracker::new(30_000_000, 30_000_000, 0),
+                crate::handler::funding::FundingCall {
+                    caller: RECIPIENT,
+                    source: SOURCE,
+                    is_static: true,
+                    permission: None,
+                    data: call.abi_encode().into(),
+                },
+                TempoEvmHandler::run_exec_loop,
+            )
+            .unwrap();
+        assert!(result.instruction_result().is_ok(), "{result:?}");
+        let found =
+            IFundingSource::discoverCall::abi_decode_returns_validate(result.output().data())
+                .unwrap();
+        candidates.extend(found);
+    }
     assert_eq!(candidates.len(), 3);
     for (candidate, input) in candidates.iter().zip([b, a, b]) {
         assert_eq!(candidate.availableAmount, U256::from(40 * UNIT));
@@ -610,7 +615,7 @@ fn token_support_is_public_and_grants_no_input_permission() {
     let (mut evm, a, _) = setup_dex();
     let call = IFundingSource::supportsTokenCall {
         token: PATH_USD_ADDRESS,
-        policyData: vec![a].abi_encode().into(),
+        policyData: (a, U256::MAX).abi_encode().into(),
     };
     let result = TempoEvmHandler::new()
         .execute_funding_call_with(
