@@ -35,7 +35,12 @@ def analyze(document):
     for series in data["result"]:
         labels = series["metric"]
         name = labels["__name__"]
-        if not name.endswith(("_sum", "_count", "_total")):
+        if "quantile" in labels or not (
+            name.endswith(("_sum", "_count")) or name in {
+                P + "persisted_blocks_total", P + "persisted_transactions_total",
+                P + "persisted_state_trie_blocks_total",
+            }
+        ):
             continue
         identity = tuple(sorted((k, v) for k, v in labels.items()
                                 if k not in ("__name__", "table", "segment", "shard", "quantile")))
@@ -78,6 +83,12 @@ def analyze(document):
             "persistence_service_transactions_per_second": ratio(txs, busy),
             "mean_persistence_batch_ms": mean(P + "save_blocks_duration_seconds"),
             "mean_commit_ms": mean(P + "commit_duration_seconds"),
+            "mean_worker_preparation_ms": mean("reth_storage_providers_database_persistence_worker_preparation_seconds"),
+            "mean_child_commit_ms": mean("reth_storage_providers_database_persistence_child_commit_seconds"),
+            "mean_save_blocks_ms": mean("reth_storage_providers_database_save_blocks_total"),
+            "mean_mdbx_writes_ms": mean("reth_storage_providers_database_save_blocks_mdbx"),
+            "mean_static_file_writes_ms": mean("reth_storage_providers_database_save_blocks_sf"),
+            "mean_rocksdb_writes_ms": mean("reth_storage_providers_database_save_blocks_rocksdb"),
             "mean_validator_execution_ms": mean("reth_sync_execution_execution_histogram"),
             "mean_payload_build_ms": mean("reth_tempo_payload_builder_payload_build_duration_seconds"),
             "mean_produced_block_interval_ms": mean("reth_tempo_payload_builder_block_time_millis", 1),
