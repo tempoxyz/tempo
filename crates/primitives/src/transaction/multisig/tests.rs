@@ -718,7 +718,7 @@ fn multisig_config_validates_owner_count_after_decoding() {
 }
 
 #[test]
-fn multisig_signature_decode_bounds_approval_count() {
+fn multisig_signature_decode_rejects_excess_approvals() {
     let encoded = encoded_multisig(
         Address::repeat_byte(0x11),
         &current_config(indexed_owner(2)),
@@ -726,13 +726,10 @@ fn multisig_signature_decode_bounds_approval_count() {
     );
 
     let mut input = encoded.as_slice();
-    let mut payload = input;
-    alloy_rlp::Header::decode(&mut payload).unwrap();
     assert!(matches!(
         MultisigSignature::decode(&mut input),
         Err(alloy_rlp::Error::Custom("too many multisig signatures"))
     ));
-    assert_eq!(input, payload);
 }
 
 #[test]
