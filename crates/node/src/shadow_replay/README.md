@@ -59,7 +59,7 @@ other gas and state differences still require fork expectations.
 
 ## Expectations
 
-`analysis/expectations.rs` registers checks at the hardfork introducing a feature. For each block,
+`expectations.rs` registers checks at the hardfork introducing a feature. For each block,
 replay selects checks in `(canonical fork, candidate fork]` after validating the control.
 
 A check receives existing execution evidence and a changed field descriptor. It returns `None` when
