@@ -22,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           bucket=tempo-benchmark-artifacts-934822761402-us-east-1
-          prefix=runs/bench-e2e-multi-region-35876161973-1/artifacts/load-generator/baseline-1/
+          prefix=runs/bench-e2e-multi-region-35883541989-1/artifacts/load-generator/baseline-1/
           mkdir -p diagnostics
           aws s3api list-objects-v2 --bucket "$bucket" --prefix "$prefix" \
             --query 'Contents[?ends_with(Key, `-results.tar.gz`)].Key' --output json > result-keys.json
@@ -55,6 +55,32 @@ jobs:
           aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance"
           aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance" \
             --query StandardOutputContent --output text > diagnostics/current-load-generator.log
+      - name: Verify all ten sharded validator layout logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          total=0
+          for region in us-east-1 us-west-2; do
+            instances=$(aws ec2 describe-instances --region "$region" --filters \
+              Name=tag:BenchmarkRunId,Values=bench-e2e-multi-region-35883541989-1 \
+              'Name=tag:Role,Values=validator*' Name=instance-state-name,Values=running \
+              --query 'Reservations[].Instances[].InstanceId' --output json)
+            test "$(jq length <<< "$instances")" = 5
+            mapfile -t ids < <(jq -r '.[]' <<< "$instances")
+            command='find /opt/tempo/artifacts -maxdepth 2 -name storage-layout-feature-1.log -exec tail -n 4 {} +'
+            params=$(jq -cn --arg command "$command" '{commands:[$command],executionTimeout:["60"]}')
+            command_id=$(aws ssm send-command --region "$region" --document-name AWS-RunShellScript \
+              --instance-ids "${ids[@]}" --comment 'Read sharded schema verification for benchmark 35883541989' \
+              --parameters "$params" --query Command.CommandId --output text)
+            for instance in "${ids[@]}"; do
+              aws ssm wait command-executed --region "$region" --command-id "$command_id" --instance-id "$instance"
+              aws ssm get-command-invocation --region "$region" --command-id "$command_id" --instance-id "$instance" \
+                --query StandardOutputContent --output text > "diagnostics/schema-$instance.log"
+              grep -F 'Verified schema 3 for feature-1' "diagnostics/schema-$instance.log"
+              total=$((total + 1))
+            done
+          done
+          test "$total" = 10
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
