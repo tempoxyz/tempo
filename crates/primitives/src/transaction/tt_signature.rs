@@ -367,8 +367,8 @@ impl alloy_rlp::Encodable for PrimitiveSignature {
 
 impl alloy_rlp::Decodable for PrimitiveSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -787,8 +787,8 @@ impl alloy_rlp::Encodable for TempoSignature {
 
 impl alloy_rlp::Decodable for TempoSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
