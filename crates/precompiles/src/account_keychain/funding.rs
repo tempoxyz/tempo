@@ -28,9 +28,11 @@ impl AccountKeychain {
                 }
                 id.get()
             }
-            FundingPolicyAuthorization::Inline(policy) => {
-                registry.install_policy(account, policy.clone().into())?
-            }
+            FundingPolicyAuthorization::Inline(policy) => registry.install_policy(
+                account,
+                policy.admins.clone(),
+                policy.rules.clone().into(),
+            )?,
         };
         self.funding_policy_ids[account][key].write(id)
     }
@@ -335,8 +337,10 @@ mod tests {
             let policy =
                 FundingPolicyAuthorization::Inline(tempo_primitives::transaction::FundingPolicy {
                     admins: vec![OWNER],
-                    slippage_bps: 100,
-                    routes: vec![],
+                    rules: tempo_primitives::transaction::FundingPolicyRules {
+                        max_slippage_bps: 100,
+                        routes: vec![],
+                    },
                 });
             {
                 let _checkpoint = StorageCtx.checkpoint();

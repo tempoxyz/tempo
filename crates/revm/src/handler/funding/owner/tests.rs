@@ -758,6 +758,32 @@ mod delegated {
     use tempo_primitives::transaction::FundingPolicyAuthorization;
     const KEY: Address = Address::repeat_byte(0x71);
 
+    fn rules(output: Address) -> IFundingPolicy::Rules {
+        IFundingPolicy::Rules {
+            maxSlippageBps: 100,
+            routes: vec![IFundingPolicy::Route {
+                token: output,
+                sources: [SOURCE, SOURCE2]
+                    .into_iter()
+                    .map(|target| IFundingPolicy::Source {
+                        target,
+                        data: PATH_USD_ADDRESS.abi_encode().into(),
+                    })
+                    .collect(),
+            }],
+        }
+    }
+
+    fn requirement(
+        token: Address,
+        amount: u64,
+        sources: Vec<ITIP20Funder::Source>,
+    ) -> FundingRequirement {
+        let mut request = super::requirement(token, amount, sources);
+        request.policy_rules = Some(rules(token).abi_encode().into());
+        request
+    }
+
     fn authorize(evm: &mut TestEvm, output: Address, limit: u64) {
         StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
             let mut keychain = AccountKeychain::new();
@@ -782,23 +808,7 @@ mod delegated {
                 )
                 .unwrap();
             let id = FundingPolicy::new(FUNDING_POLICY_ADDRESS)
-                .create_policy(
-                    ACCOUNT,
-                    IFundingPolicy::Policy {
-                        admins: vec![ACCOUNT],
-                        slippageBps: 100,
-                        routes: vec![IFundingPolicy::Route {
-                            token: output,
-                            sources: vec![SOURCE, SOURCE2]
-                                .into_iter()
-                                .map(|target| IFundingPolicy::Source {
-                                    target,
-                                    data: PATH_USD_ADDRESS.abi_encode().into(),
-                                })
-                                .collect(),
-                        }],
-                    },
-                )
+                .create_policy(ACCOUNT, vec![ACCOUNT], rules(output))
                 .unwrap();
             keychain
                 .install_funding_policy(
@@ -821,6 +831,77 @@ mod delegated {
                 })
                 .unwrap()
         })
+    }
+
+    #[test]
+    fn delegated_witness_required_and_tighter_slippage_allowed() {
+        for mode in 0..5 {
+            let (mut evm, output) = setup(TempoHardfork::T13);
+            authorize(&mut evm, output, 50);
+            let mut req = requirement(output, 0, vec![]);
+            match mode {
+                0 => req.policy_rules = None,
+                1 => req.policy_rules = Some(Bytes::new()),
+                2 => req.policy_rules = Some(rules(PATH_USD_ADDRESS).abi_encode().into()),
+                3 => req.slippage_bps = Some(0),
+                _ => req.slippage_bps = Some(100),
+            }
+            let result = run(&mut evm, &[req], vec![noop()], true, LIMIT, 0);
+            assert_eq!(
+                result.instruction_result().is_ok(),
+                mode >= 3,
+                "mode {mode}: {result:?}"
+            );
+            assert_eq!(remaining(&mut evm, output), U256::from(50));
+        }
+    }
+
+    #[test]
+    fn repeated_targets_match_entries_in_order_before_balance_shortcut() {
+        for backwards in [false, true] {
+            let (mut evm, output) = setup(TempoHardfork::T13);
+            authorize(&mut evm, output, 50);
+            let mut rules = rules(output);
+            rules.routes[0].sources = [RECIPIENT, PATH_USD_ADDRESS]
+                .into_iter()
+                .map(|input| IFundingPolicy::Source {
+                    target: SOURCE,
+                    data: input.abi_encode().into(),
+                })
+                .collect();
+            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                let mut keychain = AccountKeychain::new();
+                keychain.set_transaction_key(Address::ZERO).unwrap();
+                FundingPolicy::new(FUNDING_POLICY_ADDRESS)
+                    .set_rules(ACCOUNT, 1, rules.clone())
+                    .unwrap();
+                keychain.set_transaction_key(KEY).unwrap();
+            });
+            let first = source(SOURCE, 0, 0, 0, 0);
+            let second = if backwards {
+                source_with_input(SOURCE, RECIPIENT, RATE_SCALE, U256::ZERO, 0, 0, 0, 0)
+            } else {
+                first.clone()
+            };
+            let mut req = requirement(output, 0, vec![first, second]);
+            req.policy_rules = Some(rules.abi_encode().into());
+            let result = run(&mut evm, &[req], vec![noop()], true, LIMIT, 0);
+            assert_eq!(
+                result.instruction_result().is_ok(),
+                !backwards,
+                "{result:?}"
+            );
+            assert!(
+                evm.inner
+                    .inspector
+                    .calls
+                    .iter()
+                    .any(|(caller, target, _, is_static)| *caller == FUNDER
+                        && *target == SOURCE
+                        && *is_static)
+            );
+            assert_eq!(remaining(&mut evm, output), U256::from(50));
+        }
     }
 
     #[test]
@@ -856,7 +937,7 @@ mod delegated {
             let mut req = requirement(output, 0, vec![]);
             match mode {
                 0 => req.token = PATH_USD_ADDRESS,
-                1 => req.slippage_bps = Some(0),
+                1 => req.slippage_bps = Some(101),
                 2 => req.sources = vec![source(SOURCE2, 0, 0, 0, 0), source(SOURCE, 0, 0, 0, 0)],
                 3 => req.sources = vec![source(RECIPIENT, 0, 0, 0, 0)],
                 4 => StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
@@ -864,7 +945,14 @@ mod delegated {
                         .set_transaction_key(Address::ZERO)
                         .unwrap();
                     FundingPolicy::new(FUNDING_POLICY_ADDRESS)
-                        .modify_policy(ACCOUNT, 1, 100, vec![])
+                        .set_rules(
+                            ACCOUNT,
+                            1,
+                            IFundingPolicy::Rules {
+                                maxSlippageBps: 100,
+                                routes: vec![],
+                            },
+                        )
                         .unwrap();
                     AccountKeychain::new().set_transaction_key(KEY).unwrap();
                 }),
@@ -872,7 +960,13 @@ mod delegated {
             }
             let result = run(&mut evm, &[req], vec![noop()], true, LIMIT, 0);
             assert!(!result.instruction_result().is_ok(), "mode {mode}");
-            assert!(evm.inner.inspector.calls.is_empty());
+            assert!(
+                evm.inner
+                    .inspector
+                    .calls
+                    .iter()
+                    .all(|(_, _, _, is_static)| *is_static)
+            );
             assert_eq!(remaining(&mut evm, output), U256::from(50));
         }
     }

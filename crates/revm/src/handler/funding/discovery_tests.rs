@@ -59,7 +59,7 @@ fn protocol_discovery_uses_static_source_calls() {
         },
     ];
     let source = source(&mut evm, candidates);
-    set_sources(&mut evm, vec![rule(source)]);
+    let request = set_sources(&mut evm, vec![rule(source)]);
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
@@ -126,38 +126,45 @@ fn setup() -> TempoEvm<CacheDB<EmptyDB>, Trace> {
             .unwrap();
     });
     let create = IFundingPolicy::createPolicyCall {
-        policy: IFundingPolicy::Policy {
-            admins: vec![ACCOUNT],
-            slippageBps: 100,
-            routes: vec![IFundingPolicy::Route {
-                token: PATH_USD_ADDRESS,
-                sources: vec![],
-            }],
-        },
+        admins: vec![ACCOUNT],
+        rules: rules(vec![]),
     };
     assert!(call(&mut evm, TxKind::Call(POLICY), create.abi_encode().into()).is_success());
     evm
 }
 
+fn rules(sources: Vec<IFundingPolicy::Source>) -> IFundingPolicy::Rules {
+    IFundingPolicy::Rules {
+        maxSlippageBps: 100,
+        routes: vec![IFundingPolicy::Route {
+            token: PATH_USD_ADDRESS,
+            sources,
+        }],
+    }
+}
+
 fn request() -> IFundingDiscovery::discoverCall {
     IFundingDiscovery::discoverCall {
         policyId: 1,
+        policyRules: rules(vec![]).abi_encode().into(),
         account: ACCOUNT,
         token: PATH_USD_ADDRESS,
         amount: U256::from(50),
     }
 }
 
-fn set_sources(evm: &mut TempoEvm<CacheDB<EmptyDB>, Trace>, sources: Vec<IFundingPolicy::Source>) {
-    let update = IFundingPolicy::modifyPolicyCall {
-        policyId: 1,
-        slippageBps: 100,
-        routes: vec![IFundingPolicy::Route {
-            token: PATH_USD_ADDRESS,
-            sources,
-        }],
+fn set_sources(
+    evm: &mut TempoEvm<CacheDB<EmptyDB>, Trace>,
+    sources: Vec<IFundingPolicy::Source>,
+) -> IFundingDiscovery::discoverCall {
+    let rules = rules(sources);
+    let request = IFundingDiscovery::discoverCall {
+        policyRules: rules.abi_encode().into(),
+        ..request()
     };
+    let update = IFundingPolicy::setRulesCall { policyId: 1, rules };
     assert!(call(evm, TxKind::Call(POLICY), update.abi_encode().into()).is_success());
+    request
 }
 
 fn source(
@@ -204,11 +211,11 @@ fn discovery_preserves_source_order_and_independent_estimates() {
             availableAmount: U256::from(30),
         }],
     );
-    set_sources(&mut evm, vec![rule(b), rule(a)]);
+    let request = set_sources(&mut evm, vec![rule(b), rule(a)]);
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-        request().abi_encode().into(),
+        request.abi_encode().into(),
     );
     assert!(result.is_success(), "{result:?}");
     let found =
@@ -230,8 +237,7 @@ fn discovery_preserves_source_order_and_independent_estimates() {
 #[test]
 fn discovery_checks_policy_before_balance_and_skips_sources_when_satisfied() {
     let mut evm = setup();
-    set_sources(&mut evm, vec![rule(Address::repeat_byte(0x99))]);
-    let mut request = request();
+    let mut request = set_sources(&mut evm, vec![rule(Address::repeat_byte(0x99))]);
     request.amount = U256::from(20);
     let result = call(
         &mut evm,
@@ -272,11 +278,11 @@ fn discovery_rejects_invalid_candidates_and_propagates_source_reverts() {
                 availableAmount: U256::from(amount),
             }],
         );
-        set_sources(&mut evm, vec![rule(target)]);
+        let request = set_sources(&mut evm, vec![rule(target)]);
         let result = call(
             &mut evm,
             TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-            request().abi_encode().into(),
+            request.abi_encode().into(),
         );
         assert_eq!(
             result.output().unwrap().as_ref(),
@@ -284,7 +290,7 @@ fn discovery_rejects_invalid_candidates_and_propagates_source_reverts() {
         );
     }
     let target = source(&mut evm, vec![]);
-    set_sources(
+    let request = set_sources(
         &mut evm,
         vec![IFundingPolicy::Source {
             target,
@@ -294,7 +300,7 @@ fn discovery_rejects_invalid_candidates_and_propagates_source_reverts() {
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-        request().abi_encode().into(),
+        request.abi_encode().into(),
     );
     assert!(!result.is_success());
     assert_eq!(
@@ -313,18 +319,14 @@ fn discovery_supports_contract_staticcalls_and_plain_execution() {
             availableAmount: U256::from(30),
         }],
     );
-    set_sources(&mut evm, vec![rule(target)]);
+    let request = set_sources(&mut evm, vec![rule(target)]);
     let init = hex::decode(include_str!("fixtures/DiscoveryCaller.hex").trim()).unwrap();
     let deployed = call(&mut evm, TxKind::Create, init.into());
     assert!(deployed.is_success());
     let caller = deployed.created_address().unwrap();
-    let traced = call(
-        &mut evm,
-        TxKind::Call(caller),
-        request().abi_encode().into(),
-    );
+    let traced = call(&mut evm, TxKind::Call(caller), request.abi_encode().into());
     assert!(traced.is_success(), "{traced:?}");
-    let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, caller, request().abi_encode().into());
+    let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, caller, request.abi_encode().into());
     tx.gas_limit = LIMIT;
     evm.inner.ctx.set_tx(tx.into());
     let plain = TempoEvmHandler::new().run_system_call(&mut evm).unwrap();
@@ -349,20 +351,20 @@ fn discovery_source_cannot_write_and_failed_frames_can_be_reused() {
             ..Default::default()
         },
     );
-    set_sources(&mut evm, vec![rule(target)]);
+    let request = set_sources(&mut evm, vec![rule(target)]);
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-        request().abi_encode().into(),
+        request.abi_encode().into(),
     );
     assert!(!result.is_success());
     assert!(evm.inner.frame_stack.index().is_none());
-    set_sources(&mut evm, vec![]);
+    let request = set_sources(&mut evm, vec![]);
     assert!(
         call(
             &mut evm,
             TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-            request().abi_encode().into()
+            request.abi_encode().into()
         )
         .is_success()
     );
@@ -371,11 +373,12 @@ fn discovery_source_cannot_write_and_failed_frames_can_be_reused() {
 #[test]
 fn discovery_out_of_gas_and_malformed_input_do_not_abort_execution() {
     let mut evm = setup();
+    let request = request();
     for limit in [0, 100, 500, 1_000] {
         let mut tx = TxEnv::new_system_tx_with_caller(
             ACCOUNT,
             FUNDING_DISCOVERY_ADDRESS,
-            request().abi_encode().into(),
+            request.abi_encode().into(),
         );
         tx.gas_limit = limit;
         evm.inner.ctx.set_tx(tx.into());
@@ -394,7 +397,7 @@ fn discovery_out_of_gas_and_malformed_input_do_not_abort_execution() {
         call(
             &mut evm,
             TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-            request().abi_encode().into()
+            request.abi_encode().into()
         )
         .is_success()
     );
@@ -403,10 +406,11 @@ fn discovery_out_of_gas_and_malformed_input_do_not_abort_execution() {
 #[test]
 fn discovery_is_unavailable_before_activation() {
     let mut evm = evm(tempo_chainspec::hardfork::TempoHardfork::T12);
+    let request = request();
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-        request().abi_encode().into(),
+        request.abi_encode().into(),
     );
     assert!(result.output().is_none_or(|bytes| bytes.is_empty()));
     assert!(
@@ -424,20 +428,30 @@ fn recursive_discovery_is_bounded_by_evm_gas_and_unwinds() {
     let init = hex::decode(include_str!("fixtures/RecursiveDiscoverySource.hex").trim()).unwrap();
     let deployed = call(&mut evm, TxKind::Create, init.into());
     assert!(deployed.is_success());
-    set_sources(&mut evm, vec![rule(deployed.created_address().unwrap())]);
+    let request = set_sources(&mut evm, vec![rule(deployed.created_address().unwrap())]);
+    let mut configure = alloy_primitives::keccak256("setRules(bytes)")[..4].to_vec();
+    configure.extend((request.policyRules.clone(),).abi_encode_params());
+    assert!(
+        call(
+            &mut evm,
+            TxKind::Call(deployed.created_address().unwrap()),
+            configure.into()
+        )
+        .is_success()
+    );
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-        request().abi_encode().into(),
+        request.abi_encode().into(),
     );
     assert!(!result.is_success());
     assert!(evm.inner.frame_stack.index().is_none());
-    set_sources(&mut evm, vec![]);
+    let request = set_sources(&mut evm, vec![]);
     assert!(
         call(
             &mut evm,
             TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-            request().abi_encode().into()
+            request.abi_encode().into()
         )
         .is_success()
     );
@@ -447,11 +461,11 @@ fn recursive_discovery_is_bounded_by_evm_gas_and_unwinds() {
 fn discovery_rejects_empty_source_return_data() {
     let mut evm = setup();
     let target = Address::repeat_byte(0x66);
-    set_sources(&mut evm, vec![rule(target)]);
+    let request = set_sources(&mut evm, vec![rule(target)]);
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-        request().abi_encode().into(),
+        request.abi_encode().into(),
     );
     assert!(!result.is_success());
 }
@@ -459,9 +473,10 @@ fn discovery_rejects_empty_source_return_data() {
 #[test]
 fn discovery_rejects_overflowing_cost_budget() {
     let mut evm = setup();
+    let request = request();
     let request = IFundingDiscovery::discoverCall {
         amount: U256::MAX,
-        ..request()
+        ..request
     };
     let result = call(
         &mut evm,
@@ -500,11 +515,11 @@ fn discovery_meters_aliased_candidate_data_before_decoding() {
             ..Default::default()
         },
     );
-    set_sources(&mut evm, vec![rule(target)]);
+    let request = set_sources(&mut evm, vec![rule(target)]);
     let mut tx = TxEnv::new_system_tx_with_caller(
         ACCOUNT,
         FUNDING_DISCOVERY_ADDRESS,
-        request().abi_encode().into(),
+        request.abi_encode().into(),
     );
     tx.gas_limit = 100_000;
     evm.inner.ctx.set_tx(tx.into());

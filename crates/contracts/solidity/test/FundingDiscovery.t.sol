@@ -40,6 +40,14 @@ contract Source {
         candidates = abi.encode(candidates_);
     }
 
+    function verify(bytes calldata requestData, bytes calldata policyData)
+        external
+        pure
+        returns (bool)
+    {
+        return requestData.length > 0 && keccak256(policyData) == keccak256(hex"1122");
+    }
+
     function discover(
         address account_,
         address token_,
@@ -69,13 +77,19 @@ contract DiscoveryCaller {
 }
 
 contract RecursiveSource {
+    bytes private rules;
+
+    function setRules(bytes calldata value) external {
+        rules = value;
+    }
+
     function discover(address account, address token, uint256, uint256, bytes calldata)
         external
         view
         returns (IDiscoverySource.Candidate[] memory)
     {
         IFundingDiscovery(address(0x1120000000000000000000000000000000000003))
-            .discover(1, account, token, 50);
+            .discover(1, account, token, 50, rules);
         return new IDiscoverySource.Candidate[](0);
     }
 }

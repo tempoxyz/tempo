@@ -4427,14 +4427,16 @@ mod tests {
             FundingPolicyAuthorization::Id(NonZeroU64::MIN),
             FundingPolicyAuthorization::Inline(FundingPolicy {
                 admins: vec![root.address()],
-                slippage_bps: 100,
-                routes: vec![FundingPolicyRoute {
-                    token: Address::repeat_byte(1),
-                    sources: vec![FundingSource {
-                        target: Address::repeat_byte(2),
-                        data: Bytes::from_static(&[3]),
+                rules: tempo_primitives::transaction::FundingPolicyRules {
+                    max_slippage_bps: 100,
+                    routes: vec![FundingPolicyRoute {
+                        token: Address::repeat_byte(1),
+                        sources: vec![FundingSource {
+                            target: Address::repeat_byte(2),
+                            data: Bytes::from_static(&[3]),
+                        }],
                     }],
-                }],
+                },
             }),
         ];
         for policy in policies {

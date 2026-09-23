@@ -51,6 +51,15 @@ contract UnitSource {
         candidates = abi.encode(candidates_);
     }
 
+    function verify(bytes calldata requestData, bytes calldata policyData)
+        external
+        pure
+        returns (bool)
+    {
+        return requestData.length > 0 && keccak256(requestData) != keccak256(hex"ff")
+            && keccak256(policyData) == keccak256(hex"1122");
+    }
+
     function discover(
         address account_,
         address token_,
@@ -88,6 +97,7 @@ contract FundingDiscoveryTest {
     PolicyStore store;
     TokenBalance token;
     FundingDiscovery helper;
+    bytes rulesData;
 
     function setUp() public {
         vm.etch(0x1120000000000000000000000000000000000002, type(PolicyStore).runtimeCode);
@@ -96,10 +106,19 @@ contract FundingDiscoveryTest {
         helper = new FundingDiscovery();
     }
 
+    function testRulesHashCheckedBeforeBalanceShortcut() public {
+        setSources(new IFundingPolicy.Source[](0), 0);
+        token.set(ACCOUNT, 50);
+        rulesData = abi.encode(IFundingPolicy.Rules(1, new IFundingPolicy.Route[](0)));
+        require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
+        rulesData = "";
+        require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
+    }
+
     function testRejectsValue() public {
         vm.deal(address(this), 1);
         (bool success,) = address(helper).call{value: 1}(
-            abi.encodeCall(helper.discover, (1, ACCOUNT, address(token), 50))
+            abi.encodeCall(helper.discover, (1, ACCOUNT, address(token), 50, rulesData))
         );
         require(!success);
     }
@@ -109,7 +128,12 @@ contract FundingDiscoveryTest {
         routes[0] = IFundingPolicy.Route(address(token), sources);
         address[] memory admins = new address[](1);
         admins[0] = address(this);
-        store.set(IFundingPolicy.Policy(admins, slippage, routes));
+        rulesData = abi.encode(IFundingPolicy.Rules(slippage, routes));
+        store.set(
+            IFundingPolicy.Policy(
+                admins, keccak256(abi.encode(keccak256("tempo.funding-policy.rules.v1"), rulesData))
+            )
+        );
     }
 
     function source(uint256 amount, uint256 budget, uint256 count) internal returns (address) {
@@ -136,7 +160,7 @@ contract FundingDiscoveryTest {
         returns (bytes memory reason)
     {
         (bool ok, bytes memory data) = address(helper)
-            .staticcall(abi.encodeCall(helper.discover, (id, ACCOUNT, output, amount)));
+            .staticcall(abi.encodeCall(helper.discover, (id, ACCOUNT, output, amount, rulesData)));
         require(!ok, "expected failure");
         return data;
     }
@@ -150,7 +174,7 @@ contract FundingDiscoveryTest {
         sources[1] = IFundingPolicy.Source(second, hex"1122");
         setSources(sources, 100);
         IFundingDiscovery.Discovery memory result =
-            helper.discover(1, ACCOUNT, address(token), 50_000_000);
+            helper.discover(1, ACCOUNT, address(token), 50_000_000, rulesData);
         require(
             result.token == address(token) && result.amount == 50_000_000
                 && result.slippageBps == 100
@@ -174,15 +198,21 @@ contract FundingDiscoveryTest {
         require(bytes4(failure(2, address(token), 0)) == IFundingPolicy.PolicyNotFound.selector);
         require(bytes4(failure(1, address(0xdead), 0)) == IFundingPolicy.TokenNotAllowed.selector);
         token.set(ACCOUNT, 50);
-        require(helper.discover(1, ACCOUNT, address(token), 50).sources.length == 0);
-        require(helper.discover(1, ACCOUNT, address(token), 0).sources.length == 0);
+        require(helper.discover(1, ACCOUNT, address(token), 50, rulesData).sources.length == 0);
+        require(helper.discover(1, ACCOUNT, address(token), 0, rulesData).sources.length == 0);
     }
 
     function testEmptyRoutesRejectAndEmptySourcesReturnNoCandidates() public {
-        store.set(IFundingPolicy.Policy(new address[](0), 0, new IFundingPolicy.Route[](0)));
+        rulesData = abi.encode(IFundingPolicy.Rules(0, new IFundingPolicy.Route[](0)));
+        store.set(
+            IFundingPolicy.Policy(
+                new address[](0),
+                keccak256(abi.encode(keccak256("tempo.funding-policy.rules.v1"), rulesData))
+            )
+        );
         require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.TokenNotAllowed.selector);
         setSources(new IFundingPolicy.Source[](0), 0);
-        require(helper.discover(1, ACCOUNT, address(token), 50).sources.length == 0);
+        require(helper.discover(1, ACCOUNT, address(token), 50, rulesData).sources.length == 0);
     }
 
     function testSourceFailuresPropagate() public {
@@ -191,11 +221,12 @@ contract FundingDiscoveryTest {
     }
 
     function testRejectsInvalidCandidates() public {
-        for (uint256 mode; mode < 3; ++mode) {
+        for (uint256 mode; mode < 4; ++mode) {
             IUnitDiscoverySource.Candidate[] memory candidates =
                 new IUnitDiscoverySource.Candidate[](1);
             candidates[0] = IUnitDiscoverySource.Candidate(
-                mode == 0 ? bytes("") : bytes(hex"01"), mode == 1 ? 0 : mode == 2 ? 51 : 50
+                mode == 0 ? bytes("") : mode == 3 ? bytes(hex"ff") : bytes(hex"01"),
+                mode == 1 ? 0 : mode == 2 ? 51 : 50
             );
             address target = address(new UnitSource(ACCOUNT, address(token), 50, 50, candidates));
             setSources(single(target, hex"1122"), 0);
@@ -212,8 +243,8 @@ contract FundingDiscoveryTest {
         WritingSource writer = new WritingSource();
         setSources(single(address(writer), hex"1122"), 0);
         // CALL the helper: its view interface must still STATICCALL the source.
-        (bool ok,) =
-            address(helper).call(abi.encodeCall(helper.discover, (1, ACCOUNT, address(token), 50)));
+        (bool ok,) = address(helper)
+            .call(abi.encodeCall(helper.discover, (1, ACCOUNT, address(token), 50, rulesData)));
         require(!ok && writer.writes() == 0);
     }
 
@@ -221,13 +252,13 @@ contract FundingDiscoveryTest {
         bps = uint16(uint256(bps) % 10_001);
         uint256 budget = uint256(amount) * (10_000 + uint256(bps)) / 10_000;
         setSources(single(source(amount, budget, 0), hex"1122"), bps);
-        helper.discover(1, ACCOUNT, address(token), amount);
+        helper.discover(1, ACCOUNT, address(token), amount, rulesData);
     }
 
     function testMaximumAmountAndOverflow() public {
         uint256 maximum = type(uint256).max;
         setSources(single(source(maximum, maximum, 0), hex"1122"), 0);
-        helper.discover(1, ACCOUNT, address(token), maximum);
+        helper.discover(1, ACCOUNT, address(token), maximum, rulesData);
         setSources(single(source(maximum, maximum, 0), hex"1122"), 1);
         require(bytes4(failure(1, address(token), maximum)) == bytes4(0x4e487b71));
     }

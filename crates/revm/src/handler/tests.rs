@@ -4588,15 +4588,17 @@ fn inline_policy_intrinsic_prices_persisted_tuple_and_binding() {
     let mut inline = base.clone();
     inline.authorization.funding_policy = Some(FundingPolicyAuthorization::Inline(FundingPolicy {
         admins: vec![Address::repeat_byte(2)],
-        slippage_bps: 0,
-        routes: vec![],
+        rules: tempo_primitives::transaction::FundingPolicyRules {
+            max_slippage_bps: 0,
+            routes: vec![],
+        },
     }));
     let params = crate::gas_params::tempo_gas_params(TempoHardfork::T13);
     let (base_gas, base_state) =
         calculate_key_authorization_gas(&base, &params, TempoHardfork::T13);
     let (gas, state) = calculate_key_authorization_gas(&inline, &params, TempoHardfork::T13);
-    // Seven ABI words, one bytes-length slot, one counter slot, and one key binding.
-    let slots = 10;
+    // Five ABI words, one bytes-length slot, one counter slot, and one key binding.
+    let slots = 8;
     assert_eq!(
         state - base_state,
         slots * params.get(GasId::sstore_set_state_gas())

@@ -2,7 +2,7 @@ use alloy::{
     consensus::BlockHeader,
     eips::{BlockNumberOrTag, Encodable2718},
     network::ReceiptResponse,
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::{SolCall, SolValue},
@@ -122,16 +122,20 @@ pub(super) async fn run_demo(
                 .status()
         );
     }
-    let candidates = IFundingSource::new(SOURCE, provider.clone())
-        .discover(
-            owner.address(),
-            PATH_USD_ADDRESS,
-            U256::from(50 * UNIT),
-            U256::from(50 * UNIT),
-            assets.to_vec().abi_encode().into(),
-        )
-        .call()
-        .await?;
+    let mut candidates = Vec::new();
+    for input in assets {
+        let found = IFundingSource::new(SOURCE, provider.clone())
+            .discover(
+                owner.address(),
+                PATH_USD_ADDRESS,
+                U256::from(50 * UNIT),
+                U256::from(50 * UNIT),
+                (input, U256::MAX).abi_encode().into(),
+            )
+            .call()
+            .await?;
+        candidates.extend(found);
+    }
     assert_eq!(candidates.len(), 2);
     for (candidate, asset) in candidates.iter().zip(assets) {
         assert_eq!(candidate.availableAmount, U256::from(50 * UNIT));
@@ -277,6 +281,7 @@ pub(super) async fn run_demo(
                     Some(auth.into_signed(PrimitiveSignature::Secp256k1(signature)));
             }
             tx.require_funds.as_mut().unwrap()[0].slippage_bps = None;
+            tx.require_funds.as_mut().unwrap()[0].policy_rules = Some(policy_rules(&assets));
             signed_access(tx, owner.address(), executing_key, &maker)
         } else {
             signed(tx, &owner, &maker)
@@ -370,7 +375,13 @@ pub(super) async fn run_demo(
                     FUNDING_DISCOVERY_ADDRESS, IFundingDiscovery,
                 };
                 let discovery = IFundingDiscovery::new(FUNDING_DISCOVERY_ADDRESS, peer.clone())
-                    .discover(1, owner.address(), PATH_USD_ADDRESS, U256::from(50 * UNIT))
+                    .discover(
+                        1,
+                        owner.address(),
+                        PATH_USD_ADDRESS,
+                        U256::from(50 * UNIT),
+                        policy_rules(&assets),
+                    )
                     .block(height.into())
                     .call()
                     .await?;
@@ -535,15 +546,40 @@ fn funding_key(
         }])
         .with_funding_policy(FundingPolicyAuthorization::Inline(FundingPolicy {
             admins: vec![owner.address()],
-            slippage_bps: 100,
-            routes: vec![FundingPolicyRoute {
-                token: PATH_USD_ADDRESS,
-                sources: vec![FundingSource {
-                    target: SOURCE,
-                    data: assets.to_vec().abi_encode().into(),
+            rules: tempo_primitives::transaction::FundingPolicyRules {
+                max_slippage_bps: 100,
+                routes: vec![FundingPolicyRoute {
+                    token: PATH_USD_ADDRESS,
+                    sources: assets
+                        .iter()
+                        .map(|input| FundingSource {
+                            target: SOURCE,
+                            data: (*input, U256::MAX).abi_encode().into(),
+                        })
+                        .collect(),
                 }],
-            }],
+            },
         }));
     let signature = owner.sign_hash_sync(&auth.signature_hash()).unwrap();
     auth.into_signed(PrimitiveSignature::Secp256k1(signature))
+}
+
+fn policy_rules(assets: &[Address]) -> Bytes {
+    tempo_contracts::precompiles::IFundingPolicy::Rules {
+        maxSlippageBps: 100,
+        routes: vec![tempo_contracts::precompiles::IFundingPolicy::Route {
+            token: PATH_USD_ADDRESS,
+            sources: assets
+                .iter()
+                .map(
+                    |input| tempo_contracts::precompiles::IFundingPolicy::Source {
+                        target: SOURCE,
+                        data: (*input, U256::MAX).abi_encode().into(),
+                    },
+                )
+                .collect(),
+        }],
+    }
+    .abi_encode()
+    .into()
 }

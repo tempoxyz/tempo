@@ -21,6 +21,11 @@ contract OwnerFundingSource {
     }
     uint256 public calls;
 
+    function verify(bytes calldata data, bytes calldata policyData) external pure returns (bool) {
+        Request memory r = abi.decode(data, (Request));
+        return abi.decode(policyData, (address)) == r.assetIn;
+    }
+
     function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
         external returns (Quote memory)
     {

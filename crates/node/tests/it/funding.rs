@@ -2,7 +2,7 @@
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     network::ReceiptResponse,
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
     signers::{
         SignerSync,
@@ -130,16 +130,20 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
             );
         }
         let source = IFundingSource::new(SOURCE, provider.clone());
-        let candidates = source
-            .discover(
-                owner.address(),
-                PATH_USD_ADDRESS,
-                U256::from(50 * UNIT),
-                U256::from(50 * UNIT),
-                assets.to_vec().abi_encode().into(),
-            )
-            .call()
-            .await?;
+        let mut candidates = Vec::new();
+        for input in assets {
+            let found = source
+                .discover(
+                    owner.address(),
+                    PATH_USD_ADDRESS,
+                    U256::from(50 * UNIT),
+                    U256::from(50 * UNIT),
+                    (input, U256::MAX).abi_encode().into(),
+                )
+                .call()
+                .await?;
+            candidates.extend(found);
+        }
         assert_eq!(candidates.len(), 2);
         for (candidate, asset) in candidates.iter().zip(assets) {
             assert_eq!(candidate.availableAmount, U256::from(50 * UNIT));
@@ -398,6 +402,13 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         };
         let key = PrivateKeySigner::from_bytes(&B256::with_last_byte(113))?;
         let auth = funding_key(tx.chain_id, &owner, key.address(), &assets);
+        let tempo_primitives::transaction::FundingPolicyAuthorization::Inline(policy) =
+            auth.authorization.funding_policy.clone().unwrap()
+        else {
+            unreachable!()
+        };
+        let rules: IFundingPolicy::Rules = policy.rules.into();
+        let policy_rules: Bytes = rules.abi_encode().into();
         let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, provider.clone());
         let policies = IFundingPolicy::new(FUNDING_POLICY_ADDRESS, provider.clone());
         for nonce in [4, 5] {
@@ -407,6 +418,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                 delegated.key_authorization = Some(auth.clone());
             }
             delegated.require_funds.as_mut().unwrap()[0].slippage_bps = None;
+            delegated.require_funds.as_mut().unwrap()[0].policy_rules = Some(policy_rules.clone());
             let bytes = signed_access(delegated, owner.address(), &key, &maker);
             let receipt = rpc
                 .send_raw_transaction(&bytes)
@@ -426,7 +438,13 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                 tempo_contracts::funding_discovery::FUNDING_DISCOVERY_ADDRESS,
                 provider.clone(),
             )
-            .discover(1, owner.address(), PATH_USD_ADDRESS, U256::from(50 * UNIT))
+            .discover(
+                1,
+                owner.address(),
+                PATH_USD_ADDRESS,
+                U256::from(50 * UNIT),
+                policy_rules.clone(),
+            )
             .call()
             .await?;
             assert_eq!(discovery.token, PATH_USD_ADDRESS);
@@ -465,6 +483,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         let second = PrivateKeySigner::from_bytes(&B256::with_last_byte(114))?;
         let mut failing = tx.clone();
         failing.nonce = 6;
+        failing.require_funds.as_mut().unwrap()[0].policy_rules = Some(policy_rules.clone());
         failing.key_authorization =
             Some(funding_key(tx.chain_id, &owner, second.address(), &assets));
         failing.calls[0].input = ITIP20::transferCall {
@@ -506,10 +525,12 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         update.calls = vec![Call {
             to: FUNDING_POLICY_ADDRESS.into(),
             value: U256::ZERO,
-            input: IFundingPolicy::modifyPolicyCall {
+            input: IFundingPolicy::setRulesCall {
                 policyId: 1,
-                slippageBps: 100,
-                routes: vec![],
+                rules: IFundingPolicy::Rules {
+                    maxSlippageBps: 100,
+                    routes: vec![],
+                },
             }
             .abi_encode()
             .into(),
@@ -524,6 +545,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         let mut denied = tx.clone();
         denied.nonce = 8;
         denied.require_funds = Some(vec![FundingRequirement {
+            policy_rules: Some(policy_rules.clone()),
             token: PATH_USD_ADDRESS,
             amount: U256::ZERO,
             sources: vec![],
@@ -685,14 +707,19 @@ fn funding_key(
         }])
         .with_funding_policy(FundingPolicyAuthorization::Inline(FundingPolicy {
             admins: vec![owner.address()],
-            slippage_bps: 100,
-            routes: vec![FundingPolicyRoute {
-                token: PATH_USD_ADDRESS,
-                sources: vec![FundingSource {
-                    target: SOURCE,
-                    data: assets.to_vec().abi_encode().into(),
+            rules: tempo_primitives::transaction::FundingPolicyRules {
+                max_slippage_bps: 100,
+                routes: vec![FundingPolicyRoute {
+                    token: PATH_USD_ADDRESS,
+                    sources: assets
+                        .iter()
+                        .map(|input| FundingSource {
+                            target: SOURCE,
+                            data: (*input, U256::MAX).abi_encode().into(),
+                        })
+                        .collect(),
                 }],
-            }],
+            },
         }));
     let signature = owner.sign_hash_sync(&auth.signature_hash()).unwrap();
     auth.into_signed(PrimitiveSignature::Secp256k1(signature))

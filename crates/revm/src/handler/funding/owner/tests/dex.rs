@@ -495,6 +495,7 @@ fn signed_requirements_use_the_normal_and_inspected_batch_paths() {
         evm.inner.ctx.tx.tempo_tx_env = Some(Box::new(crate::TempoBatchCallEnv {
             aa_calls: calls.clone(),
             require_funds: vec![SignedRequirement {
+                policy_rules: None,
                 token: PATH_USD_ADDRESS,
                 amount: U256::from(50 * UNIT),
                 slippage_bps: Some(100),
@@ -604,30 +605,35 @@ fn public_quotes_bound_availability_without_moving_funds() {
 #[test]
 fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
     let (mut evm, a, b) = setup_dex();
-    let call = IFundingSource::discoverCall {
-        account: ACCOUNT,
-        assetOut: PATH_USD_ADDRESS,
-        amountOut: U256::from(50 * UNIT),
-        maxCost: U256::from(40 * UNIT),
-        policyData: vec![b, a, b].abi_encode().into(),
-    };
-    let result = TempoEvmHandler::new()
-        .execute_funding_call_with(
-            &mut evm,
-            &mut GasTracker::new(30_000_000, 30_000_000, 0),
-            crate::handler::funding::FundingCall {
-                caller: RECIPIENT,
-                source: SOURCE,
-                is_static: true,
-                permission: None,
-                data: call.abi_encode().into(),
-            },
-            TempoEvmHandler::run_exec_loop,
-        )
-        .unwrap();
-    assert!(result.instruction_result().is_ok(), "{result:?}");
-    let candidates =
-        IFundingSource::discoverCall::abi_decode_returns_validate(result.output().data()).unwrap();
+    let mut candidates = Vec::new();
+    for input in [b, a, b] {
+        let call = IFundingSource::discoverCall {
+            account: ACCOUNT,
+            assetOut: PATH_USD_ADDRESS,
+            amountOut: U256::from(50 * UNIT),
+            maxCost: U256::from(40 * UNIT),
+            policyData: (input, U256::MAX).abi_encode().into(),
+        };
+        let result = TempoEvmHandler::new()
+            .execute_funding_call_with(
+                &mut evm,
+                &mut GasTracker::new(30_000_000, 30_000_000, 0),
+                crate::handler::funding::FundingCall {
+                    caller: RECIPIENT,
+                    source: SOURCE,
+                    is_static: true,
+                    permission: None,
+                    data: call.abi_encode().into(),
+                },
+                TempoEvmHandler::run_exec_loop,
+            )
+            .unwrap();
+        assert!(result.instruction_result().is_ok(), "{result:?}");
+        let found =
+            IFundingSource::discoverCall::abi_decode_returns_validate(result.output().data())
+                .unwrap();
+        candidates.extend(found);
+    }
     assert_eq!(candidates.len(), 3);
     for (candidate, input) in candidates.iter().zip([b, a, b]) {
         assert_eq!(candidate.availableAmount, U256::from(40 * UNIT));
@@ -673,7 +679,7 @@ fn token_support_is_public_and_grants_no_input_permission() {
     let (mut evm, a, _) = setup_dex();
     let call = IFundingSource::supportsTokenCall {
         token: PATH_USD_ADDRESS,
-        policyData: vec![a].abi_encode().into(),
+        policyData: (a, U256::MAX).abi_encode().into(),
     };
     let result = TempoEvmHandler::new()
         .execute_funding_call_with(
@@ -737,22 +743,22 @@ fn policy_discovery_returns_executable_native_dex_requests() {
             ..Default::default()
         },
     );
+    let rules = IFundingPolicy::Rules {
+        maxSlippageBps: 0,
+        routes: vec![IFundingPolicy::Route {
+            token: PATH_USD_ADDRESS,
+            sources: [b, a]
+                .into_iter()
+                .map(|input| IFundingPolicy::Source {
+                    target: SOURCE,
+                    data: (input, U256::MAX).abi_encode().into(),
+                })
+                .collect(),
+        }],
+    };
     let policy_id = StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
         FundingPolicy::new(FUNDING_POLICY_ADDRESS)
-            .create_policy(
-                ACCOUNT,
-                IFundingPolicy::Policy {
-                    admins: vec![ACCOUNT],
-                    slippageBps: 0,
-                    routes: vec![IFundingPolicy::Route {
-                        token: PATH_USD_ADDRESS,
-                        sources: vec![IFundingPolicy::Source {
-                            target: SOURCE,
-                            data: vec![b, a].abi_encode().into(),
-                        }],
-                    }],
-                },
-            )
+            .create_policy(ACCOUNT, vec![ACCOUNT], rules.clone())
             .unwrap()
     });
     let result = TempoEvmHandler::new()
@@ -766,6 +772,7 @@ fn policy_discovery_returns_executable_native_dex_requests() {
                 permission: None,
                 data: IFundingDiscovery::discoverCall {
                     policyId: policy_id,
+                    policyRules: rules.abi_encode().into(),
                     account: ACCOUNT,
                     token: PATH_USD_ADDRESS,
                     amount: U256::from(50 * UNIT),

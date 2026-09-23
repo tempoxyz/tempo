@@ -15,9 +15,9 @@ impl Precompile for FundingPolicy {
                 policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
                 policyExists(call) => view(call, |c| self.policy_exists(c.policyId)),
                 getPolicy(call) => view(call, |c| self.get_policy(c.policyId)),
-                createPolicy(call) => mutate(call, sender, |s, c| self.create_policy(s, c.policy)),
-                modifyPolicy(call) => mutate_void(call, sender, |s, c| {
-                    self.modify_policy(s, c.policyId, c.slippageBps, c.routes)
+                createPolicy(call) => mutate(call, sender, |s, c| self.create_policy(s, c.admins, c.rules)),
+                setRules(call) => mutate_void(call, sender, |s, c| {
+                    self.set_rules(s, c.policyId, c.rules)
                 }),
                 setAdmins(call) => mutate_void(call, sender, |s, c| {
                     self.set_admins(s, c.policyId, c.admins)

@@ -179,53 +179,103 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 Ok((key, Some(policy)))
             })?;
             for requirement in requirements {
-                let (slippage, rules) = self.funding_storage(evm, gas, || {
-                    let Some(policy) = &policy else {
-                        return Ok((
-                            requirement.slippage_bps.unwrap_or_default(),
-                            vec![Bytes::new(); requirement.sources.len()],
-                        ));
-                    };
+                let (slippage, route) = self.funding_storage(evm, gas, || {
                     if requirement
-                        .slippage_bps
-                        .is_some_and(|bps| bps != policy.slippageBps)
+                        .sources
+                        .iter()
+                        .any(|source| source.target.is_zero() || source.data.is_empty())
                     {
                         return Err(invalid_context());
                     }
-                    StorageCtx.deduct_gas((policy.routes.len() as u64).saturating_mul(3))?;
-                    let route = policy
+                    let Some(policy) = &policy else {
+                        if requirement.policy_rules.is_some() {
+                            return Err(invalid_context());
+                        }
+                        return Ok((requirement.slippage_bps.unwrap_or_default(), None));
+                    };
+                    let rules = tempo_precompiles::funding_policy::FundingPolicy::new(
+                        tempo_contracts::precompiles::FUNDING_POLICY_ADDRESS,
+                    )
+                    .verify_rules(
+                        policy.rulesHash,
+                        requirement
+                            .policy_rules
+                            .as_ref()
+                            .map_or(&[][..], |data| data.as_ref()),
+                    )?;
+                    let slippage = requirement.slippage_bps.unwrap_or(rules.maxSlippageBps);
+                    if slippage > rules.maxSlippageBps {
+                        return Err(invalid_context());
+                    }
+                    StorageCtx.deduct_gas((rules.routes.len() as u64).saturating_mul(3))?;
+                    let route = rules
                         .routes
-                        .iter()
+                        .into_iter()
                         .find(|route| route.token == requirement.token)
                         .ok_or(TIP20FunderError::TokenNotAllowed(
                             ITIP20Funder::TokenNotAllowed {
                                 token: requirement.token,
                             },
                         ))?;
-                    let mut previous = 0;
-                    let mut rules = Vec::with_capacity(requirement.sources.len());
-                    for request in &requirement.sources {
-                        StorageCtx.deduct_gas((route.sources.len() as u64).saturating_mul(3))?;
-                        let position = route
-                            .sources
-                            .iter()
-                            .position(|source| source.target == request.target)
-                            .ok_or(TIP20FunderError::FundingNotAuthorized(
+                    Ok((slippage, Some(route)))
+                })?;
+                let mut rules = Vec::with_capacity(requirement.sources.len());
+                let mut position = 0;
+                for request in &requirement.sources {
+                    let Some(route) = &route else {
+                        rules.push(Bytes::new());
+                        continue;
+                    };
+                    let mut matched = None;
+                    for (index, entry) in route.sources.iter().enumerate().skip(position) {
+                        self.funding_storage(evm, gas, || StorageCtx.deduct_gas(3))?;
+                        if entry.target != request.target {
+                            continue;
+                        }
+                        let result = self.execute_funding_call_with(
+                            evm,
+                            gas,
+                            FundingCall {
+                                caller: funder,
+                                source: request.target,
+                                is_static: true,
+                                permission: None,
+                                data: IFundingSource::verifyCall {
+                                    requestData: request.data.clone(),
+                                    policyData: entry.data.clone(),
+                                }
+                                .abi_encode()
+                                .into(),
+                            },
+                            &mut run_loop,
+                        )?;
+                        if !result.instruction_result().is_ok() {
+                            return Err(FundingFailure::Frame(Box::new(result)));
+                        }
+                        let allowed = self.funding_storage(evm, gas, || {
+                            IFundingSource::verifyCall::abi_decode_returns_validate(
+                                result.output().data(),
+                            )
+                            .map_err(|_| invalid_quote(request.target))
+                        })?;
+                        if allowed {
+                            matched = Some((index, entry.data.clone()));
+                            break;
+                        }
+                    }
+                    let (index, data) = self.funding_storage(evm, gas, || {
+                        matched.ok_or_else(|| {
+                            TIP20FunderError::FundingNotAuthorized(
                                 ITIP20Funder::FundingNotAuthorized {
                                     source: request.target,
                                 },
-                            ))?;
-                        if position < previous {
-                            return Err(TIP20FunderError::InvalidSourceOrder(
-                                ITIP20Funder::InvalidSourceOrder {},
                             )
-                            .into());
-                        }
-                        previous = position;
-                        rules.push(route.sources[position].data.clone());
-                    }
-                    Ok((policy.slippageBps, rules))
-                })?;
+                            .into()
+                        })
+                    })?;
+                    position = index;
+                    rules.push(data);
+                }
                 let mut balance = self.funding_storage(evm, gas, || {
                     // Context and argument validation precede the existing-balance shortcut.
                     if slippage > 10_000

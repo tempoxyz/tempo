@@ -22,6 +22,11 @@
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "policyRules",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -48,7 +53,7 @@
           {
             "name": "sources",
             "type": "tuple[]",
-            "internalType": "struct IFundingDiscovery.SourceCandidate[]",
+            "internalType": "struct IFundingDiscovery.Source[]",
             "components": [
               {
                 "name": "target",

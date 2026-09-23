@@ -1,7 +1,7 @@
 //! Shared funding policy storage. Registration and delegated execution are activated separately.
 
 use alloy::{
-    primitives::{Address, Bytes},
+    primitives::{Address, B256, Bytes},
     sol_types::SolValue,
 };
 use tempo_contracts::precompiles::{
@@ -20,7 +20,7 @@ use crate::{
 #[contract]
 pub struct FundingPolicy {
     next_policy_id: u64,
-    /// Canonical ABI data keeps the stored policy and emitted policy hash consistent.
+    /// Only admins and the rules commitment occupy persistent storage.
     policies: Mapping<u64, Bytes>,
 }
 
@@ -75,12 +75,7 @@ impl FundingPolicy {
             return Err(invalid_policy());
         }
         for route in routes {
-            if route.sources.iter().any(|source| source.target.is_zero())
-                || has_duplicates_metered(
-                    &mut self.storage,
-                    route.sources.iter().map(|source| source.target),
-                )?
-            {
+            if route.sources.iter().any(|source| source.target.is_zero()) {
                 return Err(invalid_policy());
             }
         }
@@ -107,55 +102,90 @@ impl FundingPolicy {
         Ok(policy)
     }
 
+    fn hash_rules_data(&mut self, data: &[u8]) -> Result<B256> {
+        self.storage
+            .deduct_gas(input_cost(self.storage.spec(), data.len())?)?;
+        let domain = alloy::primitives::keccak256("tempo.funding-policy.rules.v1");
+        self.storage
+            .keccak256(&(domain, Bytes::copy_from_slice(data)).abi_encode_params())
+    }
+
+    /// Verifies the full canonical witness before exposing any route permissions.
+    pub fn verify_rules(&mut self, hash: B256, data: &[u8]) -> Result<IFundingPolicy::Rules> {
+        let invalid = || {
+            TempoPrecompileError::from(FundingPolicyError::InvalidPolicyData(
+                IFundingPolicy::InvalidPolicyData {},
+            ))
+        };
+        if data.is_empty() || self.hash_rules_data(data)? != hash {
+            return Err(invalid());
+        }
+        let rules = IFundingPolicy::Rules::abi_decode_validate(data).map_err(|_| invalid())?;
+        if rules.abi_encode() != data {
+            return Err(invalid());
+        }
+        self.validate_routes(rules.maxSlippageBps, &rules.routes)?;
+        Ok(rules)
+    }
+
     pub fn create_policy(
         &mut self,
         sender: Address,
-        policy: IFundingPolicy::Policy,
+        admins: Vec<Address>,
+        rules: IFundingPolicy::Rules,
     ) -> Result<u64> {
         self.require_owner_context(sender)?;
-        self.install_policy(sender, policy)
+        self.install_policy(sender, admins, rules)
     }
 
     /// Native signed-key installation bypasses transaction-key guards, never policy validation.
     pub fn install_policy(
         &mut self,
         sender: Address,
-        policy: IFundingPolicy::Policy,
+        admins: Vec<Address>,
+        rules: IFundingPolicy::Rules,
     ) -> Result<u64> {
-        self.validate_admins(&policy.admins)?;
-        self.validate_routes(policy.slippageBps, &policy.routes)?;
+        self.validate_admins(&admins)?;
+        self.validate_routes(rules.maxSlippageBps, &rules.routes)?;
+        let hash = self.hash_rules_data(&rules.abi_encode())?;
         let id = self.policy_id_counter()?;
         let next = id.checked_add(1).ok_or_else(invalid_policy)?;
-        self.policies[id].write(policy.abi_encode().into())?;
+        self.policies[id].write(
+            IFundingPolicy::Policy {
+                admins,
+                rulesHash: hash,
+            }
+            .abi_encode()
+            .into(),
+        )?;
         self.next_policy_id.write(next)?;
         self.emit_event(FundingPolicyEvent::PolicyCreated(
             IFundingPolicy::PolicyCreated {
                 policyId: id,
                 updater: sender,
+                rulesHash: hash,
+                rules,
             },
         ))?;
         Ok(id)
     }
 
-    pub fn modify_policy(
+    pub fn set_rules(
         &mut self,
         sender: Address,
         id: u64,
-        slippage: u16,
-        routes: Vec<IFundingPolicy::Route>,
+        rules: IFundingPolicy::Rules,
     ) -> Result<()> {
         let mut policy = self.require_admin(sender, id)?;
-        self.validate_routes(slippage, &routes)?;
-        policy.slippageBps = slippage;
-        policy.routes = routes;
-        let bytes = policy.abi_encode();
-        let policy_hash = self.storage.keccak256(&bytes)?;
-        self.policies[id].write(bytes.into())?;
-        self.emit_event(FundingPolicyEvent::PolicyUpdated(
-            IFundingPolicy::PolicyUpdated {
+        self.validate_routes(rules.maxSlippageBps, &rules.routes)?;
+        policy.rulesHash = self.hash_rules_data(&rules.abi_encode())?;
+        self.policies[id].write(policy.abi_encode().into())?;
+        self.emit_event(FundingPolicyEvent::PolicyRulesUpdated(
+            IFundingPolicy::PolicyRulesUpdated {
                 policyId: id,
                 updater: sender,
-                policyHash: policy_hash,
+                rulesHash: policy.rulesHash,
+                rules,
             },
         ))
     }

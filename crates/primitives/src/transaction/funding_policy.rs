@@ -38,8 +38,19 @@ impl<'a> arbitrary::Arbitrary<'a> for FundingPolicyAuthorization {
 pub struct FundingPolicy {
     /// Accounts permitted to update the shared policy.
     pub admins: Vec<Address>,
-    /// Aggregate tolerance in basis points, validated during installation.
-    pub slippage_bps: u16,
+    pub rules: FundingPolicyRules,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(rename_all = "camelCase", deny_unknown_fields)
+)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub struct FundingPolicyRules {
+    /// Maximum aggregate tolerance in basis points.
+    pub max_slippage_bps: u16,
     /// Output routes in ascending token order; source order is significant.
     #[cfg_attr(feature = "serde", serde(rename = "sources", with = "routes_by_token"))]
     pub routes: Vec<FundingPolicyRoute>,
@@ -58,8 +69,9 @@ impl FundingPolicyAuthorization {
             Self::Id(_) => 0,
             Self::Inline(policy) => {
                 policy.admins.capacity() * size_of::<Address>()
-                    + policy.routes.capacity() * size_of::<FundingPolicyRoute>()
+                    + policy.rules.routes.capacity() * size_of::<FundingPolicyRoute>()
                     + policy
+                        .rules
                         .routes
                         .iter()
                         .map(|route| {
@@ -76,11 +88,10 @@ impl FundingPolicyAuthorization {
     }
 }
 
-impl From<FundingPolicy> for IFundingPolicy::Policy {
-    fn from(policy: FundingPolicy) -> Self {
+impl From<FundingPolicyRules> for IFundingPolicy::Rules {
+    fn from(policy: FundingPolicyRules) -> Self {
         Self {
-            admins: policy.admins,
-            slippageBps: policy.slippage_bps,
+            maxSlippageBps: policy.max_slippage_bps,
             routes: policy
                 .routes
                 .into_iter()
@@ -182,14 +193,16 @@ mod tests {
     fn inline() -> FundingPolicy {
         FundingPolicy {
             admins: vec![Address::repeat_byte(1)],
-            slippage_bps: 100,
-            routes: vec![FundingPolicyRoute {
-                token: Address::repeat_byte(2),
-                sources: vec![FundingSource {
-                    target: Address::repeat_byte(3),
-                    data: Bytes::from_static(&[4]),
+            rules: FundingPolicyRules {
+                max_slippage_bps: 100,
+                routes: vec![FundingPolicyRoute {
+                    token: Address::repeat_byte(2),
+                    sources: vec![FundingSource {
+                        target: Address::repeat_byte(3),
+                        data: Bytes::from_static(&[4]),
+                    }],
                 }],
-            }],
+            },
         }
     }
 
@@ -234,12 +247,12 @@ mod tests {
         );
         let mutations: &[fn(&mut FundingPolicy)] = &[
             |p| p.admins.push(Address::repeat_byte(5)),
-            |p| p.slippage_bps = 0,
-            |p| p.routes[0].token = Address::repeat_byte(6),
-            |p| p.routes[0].sources[0].target = Address::repeat_byte(7),
-            |p| p.routes[0].sources[0].data = Bytes::from_static(&[8]),
-            |p| p.routes[0].sources.clear(),
-            |p| p.routes.clear(),
+            |p| p.rules.max_slippage_bps = 0,
+            |p| p.rules.routes[0].token = Address::repeat_byte(6),
+            |p| p.rules.routes[0].sources[0].target = Address::repeat_byte(7),
+            |p| p.rules.routes[0].sources[0].data = Bytes::from_static(&[8]),
+            |p| p.rules.routes[0].sources.clear(),
+            |p| p.rules.routes.clear(),
         ];
         for mutate in mutations {
             let mut changed = policy.clone();
@@ -270,18 +283,18 @@ mod tests {
         let policy = inline();
         let value =
             serde_json::to_value(FundingPolicyAuthorization::Inline(policy.clone())).unwrap();
-        assert!(value.get("sources").unwrap().is_object());
-        assert!(value.get("routes").is_none());
+        assert!(value["rules"].get("sources").unwrap().is_object());
+        assert!(value["rules"].get("routes").is_none());
         assert_eq!(
             serde_json::from_value::<FundingPolicyAuthorization>(value).unwrap(),
             FundingPolicyAuthorization::Inline(policy)
         );
-        let duplicate = r#"{"admins":[],"slippageBps":0,"sources":{"0x000000000000000000000000000000000000000a":[],"0x000000000000000000000000000000000000000A":[]}}"#;
+        let duplicate = r#"{"admins":[],"rules":{"maxSlippageBps":0,"sources":{"0x000000000000000000000000000000000000000a":[],"0x000000000000000000000000000000000000000A":[]}}}"#;
         assert!(serde_json::from_str::<FundingPolicyAuthorization>(duplicate).is_err());
-        let ordered = r#"{"admins":[],"slippageBps":0,"sources":{"0x000000000000000000000000000000000000000b":[],"0x000000000000000000000000000000000000000a":[]}}"#;
+        let ordered = r#"{"admins":[],"rules":{"maxSlippageBps":0,"sources":{"0x000000000000000000000000000000000000000b":[],"0x000000000000000000000000000000000000000a":[]}}}"#;
         let policy: FundingPolicy = serde_json::from_str(ordered).unwrap();
-        assert!(policy.routes[0].token < policy.routes[1].token);
-        let unknown = r#"{"admins":[],"slippageBps":0,"sources":{},"id":7}"#;
+        assert!(policy.rules.routes[0].token < policy.rules.routes[1].token);
+        let unknown = r#"{"admins":[],"rules":{"maxSlippageBps":0,"sources":{}},"id":7}"#;
         assert!(serde_json::from_str::<FundingPolicyAuthorization>(unknown).is_err());
     }
 }

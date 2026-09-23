@@ -1,6 +1,6 @@
 # Funding discovery
 
-Call `FundingDiscovery.discover(policyId, account, token, amount)` at `0x1120000000000000000000000000000000000003` before constructing a transaction. Discovery uses ordinary EVM static calls to query sources in policy order with the same shortfall and aggregate cost budget.
+Call `FundingDiscovery.discover(policyId, account, token, amount, policyRules)` at `0x1120000000000000000000000000000000000003` before constructing a transaction. `policyRules` is `abi.encode(rules)` from the policy creation or rules-update event; its hash must match the current policy. Discovery uses ordinary EVM static calls to query sources in policy order with the same shortfall and aggregate cost budget.
 
 Copy candidate `target` and `data` into `requireFunds[].sources`. Candidates are independent estimates, not reserved funds. Execution validates the current policy, key permissions, available funds, and slippage.
 

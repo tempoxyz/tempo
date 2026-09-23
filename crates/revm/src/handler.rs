@@ -364,15 +364,20 @@ fn calculate_key_authorization_gas(
                 .saturating_add(sstore_cost)
                 .saturating_add(sload_cost * 2);
             if let FundingPolicyAuthorization::Inline(policy) = policy {
-                let abi: tempo_contracts::precompiles::IFundingPolicy::Policy =
-                    policy.clone().into();
+                let abi = tempo_contracts::precompiles::IFundingPolicy::Policy {
+                    admins: policy.admins.clone(),
+                    rulesHash: Default::default(),
+                };
+                let rules: tempo_contracts::precompiles::IFundingPolicy::Rules =
+                    policy.rules.clone().into();
+                let rules_size = alloy_sol_types::SolValue::abi_encode(&rules).len() as u64;
                 // The persisted value includes the outer tuple offset.
                 let size = alloy_sol_types::SolValue::abi_encode(&abi).len() as u64;
                 let slots = size.div_ceil(32).saturating_add(2);
                 num_sstores = num_sstores.saturating_add(slots);
                 regular_gas = regular_gas
                     .saturating_add(sstore_cost.saturating_mul(slots))
-                    .saturating_add(size.saturating_mul(100))
+                    .saturating_add(rules_size.saturating_add(size).saturating_mul(100))
                     .saturating_add(10_000);
             }
         }
