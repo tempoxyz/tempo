@@ -5,10 +5,7 @@ use crate::{
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip403_registry::AuthRole,
 };
-use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
-};
+use alloy::primitives::{Address, B256, U256, keccak256, uint};
 use tempo_precompiles_macros::Storable;
 
 /// Fee multiplier for fee swaps: 0.9970 scaled by 10000 (30 bps fee).
@@ -137,7 +134,11 @@ impl PoolKey {
     /// Generates a unique pool ID by hashing the token pair addresses.
     /// Uses keccak256 to create a deterministic identifier for this pool.
     pub fn get_id(&self) -> B256 {
-        keccak256((self.user_token, self.validator_token).abi_encode())
+        let words = [
+            self.user_token.into_word().0,
+            self.validator_token.into_word().0,
+        ];
+        keccak256(words.as_flattened())
     }
 }
 
@@ -717,7 +718,8 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::Address;
+    use alloy::{primitives::Address, sol_types::SolValue};
+    use proptest::prelude::*;
     use tempo_chainspec::hardfork::TempoHardfork;
 
     use super::*;
@@ -730,6 +732,39 @@ mod tests {
         tip20::TIP20Error,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+
+    proptest! {
+        #[test]
+        fn pool_id_matches_abi_encoding(
+            user_token in any::<[u8; 20]>(),
+            validator_token in any::<[u8; 20]>(),
+        ) {
+            let user_token = Address::from(user_token);
+            let validator_token = Address::from(validator_token);
+            prop_assert_eq!(
+                PoolKey::new(user_token, validator_token).get_id(),
+                keccak256((user_token, validator_token).abi_encode())
+            );
+        }
+    }
+
+    #[test]
+    fn pool_id_preserves_padding_and_token_order() {
+        let addresses = [
+            Address::ZERO,
+            Address::repeat_byte(0xff),
+            Address::with_last_byte(1),
+        ];
+        for user_token in addresses {
+            for validator_token in addresses {
+                let id = PoolKey::new(user_token, validator_token).get_id();
+                assert_eq!(id, keccak256((user_token, validator_token).abi_encode()));
+                if user_token != validator_token {
+                    assert_ne!(id, PoolKey::new(validator_token, user_token).get_id());
+                }
+            }
+        }
+    }
 
     /// Integer square root using the Babylonian method
     fn sqrt(x: U256) -> U256 {
