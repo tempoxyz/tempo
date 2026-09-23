@@ -794,6 +794,12 @@ fn multisig_signature_roundtrips_complete_encoding() {
         decoded.recover_signer(&signature_hash).unwrap(),
         signature.account()
     );
+    let mut trailing = encoded.to_vec();
+    trailing.push(0x80);
+    assert_eq!(
+        TempoSignature::from_bytes(&trailing),
+        Err("Invalid Multisig signature RLP")
+    );
 }
 
 #[cfg(feature = "serde")]

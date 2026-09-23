@@ -780,11 +780,9 @@ impl TempoSignature {
         }
 
         if data.len() > 1 && data[0] == SIGNATURE_TYPE_MULTISIG {
-            let mut sig_data = &data[1..];
-            match MultisigSignature::decode_rlp(&mut sig_data) {
-                Ok(signature) if sig_data.is_empty() => return Ok(Self::Multisig(signature)),
-                _ => return Err("Invalid Multisig signature RLP"),
-            }
+            return alloy_rlp::decode_exact::<MultisigSignature>(&data[1..])
+                .map(Self::Multisig)
+                .map_err(|_| "Invalid Multisig signature RLP");
         }
 
         // Check if this is a Keychain signature before delegating to
