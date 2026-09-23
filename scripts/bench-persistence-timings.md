@@ -55,9 +55,11 @@ uv run python scripts/bench-persistence-timings.py metrics.json --output timings
 uv run python scripts/test_bench_persistence_timings.py
 ```
 
-The report uses first-to-last scrape deltas and rejects resets or fewer than two
-samples. Check scrape bounds: first-use registration or missing scrapes can omit
-early observations. Native increase/rate queries interpolate boundaries; do not
+The report aligns all metric deltas to their shared scrape interval per node and
+rejects resets or fewer than two samples. Check compared_start/compared_end:
+first-use registration or missing scrapes can exclude early observations.
+Tasks and commits still straddle scrape boundaries; use long phases and report
+sample counts. Native increase/rate queries interpolate boundaries; do not
 silently mix those estimates with exact deltas. Compare matched workloads/state
 sizes and preserve per-node/per-phase samples. TPS verdicts come from summary.json
 and paired-run noise, not from persistence timings alone.
