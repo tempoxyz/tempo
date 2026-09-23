@@ -1371,13 +1371,7 @@ where
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
-                let key_auth_sig_type: u8 = key_auth
-                    .signature
-                    .primitive_signature_type()
-                    .ok_or_else(|| TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "multisig signatures are not supported".into(),
-                    })?
-                    .into();
+                let key_auth_sig_type: u8 = key_auth.signature.key_type().into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
                         if loaded_key.key_id == auth_signer
@@ -2028,9 +2022,7 @@ where
                             .into());
                         }
 
-                        if key_auth.signature.primitive_signature_type()
-                            != keychain_sig.signature.primitive_signature_type()
-                        {
+                        if key_auth.signature.key_type() != keychain_sig.signature.key_type() {
                             return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason:
                                     "admin-signed key authorization signature type does not match transaction key signature type"
