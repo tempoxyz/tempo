@@ -64,16 +64,18 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        let evm = TempoEvm::new(db, input);
         #[cfg(feature = "test-utils")]
-        let evm = {
-            let mut evm = evm;
+        {
+            let mut evm = TempoEvm::new(db, input);
             if let Some(overrides) = self.precompile_overrides {
                 overrides(evm.components_mut().2);
             }
             evm
-        };
-        evm
+        }
+        #[cfg(not(feature = "test-utils"))]
+        {
+            TempoEvm::new(db, input)
+        }
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -426,15 +428,19 @@ mod tests {
         assert!(default.components().2.get(&address).is_some());
 
         let factory = TempoEvmFactory::default().with_precompile_overrides(|precompiles| {
-            precompiles
-                .apply_precompile(&tempo_contracts::precompiles::ZONE_VERIFIER_ADDRESS, |_| {
+            precompiles.map_precompile_lookup(|address, previous| {
+                if *address == tempo_contracts::precompiles::ZONE_VERIFIER_ADDRESS {
                     None
-                });
+                } else {
+                    previous.and_then(|lookup| lookup.lookup(address))
+                }
+            });
         });
         let plain = factory.create_evm(EmptyDB::default(), env.clone());
         let inspected = factory.create_evm_with_inspector(EmptyDB::default(), env, NoOpInspector);
         assert!(plain.components().2.get(&address).is_none());
         assert!(inspected.components().2.get(&address).is_none());
+        assert!(plain.components().2.get(&PATH_USD_ADDRESS).is_some());
         assert!(
             TempoEvmFactory::default()
                 .create_evm(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T13))
