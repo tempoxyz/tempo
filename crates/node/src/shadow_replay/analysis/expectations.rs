@@ -4,9 +4,10 @@
 //! accepts it.
 
 use super::{AccountDelta, Field};
-use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome};
+use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post_fee_slot_change};
 use alloy::{
-    primitives::{Address, KECCAK256_EMPTY, TxKind, keccak256},
+    consensus::Transaction as _,
+    primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, keccak256},
     sol_types::SolCall as _,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -17,8 +18,12 @@ use tempo_contracts::{
         ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
     },
 };
-use tempo_precompiles::abi_decoder_config_for_spec;
-use tempo_primitives::{TempoAddressExt as _, TempoTxEnvelope};
+use tempo_precompiles::{
+    abi_decoder_config_for_spec, storage::StorageAction, tip_fee_manager::amm::compute_amount_out,
+};
+use tempo_primitives::{
+    TempoAddressExt as _, TempoTxEnvelope, transaction::calc_gas_balance_spending,
+};
 
 #[derive(Debug)]
 pub(crate) struct Expectation {
@@ -31,6 +36,7 @@ pub(crate) struct Context<'a> {
     pub boundary: Boundary,
     pub real: &'a Evidence,
     pub shadow: &'a Evidence,
+    pub base_fee: Option<u64>,
     pub tx: Option<&'a TempoTxEnvelope>,
 }
 
@@ -44,6 +50,18 @@ impl Context<'_> {
             self.real.txs.get(index)?.as_ref().ok()?,
             self.shadow.txs.get(index)?.as_ref().ok()?,
         ))
+    }
+
+    /// Returns the normalized log hashes only when both fee transfers match their gas charges.
+    pub(super) fn verified_fee_log_hashes(&self) -> Option<(B256, B256)> {
+        let (real, shadow) = self.observed_txs()?;
+        let (real_amount, real_hash) = real.fee_normalized?;
+        let (shadow_amount, shadow_hash) = shadow.fee_normalized?;
+        let price = self.tx?.effective_gas_price(self.base_fee);
+        (real.fee.log_ranges == shadow.fee.log_ranges
+            && real_amount == calc_gas_balance_spending(real.gas_used, price)
+            && shadow_amount == calc_gas_balance_spending(shadow.gas_used, price))
+        .then_some((real_hash, shadow_hash))
     }
 
     /// Borrows all top-level calls (including AA subcalls) from the canonical transaction.
@@ -172,6 +190,64 @@ const T12_STABLECOIN_DEX: Expectation = Expectation {
     },
 };
 
+/// Accepts only the storage effect of a verified, gas-derived post-transaction fee hook.
+const FEE_STATE: Expectation = Expectation {
+    id: "fee.post-tx-state",
+    check: |ctx, field| {
+        if field.name != "storage" || !field.fee_associated {
+            return None;
+        }
+        let (address, slot) = (field.address?, field.slot?);
+        let (real, shadow) = ctx.observed_txs()?;
+        ctx.verified_fee_log_hashes()?;
+        let (real_log, real_token, real_payer, real_charge, real_refund) =
+            real.fee.post_tx_transfer?;
+        let (shadow_log, shadow_token, shadow_payer, shadow_charge, shadow_refund) =
+            shadow.fee.post_tx_transfer?;
+        if (real_log, real_token, real_payer) != (shadow_log, shadow_token, shadow_payer) {
+            return None;
+        }
+        let max = real.fee.pre_tx_max?;
+        if shadow.fee.pre_tx_max != Some(max)
+            || max.checked_sub(real_charge) != Some(real_refund)
+            || max.checked_sub(shadow_charge) != Some(shadow_refund)
+        {
+            return None;
+        }
+        // A different fee route cannot be inferred from a changed fee amount alone.
+        let route = |actions: &[StorageAction], mut amount: U256| -> Option<Vec<U256>> {
+            let mut keys = Vec::new();
+            for action in actions {
+                if let StorageAction::FeeAmmSwap(key, _, amount_in) = action {
+                    if *amount_in != amount || keys.len() == 2 {
+                        return None;
+                    }
+                    keys.push(*key);
+                    amount = compute_amount_out(amount).ok()?;
+                }
+            }
+            Some(keys)
+        };
+        if route(&real.fee.post_tx_actions, real_charge)?
+            != route(&shadow.fee.post_tx_actions, shadow_charge)?
+        {
+            return None;
+        }
+        let (real_before, real_after) =
+            post_fee_slot_change(&real.fee.post_tx_actions, address, slot)?;
+        let (shadow_before, shadow_after) =
+            post_fee_slot_change(&shadow.fee.post_tx_actions, address, slot)?;
+        // Compare application state at hook entry, not merely the transaction's initial state.
+        if real_before != shadow_before {
+            return None;
+        }
+        let real_net = AccountDelta(real.state.transitions.get(&address)).storage(slot)?;
+        let shadow_net = AccountDelta(shadow.state.transitions.get(&address)).storage(slot)?;
+        (real_net.0 == shadow_net.0 && real_net.1 == real_after && shadow_net.1 == shadow_after)
+            .then_some(())
+    },
+};
+
 const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     id: "t13.zone-runtime-upgrade",
     check: |ctx, field| {
@@ -217,6 +293,7 @@ const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
             T12_ALLOW_PRECOMPILE_ABI_SUFFIX,
             T12_TIP20_CHANNEL,
             T12_STABLECOIN_DEX,
+            FEE_STATE,
         ],
     ),
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
@@ -244,7 +321,168 @@ fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_revm::{db::states::TransitionAccount, state::AccountInfo};
+    use alloy::primitives::Signature;
+    use reth_revm::{
+        db::states::{StorageSlot, TransitionAccount},
+        state::AccountInfo,
+    };
+    use tempo_primitives::{
+        TempoTransaction,
+        transaction::{AASigned, PrimitiveSignature, TempoSignature},
+    };
+
+    #[test]
+    fn accepts_only_verified_post_fee_storage_effects() {
+        let token = Address::repeat_byte(1);
+        let payer = Address::repeat_byte(2);
+        let slot = U256::from(3);
+        let tx: TempoTxEnvelope = AASigned::new_unhashed(
+            TempoTransaction {
+                max_fee_per_gas: 1_000_000_000_000,
+                max_priority_fee_per_gas: 1_000_000_000_000,
+                ..Default::default()
+            },
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        )
+        .into();
+        let observed = |charge: u64| {
+            let after = U256::from(100 - charge);
+            let mut fee = crate::shadow_replay::fees::FeeWrites {
+                pre_tx_max: Some(U256::from(100)),
+                post_tx_transfer: Some((
+                    0,
+                    token,
+                    payer,
+                    U256::from(charge),
+                    U256::from(100 - charge),
+                )),
+                post_tx_actions: vec![StorageAction::Sdec(
+                    token,
+                    slot,
+                    U256::from(100),
+                    U256::from(charge),
+                )],
+                log_ranges: std::iter::once(0..1).collect(),
+                ..Default::default()
+            };
+            fee.slots.insert((token, slot));
+            let mut state = reth_revm::db::TransitionState::default();
+            state.transitions.insert(
+                token,
+                TransitionAccount {
+                    previous_info: Some(AccountInfo::default()),
+                    info: Some(AccountInfo::default()),
+                    storage: [(slot, StorageSlot::new_changed(U256::from(50), after))]
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                },
+            );
+            Evidence {
+                txs: vec![Ok(ObservedTx {
+                    gas_used: charge,
+                    fee_normalized: Some((U256::from(charge), KECCAK256_EMPTY)),
+                    fee,
+                    state,
+                    ..Default::default()
+                })],
+                ..Default::default()
+            }
+        };
+        let real = observed(10);
+        let mut shadow = observed(20);
+        let field = Field {
+            name: "storage",
+            address: Some(token),
+            slot: Some(slot),
+            fee_associated: true,
+        };
+        let check = |shadow: &Evidence, field: &Field| {
+            (FEE_STATE.check)(
+                &Context {
+                    boundary: Boundary::Transaction(0),
+                    real: &real,
+                    shadow,
+                    base_fee: Some(0),
+                    tx: Some(&tx),
+                },
+                field,
+            )
+            .is_some()
+        };
+        assert!(check(&shadow, &field));
+        assert!(!check(
+            &shadow,
+            &Field {
+                fee_associated: false,
+                ..field
+            }
+        ));
+        assert!(!check(
+            &shadow,
+            &Field {
+                slot: Some(U256::from(4)),
+                ..field
+            }
+        ));
+
+        let tx = shadow.txs[0].as_mut().unwrap();
+        tx.fee.post_tx_actions[0] =
+            StorageAction::Sdec(token, slot, U256::from(101), U256::from(20));
+        assert!(!check(&shadow, &field));
+        let tx = shadow.txs[0].as_mut().unwrap();
+        tx.fee.post_tx_actions[0] =
+            StorageAction::Sdec(token, slot, U256::from(100), U256::from(20));
+        tx.state
+            .transitions
+            .get_mut(&token)
+            .unwrap()
+            .storage
+            .get_mut(&slot)
+            .unwrap()
+            .present_value = U256::from(79);
+        assert!(!check(&shadow, &field));
+        let tx = shadow.txs[0].as_mut().unwrap();
+        tx.state
+            .transitions
+            .get_mut(&token)
+            .unwrap()
+            .storage
+            .get_mut(&slot)
+            .unwrap()
+            .present_value = U256::from(80);
+        tx.fee.post_tx_transfer.as_mut().unwrap().4 = U256::from(79);
+        assert!(!check(&shadow, &field));
+        shadow.txs[0]
+            .as_mut()
+            .unwrap()
+            .fee
+            .post_tx_transfer
+            .as_mut()
+            .unwrap()
+            .4 = U256::from(80);
+        assert!(check(&shadow, &field));
+        shadow.txs[0]
+            .as_mut()
+            .unwrap()
+            .fee
+            .post_tx_actions
+            .push(StorageAction::FeeAmmSwap(
+                U256::ZERO,
+                U256::ZERO,
+                U256::from(21),
+            ));
+        assert!(!check(&shadow, &field));
+        shadow.txs[0].as_mut().unwrap().fee.post_tx_actions.pop();
+        shadow.txs[0]
+            .as_mut()
+            .unwrap()
+            .fee_normalized
+            .as_mut()
+            .unwrap()
+            .0 = U256::from(21);
+        assert!(!check(&shadow, &field));
+    }
 
     #[test]
     fn accepts_exact_bytecode_upgrades() {
@@ -272,6 +510,7 @@ mod tests {
             boundary: Boundary::PreBlock,
             real: &real,
             shadow,
+            base_fee: None,
             tx: None,
         };
         let code = Field {

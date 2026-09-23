@@ -40,7 +40,7 @@ use reth_revm::{
     state::EvmState,
 };
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
-use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc, time::Instant};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
@@ -447,12 +447,10 @@ struct ObservedTx {
     block_gas_used: u64,
     /// Hash of the transaction's output bytes (empty when there is no output).
     output_hash: B256,
-    /// Positions of logs emitted by protocol fee hooks.
-    fee_log_ranges: Vec<std::ops::Range<usize>>,
     /// Validated post-fee amount and full receipt hash with only that amount zeroed.
     fee_normalized: Option<(U256, B256)>,
-    /// Storage slots touched by fee hooks, which may also have application writes.
-    fee_slots: HashSet<(alloy_primitives::Address, alloy_primitives::U256)>,
+    /// Fee-hook log, storage, and charge provenance for this transaction.
+    fee: FeeWrites,
     /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
 }
@@ -472,9 +470,8 @@ impl ObservedTx {
             gas_used: execution.tx_gas_used(),
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
-            fee_log_ranges: writes.log_ranges,
             fee_normalized,
-            fee_slots: writes.slots,
+            fee: writes,
             state: TransitionState::default(),
         }
     }
@@ -545,7 +542,7 @@ fn normalized_fee_transfer(
     logs: &[alloy_primitives::Log],
     writes: &FeeWrites,
 ) -> Option<(U256, B256)> {
-    let (index, token, payer, amount) = writes.post_tx_transfer?;
+    let (index, token, payer, amount, _) = writes.post_tx_transfer?;
     let log = logs.get(index)?;
     if log.address != token || !writes.log_ranges.iter().any(|range| range.contains(&index)) {
         return None;
@@ -607,7 +604,7 @@ mod tests {
         };
         let writes = |amount| FeeWrites {
             log_ranges: std::iter::once(1..2).collect(),
-            post_tx_transfer: Some((1, token, payer, amount)),
+            post_tx_transfer: Some((1, token, payer, amount, U256::ZERO)),
             ..Default::default()
         };
         let (canonical, candidate) = (logs(U256::from(85)), logs(U256::from(79)));

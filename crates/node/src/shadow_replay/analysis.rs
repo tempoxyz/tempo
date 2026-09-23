@@ -1,13 +1,13 @@
 //! Classify independent boundary differences before formatting bounded samples.
 
 use self::expectations::{Context, Expectation};
-use super::{Boundary, Evidence, ObservedTx, ReplayOutcome};
-use alloy::consensus::{BlockHeader as _, Transaction as _};
-use alloy_primitives::{Address, B256, U256};
+use super::{Boundary, Evidence, ReplayOutcome};
+use alloy::consensus::BlockHeader as _;
+use alloy_primitives::{Address, U256};
 use reth_primitives_traits::RecoveredBlock;
 use reth_revm::db::{TransitionAccount, TransitionState};
 use std::{collections::BTreeMap, fmt::Debug};
-use tempo_primitives::{Block, TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::Block;
 
 mod expectations;
 pub(super) use expectations::between;
@@ -54,6 +54,7 @@ impl Report {
             boundary,
             real,
             shadow,
+            base_fee,
             tx: match boundary {
                 Boundary::Transaction(index) => block.body().transactions.get(index),
                 _ => None,
@@ -75,8 +76,9 @@ impl Report {
                     diff.record("success", |tx| tx.outcome == super::TxOutcome::Success);
                     diff.record("output", |tx| tx.output_hash);
                     // Keep all logs, in order; mask only a verified gas-derived fee amount.
-                    let (real_logs, shadow_logs) =
-                        receipt_log_hashes(real, shadow, ctx.tx, base_fee);
+                    let (real_logs, shadow_logs) = ctx
+                        .verified_fee_log_hashes()
+                        .unwrap_or((real.receipt_logs_hash, shadow.receipt_logs_hash));
                     diff.record_values("receipt_logs", real_logs, shadow_logs);
                     diff.record("gas", |tx| tx.gas_used);
                     diff.record("block_gas", |tx| tx.block_gas_used);
@@ -125,10 +127,10 @@ impl Report {
         {
             field.fee_associated = ctx.real.txs[index]
                 .as_ref()
-                .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)))
+                .is_ok_and(|tx| tx.fee.slots.contains(&(address, slot)))
                 || ctx.shadow.txs[index]
                     .as_ref()
-                    .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)));
+                    .is_ok_and(|tx| tx.fee.slots.contains(&(address, slot)));
         }
         let accepted = rules
             .iter()
@@ -211,26 +213,6 @@ pub(super) struct Difference {
     pub field: Field,
     pub real: String,
     pub shadow: String,
-}
-
-/// Fall back to the raw hashes unless both fee transfers are verified and each amount
-/// follows from that arm's gas. An unexplained gas change is still reported separately.
-fn receipt_log_hashes(
-    real: &ObservedTx,
-    shadow: &ObservedTx,
-    tx: Option<&TempoTxEnvelope>,
-    base_fee: Option<u64>,
-) -> (B256, B256) {
-    let normalized = (|| {
-        let (real_amount, real_hash) = real.fee_normalized?;
-        let (shadow_amount, shadow_hash) = shadow.fee_normalized?;
-        let price = tx?.effective_gas_price(base_fee);
-        (real.fee_log_ranges == shadow.fee_log_ranges
-            && real_amount == calc_gas_balance_spending(real.gas_used, price)
-            && shadow_amount == calc_gas_balance_spending(shadow.gas_used, price))
-        .then_some((real_hash, shadow_hash))
-    })();
-    normalized.unwrap_or((real.receipt_logs_hash, shadow.receipt_logs_hash))
 }
 
 struct Comparison<'a, T> {

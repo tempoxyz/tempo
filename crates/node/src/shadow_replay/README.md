@@ -49,12 +49,13 @@ and block gas, and net account and storage transitions. This compares observable
 completed boundaries, not opcode traces or internal write history.
 
 Because every shadow transaction starts from the same canonical prefix, findings at later
-transactions remain independent and are all compared. Fee provenance is recorded for classification
-but does not by itself exempt a state difference. The post-fee TIP-20 transfer amount is masked
+transactions remain independent and are all compared. The post-fee TIP-20 transfer amount is masked
 when hashing the full receipt only if both arms emit the verified transfer in the same position
-and each amount equals its gas-derived charge. All other log contents and positions must match;
-unsupported fee-log differences remain findings. Gas and state differences still require fork
-expectations.
+and each amount equals its gas-derived charge. All other log contents and positions must match.
+Fee-hook storage provenance alone never exempts a state difference: a fee-state expectation also
+requires the same value before the post-fee writes in both arms and validates each arm's final value
+against its ordered hook writes (including fee-AMM swaps). Unsupported fee changes remain findings;
+other gas and state differences still require fork expectations.
 
 ## Expectations
 
