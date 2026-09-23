@@ -6,7 +6,7 @@ on:
       cloud:
         type: string
         required: false
-        default: "aws"
+        default: "gcp"
       baseline:
         type: string
         required: false
@@ -102,17 +102,17 @@ on:
         description: Cloud provider used for disposable benchmark infrastructure.
         type: choice
         required: true
-        default: aws
+        default: gcp
         options:
           - aws
           - gcp
       baseline:
-        description: Git ref for the baseline run. Empty = tempoxyz/tempo main.
+        description: Git ref for the baseline run. Empty = merge-base of the selected branch with main.
         type: string
         required: false
         default: ""
       feature:
-        description: Git ref for the feature run. Empty = tempoxyz/tempo main.
+        description: Git ref for the feature run. Empty = selected branch HEAD.
         type: string
         required: false
         default: ""
@@ -277,10 +277,10 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
-      TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
+      TERRAFORM_DIR: ${{ (inputs.cloud || 'gcp') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
-      BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
+      BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'gcp' }}
       BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
       BENCH_GCP_WIF_PROVIDER: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
       BENCH_GCP_SERVICE_ACCOUNT: benchmark-runner@chain-benchmarking-zygis.iam.gserviceaccount.com
@@ -295,7 +295,7 @@ jobs:
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
-      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'c4d-standard-48-lssd' || 'c6id.8xlarge' }}
+      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'gcp') == 'gcp' && 'c4d-standard-48-lssd' || 'c6id.8xlarge' }}
       BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
@@ -398,50 +398,49 @@ jobs:
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
 
+      - name: Resolve baseline and feature refs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const repo = { owner: 'tempoxyz', repo: 'tempo' };
+            const resolve = async (ref) => {
+              const { data } = await github.rest.repos.getCommit({ ...repo, ref });
+              return data.sha;
+            };
+            const baselineArg = process.env.BENCH_INPUT_BASELINE;
+            const featureArg = process.env.BENCH_INPUT_FEATURE;
+            const isTempo = context.repo.owner === repo.owner && context.repo.repo === repo.repo;
+            const pr = isTempo ? context.payload.pull_request : undefined;
+            const selectedHead = isTempo ? (pr?.head.sha || context.sha) : 'main';
+            const baseRef = pr?.base.ref || 'main';
+            const feature = await resolve(featureArg || selectedHead);
+            let baseline;
+            if (baselineArg) {
+              baseline = await resolve(baselineArg);
+            } else {
+              // Like bench-e2e, use the selected workflow head for the merge-base,
+              // even when the feature input is overridden.
+              const head = await resolve(selectedHead);
+              const { data } = await github.rest.repos.compareCommits({ ...repo, base: baseRef, head });
+              baseline = data.merge_base_commit.sha;
+            }
+            const baselineName = process.env.BENCH_INPUT_BASELINE_NAME;
+            core.exportVariable('BENCH_INPUT_BASELINE_NAME',
+              baselineArg ? (baselineName || baselineArg) :
+                (baselineName && baselineName !== 'merge-base' ? baselineName : baseline));
+            const headName = isTempo ? (pr?.head.ref || context.ref?.replace(/^refs\/(heads|tags)\//, '')) : 'main';
+            core.exportVariable('BENCH_INPUT_FEATURE_NAME',
+              process.env.BENCH_INPUT_FEATURE_NAME || featureArg || headName || feature);
+            core.exportVariable('BENCH_INPUT_BASELINE', baseline);
+            core.exportVariable('BENCH_INPUT_FEATURE', feature);
+            core.info(`Resolved baseline: ${baseline}`);
+            core.info(`Resolved feature: ${feature}`);
+
       - name: Validate Tempo commit ancestry
         run: |
-          resolve_tempo_ref() {
-            local ref="${1:-main}"
-            local rev
-
-            if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
-              printf '%s\n' "$ref"
-              return 0
-            fi
-
-            if [[ "$ref" == refs/* ]]; then
-              git ls-remote https://github.com/tempoxyz/tempo.git "$ref" "$ref^{}" 2>/dev/null |
-                awk -v ref="$ref" 'BEGIN { rev = "" } $2 == ref "^{}" { print $1; found = 1; exit } $2 == ref && rev == "" { rev = $1 } END { if (!found && rev != "") print rev }'
-              return 0
-            fi
-
-            rev="$(git ls-remote --refs https://github.com/tempoxyz/tempo.git "refs/heads/$ref" 2>/dev/null | awk -v ref="refs/heads/$ref" '$2 == ref { print $1; exit }')"
-            if [[ -n "$rev" ]]; then
-              printf '%s\n' "$rev"
-              return 0
-            fi
-
-            git ls-remote https://github.com/tempoxyz/tempo.git "refs/tags/$ref" "refs/tags/$ref^{}" 2>/dev/null |
-              awk -v ref="refs/tags/$ref" 'BEGIN { rev = "" } $2 == ref "^{}" { print $1; found = 1; exit } $2 == ref && rev == "" { rev = $1 } END { if (!found && rev != "") print rev }'
-          }
-
-          baseline_ref="${BENCH_INPUT_BASELINE:-main}"
-          feature_ref="${BENCH_INPUT_FEATURE:-main}"
-          baseline_commit="$(resolve_tempo_ref "$baseline_ref")"
-          feature_commit="$(resolve_tempo_ref "$feature_ref")"
-
-          if [[ -z "$baseline_commit" ]]; then
-            echo "Unable to resolve baseline ref '$baseline_ref' in tempoxyz/tempo" >&2
-            exit 1
-          fi
-          if [[ -z "$feature_commit" ]]; then
-            echo "Unable to resolve feature ref '$feature_ref' in tempoxyz/tempo" >&2
-            exit 1
-          fi
-
           "$BENCH_REPO_DIR/scripts/validate_tempo_commit_ancestry.sh" \
-            baseline "$baseline_ref" "$baseline_commit" \
-            feature "$feature_ref" "$feature_commit"
+            baseline "$BENCH_INPUT_BASELINE" "$BENCH_INPUT_BASELINE" \
+            feature "$BENCH_INPUT_FEATURE" "$BENCH_INPUT_FEATURE"
 
       - name: Validate regions
         id: regions
@@ -465,6 +464,8 @@ jobs:
           echo "Benchmark run parameters"
           echo "benchmark-id=$BENCHMARK_ID"
           echo "normalized-regions=$BENCHMARK_REGIONS"
+          echo "resolved-baseline=$BENCH_INPUT_BASELINE"
+          echo "resolved-feature=$BENCH_INPUT_FEATURE"
           printf '%s\n' "$WORKFLOW_INPUTS" | jq -r 'to_entries | sort_by(.key)[] | "\(.key)=\(.value | tojson)"'
 
           {
@@ -472,6 +473,8 @@ jobs:
             echo ""
             echo "- Benchmark ID: \`$BENCHMARK_ID\`"
             echo "- Normalized regions: \`$BENCHMARK_REGIONS\`"
+            echo "- Resolved baseline: \`$BENCH_INPUT_BASELINE\`"
+            echo "- Resolved feature: \`$BENCH_INPUT_FEATURE\`"
             echo ""
             echo '```json'
             printf '%s\n' "$WORKFLOW_INPUTS" | jq -S .

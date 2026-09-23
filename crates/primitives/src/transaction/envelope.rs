@@ -122,6 +122,18 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns whether `timestamp` falls within the transaction's validity window.
+    ///
+    /// For AA transactions, `valid_after` is inclusive and `valid_before` is exclusive.
+    /// Missing bounds are unrestricted. Other transaction types always return `true`.
+    /// This only checks time bounds, not other transaction validity rules.
+    pub fn is_valid_at(&self, timestamp: u64) -> bool {
+        match self {
+            Self::AA(tx) => tx.tx().is_valid_at(timestamp),
+            _ => true,
+        }
+    }
+
     /// Ensures an AA transaction's `valid_before`, when present, is strictly greater than
     /// `min_allowed`.
     ///
@@ -745,6 +757,11 @@ mod tests {
             .into_signed(Signature::test_signature().into()),
         );
 
+        assert!(!envelope.is_valid_at(49));
+        assert!(envelope.is_valid_at(50));
+        assert!(envelope.is_valid_at(99));
+        assert!(!envelope.is_valid_at(100));
+
         assert_eq!(
             envelope.ensure_valid_before(100),
             Err(InvalidValidBefore {
@@ -767,6 +784,9 @@ mod tests {
             TxLegacy::default(),
             Signature::test_signature(),
         ));
+
+        assert!(envelope.is_valid_at(0));
+        assert!(envelope.is_valid_at(u64::MAX));
 
         assert_eq!(envelope.ensure_valid_before(100), Ok(()));
         assert_eq!(envelope.ensure_valid_after(100), Ok(()));
