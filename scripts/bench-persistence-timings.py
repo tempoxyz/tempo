@@ -47,9 +47,17 @@ def analyze(document):
         key = (name, labels.get("table", labels.get("segment", "")), labels.get("shard", ""))
         if key in phases[identity]:
             raise ValueError("Duplicate metric series")
-        phases[identity][key] = delta(series)
+        delta(series)  # Reject resets before clipping to the shared interval.
+        phases[identity][key] = series
     result = []
-    for identity, values in sorted(phases.items()):
+    for identity, raw in sorted(phases.items()):
+        common_start = max(float(v["values"][0][0]) for v in raw.values())
+        common_end = min(float(v["values"][-1][0]) for v in raw.values())
+        values = {
+            key: delta({"values": [(t, v) for t, v in series["values"]
+                                  if common_start <= float(t) <= common_end]})
+            for key, series in raw.items()
+        }
         def value(name):
             item = values.get((name, "", ""))
             return item[0] if item else None
@@ -76,6 +84,7 @@ def analyze(document):
                            "first_scrape": first, "last_scrape": last})
         result.append({
             "labels": dict(identity), "persisted_blocks": blocks, "persisted_transactions": txs,
+            "compared_start": common_start, "compared_end": common_end,
             "state_trie_blocks": value(P + "persisted_state_trie_blocks_total"),
             "complete_persistence_ms_per_block": ratio(busy * 1000, blocks),
             "complete_persistence_us_per_transaction": ratio(busy * 1e6, txs),
