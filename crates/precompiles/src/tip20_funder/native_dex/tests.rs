@@ -288,7 +288,7 @@ fn token_support_rejects_non_parity_and_missing_routes() {
 
 #[test]
 fn verification_binds_input_and_cap_without_storage() {
-    let source = NativeDexFundingSource::new();
+    let source = NativeDexFundingSource::new(SOURCE, FUNDER);
     for (input, cap, expected) in [
         (ACCOUNT, 30, true),
         (ACCOUNT, 31, false),
