@@ -26,7 +26,7 @@ on:
       preset:
         type: string
         required: false
-        default: "tip20_existing_recipients"
+        default: "public-mix"
       duration:
         type: string
         required: false
@@ -130,7 +130,7 @@ on:
         description: Benchmark preset.
         type: choice
         required: true
-        default: tip20_existing_recipients
+        default: public-mix
         options:
           - tip20
           - tip20_2d_nonces
@@ -289,7 +289,7 @@ jobs:
       BENCH_INPUT_FEATURE_NAME: ${{ inputs['feature-name'] || '' }}
       BENCH_INPUT_BASELINE_HARDFORK: ${{ inputs['baseline-hardfork'] || '' }}
       BENCH_INPUT_FEATURE_HARDFORK: ${{ inputs['feature-hardfork'] || '' }}
-      BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
+      BENCH_INPUT_PRESET: ${{ inputs.preset || 'public-mix' }}
       BENCH_INPUT_DURATION: ${{ inputs.duration || (github.event_name == 'pull_request' && '30') || '90' }}
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
