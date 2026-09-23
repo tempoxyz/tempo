@@ -2,7 +2,7 @@ use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::Prim
 use alloc::vec::Vec;
 #[cfg(any(test, feature = "serde"))]
 use alloy_primitives::Bytes;
-use alloy_primitives::{Address, B256, b256, keccak256};
+use alloy_primitives::{Address, B256, Keccak256, b256, keccak256};
 use core::mem::size_of;
 use tempo_contracts::SAFE_DEPLOYER_ADDRESS;
 
@@ -642,17 +642,12 @@ pub fn multisig_account_address(factory: Address, account_salt: B256) -> Address
 /// This free function is also used while constructing a signature, before a [`MultisigSignature`]
 /// exists; [`MultisigSignature::digest`] supplies the account and version from an existing value.
 pub fn multisig_digest(inner_digest: B256, account: Address, config_version: u64) -> B256 {
-    let mut input = [0u8; MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8];
-    let mut offset = 0;
-    input[offset..offset + MULTISIG_SIGNATURE_DOMAIN.len()]
-        .copy_from_slice(MULTISIG_SIGNATURE_DOMAIN);
-    offset += MULTISIG_SIGNATURE_DOMAIN.len();
-    input[offset..offset + 32].copy_from_slice(inner_digest.as_slice());
-    offset += 32;
-    input[offset..offset + 20].copy_from_slice(account.as_slice());
-    offset += 20;
-    input[offset..].copy_from_slice(&config_version.to_be_bytes());
-    keccak256(input)
+    let mut hasher = Keccak256::new();
+    hasher.update(MULTISIG_SIGNATURE_DOMAIN);
+    hasher.update(inner_digest);
+    hasher.update(account);
+    hasher.update(config_version.to_be_bytes());
+    hasher.finalize()
 }
 
 #[cfg(test)]
