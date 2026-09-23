@@ -532,6 +532,7 @@ impl KeychainSignature {
     }
 }
 
+// Manual deserialization rejects V1 + multisig, which a derive would accept.
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for KeychainSignature {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
