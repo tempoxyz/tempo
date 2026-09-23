@@ -7,6 +7,11 @@ from pathlib import Path
 
 P = "reth_consensus_engine_persistence_"
 T = "reth_storage_providers_database_table_write_seconds"
+TABLE_METRICS = {
+    T: "mdbx",
+    "reth_storage_providers_static_file_segment_write_seconds": "static_file",
+    "reth_storage_providers_rocksdb_table_write_seconds": "rocksdb",
+}
 
 
 def ratio(a, b):
@@ -33,8 +38,8 @@ def analyze(document):
         if not name.endswith(("_sum", "_count", "_total")):
             continue
         identity = tuple(sorted((k, v) for k, v in labels.items()
-                                if k not in ("__name__", "table", "shard", "quantile")))
-        key = (name, labels.get("table", ""), labels.get("shard", ""))
+                                if k not in ("__name__", "table", "segment", "shard", "quantile")))
+        key = (name, labels.get("table", labels.get("segment", "")), labels.get("shard", ""))
         if key in phases[identity]:
             raise ValueError("Duplicate metric series")
         phases[identity][key] = delta(series)
@@ -55,10 +60,11 @@ def analyze(document):
         txs = value(P + "persisted_transactions_total")
         tables = []
         for (name, table, shard), (seconds, first, last) in sorted(values.items()):
-            if name != T + "_sum":
+            metric = name.removesuffix("_sum")
+            if not name.endswith("_sum") or metric not in TABLE_METRICS:
                 continue
-            count = values.get((T + "_count", table, shard))
-            tables.append({"table": table, "shard": shard,
+            count = values.get((metric + "_count", table, shard))
+            tables.append({"backend": TABLE_METRICS[metric], "table": table, "shard": shard,
                            "samples": count[0] if count else None,
                            "mean_task_ms": ratio(seconds * 1000, count[0] if count else None),
                            "task_ms_per_persisted_block": ratio(seconds * 1000, blocks),

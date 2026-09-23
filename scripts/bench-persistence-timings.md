@@ -17,6 +17,10 @@ New Prometheus metrics:
   `persisted_transactions_total`, and `persisted_state_trie_blocks_total`
   (same prefix): counts recorded after successful provider commit.
 - `reth_consensus_engine_persistence_commit_duration_seconds`: provider commit.
+- `reth_storage_providers_static_file_segment_write_seconds{segment}`: each
+  static-file task, including writer sync.
+- `reth_storage_providers_rocksdb_table_write_seconds{table}`: each RocksDB
+  table-writing task.
 
 Reuse existing persistence `save_blocks_duration_seconds`, provider
 `save_blocks_total` and backend timers, validator
@@ -38,8 +42,8 @@ For one node and measured phase:
 Do not add overlapping table/backend durations to obtain wall time. Keep each
 shard separate. Use sums/counts rather than averaging batch ratios. State/trie
 and block-data frontiers can advance separately; report both counts. Missing
-table observations are not a measured zero. Static-file/RocksDB work uses backend
-timers, not MDBX table labels. Failed task observations are attempts; exclude
+table observations are not a measured zero. Static-file/RocksDB work has separate
+backend labels. Failed task observations are attempts; exclude
 failed benchmark phases before comparing successful persistence counts.
 
 Export a Prometheus query_range matrix for the exact measured phase and these

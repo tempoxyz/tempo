@@ -20,12 +20,16 @@ class MetricsTests(unittest.TestCase):
                 row(m.P + "save_blocks_duration_seconds_count", 2),
                 row(m.T + "_sum", 1, table="HashedStorages", shard="2"),
                 row(m.T + "_count", 2, table="HashedStorages", shard="2"),
+                row("reth_storage_providers_static_file_segment_write_seconds_sum", 0.2, segment="Headers"),
+                row("reth_storage_providers_static_file_segment_write_seconds_count", 2, segment="Headers"),
                 row(m.P + "persisted_blocks_total", 1000, node="b")]
         result = m.analyze({"data": {"resultType": "matrix", "result": rows}})["phases"]
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["complete_persistence_ms_per_block"], 400)
         self.assertEqual(result[0]["persistence_service_transactions_per_second"], 50)
         self.assertEqual(result[0]["tables"][0]["mean_task_ms"], 500)
+        self.assertEqual(result[0]["tables"][1]["backend"], "static_file")
+        self.assertAlmostEqual(result[0]["tables"][1]["mean_task_ms"], 100)
         self.assertIsNone(result[0]["mean_validator_execution_ms"])
 
     def test_reject_reset_and_missing_scrapes(self):
