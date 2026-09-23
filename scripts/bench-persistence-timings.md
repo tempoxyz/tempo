@@ -1,62 +1,59 @@
 # Persistence timing comparison
 
-Run serial, parallel-table, and sharded-table builds from the same OTEL-fixed
-baseline family. Keep the load generator, state size, duration, node arguments,
-cache reset, and instrumentation identical. This is a diagnostic comparison;
-per-operation timing adds overhead and must not be presented as an uninstrumented
-throughput result.
+Use normal Prometheus metrics on serial, parallel-only and sharded builds.
+No environment switch or per-cursor-operation instrumentation is required.
+Enable ordinary benchmark metrics collection on both sides.
 
-Enable transaction-local operation timing on both nodes with the benchmark
-options `--baseline-env=RETH_PERSISTENCE_TIMINGS=1` and
-`--feature-env=RETH_PERSISTENCE_TIMINGS=1`. Keep debug logs for
-`engine::persistence`, `engine::tree::payload_validator`, and the payload builder.
-The normal OTLP benchmark configuration exports these structured logs.
+New Prometheus metrics:
 
-Export these messages for the exact benchmark ID and phase time range:
+- `reth_storage_providers_database_table_write_seconds{table,shard}`: wall time
+  per table-writing loop/task, including preparation and seeks. Shared helpers
+  also run during init/sync: query only the measured benchmark phase.
+  State/trie workers run per batch; other tables can run per block.
+- `reth_storage_providers_database_persistence_worker_preparation_seconds` and
+  `reth_storage_providers_database_persistence_child_commit_seconds`: parallel
+  worker setup and child-transaction commit time.
+- `reth_consensus_engine_persistence_persisted_blocks_total`,
+  `persisted_transactions_total`, and `persisted_state_trie_blocks_total`
+  (same prefix): counts recorded after successful provider commit.
+- `reth_consensus_engine_persistence_commit_duration_seconds`: provider commit.
 
-- `Persistence table operations`: logical table name, operation count, summed
-  operation nanoseconds. Covers timed cursor and transaction calls in
-  `save_blocks`; includes reads/seeks required by writes. Does not measure time
-  spent outside those calls. Sharded tables aggregate their physical cursors.
-- `Persistence table task`: full wall time and start offset for the account,
-  storage, account-trie, and storage-trie writing tasks; includes a shard index
-  and thread ID. Parallel task offsets share one origin, allowing overlap to be
-  measured. Serial task groups do not share one origin.
-- `Persistence worker preparation`: setup time and actual persistence pool size.
-- `Persistence child transaction commits`: time to publish child metadata into
-  the parent transaction after the parallel workers finish.
-- `Persistence batch writes`: `save_blocks` wall time and overlapping backend
-  times, block/transaction counts, and separate state-trie block count.
-- `Persistence batch complete`: complete persistence wall time including commit
-  and BAL flush, plus the duration of the provider commit separately.
-- `Executed block`, `Executed block via BAL path`: validator execution seconds.
-- `Built payload`: builder wall time and transaction-execution time in seconds.
+Reuse existing persistence `save_blocks_duration_seconds`, provider
+`save_blocks_total` and backend timers, validator
+`reth_sync_execution_execution_histogram`, builder
+`reth_tempo_payload_builder_payload_build_duration_seconds` and
+`reth_tempo_payload_builder_block_time_millis`.
 
-Keep `benchmark_id`, `benchmark_run`, `runner_role`, `last_block_number`,
-`state_block_number`, and the numeric fields in the export. The block-data and
-state-trie frontiers identify a batch within one node/phase. The analysis rejects
-unmatched write/completion events from persistence totals. Check exported log
-coverage and dropped-log warnings before interpreting missing table events.
+For one node and measured phase:
+
+1. Per-table mean = duration sum increase / observation count increase.
+2. Complete persistence time/block = save_blocks_duration_seconds sum increase /
+   persisted_blocks_total increase. Includes commit and BAL flush.
+3. Service throughput = persisted blocks or transactions / complete persistence
+   duration. This is capacity while busy, not network TPS.
+4. Execution/build mean = duration sum / count. These are execution attempts,
+   potentially speculative/repeated, not necessarily distinct canonical blocks.
+5. Produced-block interval = block_time_millis sum / count; check summary.json too.
+
+Do not add overlapping table/backend durations to obtain wall time. Keep each
+shard separate. Use sums/counts rather than averaging batch ratios. State/trie
+and block-data frontiers can advance separately; report both counts. Missing
+table observations are not a measured zero. Static-file/RocksDB work uses backend
+timers, not MDBX table labels. Failed task observations are attempts; exclude
+failed benchmark phases before comparing successful persistence counts.
+
+Export a Prometheus query_range matrix for the exact measured phase and these
+metric families, including _sum/_count and persisted counters, with node and
+benchmark labels preserved. Then run:
 
 ```sh
-uv run python scripts/bench-persistence-timings.py logs.json --output timings.json
+uv run python scripts/bench-persistence-timings.py metrics.json --output timings.json
 uv run python scripts/test_bench_persistence_timings.py
 ```
 
-For each node and phase, compare:
-
-1. Mean builder time and mean validator execution time (separate populations;
-   execution attempts may include speculative or repeated work).
-2. Mean produced-block interval from the benchmark's `summary.json`.
-3. Sum of complete persistence durations divided by persisted block count, and
-   its reciprocal (blocks per second while persistence is busy).
-4. Sum of complete persistence durations divided by persisted transactions.
-5. Per-table task means and operation totals; include child/parent commit time.
-
-Do not add overlapping worker/backend durations to obtain wall time. Do not
-average per-batch ratios when batch sizes differ. Preserve node/phase samples
-when comparing runs, rather than counting every block as an independent trial.
-Partial state-trie persistence can advance separately from block data; report
-both counts and avoid treating the block-normalized figure as single-block
-latency. Backpressure also depends on allowed backlog and batch scheduling, so
-an average alone cannot prove the absence of future stalls.
+The report uses first-to-last scrape deltas and rejects resets or fewer than two
+samples. Check scrape bounds: first-use registration or missing scrapes can omit
+early observations. Native increase/rate queries interpolate boundaries; do not
+silently mix those estimates with exact deltas. Compare matched workloads/state
+sizes and preserve per-node/per-phase samples. TPS verdicts come from summary.json
+and paired-run noise, not from persistence timings alone.

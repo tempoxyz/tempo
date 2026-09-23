@@ -1,50 +1,38 @@
-import runpy
+import importlib.util
 from pathlib import Path
 import unittest
 
-analyze = runpy.run_path(str(Path(__file__).with_name("bench-persistence-timings.py")))["analyze"]
+spec = importlib.util.spec_from_file_location("timings", Path(__file__).with_name("bench-persistence-timings.py"))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
 
 
-class PersistenceReportTest(unittest.TestCase):
-    def event(self, message, tip=10, node="a", **values):
-        return dict(benchmark_id="test", benchmark_run="feature-1", runner_role=node,
-                    last_block_number=tip, state_block_number=tip, message=message, **values)
+def row(name, end, node="a", **labels):
+    return {"metric": {"__name__": name, "instance": node, **labels},
+            "values": [[0, "10"], [10, str(10 + end)]]}
 
-    def test_weighted_ratios_exclude_incomplete_batches_and_other_nodes(self):
-        rows = []
-        for tip, blocks, seconds in [(10, 10, 2), (40, 30, 3)]:
-            rows += [self.event("Persistence batch writes", tip, block_count=blocks,
-                                transaction_count=blocks * 10, state_trie_block_count=blocks,
-                                elapsed_seconds=seconds),
-                     self.event("Persistence batch complete", tip, commit_seconds=1,
-                                elapsed_seconds=seconds + 1)]
-        rows += [self.event("Persistence batch writes", 99, block_count=100,
-                            transaction_count=1000, state_trie_block_count=100,
-                            elapsed_seconds=999),
-                 self.event("Persistence table operations", 99, table="Storage", operations=1,
-                            operation_nanos=999000000000),
-                 self.event("Persistence batch complete", 10, node="b", commit_seconds=99,
-                            elapsed_seconds=100)]
-        report = analyze(rows + rows[:1])
-        self.assertEqual(report["unmatched_write_batches"], 1)
-        self.assertEqual(report["unmatched_completed_batches"], 1)
-        phase = report["phases"][0]
-        self.assertEqual(phase["completed_batches"], 2)
-        self.assertEqual(phase["complete_persistence_ms_per_block"], 175)
-        self.assertEqual(phase["tables"], {})
 
-    def test_overlap_and_shards_are_reported_separately(self):
-        rows = [self.event("Persistence batch writes", block_count=2, transaction_count=20,
-                           state_trie_block_count=1, elapsed_seconds=3),
-                self.event("Persistence batch complete", commit_seconds=1, elapsed_seconds=4),
-                self.event("Persistence worker preparation")]
-        for shard, start in [(0, 0), (1, 1)]:
-            rows.append(self.event("Persistence table task", table="Storage", shard=shard,
-                                   start_offset_seconds=start, elapsed_seconds=2))
-        phase = analyze(rows)["phases"][0]
-        self.assertEqual(phase["mean_peak_overlapping_table_tasks"], 2)
-        self.assertEqual(len(phase["table_tasks"]), 2)
-        self.assertEqual(phase["state_trie_blocks"], 1)
+class MetricsTests(unittest.TestCase):
+    def test_weighted_ratios_and_node_isolation(self):
+        rows = [row(m.P + "persisted_blocks_total", 5),
+                row(m.P + "persisted_transactions_total", 100),
+                row(m.P + "save_blocks_duration_seconds_sum", 2),
+                row(m.P + "save_blocks_duration_seconds_count", 2),
+                row(m.T + "_sum", 1, table="HashedStorages", shard="2"),
+                row(m.T + "_count", 2, table="HashedStorages", shard="2"),
+                row(m.P + "persisted_blocks_total", 1000, node="b")]
+        result = m.analyze({"data": {"resultType": "matrix", "result": rows}})["phases"]
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["complete_persistence_ms_per_block"], 400)
+        self.assertEqual(result[0]["persistence_service_transactions_per_second"], 50)
+        self.assertEqual(result[0]["tables"][0]["mean_task_ms"], 500)
+        self.assertIsNone(result[0]["mean_validator_execution_ms"])
+
+    def test_reject_reset_and_missing_scrapes(self):
+        with self.assertRaises(ValueError):
+            m.delta({"values": [[0, "5"], [1, "2"]]})
+        with self.assertRaises(ValueError):
+            m.delta({"values": [[0, "5"]]})
 
 
 if __name__ == "__main__":
