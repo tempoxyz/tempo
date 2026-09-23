@@ -1,7 +1,9 @@
 //! Classify independent boundary differences before formatting bounded samples.
 
-use self::expectations::{Context, Expectation};
-use super::{Boundary, Evidence, ReplayOutcome};
+use super::{
+    Boundary, Evidence, ReplayOutcome,
+    expectations::{Context, Expectation},
+};
 use alloy::consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
 use reth_primitives_traits::RecoveredBlock;
@@ -9,13 +11,7 @@ use reth_revm::db::{TransitionAccount, TransitionState};
 use std::{collections::BTreeMap, fmt::Debug};
 use tempo_primitives::Block;
 
-mod expectations;
-pub(super) use expectations::between;
-
-#[cfg(test)]
-mod tests;
-
-const MAX_SAMPLES: usize = 8;
+pub(super) const MAX_SAMPLES: usize = 8;
 
 /// Difference counts, comparison coverage, and bounded diagnostic samples.
 ///
@@ -266,10 +262,13 @@ impl<'a, T> Comparison<'a, T> {
 }
 
 #[derive(Clone, Copy)]
-struct AccountDelta<'a>(Option<&'a TransitionAccount>);
+pub(super) struct AccountDelta<'a>(pub(super) Option<&'a TransitionAccount>);
 
 impl<'a> AccountDelta<'a> {
-    fn info<T: Eq>(self, get: impl Fn(&reth_revm::state::AccountInfo) -> T) -> Option<(T, T)> {
+    pub(super) fn info<T: Eq>(
+        self,
+        get: impl Fn(&reth_revm::state::AccountInfo) -> T,
+    ) -> Option<(T, T)> {
         let account = self.0?;
         // Also compare initial values on creation and final values on destruction.
         let default = reth_revm::state::AccountInfo::default();
@@ -284,7 +283,7 @@ impl<'a> AccountDelta<'a> {
         Self::changed(account.previous_info.is_some(), account.info.is_some())
     }
 
-    fn storage(self, slot: U256) -> Option<(U256, U256)> {
+    pub(super) fn storage(self, slot: U256) -> Option<(U256, U256)> {
         let value = self.0?.storage.get(&slot)?;
         Self::changed(value.original_value(), value.present_value())
     }

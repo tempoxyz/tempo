@@ -17,6 +17,7 @@
 //! classify individual differences, and incomplete coverage is reported separately.
 
 mod analysis;
+mod expectations;
 mod fees;
 
 use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
@@ -204,7 +205,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .real_config
             .chain_spec()
             .tempo_hardfork_at(block.timestamp());
-        let rules = analysis::between(canonical, self.shadow_hardfork);
+        let rules = expectations::between(canonical, self.shadow_hardfork);
         let report = Report::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
         metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared")
