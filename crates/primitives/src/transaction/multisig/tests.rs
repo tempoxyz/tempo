@@ -704,10 +704,13 @@ fn multisig_config_decode_bounds_owner_count() {
     config.encode(&mut encoded);
 
     let mut input = encoded.as_slice();
+    let mut payload = input;
+    alloy_rlp::Header::decode(&mut payload).unwrap();
     assert!(matches!(
         MultisigConfig::decode(&mut input),
         Err(alloy_rlp::Error::Custom("too many multisig owners"))
     ));
+    assert_eq!(input, payload);
 }
 
 #[test]
@@ -719,10 +722,13 @@ fn multisig_signature_decode_bounds_approval_count() {
     );
 
     let mut input = encoded.as_slice();
+    let mut payload = input;
+    alloy_rlp::Header::decode(&mut payload).unwrap();
     assert!(matches!(
         MultisigSignature::decode(&mut input),
         Err(alloy_rlp::Error::Custom("too many multisig signatures"))
     ));
+    assert_eq!(input, payload);
 }
 
 #[test]
@@ -815,6 +821,9 @@ fn multisig_signature_serde_roundtrips_rlp_bytes() {
         serde_json::from_value::<TempoSignature>(json).unwrap(),
         TempoSignature::Multisig(signature)
     );
+    encoded.push(0x80);
+    let json = serde_json::to_value(Bytes::from(encoded)).unwrap();
+    assert!(serde_json::from_value::<MultisigSignature>(json).is_err());
 }
 
 #[cfg(feature = "serde")]
