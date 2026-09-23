@@ -13,11 +13,11 @@ use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
-use reth_evm::execute::WithTxEnv;
+use reth_evm::{SenderRecoveryCache, execute::WithTxEnv};
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
-    error::PoolTransactionError,
+    error::{PoolTransactionError, RawPoolTransactionError},
 };
 use std::{
     convert::Infallible,
@@ -93,9 +93,10 @@ impl TempoPooledTransaction {
 
     /// Create a new pooled transaction with optional precomputed transaction metadata.
     ///
-    /// Sender recovery can compute the signer and expiring nonce hash in one pass for expiring AA
-    /// transactions. This constructor preserves those values while keeping [`Self::new`] as the
-    /// default path for callers that already have a recovered transaction.
+    /// Raw transaction recovery can compute the signer and expiring nonce hash in one pass for
+    /// expiring AA transactions, and it already knows the encoded byte length. This constructor
+    /// preserves those values while keeping [`Self::new`] as the default path for callers that
+    /// already have a recovered transaction.
     fn new_with(
         transaction: Recovered<TempoTxEnvelope>,
         expiring_nonce_hash: Option<B256>,
@@ -814,20 +815,39 @@ impl PoolTransaction for TempoPooledTransaction {
         Self::new(tx)
     }
 
-    fn try_recover(transaction: Self::Pooled) -> Result<Self, Self::Pooled> {
-        let recovered = match &transaction {
+    fn recover_raw_transaction(data: &[u8]) -> Result<Self, RawPoolTransactionError> {
+        let transaction = Self::decode_raw_transaction(data)?;
+        let (signer, expiring_nonce_hash) = match &transaction {
             TempoTxEnvelope::AA(tx) => tx.recover_signer_with_expiring_nonce_hash(),
             _ => transaction.recover_signer().map(|signer| (signer, None)),
-        };
-        let Ok((signer, expiring_nonce_hash)) = recovered else {
-            return Err(transaction);
-        };
-        let encoded_length = transaction.encode_2718_len();
+        }
+        .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?;
 
         Ok(Self::new_with(
             Recovered::new_unchecked(transaction, signer),
             expiring_nonce_hash,
-            encoded_length,
+            data.len(),
+        ))
+    }
+
+    fn recover_raw_transaction_with_cache(
+        data: &[u8],
+        cache: &SenderRecoveryCache,
+    ) -> Result<Self, RawPoolTransactionError> {
+        let transaction = Self::decode_raw_transaction(data)?;
+        let signer = cache
+            .recover(&transaction)
+            .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?;
+        let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
+            tx.tx()
+                .is_expiring_nonce_tx()
+                .then(|| tx.expiring_nonce_hash(signer))
+        });
+
+        Ok(Self::new_with(
+            Recovered::new_unchecked(transaction, signer),
+            expiring_nonce_hash,
+            data.len(),
         ))
     }
 
@@ -980,7 +1000,6 @@ mod tests {
     use alloy_sol_types::SolCall;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb_sized;
-    use reth_evm::SenderRecoveryCache;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
@@ -1015,10 +1034,14 @@ mod tests {
             .expect("raw transaction recovery failed");
         let cache = SenderRecoveryCache::new(4);
         for cache_opt in [None, Some(&cache), Some(&cache)] {
-            // Decode a fresh envelope each time to exercise both cache misses and hits.
-            let decoded = TempoPooledTransaction::decode_raw_transaction(&raw).unwrap();
-            let recovered = TempoPooledTransaction::try_recover_with_cache_opt(decoded, cache_opt)
-                .expect("sender recovery failed");
+            // Each raw hook decodes a fresh envelope, exercising cache misses and hits.
+            let recovered = match cache_opt {
+                Some(cache) => {
+                    TempoPooledTransaction::recover_raw_transaction_with_cache(&raw, cache)
+                }
+                None => TempoPooledTransaction::recover_raw_transaction(&raw),
+            }
+            .expect("sender recovery failed");
             assert_eq!(recovered.sender(), sender);
             assert_eq!(recovered.hash(), pooled.hash());
             assert_eq!(recovered.encoded_length(), encoded_length);
@@ -1042,6 +1065,10 @@ mod tests {
         )
         .into();
         let cache = SenderRecoveryCache::new(4);
+        let raw = transaction.encoded_2718();
+        assert!(TempoPooledTransaction::recover_raw_transaction(&raw).is_err());
+        assert!(TempoPooledTransaction::recover_raw_transaction_with_cache(&raw, &cache).is_err());
+        assert_eq!(cache.get(transaction.tx_hash()), None);
         for cache_opt in [None, Some(&cache)] {
             let rejected =
                 TempoPooledTransaction::try_recover_with_cache_opt(transaction.clone(), cache_opt)
