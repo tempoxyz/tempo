@@ -37,6 +37,11 @@ For one node and measured phase:
    duration. This is capacity while busy, not network TPS.
 4. Execution/build mean = duration sum / count. These are execution attempts,
    potentially speculative/repeated, not necessarily distinct canonical blocks.
+   The validator execution histogram excludes subsequent state-root waiting.
+   Also export `reth_sync_block_validation_total_duration` (total newPayload
+   processing) and `reth_sync_block_validation_state_root_histogram` (state-root
+   wait). NewPayload observations can include already-known/buffered payloads;
+   these populations differ, so do not subtract or add their means.
 5. Produced-block interval = block_time_millis sum / count; check summary.json too.
 
 Do not add overlapping table/backend durations to obtain wall time. Keep each
