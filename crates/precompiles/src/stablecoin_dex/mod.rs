@@ -246,6 +246,11 @@ impl StablecoinDEX {
     /// Subtract from user's balance.
     fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
+        if crate::tip20_funder::permission::meter_input(user, token, U256::from(amount))? {
+            let tip20 = TIP20Token::from_address(token)?;
+            tip20.check_not_paused()?;
+            tip20.ensure_transfer_authorized(user, self.address)?;
+        }
         self.set_balance(
             user,
             token,
@@ -339,6 +344,13 @@ impl StablecoinDEX {
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.transfer_from(token, sender, remaining)?;
+            if crate::tip20_funder::permission::meter_input(
+                sender,
+                token,
+                U256::from(user_balance),
+            )? {
+                tip20.check_not_paused()?;
+            }
             self.set_balance(sender, token, 0)
         }
     }
@@ -7404,3 +7416,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod funding_tests;
