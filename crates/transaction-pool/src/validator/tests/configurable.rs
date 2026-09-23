@@ -284,11 +284,10 @@ async fn policy_updates_quarantine_until_fresh_validation() {
                     tx_type: TempoTxType::AA,
                     success: true,
                     cumulative_gas_used: 21_000,
-                    logs: vec![Log::new_unchecked(
-                        fee_token,
-                        event.topics().to_vec(),
-                        event.data,
-                    )],
+                    logs: vec![Log {
+                        address: fee_token,
+                        data: event,
+                    }],
                 }]],
                 ..Default::default()
             };
@@ -395,16 +394,14 @@ async fn policy_revalidation_preserves_same_block_fee_preference_changes() {
                     success: true,
                     cumulative_gas_used: 21_000,
                     logs: vec![
-                        Log::new_unchecked(
-                            PATH_USD_ADDRESS,
-                            policy_event.topics().to_vec(),
-                            policy_event.data,
-                        ),
-                        Log::new_unchecked(
-                            TIP_FEE_MANAGER_ADDRESS,
-                            preference_event.topics().to_vec(),
-                            preference_event.data,
-                        ),
+                        Log {
+                            address: PATH_USD_ADDRESS,
+                            data: policy_event,
+                        },
+                        Log {
+                            address: TIP_FEE_MANAGER_ADDRESS,
+                            data: preference_event,
+                        },
                     ],
                 }]],
                 ..Default::default()
@@ -794,7 +791,9 @@ async fn callback_lag_rechecks_only_affected_entries_including_late_admissions()
                     BundleAccount::new(
                         Some(AccountInfo::default()),
                         Some(AccountInfo {
-                            extension: revm::state::AccountExtension::copy_from_slice(&extension),
+                            extension: revm::state::AccountExtension::from_shared(
+                                extension.into_shared(),
+                            ),
                             ..Default::default()
                         }),
                         Default::default(),
