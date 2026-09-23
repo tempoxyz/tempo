@@ -323,6 +323,46 @@ fn test_paused_fee_token_rejected() {
 }
 
 #[test]
+fn test_resolve_fee_context_warms_balance_without_fee_collection() {
+    use tempo_precompiles::storage::{
+        PrecompileStorageProvider, evm::EvmPrecompileStorageProvider,
+    };
+
+    for (spec, disable_fee, gas_price) in [
+        (TempoHardfork::T1, false, 0),
+        (TempoHardfork::T7, false, 0),
+        (TempoHardfork::T7, true, 1_000_000_000_000),
+    ] {
+        let mut evm = storage_evm(spec);
+        if disable_fee {
+            let mut version = *evm.version();
+            version.features.remove(EvmFeatures::FEE_CHARGE);
+            evm.set_execution_config(
+                ExecutionConfig::for_spec_and_version(spec, version),
+                spec,
+                tempo_tx_registry(spec.into()),
+                NoPrecompiles::default(),
+            );
+        }
+        let token = DEFAULT_FEE_TOKEN;
+        let slot = TIP20Token::from_address(token).unwrap().balances[SIGNER].slot();
+        insert_storage(&mut evm, token, slot, U256::from(42));
+        let tx = fee_tx_env(SIGNER, token, 100_000, gas_price);
+        let context = TempoHandlerHooks::resolve_fee_context(&mut evm, &tx).unwrap();
+        assert_eq!(context.collected, U256::ZERO);
+
+        // The first metered balance read must pay only the warm SLOAD cost.
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        assert_eq!(provider.sload(token, slot).unwrap(), U256::from(42));
+        assert_eq!(
+            provider.gas_used(),
+            100,
+            "balance should be warm for {spec:?}, disable_fee={disable_fee}"
+        );
+    }
+}
+
+#[test]
 fn test_collect_fee_pre_tx_requires_max_fee_balance() {
     let fee_payer = Address::random();
     let gas_limit = 100_000;

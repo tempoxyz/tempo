@@ -388,18 +388,18 @@ impl TempoHandlerHooks {
         }
         if !max_fee.is_zero() {
             fee_manager.validate_fee_token(host, fee_token, spec)?;
-            let balance = map_protocol_result(host.get_token_balance(
-                fee_token,
-                fee_payer,
-                spec,
-                StorageActions::disabled(),
-            ))?;
-            if balance < max_fee {
-                return Err(invalid(FeePaymentError::InsufficientFeeTokenBalance {
-                    fee: max_fee,
-                    balance,
-                }));
-            }
+        }
+        let balance = map_protocol_result(host.get_token_balance(
+            fee_token,
+            fee_payer,
+            spec,
+            StorageActions::disabled(),
+        ))?;
+        if balance < max_fee {
+            return Err(invalid(FeePaymentError::InsufficientFeeTokenBalance {
+                fee: max_fee,
+                balance,
+            }));
         }
 
         Ok(TempoFeeContext {

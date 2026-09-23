@@ -869,6 +869,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_envelope_identifier_populates_sender_scoped_cache() {
+        let envelope = crate::TempoTxEnvelope::AA(AASigned::new_unhashed(
+            make_tx(),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        ));
+        let signed = envelope.as_aa().unwrap();
+        let sender = Address::repeat_byte(0x01);
+        let other_sender = Address::repeat_byte(0x02);
+        let expected = unique_tx_identifier_from_signable(signed.tx(), sender);
+        assert!(signed.expiring_nonce_hash.get().is_none());
+
+        assert_eq!(envelope.unique_tx_identifier(sender), expected);
+        assert_eq!(
+            signed
+                .expiring_nonce_hash
+                .get()
+                .map(|entry| (entry.0, entry.1)),
+            Some((sender, expected)),
+        );
+        let cloned = envelope.clone();
+        assert_eq!(
+            cloned
+                .as_aa()
+                .unwrap()
+                .expiring_nonce_hash
+                .get()
+                .map(|entry| (entry.0, entry.1)),
+            Some((sender, expected)),
+        );
+        assert_eq!(
+            cloned.unique_tx_identifier(other_sender),
+            unique_tx_identifier_from_signable(signed.tx(), other_sender),
+        );
+        assert_ne!(cloned.unique_tx_identifier(other_sender), expected);
+        assert_eq!(cloned.unique_tx_identifier(sender), expected);
+    }
+
+    #[test]
     fn test_expiring_nonce_hash_deterministic() {
         let tx = make_tx();
         let sig =
