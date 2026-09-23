@@ -505,28 +505,6 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
     }
 }
 
-#[cfg(feature = "serde")]
-#[doc(hidden)]
-pub mod serde_nonzero_quantity_opt {
-    use core::num::NonZeroU64;
-    use serde::{Deserializer, Serializer};
-
-    // Preserve the existing public helper signatures for downstream callers.
-    pub fn serialize<S>(value: &Option<NonZeroU64>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        alloy_serde::quantity::opt::serialize(value, serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        alloy_serde::quantity::opt::deserialize(deserializer)
-    }
-}
-
 mod rlp {
     use super::*;
     use alloy_rlp::{Decodable, Encodable};
