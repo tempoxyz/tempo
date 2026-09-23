@@ -7,11 +7,18 @@ on:
     branches: [main]
     paths:
       - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/**/Cargo.toml"
+      - "**/Cargo.toml"
       - "tips/verify/**"
+      - "crates/alloy/**"
+      - "crates/chainspec/**"
       - "crates/contracts/**"
+      - "crates/dkg-onchain-artifacts/**"
+      - "crates/evm/**"
+      - "crates/hardfork/**"
       - "crates/precompiles/**"
+      - "crates/precompiles-macros/**"
+      - "crates/primitives/**"
+      - "crates/revm/**"
       - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
       - ".github/workflows/update-reth.yml"
@@ -19,6 +26,8 @@ on:
   pull_request:
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -27,74 +36,59 @@ jobs:
     name: Check specs changes
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
     outputs:
-      should_run: ${{ steps.filter.outputs.specs }}
-      foundry_smoke: ${{ steps.filter.outputs.foundry_smoke }}
-      release_only_sdk_crates: ${{ steps.release-only.outputs.release_only_sdk_crates }}
+      should_run: ${{ contains(fromJSON(steps.filter.outputs.changes), 'specs') }}
+      foundry_smoke: ${{ contains(fromJSON(steps.filter.outputs.changes), 'foundry_smoke') }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/actions/changed-paths@ab45d76f6e7420a094281a22aee1973ecc0754f8
+      - uses: tempoxyz/gh-actions/actions/changed-paths@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         id: filter
         with:
           filters: |
             specs:
+              # Dependency updates can change native precompile behavior without Rust source changes.
+              - 'Cargo.lock'
+              - '**/Cargo.toml'
               - 'tips/verify/**'
+              - 'crates/alloy/**'
+              - 'crates/chainspec/**'
               - 'crates/contracts/**'
-              - '!crates/contracts/CHANGELOG.md'
-              - '!crates/contracts/Cargo.toml'
+              - 'crates/dkg-onchain-artifacts/**'
+              - 'crates/evm/**'
+              - 'crates/hardfork/**'
               - 'crates/precompiles/**'
-              - '!crates/precompiles/CHANGELOG.md'
-              - '!crates/precompiles/Cargo.toml'
+              - 'crates/precompiles-macros/**'
+              - 'crates/primitives/**'
+              - 'crates/revm/**'
+              - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
             foundry_smoke:
               - 'Cargo.lock'
-              - 'Cargo.toml'
-              - 'crates/**/Cargo.toml'
+              - '**/Cargo.toml'
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
               - '.github/workflows/update-reth.yml'
-      - name: Check release-only SDK crate changes
-        id: release-only
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'main' }}
-        run: |
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
-            echo "Not skipping Foundry precompile tests on push events."
-            exit 0
-          fi
-
-          base_ref="${BASE_REF#refs/heads/}"
-          changed_files="$(git diff --name-only "origin/${base_ref}...HEAD")"
-          if [[ -z "$changed_files" ]]; then
-            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
-            echo "No changed files detected against origin/${base_ref}."
-            exit 0
-          fi
-
-          # Release PRs may also add/delete consumed changelog fragments.
-          allowed='^(Cargo\.lock|\.changelog/[^/]+\.md|crates/(alloy|chainspec|contracts|primitives|hardfork)/(Cargo\.toml|CHANGELOG\.md))$'
-          if printf '%s\n' "$changed_files" | grep -Ev "$allowed" >/dev/null; then
-            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
-            echo "Found non-release-only SDK crate changes."
-          else
-            echo "release_only_sdk_crates=true" >> "$GITHUB_OUTPUT"
-            echo "Skipping Foundry precompile tests: only SDK crate release metadata changed."
-          fi
 
   foundry-resolver-smoke:
     name: Foundry Resolver Smoke
     needs: check-specs-changes
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - name: Skip Foundry resolver smoke
         if: needs.check-specs-changes.outputs.foundry_smoke != 'true'
         run: |
@@ -112,14 +106,14 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 42 to match the version used by reth and Tempo.
-          ref: 8811c408fe72c244317a508e5343fc460447be1a
+          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
+          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
           path: foundry
           persist-credentials: false
 
       - name: Setup Rust
         if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Patch foundry to use checked-out tempo crates
         if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
@@ -133,10 +127,14 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     outputs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
@@ -172,15 +170,19 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@16356ec5155405ba5e33f5558e80b5bf77eb70ab
+        uses: tempoxyz/gh-actions/actions/setup-foundry@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           version: nightly
 
@@ -194,21 +196,25 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@16356ec5155405ba5e33f5558e80b5bf77eb70ab
+        uses: tempoxyz/gh-actions/actions/setup-foundry@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           version: nightly
 
@@ -225,15 +231,19 @@ jobs:
     if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@16356ec5155405ba5e33f5558e80b5bf77eb70ab
+        uses: tempoxyz/gh-actions/actions/setup-foundry@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           version: nightly
 
@@ -244,12 +254,16 @@ jobs:
   foundry-build:
     name: Build patched Forge
     needs: [check-specs-changes, check-precompiles]
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.release_only_sdk_crates != 'true'
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - name: Checkout tempo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -261,17 +275,20 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 42 to match the version used by reth and Tempo.
-          ref: 8811c408fe72c244317a508e5343fc460447be1a
+          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
+          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
           path: foundry
           persist-credentials: false
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
-      - uses: tempoxyz/gh-actions/actions/setup-mold@ab45d76f6e7420a094281a22aee1973ecc0754f8
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
-      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - uses: tempoxyz/gh-actions/actions/setup-mold@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           workspaces: foundry
 
@@ -312,8 +329,12 @@ jobs:
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - name: Checkout tempo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -323,7 +344,7 @@ jobs:
 
       - name: Setup Rust
         if: needs.check-precompiles.outputs.coverage == 'true' && matrix.profile == 'default'
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           components: llvm-tools-preview
 
@@ -364,7 +385,8 @@ jobs:
     name: specs success
     runs-on: ubuntu-latest
     if: always()
-    permissions: {}
+    permissions:
+      id-token: write
     needs:
       - check-specs-changes
       - foundry-resolver-smoke
@@ -376,8 +398,11 @@ jobs:
       - foundry-test
     timeout-minutes: 5
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - name: Decide whether the needed jobs succeeded or failed
-        uses: tempoxyz/gh-actions/actions/check-needs@ab45d76f6e7420a094281a22aee1973ecc0754f8
+        uses: tempoxyz/gh-actions/actions/check-needs@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-build,foundry-test
           jobs: ${{ toJSON(needs) }}
@@ -391,6 +416,7 @@ jobs:
       commit_sha: ${{ github.event.pull_request.head.sha || github.sha }}
       pr_number: ${{ github.event.pull_request.number || 0 }}
     permissions:
+      id-token: write
       contents: read
       pull-requests: write
       actions: read

@@ -43,6 +43,7 @@ use futures::{
     stream::{FusedStream, FuturesOrdered},
 };
 use rand_core::CryptoRng;
+use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
 use tokio::select;
@@ -50,6 +51,7 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
+mod startup;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -127,6 +129,9 @@ pub(crate) struct Actor<
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
 
+    /// Opened during initialization, before authenticating the tip. Taken when the actor starts.
+    storage: Option<state::Unverified<TContext>>,
+
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
@@ -152,12 +157,32 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
-        let context = ContextCell::new(context);
+        let mut context = ContextCell::new(context);
         let metrics = Metrics::init(context.as_present());
+
+        let storage = state::builder()
+            .partition_prefix(&config.partition_prefix)
+            .init_unverified(context.child("state"))
+            .await?;
+
+        // Authenticate with the original persisted identity before healing can
+        // replace stale state with an outcome supplied by the snapshot.
+        startup::verify_finalized_tip(
+            &mut *context,
+            &config.network_identity,
+            storage.state(),
+            config
+                .finalized_tip
+                .as_ref()
+                .map(|(height, certificate)| (*height, certificate)),
+            config.last_finalized_height,
+            &config.scheme_provider,
+        )?;
 
         Ok(Self {
             config,
             context,
+            storage: Some(storage),
             mailbox,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
@@ -183,14 +208,10 @@ where
     ) {
         // NOTE: The instrumented fns emits on error events
 
-        let Ok(opened) = state::builder()
-            .partition_prefix(&self.config.partition_prefix)
-            .init_unverified(self.context.child("state"))
-            .await
-        else {
-            return;
-        };
-
+        let opened = self
+            .storage
+            .take()
+            .expect("storage opened during initialization");
         let Ok(mut storage) = self.heal(opened).await else {
             return;
         };
@@ -226,6 +247,29 @@ where
         });
     }
 
+    #[instrument(skip_all, err)]
+    async fn is_state_v1_activated(&self, state: &State) -> eyre::Result<bool> {
+        let chain_spec = self.config.execution_node.chain_spec();
+
+        // Reveal versions bind ACKs and dealer logs to different round transcripts, so the
+        // version must stay fixed throughout the ceremony. The entire epoch must be activated,
+        // hence checking the last boundary.
+        let boundary = state.epoch.previous().map_or(Height::zero(), |epoch| {
+            self.config
+                .epoch_strategy
+                .last(epoch)
+                .expect("epoch strategy covers all epochs")
+        });
+
+        let boundary_timestamp =
+            get_header(&self.config.execution_node, &self.config.marshal, boundary)
+                .await?
+                .timestamp();
+
+        Ok(chain_spec.tempo_hardfork_at(boundary_timestamp).is_t12())
+    }
+
+    #[instrument(skip_all, fields(epoch = %storage.current().epoch))]
     async fn run_dkg_loop<TStorageContext, TSender, TReceiver>(
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
@@ -249,17 +293,20 @@ where
             .set(state.players().len() as i64);
 
         if let Some(previous) = state.epoch.previous() {
-            // NOTE: State::prune emits an error event.
-            storage.prune(previous).await.wrap_err_with(|| {
-                format!("unable to prune storage before up until epoch `{previous}`",)
-            })?;
+            storage.prune(previous).await;
         }
 
         self.enter_epoch(&state)
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
 
         // TODO: emit an event with round info
-        let round = Round::from_state(&state, &self.config.namespace);
+        let round = Round::from_state(
+            &state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
+        );
 
         let mut dealer_state = storage
             .create_dealer_for_round(
@@ -315,7 +362,7 @@ where
                 }
 
                 Some((cause, block, ack)) = self.pending_finalized_blocks.next() => {
-                    let should_break = match self
+                    let new_state = self
                         .handle_finalized_header(
                             cause,
                             &state,
@@ -327,8 +374,8 @@ where
                             block.header().clone(),
                         )
                         .await
-                        .wrap_err("failed handling finalized block")?
-                    {
+                        .wrap_err("failed handling finalized block")?;
+                    let should_break = match new_state {
                         Some(new_state) => {
                             info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
                                 info!(
@@ -337,13 +384,7 @@ where
                                 )
                             });
 
-                            if let Err(err) = storage
-                                .set_state(new_state)
-                                .await
-                                .wrap_err("failed appending new state to journal")
-                            {
-                                break Err(err);
-                            }
+                            storage.set_state(new_state).await;
                             // Emits an error event.
                             let _ = self.exit_epoch(&state);
 
@@ -360,7 +401,7 @@ where
                 network_msg = round_receiver.recv().fuse() => {
                     match network_msg {
                         Ok((sender, message)) => {
-                            // Produces an error event.
+                            // Protocol errors are logged by the handler; write failures panic.
                             let _ = self.handle_network_msg(
                                 &round,
                                 &mut round_sender,
@@ -518,21 +559,17 @@ where
                 .epoch_strategy
                 .containing(self.config.last_finalized_height.next())
                 .expect("epoch strategy is covering all heights");
-            let round = Round::from_state(state, &self.config.namespace);
-            if round.epoch() < epoch_info.epoch() {
+            if state.epoch < epoch_info.epoch() {
                 warn!(
                     "latest DKG state is for `{}`, but the next block will be \
                     for epoch `{}`. Resetting DKG initial state",
-                    round.epoch(),
+                    state.epoch,
                     epoch_info.epoch(),
                 );
                 share_candidate = state.share.clone();
             } else {
                 let state = state.clone();
-                return storage
-                    .init_verified(state)
-                    .await
-                    .wrap_err("failed writing initial state back to storage");
+                return Ok(storage.init_verified(state).await);
             }
         };
         let initial_state = self
@@ -540,10 +577,7 @@ where
             .await
             .wrap_err("failed constructing initial state")?;
 
-        storage
-            .init_verified(initial_state)
-            .await
-            .wrap_err("failed setting initial state")
+        Ok(storage.init_verified(initial_state).await)
     }
 
     #[instrument(skip_all, err)]
@@ -555,7 +589,6 @@ where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let state = storage.current();
-        let round = Round::from_state(&state, &self.config.namespace);
         let target_height = self.config.last_finalized_height;
         let epoch_info = self
             .config
@@ -565,9 +598,17 @@ where
 
         // The DKG actor may have persisted the new epoch before the finalized floor caught up
         // during shutdown. Do not replay prior-epoch headers against the newer DKG round.
-        if round.epoch() > epoch_info.epoch() {
+        if state.epoch > epoch_info.epoch() {
             return Ok(());
         }
+
+        let round = Round::from_state(
+            &state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
+        );
 
         let mut height = storage
             .get_latest_finalized_block_for_epoch(&round.epoch())
@@ -593,8 +634,7 @@ where
             ))?;
 
             self.record_finalized_header(storage, &round, header, None)
-                .await
-                .wrap_err("failed backfilling header to storage")?;
+                .await;
             height = height.next();
         }
         Ok(())
@@ -606,8 +646,7 @@ where
         round: &Round,
         header: TempoHeader,
         dealer_state: Option<&mut Dealer>,
-    ) -> eyre::Result<()>
-    where
+    ) where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let height = Height::new(header.number());
@@ -626,8 +665,7 @@ where
                 };
                 storage
                     .append_dealer_log(round.epoch(), dealer.clone(), log)
-                    .await
-                    .wrap_err("failed to append dealer log from finalized header")?;
+                    .await;
                 if self.config.me.public_key() == dealer
                     && let Some(dealer_state) = dealer_state
                 {
@@ -640,10 +678,7 @@ where
             }
         }
 
-        storage
-            .append_finalized_header(round.epoch(), header)
-            .await
-            .wrap_err("failed to append finalized header")
+        storage.append_finalized_header(round.epoch(), header).await;
     }
 
     fn handle_verify_dealer_log(
@@ -791,8 +826,7 @@ where
 
         if height != epoch_info.last() {
             self.record_finalized_header(storage, round, header, dealer_state.as_mut())
-                .await
-                .wrap_err("failed to record finalized header")?;
+                .await;
 
             return Ok(None);
         }
@@ -804,65 +838,70 @@ where
 
         info!("reading validator from contract");
 
-        let (local_output, mut share) = if let Some((outcome, share)) =
-            storage.get_dkg_outcome(&state.epoch, &parent_digest)
-        {
-            debug!("using cached DKG outcome");
-            (outcome.clone(), share.clone())
-        } else {
-            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-            for (k, v) in storage.logs_for_epoch(round.epoch()) {
-                logs.record(k.clone(), v.clone());
-            }
+        let (local_output, mut share) =
+            if let Some((outcome, share)) = storage.get_dkg_outcome(&state.epoch, &parent_digest) {
+                debug!("using cached DKG outcome");
+                (outcome.clone(), share.clone())
+            } else {
+                let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+                for (k, v) in storage.logs_for_epoch(round.epoch()) {
+                    logs.record(k.clone(), v.clone());
+                }
 
-            let ctx_mut = self.context.as_present_mut();
-            let player_outcome = if let Some(player) = player_state.take() {
-                info!("we were a player in the ceremony; finalizing share");
-                match player.finalize(ctx_mut, logs.clone(), &Sequential) {
-                    Ok((new_output, new_share)) => {
-                        info!("local DKG ceremony was a success");
-                        Some((new_output, ShareState::Plaintext(Some(new_share))))
+                let ctx_mut = self.context.as_present_mut();
+                let player_outcome = if let Some(player) = player_state.take() {
+                    info!("we were a player in the ceremony; finalizing share");
+                    match player.finalize(ctx_mut, logs.clone(), &Sequential) {
+                        Ok((new_output, new_share)) => {
+                            info!("local DKG ceremony was a success");
+                            Some((new_output, ShareState::Plaintext(Some(new_share))))
+                        }
+                        // `FinalizeError::Error` means our local player state is
+                        // unusable (missing or invalid persisted dealings) while the
+                        // round itself may have succeeded; `observe` still yields the
+                        // public output, so continue as an observer.
+                        Err(dkg::FinalizeError::Error(reason)) => {
+                            warn!(
+                                reason = %Report::new(reason),
+                                "local DKG state cannot reconstruct a share in this epoch; has \
+                                consensus state been deleted or corrupted, or a node with the same \
+                                identity started without consensus state? Finalizing the current \
+                                round as an observer and will not have a share in the next epoch"
+                            );
+                            None
+                        }
+                        // `FinalizeError::Failure` means the agreed dealer logs cannot
+                        // produce an output for anyone; keep the previous epoch's output.
+                        Err(dkg::FinalizeError::Failure(failure)) => {
+                            warn!(
+                                failure = %Report::new(failure),
+                                "local DKG ceremony was a failure",
+                            );
+                            Some((state.output.clone(), state.share.clone()))
+                        }
                     }
-                    Err(reason @ dkg::Error::MissingPlayerDealing) => {
-                        warn!(
-                            reason = %Report::new(reason),
-                            "missing critical DKG state to reconstruct a share in this epoch; has \
-                            consensus state been deleted or a node with the same identity started \
-                            without consensus state? Finalizing the current round as an observer \
-                            and will not have a share in the next epoch"
-                        );
-                        None
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %Report::new(error),
-                            "local DKG ceremony was a failure",
-                        );
-                        Some((state.output.clone(), state.share.clone()))
+                } else {
+                    None
+                };
+
+                if let Some(outcome) = player_outcome {
+                    outcome
+                } else {
+                    match observe::<_, _, N3f1, Batch>(ctx_mut, logs, &Sequential) {
+                        Ok(output) => {
+                            info!("local DKG ceremony was a success");
+                            (output, ShareState::Plaintext(None))
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %Report::new(error),
+                                "local DKG ceremony was a failure",
+                            );
+                            (state.output.clone(), state.share.clone())
+                        }
                     }
                 }
-            } else {
-                None
             };
-
-            if let Some(outcome) = player_outcome {
-                outcome
-            } else {
-                match observe::<_, _, N3f1, Batch>(ctx_mut, logs, &Sequential) {
-                    Ok(output) => {
-                        info!("local DKG ceremony was a success");
-                        (output, ShareState::Plaintext(None))
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %Report::new(error),
-                            "local DKG ceremony was a failure",
-                        );
-                        (state.output.clone(), state.share.clone())
-                    }
-                }
-            }
-        };
 
         if local_output != onchain_outcome.output {
             let am_player = onchain_outcome
@@ -890,7 +929,7 @@ where
         }
 
         Ok(Some(State {
-            epoch: onchain_outcome.epoch,
+            epoch: onchain_outcome.epoch(),
             seed: Summary::random(self.context.as_present_mut()),
             output: onchain_outcome.output.clone(),
             share,
@@ -914,20 +953,26 @@ where
         let me = self.config.me.public_key();
         for (player, pub_msg, priv_msg) in dealer_state.shares_to_distribute().collect::<Vec<_>>() {
             if player == me {
-                if let Some(player_state) = player_state
-                    && let Ok(ack) = player_state
+                if let Some(player_state) = player_state {
+                    let ack = match player_state
                         .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
                         .await
-                        .inspect(|_| {
-                            self.metrics.shares_distributed.metric().inc();
-                            self.metrics.shares_received.metric().inc();
-                        })
-                        .inspect_err(|error| warn!(%error, "failed to store our own dealing"))
-                    && let Ok(()) = dealer_state
+                    {
+                        Ok(ack) => ack,
+                        Err(error) => {
+                            warn!(%error, "failed to process our own dealing");
+                            continue;
+                        }
+                    };
+                    self.metrics.shares_distributed.metric().inc();
+                    self.metrics.shares_received.metric().inc();
+                    if let Err(error) = dealer_state
                         .receive_ack(storage, epoch, me.clone(), ack)
                         .await
-                        .inspect_err(|error| warn!(%error, "failed to store our own ACK"))
-                {
+                    {
+                        warn!(%error, "failed to process our own ACK");
+                        continue;
+                    }
                     self.metrics.acks_received.metric().inc();
                     self.metrics.acks_sent.metric().inc();
                     info!("stored our own ACK and share");
@@ -980,7 +1025,7 @@ where
                     let ack = player_state
                         .receive_dealing(storage, round.epoch(), from.clone(), pub_msg, priv_msg)
                         .await
-                        .wrap_err("failed storing dealing")?;
+                        .wrap_err("failed to process dealing")?;
 
                     let sent = round_channel.send(
                         Recipients::One(from.clone()),
@@ -989,12 +1034,14 @@ where
                     );
 
                     // Follows the doc on the return value of of Sender::send.
-                    ensure!(
-                        !sent.is_empty(),
-                        "failed returning ACK to dealer because it was rate \
-                        limited, the connection was closed, or the message \
-                        otherwise rejected",
-                    );
+                    if sent.is_empty() {
+                        warn!(
+                            "failed returning ACK to dealer because it was rate \
+                            limited, the connection was closed, or the message \
+                            otherwise rejected",
+                        );
+                        return Ok(());
+                    }
 
                     info!("returned ACK to dealer");
                     self.metrics.acks_sent.metric().inc();
@@ -1009,7 +1056,7 @@ where
                     dealer_state
                         .receive_ack(storage, round.epoch(), from, ack)
                         .await
-                        .wrap_err("failed storing ACK")?;
+                        .wrap_err("failed to process ACK")?;
                 } else {
                     info!("received an ACK, but we are not a dealer");
                 }
@@ -1146,19 +1193,22 @@ where
                             info!("local DKG ceremony was a success");
                             Some((new_output, ShareState::Plaintext(Some(new_share))))
                         }
-                        Err(reason @ dkg::Error::MissingPlayerDealing) => {
+                        // See the early-finalization match above: local-state
+                        // errors fall through to `observe`, protocol failures
+                        // keep the previous output.
+                        Err(dkg::FinalizeError::Error(reason)) => {
                             warn!(
                                 reason = %Report::new(reason),
-                                "missing critical DKG state to reconstruct a share in this epoch; has \
-                                consensus state been deleted or a node with the same identity started \
-                                without consensus state? Finalizing the current round as an observer \
-                                and will not have a share in the next epoch"
+                                "local DKG state cannot reconstruct a share in this epoch; has \
+                                consensus state been deleted or corrupted, or a node with the same \
+                                identity started without consensus state? Finalizing the current \
+                                round as an observer and will not have a share in the next epoch"
                             );
                             None
                         }
-                        Err(error) => {
+                        Err(dkg::FinalizeError::Failure(failure)) => {
                             warn!(
-                                error = %Report::new(error),
+                                failure = %Report::new(failure),
                                 "local DKG ceremony was a failure",
                             );
                             Some((state.output.clone(), state.share.clone()))
@@ -1214,7 +1264,7 @@ where
         request
             .response
             .send(OnchainDkgOutcome {
-                epoch: next_epoch,
+                epoch: next_epoch.get(),
                 output,
                 next_players,
                 is_next_full_dkg: will_be_re_dkg,
@@ -1308,7 +1358,7 @@ where
         }
 
         let mut state = State {
-            epoch: onchain_outcome.epoch,
+            epoch: onchain_outcome.epoch(),
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
             share: state::ShareState::Plaintext(share),
@@ -1358,7 +1408,7 @@ where
         .wrap_err("failed reading outcome for ceremony boundary")?;
 
         ensure!(
-            ceremony_outcome.epoch == ceremony_epoch,
+            ceremony_outcome.epoch() == ceremony_epoch,
             "boundary outcome is for epoch `{}`, expected ceremony epoch `{ceremony_epoch}`",
             ceremony_outcome.epoch,
         );
@@ -1371,7 +1421,7 @@ where
         }
 
         let ceremony_state = State {
-            epoch: ceremony_outcome.epoch,
+            epoch: ceremony_outcome.epoch(),
             seed: state.seed,
             output: ceremony_outcome.output,
             share: state::ShareState::Plaintext(None),
@@ -1379,7 +1429,13 @@ where
             is_full_dkg: ceremony_outcome.is_next_full_dkg,
         };
 
-        let round = Round::from_state(&ceremony_state, &self.config.namespace);
+        let round = Round::from_state(
+            &ceremony_state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&ceremony_state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
+        );
         ensure!(
             round.players().position(&public_key).is_some(),
             "our identity is in the current output but was not a player in ceremony epoch \
@@ -1437,7 +1493,7 @@ where
         let (recovered_output, share) = match player.finalize(&mut self.context, logs, &Sequential)
         {
             Ok(recovered) => recovered,
-            Err(dkg::Error::MissingPlayerDealing) => return Ok(None),
+            Err(dkg::FinalizeError::Error(dkg::Error::MissingPlayerDealing)) => return Ok(None),
             Err(error) => {
                 return Err(eyre::Report::new(error))
                     .wrap_err("failed finalizing revealed share from dealer logs");

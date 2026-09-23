@@ -26,7 +26,6 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         let TempoExecutionData {
             block,
             block_access_list: _,
-            validator_set: _,
         } = payload;
         Ok(block.into_sealed_block())
     }

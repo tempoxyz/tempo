@@ -172,7 +172,10 @@ impl Block {
         )
     }
 
-    fn from_execution_block_unchecked_with_encoded_cache<T>(
+    /// Wraps a trusted execution block and its encoded bytes without validating body or BAL
+    /// commitments. Locally built payloads already contain the matching body, BAL, and header;
+    /// network and archive reads must use the validating constructor instead.
+    pub(crate) fn from_execution_block_unchecked_with_encoded_cache<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
         execution_block_encoded: EncodedBlock,
@@ -214,11 +217,6 @@ impl Block {
                 None
             },
         )
-    }
-
-    /// Returns the (eth) hash of the wrapped block.
-    pub(crate) fn block_hash(&self) -> B256 {
-        self.execution_block.hash()
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].

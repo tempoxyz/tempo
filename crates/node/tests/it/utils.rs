@@ -334,7 +334,7 @@ where
     let roles = IRolesAuth::new(*token.address(), provider);
 
     roles
-        .grantRole(*ISSUER_ROLE, caller)
+        .grantRole(ISSUER_ROLE, caller)
         .from(caller)
         .gas(1_000_000)
         .send()
@@ -454,6 +454,7 @@ pub(crate) struct TestNodeBuilder {
     custom_gas_limit: Option<String>,
     node_count: usize,
     is_dev: bool,
+    block_time: Option<Duration>,
     external_rpc: Option<Url>,
     custom_validator: Option<Address>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
@@ -468,6 +469,7 @@ impl TestNodeBuilder {
             custom_gas_limit: None,
             node_count: 1,
             is_dev: true,
+            block_time: Some(Duration::from_millis(100)),
             external_rpc: None,
             custom_validator: None,
             dynamic_validator: None,
@@ -484,6 +486,12 @@ impl TestNodeBuilder {
     /// Use custom genesis JSON content
     pub(crate) fn with_genesis(mut self, genesis_content: String) -> Self {
         self.genesis_content = genesis_content;
+        self
+    }
+
+    /// Mine HTTP-only test blocks as soon as transactions arrive, without an interval timer.
+    pub(crate) fn with_instant_mining(mut self) -> Self {
+        self.block_time = None;
         self
     }
 
@@ -605,7 +613,7 @@ impl TestNodeBuilder {
                     .with_http_api(http_api),
             );
         node_config.txpool.max_account_slots = usize::MAX;
-        node_config.dev.block_time = Some(Duration::from_millis(100));
+        node_config.dev.block_time = self.block_time;
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(runtime.clone())

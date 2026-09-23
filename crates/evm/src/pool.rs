@@ -15,6 +15,7 @@ pub type TempoPoolValidationResult<DBError> =
 /// and apply the pool-specific semantics:
 /// - skip `valid_after`, because the pool queues transactions until they become executable;
 /// - disable protocol nonce checking, because the pool queues future-nonce transactions;
+/// - disable the block base-fee check, because pool admission enforces the T7 fee floor;
 /// - skip the EVM liquidity check, because the pool checks liquidity against its cached AMM view;
 /// - return `tx` and clear transaction-local state after both success and error;
 /// - discard journaled writes (nonce updates, fee deduction, and key authorization) while retaining

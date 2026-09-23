@@ -48,7 +48,7 @@ pub(crate) fn make_child_block(
     height: u64,
     outcome: Option<&OnchainDkgOutcome>,
 ) -> Block {
-    make_block_with_parent(height, parent.block_hash(), outcome)
+    make_block_with_parent(height, parent.digest().0, outcome)
 }
 
 fn make_block_with_parent(

@@ -15,6 +15,7 @@ extend-exclude = [
 ]
 
 [default.extend-words]
+COSE = "COSE"
 ba = "ba"
 multline = "multline"
 froms = "froms"
@@ -24,4 +25,5 @@ Prool = "Prool"
 JOD = "JOD"
 
 [default.extend-identifiers]
+cose = "cose"
 OtOGGpViE5JRa7WT7wVYPtLlhm9ctiYKMBcjf9ibkK8 = "OtOGGpViE5JRa7WT7wVYPtLlhm9ctiYKMBcjf9ibkK8"

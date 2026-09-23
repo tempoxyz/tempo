@@ -20,7 +20,7 @@ mod instructions;
 mod signature_gas;
 mod tx;
 
-pub use error::{TempoHaltReason, TempoInvalidTransaction};
+pub use error::TempoInvalidTransaction;
 pub use evm::TempoEvm;
 pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};

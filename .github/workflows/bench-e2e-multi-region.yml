@@ -23,6 +23,10 @@ on:
         type: string
         required: false
         default: ""
+      preset:
+        type: string
+        required: false
+        default: "tip20_existing_recipients"
       duration:
         type: string
         required: false
@@ -58,7 +62,7 @@ on:
       run-pairs:
         type: string
         required: false
-        default: "3"
+        default: "1"
       clickhouse-run:
         type: string
         required: false
@@ -139,6 +143,7 @@ on:
           - tip20_key_authorization
           - mpp
           - mix
+          - public-mix
           - dex
       duration:
         description: Benchmark duration in seconds.
@@ -239,7 +244,7 @@ on:
         description: Number of baseline/feature run pairs.
         type: string
         required: true
-        default: "3"
+        default: "1"
       clickhouse-run:
         description: Benchmark phase that may use the direct ClickHouse reporter.
         type: string
@@ -252,8 +257,17 @@ permissions:
   id-token: write
   packages: read
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   bench-e2e-multi-region:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
     name: bench-e2e-multi-region
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 360
@@ -280,8 +294,8 @@ jobs:
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
-      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
-      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
+      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'c4d-standard-48-lssd' || 'c6id.8xlarge' }}
+      BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
@@ -296,7 +310,7 @@ jobs:
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
-      BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
+      BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
       BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
@@ -305,9 +319,12 @@ jobs:
       VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
@@ -461,18 +478,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Terraform
-        uses: tempoxyz/gh-actions/actions/setup-terraform@d9f22a1d62ed20d6d18b1dbbc33779b56996c068 # main
+        uses: tempoxyz/gh-actions/actions/setup-terraform@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           version: 1.14.7
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           toolchain: stable
 
       - name: Configure AWS credentials
         if: env.BENCH_INPUT_CLOUD == 'aws'
-        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
@@ -500,14 +517,14 @@ jobs:
 
       - name: Authenticate to Google Cloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           workload_identity_provider: ${{ env.BENCH_GCP_WIF_PROVIDER }}
           service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
 
       - name: Setup Google Cloud CLI
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@487be2d19b0ba9ae1903143016444ab752c3e939
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
 
@@ -768,6 +785,22 @@ jobs:
               summary = 'Benchmark completed but failed to read summary.';
             }
 
+            let dashboardSection = '';
+            try {
+              if (fs.existsSync(`${resultsDir}/clickhouse-run-id.txt`)) {
+                // The wrapper report uses the workflow ID; txgen's report has the ClickHouse UUID.
+                const phase = process.env.BENCH_INPUT_CLICKHOUSE_RUN;
+                const report = JSON.parse(fs.readFileSync(`${resultsDir}/${phase}/txgen-report.json`, 'utf8'));
+                const clickhouseRunId = report.benchmark_id;
+                if (clickhouseRunId) {
+                  const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
+                  dashboardSection = `\n- [Internal dashboard](${dashboardUrl})\n`;
+                }
+              }
+            } catch (e) {
+              core.info(`Unable to read ClickHouse run ID for internal dashboard: ${e.message}`);
+            }
+
             const lifecycleOutcomes = [
               process.env.BENCH_FETCH_BINARIES_OUTCOME,
               process.env.BENCH_GENERATE_OUTCOME,
@@ -798,6 +831,13 @@ jobs:
               }
             } catch (e) {
               core.info(`Unable to resolve job URL: ${e.message}`);
+            }
+
+            const observabilityHeading = '\n## Observability\n';
+            if (summary.includes(observabilityHeading)) {
+              summary = summary.replace(observabilityHeading, () => observabilityHeading + dashboardSection);
+            } else if (dashboardSection) {
+              summary += observabilityHeading + dashboardSection;
             }
 
             const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;

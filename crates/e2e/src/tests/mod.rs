@@ -7,6 +7,7 @@ use crate::{
 };
 
 mod backfill;
+mod blocked_transfers;
 mod consensus_context;
 mod consensus_rpc;
 mod dkg;
@@ -18,10 +19,8 @@ mod payload_builder;
 mod restart;
 mod simple;
 mod snapshot;
-// FIXME: subblocks are currently flaky.
-// mod subblocks;
-mod blocked_transfers;
 mod sync;
+mod t12;
 
 #[test_traced]
 fn spawning_execution_node_works() {
