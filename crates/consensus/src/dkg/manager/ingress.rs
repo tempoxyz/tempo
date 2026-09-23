@@ -1,3 +1,4 @@
+use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
 use commonware_consensus::{
     Reporter,
@@ -70,7 +71,7 @@ impl Mailbox {
     pub(crate) async fn verify_dealer_log(
         &self,
         epoch: Epoch,
-        bytes: Vec<u8>,
+        bytes: Bytes,
     ) -> eyre::Result<PublicKey> {
         let (response, rx) = oneshot::channel();
         self.inner
@@ -146,7 +147,7 @@ pub(super) struct GetDkgOutcome {
 }
 
 pub(super) struct VerifyDealerLog {
-    pub(super) bytes: Vec<u8>,
+    pub(super) bytes: Bytes,
     pub(super) epoch: Epoch,
     pub(super) response: oneshot::Sender<eyre::Result<PublicKey>>,
 }
