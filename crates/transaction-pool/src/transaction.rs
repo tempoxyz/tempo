@@ -558,6 +558,10 @@ fn warm_payment_keccak_slots<'a>(
 /// rejection is thrown.
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
+    /// Funding encoding is supported, but funding execution has not been activated.
+    #[error("funding requirements are not activated")]
+    FundingNotActivated,
+
     /// A non-payment transaction no longer fits in the block's general gas lane.
     ///
     /// Thrown by the payload builder after the transaction is already in the pool,
@@ -751,7 +755,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
-            | Self::Keychain(_) => false,
+            | Self::Keychain(_)
+            | Self::FundingNotActivated => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }

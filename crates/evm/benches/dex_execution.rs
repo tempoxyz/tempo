@@ -156,6 +156,7 @@ fn sign_dex_calls(
     };
 
     let tx = TempoTransaction {
+        require_funds: None,
         chain_id: CHAIN_ID,
         fee_token: Some(PATH_USD_ADDRESS),
         max_priority_fee_per_gas: TXGEN_FEE_PER_GAS,

@@ -265,6 +265,46 @@ while true; do
 done
 
 update_stale_tempo_git_packages
+# MPP's pinned transaction literals predate require_funds. Patch a private copy,
+# leaving Cargo's shared checkout untouched and ordinary payments unfunded.
+metadata_file="$(mktemp)"
+cargo metadata --format-version=1 --no-default-features > "$metadata_file"
+python3 - "$FOUNDRY_ROOT" "$metadata_file" <<'PYTHON'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+metadata = json.loads(Path(sys.argv[2]).read_text())
+package, = [p for p in metadata["packages"] if p["name"] == "mpp"]
+source = Path(package["manifest_path"]).resolve().parent
+patched = root / ".tempo-patches" / "mpp"
+if source != patched:
+    shutil.copytree(source, patched, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git", "target"))
+
+for relative, field in [
+    ("src/client/tempo/charge/tx_builder.rs", "tempo_authorization_list: vec![],"),
+    ("src/protocol/methods/tempo/fee_payer_envelope.rs", "tempo_authorization_list: self.tempo_authorization_list.clone(),"),
+]:
+    path = patched / relative
+    text = path.read_text()
+    if "require_funds: None," not in text:
+        if text.count(field) != 1:
+            raise SystemExit(f"MPP transaction initializer changed: {path}")
+        text = text.replace(field, field + "\n        require_funds: None,")
+        path.write_text(text)
+
+cargo = root / "Cargo.toml"
+text = cargo.read_text()
+section = '[patch."https://github.com/tempoxyz/mpp-rs"]'
+entry = "mpp = { path = " + json.dumps(str(patched)) + " }"
+if section not in text:
+    cargo.write_text(text + "\n" + section + "\n" + entry + "\n")
+elif entry not in text:
+    raise SystemExit("Foundry has a conflicting MPP patch")
+PYTHON
+rm "$metadata_file"
 cargo metadata --format-version=1 --no-default-features >/dev/null
 for package in alloy-primitives alloy-sol-types revm; do
   assert_lock_versions_match "$package"

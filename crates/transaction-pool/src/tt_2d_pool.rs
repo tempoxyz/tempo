@@ -7048,6 +7048,7 @@ mod tests {
 
         let build_tx = |fee_payer_signature: Signature| {
             let tx = TempoTransaction {
+                require_funds: None,
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 2_000_000_000,
@@ -7134,6 +7135,7 @@ mod tests {
         }];
 
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,

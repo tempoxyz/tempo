@@ -57,6 +57,7 @@ impl TempoTransactionRequest {
             tempo_authorization_list,
             nonce_key,
             key_authorization,
+            require_funds,
             valid_before,
             valid_after,
             fee_payer_signature: _,
@@ -83,6 +84,7 @@ impl TempoTransactionRequest {
 
             Some(Box::new(TempoBatchCallEnv {
                 aa_calls: calls,
+                require_funds,
                 signature: mock_signature,
                 tempo_authorization_list: tempo_authorization_list
                     .into_iter()
@@ -199,6 +201,18 @@ mod tests {
     use super::*;
     use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
+
+    #[test]
+    fn funding_simulation_retains_requirements() {
+        let requirements = vec![tempo_primitives::transaction::FundingRequirement::default()];
+        let mut request =
+            TempoTransactionRequest::default().with_require_funds(requirements.clone());
+        request.inner.to = Some(Address::ZERO.into());
+        let env = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .unwrap();
+        assert_eq!(env.tempo_tx_env.unwrap().require_funds, requirements);
+    }
 
     #[test]
     fn access_key_request_populates_typed_simulation_env() {

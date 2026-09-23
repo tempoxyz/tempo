@@ -249,6 +249,13 @@ where
         };
 
         let tx = aa_tx.tx();
+        if tx
+            .require_funds
+            .as_ref()
+            .is_some_and(|requirements| !requirements.is_empty())
+        {
+            return Err(TempoPoolTransactionError::FundingNotActivated);
+        }
 
         // Check number of calls
         if tx.calls.len() > MAX_AA_CALLS {
@@ -1139,6 +1146,46 @@ mod tests {
         };
         let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
         assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
+    }
+
+    #[tokio::test]
+    async fn funding_rejected_before_activation() {
+        use tempo_primitives::transaction::{
+            AASigned, FundingRequirement, PrimitiveSignature, TempoSignature, TempoTransaction,
+        };
+        let tx = TempoTransaction {
+            require_funds: Some(vec![FundingRequirement::default()]),
+            max_fee_per_gas: 20_000_000_000,
+            calls: vec![Call {
+                to: Address::ZERO.into(),
+                value: U256::ZERO,
+                input: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+        );
+        let transaction = TempoPooledTransaction::new(
+            alloy_consensus::transaction::Recovered::new_unchecked(signed.into(), Address::ZERO),
+        );
+        let validator = setup_validator(&transaction, 0);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, err) => assert!(
+                matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::FundingNotActivated)
+                ),
+                "unexpected rejection: {err:?}"
+            ),
+            _ => panic!("expected inactive funding rejection: {outcome:?}"),
+        }
     }
 
     #[tokio::test]
@@ -2280,6 +2327,7 @@ mod tests {
             .collect();
 
         let tx_aa = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum

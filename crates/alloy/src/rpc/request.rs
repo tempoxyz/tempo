@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
+        Call, FundingRequirement, SignedKeyAuthorization, TempoSignedAuthorization,
+        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
@@ -48,6 +48,10 @@ pub struct TempoTransactionRequest {
     /// Optional calls array, for Tempo transactions.
     #[serde(default)]
     pub calls: Vec<Call>,
+
+    /// Funding requirements included in the signed Tempo transaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub require_funds: Vec<FundingRequirement>,
 
     /// Optional key type for gas estimation of Tempo transactions.
     /// Specifies the signature verification algorithm to calculate accurate gas costs.
@@ -112,6 +116,7 @@ impl TempoTransactionRequest {
     /// Returns whether this request contains fields that require Tempo AA transaction semantics.
     pub(crate) fn has_aa_fields(&self) -> bool {
         !self.calls.is_empty()
+            || !self.require_funds.is_empty()
             || self.nonce_key.is_some()
             || self.fee_token.is_some()
             || !self.tempo_authorization_list.is_empty()
@@ -122,6 +127,17 @@ impl TempoTransactionRequest {
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
+    }
+
+    /// Sets the signed funding requirements.
+    pub fn set_require_funds(&mut self, requirements: Vec<FundingRequirement>) {
+        self.require_funds = requirements;
+    }
+
+    /// Sets the signed funding requirements.
+    pub fn with_require_funds(mut self, requirements: Vec<FundingRequirement>) -> Self {
+        self.require_funds = requirements;
+        self
     }
 
     /// Set the fee token for the [`TempoTransaction`] transaction.
@@ -335,6 +351,7 @@ impl TempoTransactionRequest {
             tempo_authorization_list: self.tempo_authorization_list,
             nonce_key: self.nonce_key.unwrap_or_default(),
             key_authorization: self.key_authorization,
+            require_funds: (!self.require_funds.is_empty()).then_some(self.require_funds),
         })
     }
 }
@@ -461,6 +478,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            require_funds: tx.require_funds.unwrap_or_default(),
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -527,6 +545,9 @@ pub trait TempoCallBuilderExt {
 
     /// Sets the `key_authorization` field in the [`TempoTransaction`] transaction.
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self;
+
+    /// Sets the signed funding requirements.
+    fn require_funds(self, requirements: Vec<FundingRequirement>) -> Self;
 }
 
 impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
@@ -560,6 +581,10 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
         self.map(|request| request.with_key_data(key_data))
     }
 
+    fn require_funds(self, requirements: Vec<FundingRequirement>) -> Self {
+        self.map(|request| request.with_require_funds(requirements))
+    }
+
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self {
         self.map(|request| request.with_key_authorization(key_authorization))
     }
@@ -575,6 +600,40 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test timestamp must be non-zero")
+    }
+
+    #[test]
+    fn funding_request_json_and_builder_roundtrip() {
+        let value = serde_json::json!({
+            "to": "0x0000000000000000000000000000000000000001",
+            "nonce": "0x0", "gas": "0x186a0", "maxFeePerGas": "0x1", "maxPriorityFeePerGas": "0x0",
+            "requireFunds": [{
+                "token": "0x0000000000000000000000000000000000000002",
+                "amount": "0x32", "slippageBps": "0x0",
+                "sources": [{"target": "0x0000000000000000000000000000000000000003", "data": "0xabcd"}]
+            }]
+        });
+        let request: TempoTransactionRequest = serde_json::from_value(value.clone()).unwrap();
+        assert!(request.has_aa_fields());
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["requireFunds"],
+            value["requireFunds"]
+        );
+        let tx = request.clone().build_aa().unwrap();
+        assert_eq!(tx.require_funds.as_ref().unwrap(), &request.require_funds);
+        assert_eq!(
+            TempoTransactionRequest::from(tx).require_funds,
+            request.require_funds
+        );
+        let empty = request.with_require_funds(vec![]);
+        assert!(!empty.has_aa_fields());
+        assert!(
+            serde_json::to_value(&empty)
+                .unwrap()
+                .get("requireFunds")
+                .is_none()
+        );
+        assert!(empty.build_aa().unwrap().require_funds.is_none());
     }
 
     #[test]
@@ -643,6 +702,7 @@ mod tests {
     #[test]
     fn test_from_tempo_transaction_preserves_validity_window() {
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             nonce: 0,
             fee_payer_signature: None,
@@ -722,6 +782,7 @@ mod tests {
     fn test_from_tempo_transaction_preserves_fee_payer_signature() {
         let sig = Signature::test_signature();
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             nonce: 0,
             fee_payer_signature: Some(sig),

@@ -1,4 +1,6 @@
 pub mod envelope;
+pub mod funding;
+pub use funding::{FundingRequirement, FundingSource};
 pub mod key_authorization;
 pub mod tempo_transaction;
 pub mod tt_authorization;
