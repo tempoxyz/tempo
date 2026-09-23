@@ -274,9 +274,7 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
             candidate.clone().into(),
             response,
         ));
-        actor
-            .apply_verification_outcome(round(2), super::WalkOutcome::NeedsFetch)
-            .unwrap();
+        actor.handle_parent_lookup(super::WalkOwner::Verification(round(2)), None);
 
         // The parent is buffered in the old receiver when a new request
         // replaces its owner. It must not advance the replacement walk.
@@ -288,9 +286,7 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
             candidate.clone().into(),
             response,
         ));
-        actor
-            .apply_verification_outcome(round(2), super::WalkOutcome::NeedsFetch)
-            .unwrap();
+        actor.handle_parent_lookup(super::WalkOwner::Verification(round(2)), None);
         assert!(old_verdict.await.is_err());
         assert!(actor.parent_fetches.next_completed().await.is_err());
         let walk = &actor.queued_verifications[&round(2)].walk;

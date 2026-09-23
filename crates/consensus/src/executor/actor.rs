@@ -74,9 +74,10 @@
 //! and a non-`VALID` finalized delivery are fatal as well.
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashMap, VecDeque},
     sync::Arc,
-    task::{Poll, ready},
+    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -486,10 +487,7 @@ where
                         .map(|event| (active.round, event)),
                     None => Poll::Pending,
                 }) => {
-                    if let Err(error) = self.handle_verification_event(round, event) {
-                        log_fatal(&error);
-                        break;
-                    }
+                    self.handle_verification_event(round, event);
                 }
 
                 completion = self.parent_fetches.next_completed() => {
@@ -498,16 +496,13 @@ where
                     }
                 }
 
-                outcome = async {
+                parent = async {
                     match &mut self.convergence {
                         Some(walk) => walk.next_lookup().await,
                         None => std::future::pending().await,
                     }
                 } => {
-                    if let Err(error) = self.apply_convergence_outcome(outcome) {
-                        log_fatal(&error);
-                        break;
-                    }
+                    self.handle_parent_lookup(WalkOwner::Convergence, parent);
                 }
 
                 Some(delivered) = self.payload_jobs.next() => {
@@ -637,9 +632,9 @@ where
         }
     }
 
-    /// Applies an engine answer to the active verification, if it is the one
-    /// that expects it. Answers for a replaced or dropped request, or for a
-    /// block the current walk is not waiting on, are ignored.
+    /// Interprets an engine answer for the active verification. Cursors
+    /// overtaken by finality reprobe the target; historical targets are
+    /// dropped by [`Self::prune_finalized`] before another delivery.
     #[instrument(skip_all, fields(%round, %digest), err(level = Level::WARN))]
     fn handle_verification_delivered(
         &mut self,
@@ -655,73 +650,63 @@ where
             return Ok(());
         }
         active.duration += duration;
-        let outcome = active.walk.on_verification_status(
-            status,
-            self.network_finalized_tip,
-            self.delivered_finalized_tip,
-        );
-        self.apply_verification_outcome(round, outcome)
-    }
-
-    /// Acts on what a verification's walk reported, after an engine answer
-    /// or a local parent lookup. A verdict answers the requester and
-    /// drops the verification; a failure drops it without one.
-    fn apply_verification_outcome(
-        &mut self,
-        round: Round,
-        outcome: WalkOutcome,
-    ) -> eyre::Result<()> {
-        let (execution_node, marshal) = (self.execution_node.clone(), self.marshal.clone());
-        let verification = match &mut self.active_verification {
-            Some(active) if active.round == round => Some(active),
-            _ => self.queued_verifications.get_mut(&round),
-        };
-        let Some(verification) = verification else {
+        let walk = &mut active.walk;
+        let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
+        if walk.conflicts_with_finality(finalized_height, finalized_digest) {
+            // A finality conflict is not an execution-invalid verdict
+            // that certification may cache. Close the request instead.
+            self.remove_verification(round);
             return Ok(());
-        };
-        let verdict = match outcome {
-            WalkOutcome::Continue => return Ok(()),
-            WalkOutcome::NeedsParent => {
-                verification.walk.look_up_parent(execution_node, marshal);
+        }
+        if walk.below_finality(finalized_height) {
+            // Finality overtook this cursor without proving a conflict.
+            // Reconsider the target against the new tip on the next loop.
+            walk.reprobe();
+            return Ok(());
+        }
+        let verdict = match status {
+            PayloadStatusEnum::Valid if walk.at_target() => Some(active.duration),
+            PayloadStatusEnum::Valid => {
+                walk.reprobe();
                 return Ok(());
             }
-            WalkOutcome::NeedsFetch => {
-                verification.walk.fetch_parent(
-                    marshal,
-                    WalkOwner::Verification(round),
-                    &mut self.parent_fetches,
-                );
+            PayloadStatusEnum::Invalid { validation_error } => {
+                info!(%validation_error, "execution layer rejected the block");
+                None
+            }
+            PayloadStatusEnum::Syncing => {
+                match walk.parent_height().cmp(&finalized_height) {
+                    Ordering::Greater => {
+                        // Missing ancestry above finality belongs to this walk.
+                        walk.look_up_parent(self.execution_node.clone(), self.marshal.clone());
+                    }
+                    Ordering::Equal | Ordering::Less
+                        if self.delivered_finalized_tip.1 < finalized_height =>
+                    {
+                        // The cursor itself or its parent is the finalized
+                        // tip. Let finalization supply it before retrying.
+                        walk.wait_for_finalized(finalized_height);
+                    }
+                    Ordering::Equal | Ordering::Less => walk.reprobe(),
+                }
                 return Ok(());
             }
-            WalkOutcome::SyncingAtDeliveredFinality => {
-                verification.walk.reprobe();
-                return Ok(());
-            }
-            WalkOutcome::TargetValid => Some(verification.duration),
-            WalkOutcome::Invalid => None,
-            WalkOutcome::ConflictsWithFinality => {
-                // The local finality boundary can change while a walk runs. It
-                // is not an execution-invalid verdict that certification may cache.
-                self.remove_verification(round);
-                return Ok(());
-            }
-            WalkOutcome::Accepted => {
+            PayloadStatusEnum::Accepted => {
                 self.remove_verification(round);
                 bail!("payload was accepted without execution while verifying block");
             }
         };
-        // Responding drops the verification; it owns the channel.
         self.remove_verification(round)
-            .expect("the verification was found above")
+            .expect("the active verification was found above")
             .respond(verdict);
         Ok(())
     }
 
-    /// Applies an engine answer to the convergence walk, if it still waits on
-    /// the block. A VALID target whose ancestry reaches the current network
-    /// finalized tip becomes eligible for HEAD and ends the walk. Anything else
-    /// that stops the walk leaves it stopped; a newer consensus context that
-    /// selects the same head, or a finalized delivery, restarts it.
+    /// Interprets an engine answer for convergence. The target must return
+    /// VALID and its ancestry must reach current network finality before it
+    /// becomes eligible for HEAD. Overtaken cursors reprobe the target before
+    /// interpreting their status. Rejected or failed walks remain stopped
+    /// until a newer consensus context or finalized delivery restarts them.
     #[instrument(skip_all, fields(%digest), err(level = Level::WARN))]
     fn handle_convergence_delivered(
         &mut self,
@@ -737,43 +722,67 @@ where
         if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
-        let outcome = walk.on_convergence_status(
-            status,
-            self.network_finalized_tip,
-            self.delivered_finalized_tip,
-        );
-        self.apply_convergence_outcome(outcome)
-    }
-
-    /// Acts on what the convergence walk reported, after an engine answer or
-    /// a local parent lookup. A VALID target is eligible only after the walk
-    /// proved its ancestry reaches the current network finalized tip.
-    fn apply_convergence_outcome(&mut self, outcome: WalkOutcome) -> eyre::Result<()> {
-        let Some(walk) = &mut self.convergence else {
+        let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
+        if walk.target.height() < finalized_height
+            || walk.conflicts_with_finality(finalized_height, finalized_digest)
+        {
+            // A historical target cannot become HEAD below current finality,
+            // even if it is canonical. A conflicting branch cannot either.
+            walk.stop();
             return Ok(());
-        };
-        match outcome {
-            WalkOutcome::Continue => {}
-            WalkOutcome::NeedsParent => {
-                walk.look_up_parent(self.execution_node.clone(), self.marshal.clone())
+        }
+        if walk.below_finality(finalized_height) {
+            // Finality overtook this cursor without proving a conflict.
+            // Reconsider the pending head against the new tip.
+            walk.reprobe();
+            return Ok(());
+        }
+
+        match status {
+            PayloadStatusEnum::Valid => {
+                if walk.cursor.digest() == finalized_digest
+                    || walk.cursor.parent_digest() == finalized_digest
+                {
+                    // Every cursor belongs to the target's ancestry, so
+                    // reaching finality proves the target connects to it.
+                    walk.proven_finalized_tip = Some(finalized_digest);
+                }
+
+                if walk.proven_finalized_tip != Some(finalized_digest) {
+                    // VALID proves execution; ancestry still needs checking.
+                    walk.look_up_parent(self.execution_node.clone(), self.marshal.clone());
+                } else if walk.at_target() {
+                    let target = (walk.target.height(), walk.target.digest());
+                    self.convergence = None;
+                    self.record_executed_convergence_target(target, finalized_digest);
+                } else {
+                    // Keep the ancestry proof, but require the target's own VALID.
+                    walk.reprobe();
+                }
             }
-            WalkOutcome::NeedsFetch => walk.fetch_parent(
-                self.marshal.clone(),
-                WalkOwner::Convergence,
-                &mut self.parent_fetches,
-            ),
-            WalkOutcome::TargetValid => {
-                let target = (walk.cursor.height(), walk.cursor.digest());
-                let finalized_digest = walk
-                    .finalized_ancestor
-                    .expect("convergence requires a proven finalized ancestor");
-                self.convergence = None;
-                self.record_executed_convergence_target(target, finalized_digest);
+            PayloadStatusEnum::Invalid { validation_error } => {
+                info!(%validation_error, "execution layer rejected the block");
+                walk.stop();
             }
-            WalkOutcome::Invalid
-            | WalkOutcome::SyncingAtDeliveredFinality
-            | WalkOutcome::ConflictsWithFinality => walk.stop(),
-            WalkOutcome::Accepted => {
+            PayloadStatusEnum::Syncing => match walk.parent_height().cmp(&finalized_height) {
+                Ordering::Greater => {
+                    // Missing ancestry above finality belongs to this walk.
+                    walk.look_up_parent(self.execution_node.clone(), self.marshal.clone());
+                }
+                Ordering::Equal | Ordering::Less
+                    if self.delivered_finalized_tip.1 < finalized_height =>
+                {
+                    // The cursor itself or its parent is the finalized
+                    // tip. Its execution is the finalization pipeline's job.
+                    walk.wait_for_finalized(finalized_height);
+                }
+                Ordering::Equal | Ordering::Less => {
+                    // Finalized history was already delivered. Wait for a
+                    // newer context or finalized delivery before retrying.
+                    walk.stop();
+                }
+            },
+            PayloadStatusEnum::Accepted => {
                 walk.stop();
                 bail!("payload was accepted without execution while delivering block");
             }
@@ -815,26 +824,13 @@ where
             && self.pending_head.executed.is_none()
     }
 
+    /// Drops obsolete requests and historical verification targets before
+    /// scheduling more deliveries.
     #[instrument(skip_all)]
     fn prune_finalized(&mut self) {
         let (round, height, digest) = self.network_finalized_tip;
         debug_assert!(self.local_state.finalized.0 <= height);
         self.built_blocks.retain(|_, block| block.height() > height);
-        // A verification for a round finality has passed can no longer
-        // influence consensus; dropping it closes the requester's channel.
-        self.queued_verifications.retain(|queued, _| {
-            let kept = *queued > round;
-            if !kept {
-                debug!(round = %queued, finalized_round = %round, "dropping verification at or below the finalized round");
-            }
-            kept
-        });
-        if let Some(active) = &self.active_verification
-            && active.round <= round
-        {
-            debug!(round = %active.round, finalized_round = %round, "dropping verification at or below the finalized round");
-            self.active_verification = None;
-        }
         if self.pending_head.round <= round && self.pending_head.digest != digest {
             self.pending_head = PendingHead::finalized(self.network_finalized_tip);
         }
@@ -852,9 +848,13 @@ where
 
         // Finalization now owns ancestry at or below the tip. Restart the
         // surviving walks before consuming any obsolete fetch completions.
-        for verification in self.verifications_mut() {
-            verification.walk.on_finalized_tip(round, height);
+        if let Some(active) = &mut self.active_verification
+            && !active.retain_after_finality(round, height)
+        {
+            self.active_verification = None;
         }
+        self.queued_verifications
+            .retain(|_, verification| verification.retain_after_finality(round, height));
         if let Some(walk) = &mut self.convergence {
             walk.on_finalized_tip(round, height);
         }
@@ -1430,18 +1430,40 @@ where
 
     /// A requester's cancellation or the active walk's local lookup woke the actor.
     #[instrument(skip_all, fields(%round))]
-    fn handle_verification_event(
-        &mut self,
-        round: Round,
-        event: VerificationEvent,
-    ) -> eyre::Result<()> {
+    fn handle_verification_event(&mut self, round: Round, event: VerificationEvent) {
         match event {
             VerificationEvent::Canceled => {
                 debug!("the verification's requester went away");
                 self.remove_verification(round);
-                Ok(())
             }
-            VerificationEvent::Walk(outcome) => self.apply_verification_outcome(round, outcome),
+            VerificationEvent::ParentLookedUp(block) => {
+                self.handle_parent_lookup(WalkOwner::Verification(round), block);
+            }
+        }
+    }
+
+    /// A local lookup either supplies the next cursor or starts a marshal
+    /// subscription for the missing parent.
+    fn handle_parent_lookup(&mut self, owner: WalkOwner, block: Option<Arc<Block>>) {
+        let walk = match owner {
+            WalkOwner::Verification(round) => match &mut self.active_verification {
+                Some(active) if active.round == round => Some(&mut active.walk),
+                _ => self
+                    .queued_verifications
+                    .get_mut(&round)
+                    .map(|v| &mut v.walk),
+            },
+            WalkOwner::Convergence => self.convergence.as_mut(),
+        };
+        let Some(walk) = walk else { return };
+        match block {
+            Some(block) => walk.on_fetched(block),
+            None => walk.fetch_parent(
+                self.marshal.clone(),
+                owner,
+                self.network_finalized_tip.0,
+                &mut self.parent_fetches,
+            ),
         }
     }
 
@@ -1763,8 +1785,8 @@ impl Future for PendingNotarizedBlock {
 /// there if it must. The actor polls active requester cancellation, reaps
 /// canceled queued requests, and pools parent subscriptions. It stays until
 /// the candidate has a verdict, the request fails or is canceled, its round
-/// falls at or below the network finalized round, or a request for the same
-/// round replaces it.
+/// falls at or below the network finalized round, its target falls below the
+/// network finalized height, or a request for the same round replaces it.
 struct Verification {
     round: Round,
     /// The walk toward the candidate, which is its target.
@@ -1803,12 +1825,38 @@ impl Verification {
         }
     }
 
+    /// Updates the walk for finality and returns whether to retain the request.
+    /// Obsolete rounds and historical targets are removed without a verdict.
+    fn retain_after_finality(
+        &mut self,
+        network_finalized_round: Round,
+        network_finalized_height: Height,
+    ) -> bool {
+        // A request for a round finality has passed can no longer influence consensus.
+        if self.round <= network_finalized_round {
+            debug!(round = %self.round, finalized_round = %network_finalized_round, "dropping verification at or below the finalized round");
+            return false;
+        }
+
+        let target_height = self.walk.target.height();
+        if target_height < network_finalized_height {
+            debug!(round = %self.round, %target_height, %network_finalized_height, "dropping verification below the finalized height");
+            return false;
+        }
+
+        self.walk
+            .on_finalized_tip(network_finalized_round, network_finalized_height);
+        true
+    }
+
     /// Polls the active requester's cancellation and its local parent lookup.
     fn poll_event(&mut self, cx: &mut std::task::Context<'_>) -> Poll<VerificationEvent> {
         if self.response.poll_canceled(cx).is_ready() {
             return Poll::Ready(VerificationEvent::Canceled);
         }
-        self.walk.poll_lookup(cx).map(VerificationEvent::Walk)
+        self.walk
+            .poll_lookup(cx)
+            .map(VerificationEvent::ParentLookedUp)
     }
 }
 
@@ -1817,7 +1865,7 @@ enum VerificationEvent {
     /// Its requester went away.
     Canceled,
     /// Its local parent lookup resolved.
-    Walk(WalkOutcome),
+    ParentLookedUp(Option<Arc<Block>>),
 }
 
 /// One ancestry walk, shared by verification and pending-head convergence.
@@ -1830,19 +1878,16 @@ enum VerificationEvent {
 /// For verification, a VALID ancestor restarts the walk at the target: the
 /// execution layer connects buffered descendants itself once the gap is closed.
 /// The target must itself return VALID before verification succeeds.
+/// Targets overtaken by network finality are dropped without a verdict.
 ///
 /// Convergence walks past VALID blocks until a VALID cursor or its parent
 /// is the network finalized tip. That digest proves the target's ancestry;
 /// the target must then return VALID before it can become HEAD. A changed
 /// finalized digest requires a new ancestry proof.
 ///
-/// For either walk, an INVALID target or ancestor reports [`WalkOutcome::Invalid`]
-/// to the owner without re-probing the target.
-///
-/// Answers for the target, and answers that stop the walk, are reported to
-/// the owner as a [`WalkOutcome`]. The owner then ends, restarts, or pauses
-/// the walk. Ancestor answers and gaps above the finalized tip are handled
-/// inside.
+/// The actor interprets engine replies, decides verdicts and HEAD eligibility,
+/// and schedules ancestry work. Local lookups and marshal subscriptions supply
+/// the next cursor without rendering verdicts.
 ///
 /// Only the target and the current cursor are retained. Advancing to a
 /// parent drops the previous cursor.
@@ -1854,9 +1899,10 @@ struct AncestryWalk {
     /// The step owns the local lookup or the abort handle for a pooled
     /// parent subscription. Changing steps cancels any outstanding fetch.
     step: WalkStep,
-    /// The finalized digest reached by a convergence walk. Verification
-    /// does not require this proof and leaves it unset.
-    finalized_ancestor: Option<Digest>,
+    /// The digest of the finalized tip reached in the target's ancestry.
+    /// This proof survives reprobing the target. Verification does not
+    /// require it and leaves this unset.
+    proven_finalized_tip: Option<Digest>,
 }
 
 enum WalkStep {
@@ -1872,8 +1918,8 @@ enum WalkStep {
     /// actor, which may have to fetch it from peers. The receiver closes if
     /// the marshal actor gives up on it.
     FetchParent { _aborter: Aborter },
-    /// The cursor's parent is the finalized tip at `height`, which the
-    /// finalization pipeline has not delivered yet.
+    /// Finalization must deliver `height` before the walk can proceed.
+    /// Finalized history is supplied by the finalization pipeline.
     WaitForFinalized { height: Height },
     /// The owner stopped the walk after a rejected or failed delivery. It
     /// restarts at the target when the owner asks.
@@ -1891,38 +1937,6 @@ impl WalkStep {
             Self::Stopped => "stopped",
         }
     }
-}
-
-/// What the owner must decide after an engine answer or a local parent
-/// lookup. Every outcome other than `Continue` leaves the step as
-/// it was for the owner to end, restart, stop, or fetch for.
-enum WalkOutcome {
-    /// The walk moved on by itself.
-    Continue,
-    /// The walk needs the cursor's parent above the finalized tip; the
-    /// owner looks it up locally.
-    NeedsParent,
-    /// Neither the execution layer nor marshal storage has the parent; the
-    /// owner subscribes for it with the marshal actor.
-    NeedsFetch,
-    /// The target itself returned VALID. For convergence, its ancestry also
-    /// reaches the current network finalized tip.
-    TargetValid,
-    /// The cursor was rejected. This is the target's verdict whether the
-    /// cursor is the target or an ancestor: the execution layer answers
-    /// INVALID for every descendant of a cached rejection, and the one
-    /// uncached rejection, a timestamp ahead of our clock, would fail the
-    /// target too.
-    Invalid,
-    /// The cursor's parent is the finalized tip and was delivered already,
-    /// yet the execution layer still says SYNCING. The walk cannot descend
-    /// further; the owner decides when to probe the target again.
-    SyncingAtDeliveredFinality,
-    /// The ancestry meets finality on another branch. The target can never
-    /// become canonical.
-    ConflictsWithFinality,
-    /// The execution layer accepted the block without executing it.
-    Accepted,
 }
 
 /// Which walk a delivery belongs to.
@@ -1949,7 +1963,7 @@ impl AncestryWalk {
             cursor: target.clone(),
             target,
             step: WalkStep::Probe,
-            finalized_ancestor: None,
+            proven_finalized_tip: None,
         }
     }
 
@@ -1985,195 +1999,46 @@ impl AncestryWalk {
         self.step = WalkStep::Probe;
     }
 
+    fn wait_for_finalized(&mut self, height: Height) {
+        self.cursor = self.target.clone();
+        self.step = WalkStep::WaitForFinalized { height };
+    }
+
+    /// Whether finality has advanced past the current cursor.
+    fn below_finality(&self, finalized_height: Height) -> bool {
+        self.cursor.height() < finalized_height
+    }
+
+    /// A digest mismatch proves a fork only at the finalized height.
+    fn conflicts_with_finality(&self, finalized_height: Height, finalized_digest: Digest) -> bool {
+        let cursor_is_not_tip =
+            self.cursor.height() == finalized_height && self.cursor.digest() != finalized_digest;
+        let parent_is_not_tip = self.cursor.height().previous() == Some(finalized_height)
+            && self.cursor.parent_digest() != finalized_digest;
+
+        cursor_is_not_tip || parent_is_not_tip
+    }
+
     fn stop(&mut self) {
         self.step = WalkStep::Stopped;
     }
 
-    /// Polls the step's local lookup, if any. A found parent becomes the
-    /// cursor; a miss is reported for the owner to act on.
-    fn poll_lookup(&mut self, cx: &mut std::task::Context<'_>) -> Poll<WalkOutcome> {
-        let outcome = match &mut self.step {
-            WalkStep::LookUpParent(lookup) => match ready!(lookup.poll_unpin(cx)) {
-                Some(block) => {
-                    self.on_fetched(block);
-                    WalkOutcome::Continue
-                }
-                None => WalkOutcome::NeedsFetch,
-            },
+    /// Polls the local parent lookup. The actor applies the result before
+    /// polling the walk again, advancing the cursor or starting a fetch.
+    fn poll_lookup(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Option<Arc<Block>>> {
+        match &mut self.step {
+            WalkStep::LookUpParent(lookup) => lookup.poll_unpin(cx),
             WalkStep::Probe
             | WalkStep::InFlight
             | WalkStep::FetchParent { .. }
             | WalkStep::WaitForFinalized { .. }
-            | WalkStep::Stopped => return Poll::Pending,
-        };
-        Poll::Ready(outcome)
+            | WalkStep::Stopped => Poll::Pending,
+        }
     }
 
-    /// Drives the local lookup, if any, and resolves with what the owner
-    /// must do when it completes.
-    async fn next_lookup(&mut self) -> WalkOutcome {
+    /// Drives the local lookup until it returns a parent or reports a miss.
+    async fn next_lookup(&mut self) -> Option<Arc<Block>> {
         poll_fn(|cx| self.poll_lookup(cx)).await
-    }
-
-    /// Interprets the engine's answer for a verification walk. The network
-    /// finalized tip is announced by consensus; the delivered finalized tip
-    /// is the highest finalized block the execution layer has accepted.
-    fn on_verification_status(
-        &mut self,
-        status: PayloadStatusEnum,
-        network_finalized_tip: (Round, Height, Digest),
-        delivered_finalized_tip: (Round, Height, Digest),
-    ) -> WalkOutcome {
-        match status {
-            PayloadStatusEnum::Valid if self.at_target() => WalkOutcome::TargetValid,
-            PayloadStatusEnum::Valid => {
-                self.reprobe();
-                WalkOutcome::Continue
-            }
-            PayloadStatusEnum::Invalid { validation_error } => {
-                info!(
-                    digest = %self.cursor.digest(),
-                    validation_error,
-                    "execution layer rejected the block",
-                );
-                WalkOutcome::Invalid
-            }
-            PayloadStatusEnum::Syncing => {
-                self.descend_after_syncing(network_finalized_tip, delivered_finalized_tip)
-            }
-            PayloadStatusEnum::Accepted => WalkOutcome::Accepted,
-        }
-    }
-
-    /// Requires proof of ancestry to the current finalized digest in addition
-    /// to execution. A VALID block alone may belong to another branch.
-    fn on_convergence_status(
-        &mut self,
-        status: PayloadStatusEnum,
-        network_finalized_tip: (Round, Height, Digest),
-        delivered_finalized_tip: (Round, Height, Digest),
-    ) -> WalkOutcome {
-        let finalized_digest = network_finalized_tip.2;
-        match status {
-            PayloadStatusEnum::Valid => {
-                if self.cursor.parent_digest() == finalized_digest
-                    || self.cursor.digest() == finalized_digest
-                {
-                    // The path from the target has reached current finality.
-                    // Retain this proof when we return to the target.
-                    self.finalized_ancestor = Some(finalized_digest);
-                }
-                if self.finalized_ancestor != Some(finalized_digest) {
-                    // VALID proves execution, but we still need to establish
-                    // the target's ancestry to the current finalized tip.
-                    self.descend_to_network_finalized_tip(network_finalized_tip)
-                } else if self.at_target() {
-                    // The target itself is VALID and the retained ancestry
-                    // proof still matches current finality: it can become HEAD.
-                    WalkOutcome::TargetValid
-                } else {
-                    // An ancestor established the path to finality. Probe the
-                    // target again to confirm it executed; its earlier delivery
-                    // may have returned SYNCING or been evicted from EL's buffer.
-                    self.reprobe();
-                    WalkOutcome::Continue
-                }
-            }
-            PayloadStatusEnum::Invalid { validation_error } => {
-                info!(
-                    digest = %self.cursor.digest(),
-                    validation_error,
-                    "execution layer rejected the block",
-                );
-                WalkOutcome::Invalid
-            }
-            PayloadStatusEnum::Syncing => {
-                // Repair missing execution ancestry just as verification does,
-                // even if the target's path to finality is already proved.
-                self.descend_after_syncing(network_finalized_tip, delivered_finalized_tip)
-            }
-            PayloadStatusEnum::Accepted => WalkOutcome::Accepted,
-        }
-    }
-
-    /// Descends after SYNCING to find missing execution state. Both verification
-    /// and convergence leave finalized history to the finalization pipeline.
-    fn descend_after_syncing(
-        &mut self,
-        network_finalized_tip: (Round, Height, Digest),
-        delivered_finalized_tip: (Round, Height, Digest),
-    ) -> WalkOutcome {
-        let (finalized_round, finalized_height, finalized_digest) = network_finalized_tip;
-        let (_, delivered_height, _) = delivered_finalized_tip;
-        let parent_height = self.parent_height();
-        let (parent_round, parent_digest) = self.parent();
-        // A missing parent must be above both finality boundaries;
-        // marshal cannot fetch notarizations at or below its round floor.
-        if parent_height > finalized_height && parent_round > finalized_round {
-            WalkOutcome::NeedsParent
-        } else if parent_digest == finalized_digest {
-            if delivered_height >= finalized_height {
-                WalkOutcome::SyncingAtDeliveredFinality
-            } else {
-                // Only the target is needed to restart later.
-                self.cursor = self.target.clone();
-                self.step = WalkStep::WaitForFinalized {
-                    height: finalized_height,
-                };
-                WalkOutcome::Continue
-            }
-        } else {
-            info!(
-                %parent_digest,
-                %parent_height,
-                %parent_round,
-                %finalized_digest,
-                %finalized_height,
-                %finalized_round,
-                "ancestry does not reach the finalized tip",
-            );
-            WalkOutcome::ConflictsWithFinality
-        }
-    }
-
-    /// Descends past a VALID block to prove the target's ancestry to network
-    /// finality. Execution has succeeded, so delivery progress is irrelevant.
-    fn descend_to_network_finalized_tip(
-        &mut self,
-        network_finalized_tip: (Round, Height, Digest),
-    ) -> WalkOutcome {
-        let (finalized_round, finalized_height, finalized_digest) = network_finalized_tip;
-        if !self.at_target()
-            && (self.cursor.height() <= finalized_height
-                || self.cursor.context().round <= finalized_round)
-        {
-            // Finality overtook this in-flight ancestor. Restart at the target
-            // to find the new boundary; descending from here would mistake
-            // old history for a conflict.
-            self.reprobe();
-            return WalkOutcome::Continue;
-        }
-
-        let parent_height = self.parent_height();
-        let (parent_round, parent_digest) = self.parent();
-        if parent_height > finalized_height && parent_round > finalized_round {
-            // Returning to the target before reaching the boundary would
-            // repeat the same walk without proving FCU eligibility.
-            WalkOutcome::NeedsParent
-        } else {
-            // A VALID cursor or parent matching the finalized digest would
-            // already have established the proof in on_convergence_status.
-            info!(
-                %parent_digest,
-                %parent_height,
-                %parent_round,
-                %finalized_digest,
-                %finalized_height,
-                %finalized_round,
-                "ancestry does not reach the finalized tip",
-            );
-            WalkOutcome::ConflictsWithFinality
-        }
     }
 
     /// Looks up the cursor's parent locally to continue the walk.
@@ -2187,9 +2052,16 @@ impl AncestryWalk {
         &mut self,
         marshal: impl Marshal,
         owner: WalkOwner,
+        finalized_round: Round,
         fetches: &mut AbortablePool<'static, (WalkOwner, Option<Arc<Block>>)>,
     ) {
         let (round, digest) = self.parent();
+        if round <= finalized_round {
+            // Marshal cannot fetch below its round floor. That restriction
+            // alone does not prove a digest conflict; await finalized history.
+            self.wait_for_finalized(self.parent_height());
+            return;
+        }
         let receiver = marshal.subscribe_by_digest(digest, round);
         self.step = WalkStep::FetchParent {
             _aborter: fetches.push(async move { (owner, receiver.await.ok()) }),
@@ -2202,17 +2074,14 @@ impl AncestryWalk {
         self.step = WalkStep::Probe;
     }
 
-    /// Restarts when either the finalized height or round covers a pending
-    /// parent lookup, subscription, or an ancestor ready to probe. Reprobing
-    /// cancels that work and finds the new finality boundary from the target.
+    /// Restarts ancestry work covered by the finalized height. The round
+    /// floor also cancels subscriptions, but local ancestors remain usable.
+    /// Reprobing finds the new finality boundary from the target.
     fn on_finalized_tip(&mut self, finalized_round: Round, finalized_height: Height) {
         let restart = match &self.step {
-            WalkStep::Probe => {
-                !self.at_target()
-                    && (self.cursor.height() <= finalized_height
-                        || self.cursor.context().round <= finalized_round)
-            }
-            WalkStep::LookUpParent(_) | WalkStep::FetchParent { .. } => {
+            WalkStep::Probe => !self.at_target() && self.cursor.height() <= finalized_height,
+            WalkStep::LookUpParent(_) => self.parent_height() <= finalized_height,
+            WalkStep::FetchParent { .. } => {
                 self.parent_height() <= finalized_height || self.parent().0 <= finalized_round
             }
             WalkStep::InFlight | WalkStep::WaitForFinalized { .. } | WalkStep::Stopped => false,

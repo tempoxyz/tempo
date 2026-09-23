@@ -8,7 +8,9 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use futures::future::Either;
 
-use super::harness::{GENESIS, Harness, built_payload, make_block, round};
+use super::harness::{
+    FakeExecution, GENESIS, Harness, HarnessOptions, built_payload, make_block, round,
+};
 
 #[test_traced]
 fn valid_block_resolves_with_a_duration() {
@@ -255,31 +257,155 @@ fn syncing_at_the_finalized_tip_waits_for_finalization_delivery() {
 }
 
 #[test_traced]
-fn syncing_below_the_finalized_tip_abandons_verification() {
+fn syncing_ancestor_at_the_finalized_tip_waits_for_finalization_delivery() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        let ancestor = make_block(1, 1, GENESIS);
+        let target = make_block(2, 2, ancestor.digest());
+        let (a, t) = (ancestor.digest(), target.digest());
+        h.marshal.add_block(ancestor.clone());
+        let release = h
+            .execution
+            .script_delayed_new_payload(a, Ok(PayloadStatusEnum::Syncing));
+        h.execution
+            .script_new_payload(a, Ok(PayloadStatusEnum::Valid));
+        let mut verify = Box::pin(h.verify(round(3), target));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| h.execution.new_payloads() == vec![t, a])
+            .await;
+
+        h.deliver_tip(round(1), 1, a);
+        h.run_for(Duration::from_millis(10)).await;
+        release.send(()).unwrap();
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(futures::poll!(&mut verify).is_pending());
+        // Do not retry the target until finalization delivers the ancestor.
+        assert_eq!(h.execution.new_payloads(), vec![t, a]);
+
+        h.deliver_finalized(ancestor).await.unwrap();
+        assert!(verify.await.unwrap().is_some());
+        assert_eq!(h.execution.new_payloads(), vec![t, a, a, t]);
+    });
+}
+
+#[test_traced]
+fn historical_verification_is_abandoned_without_execution() {
+    for execution_ahead in [false, true] {
+        deterministic::Runner::default().start(|context| async move {
+            let b1 = make_block(1, 1, GENESIS);
+            let b2 = make_block(2, 2, b1.digest());
+            let b3 = make_block(3, 3, b2.digest());
+            let b4 = make_block(4, 4, b3.digest());
+            let execution = FakeExecution::new();
+            if execution_ahead {
+                for block in [&b1, &b2, &b3, &b4] {
+                    execution.seed_canonical_block(block);
+                }
+                execution.set_finalized(4, b4.digest());
+            }
+            let h = Harness::builder()
+                .execution(execution)
+                .harness_options(HarnessOptions {
+                    finalized_floor: if execution_ahead { 1 } else { 0 },
+                    finalized_tip: (round(3), 3, b3.digest()),
+                    ..Default::default()
+                })
+                .start(&context);
+
+            // Both canonical and conflicting historical targets are dropped,
+            // even when their request round is newer than network finality.
+            for target in [b2, make_block(4, 2, b1.digest())] {
+                assert!(h.verify(round(5), target).await.is_err());
+            }
+            assert!(h.execution.new_payloads().is_empty());
+            assert!(h.marshal.subscribe_log().is_empty());
+        });
+    }
+}
+
+#[test_traced]
+fn verification_of_the_finalized_tip_waits_for_its_execution() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
         let b1 = make_block(1, 1, GENESIS);
         let b2 = make_block(2, 2, b1.digest());
-        let b3 = make_block(3, 3, b2.digest());
-        let (d1, d2, d3) = (b1.digest(), b2.digest(), b3.digest());
-        h.deliver_tip(round(1), 1, d1);
-        h.deliver_finalized(b1).await.unwrap();
-        h.deliver_tip(round(3), 3, d3);
-        h.execution
-            .script_new_payload(d2, Ok(PayloadStatusEnum::Syncing));
-        // Requested from a round above finality, so the request is kept and
-        // the walk itself has to notice the conflict.
-        assert!(h.verify(round(4), b2.clone()).await.is_err());
-        assert_eq!(h.execution.new_payloads(), vec![d1, d2]);
+        let digest = b2.digest();
+        h.deliver_tip(round(2), 2, digest);
+        let mut verify = Box::pin(h.verify(round(3), b2.clone()));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| h.execution.new_payloads() == vec![digest])
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(futures::poll!(&mut verify).is_pending());
         assert!(h.marshal.subscribe_log().is_empty());
-
-        // Finalization continues without re-probing the abandoned candidate.
-        h.execution
-            .script_new_payload(d2, Ok(PayloadStatusEnum::Valid));
+        h.deliver_finalized(b1).await.unwrap();
+        assert!(futures::poll!(&mut verify).is_pending());
         h.deliver_finalized(b2).await.unwrap();
-        h.deliver_finalized(b3).await.unwrap();
-        assert_eq!(h.execution.new_payloads(), vec![d1, d2, d2, d3]);
+        assert!(verify.await.unwrap().is_some());
     });
+}
+
+#[test_traced]
+fn verification_abandons_a_digest_conflict_at_the_finalized_height() {
+    for status in [PayloadStatusEnum::Valid, PayloadStatusEnum::Syncing] {
+        for height in [1, 2] {
+            let status = status.clone();
+            deterministic::Runner::default().start(|context| async move {
+                let mut h = Harness::start_at_genesis(&context);
+                let finalized = make_block(1, 1, GENESIS);
+                let other = make_block(2, 1, GENESIS);
+                h.execution.add_body(other.clone());
+                let candidate = if height == 1 {
+                    other.clone()
+                } else {
+                    make_block(3, 2, other.digest())
+                };
+                h.deliver_tip(round(1), 1, finalized.digest());
+                h.execution
+                    .script_new_payload(candidate.digest(), Ok(status));
+                assert!(h.verify(round(4), candidate).await.is_err());
+                assert!(h.marshal.subscribe_log().is_empty());
+            });
+        }
+    }
+}
+
+#[test_traced]
+fn finality_overtaking_an_in_flight_target_abandons_verification() {
+    for status in [
+        PayloadStatusEnum::Valid,
+        PayloadStatusEnum::Syncing,
+        PayloadStatusEnum::Invalid {
+            validation_error: "rejected before finality advanced".into(),
+        },
+        PayloadStatusEnum::Accepted,
+    ] {
+        deterministic::Runner::default().start(|context| async move {
+            let mut h = Harness::start_at_genesis(&context);
+            let b1 = make_block(1, 1, GENESIS);
+            let b2 = make_block(2, 2, b1.digest());
+            let (d1, d2) = (b1.digest(), b2.digest());
+            let release = h.execution.script_delayed_new_payload(d1, Ok(status));
+            h.execution
+                .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+            let mut verify = Box::pin(h.verify(round(3), b1.clone()));
+            assert!(futures::poll!(&mut verify).is_pending());
+            h.wait_until(|| h.execution.new_payloads() == vec![d1])
+                .await;
+
+            h.deliver_tip(round(2), 2, d2);
+            // Drop the request before its in-flight engine response arrives.
+            assert!(verify.await.is_err());
+            release.send(()).unwrap();
+            h.run_for(Duration::from_millis(10)).await;
+            assert_eq!(h.execution.new_payloads(), vec![d1]);
+
+            // Ignoring the old response must leave finalization able to progress.
+            h.deliver_finalized(b1).await.unwrap();
+            h.deliver_finalized(b2).await.unwrap();
+            assert_eq!(h.execution.new_payloads(), vec![d1, d1, d2]);
+        });
+    }
 }
 
 #[test_traced]
