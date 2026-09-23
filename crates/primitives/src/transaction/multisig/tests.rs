@@ -111,9 +111,7 @@ fn sorted_secp_config(owners: &[(Address, u8)], threshold: u8) -> MultisigConfig
 }
 
 fn indexed_owner(index: u16) -> Address {
-    let mut bytes = [0u8; 20];
-    bytes[18..].copy_from_slice(&index.to_be_bytes());
-    Address::from(bytes)
+    Address::left_padding_from(&index.to_be_bytes())
 }
 
 fn valid_owner_signature_bytes() -> Bytes {
@@ -161,10 +159,10 @@ fn sign_p256_owner_approval_with_prehash(
 ) -> Bytes {
     let prehashed = B256::from_slice(Sha256::digest(digest).as_ref());
     let signature: p256::ecdsa::Signature = signing_key.sign_prehash(prehashed.as_slice()).unwrap();
-    let sig_bytes = signature.to_bytes();
+    let (r, s) = signature.split_bytes();
     PrimitiveSignature::P256(P256SignatureWithPreHash {
-        r: B256::from_slice(&sig_bytes[..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s"),
+        r: B256::from_slice(&r),
+        s: normalize_p256_s(&s).expect("p256 crate produces valid s"),
         pub_key_x,
         pub_key_y,
         pre_hash: true,
