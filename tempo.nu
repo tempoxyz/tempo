@@ -2459,7 +2459,7 @@ def "main bench" [
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
-    --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
+    --bloat: int = 1024                             # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
     --feature: string = ""                          # Git ref for feature (comparison mode)

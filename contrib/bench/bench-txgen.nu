@@ -219,7 +219,7 @@ def "main run" [
     --baseline-env: string = ""
     --feature-env: string = ""
     --bench-env: string = ""
-    --bloat: int = 0
+    --bloat: int = 1024
     --no-infra
     --baseline: string = ""
     --feature: string = ""
