@@ -67,9 +67,9 @@ fn spec() -> MultisigSimulationSpec {
 fn simulation_spec_roundtrips_config_as_rlp_bytes(threshold: u8, valid: bool) {
     let mut spec = spec();
     spec.config.threshold = threshold;
-    let json = serde_json::to_value(&spec).unwrap();
+    let mut json = serde_json::to_value(&spec).unwrap();
     assert!(json["config"].as_str().unwrap().starts_with("0x"));
-    let decoded = serde_json::from_value::<MultisigSimulationSpec>(json).unwrap();
+    let decoded = serde_json::from_value::<MultisigSimulationSpec>(json.clone()).unwrap();
     assert_eq!(decoded, spec);
     let account = Address::repeat_byte(9);
     assert_eq!(decoded.validate_owners(account).is_ok(), valid);
@@ -78,6 +78,10 @@ fn simulation_spec_roundtrips_config_as_rlp_bytes(threshold: u8, valid: bool) {
         create_mock_native_multisig_signature(account, &decoded).is_ok(),
         valid
     );
+    let mut encoded = alloy_rlp::encode(&spec.config);
+    encoded.push(0x80);
+    json["config"] = serde_json::to_value(Bytes::from(encoded)).unwrap();
+    assert!(serde_json::from_value::<MultisigSimulationSpec>(json).is_err());
 }
 
 #[test]

@@ -3,7 +3,6 @@ use super::revm_compat::create_mock_primitive_signature_with_webauthn_limit;
 #[cfg(feature = "revm")]
 use alloy_primitives::B256;
 use alloy_primitives::{Address, Bytes};
-use alloy_rlp::Decodable;
 use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -92,12 +91,7 @@ mod serde_multisig_config {
         deserializer: D,
     ) -> Result<MultisigConfig, D::Error> {
         let encoded = Bytes::deserialize(deserializer)?;
-        let mut input = encoded.as_ref();
-        let config = MultisigConfig::decode(&mut input).map_err(D::Error::custom)?;
-        if !input.is_empty() {
-            return Err(D::Error::custom("trailing native multisig config bytes"));
-        }
-        Ok(config)
+        alloy_rlp::decode_exact(&encoded).map_err(D::Error::custom)
     }
 }
 
