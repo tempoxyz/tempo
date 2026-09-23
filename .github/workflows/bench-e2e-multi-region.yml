@@ -55,6 +55,33 @@ jobs:
           aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance"
           aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance" \
             --query StandardOutputContent --output text > diagnostics/current-load-generator.log
+          command=$(cat <<'PROBE'
+          date -u
+          for bench_pid in $(pgrep -x bench); do
+            ps -L -p "$bench_pid" -o pid,tid,comm,wchan:25,etime,pcpu --sort=-pcpu | head -20
+            cat "/proc/$bench_pid/io"
+            for fd in /proc/"$bench_pid"/fd/*; do
+              target=$(readlink "$fd" || true)
+              case "$target" in
+                /tmp/*|/opt/tempo/load-generator/*)
+                  printf '%s %s\n' "$fd" "$target"
+                  stat -Lc 'size=%s' "$fd"
+                  sed -n '1,2p' "/proc/$bench_pid/fdinfo/${fd##*/}"
+                  ;;
+              esac
+            done
+          done
+          find /opt/tempo/load-generator -maxdepth 3 -type f \( -name 'txgen-report*' -o -name 'report.json' -o -name 'txgen.out' \) -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n'
+          for diagnostic_tool in perf gdb strace; do command -v "$diagnostic_tool" || true; done
+          PROBE
+          )
+          params=$(jq -cn --arg command "$command" '{commands:[$command],executionTimeout:["60"]}')
+          command_id=$(aws ssm send-command --document-name AWS-RunShellScript \
+            --instance-ids "$instance" --comment 'Read process and report progress for benchmark 35883541989' \
+            --parameters "$params" --query Command.CommandId --output text)
+          aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance"
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance" \
+            --query StandardOutputContent --output text > diagnostics/current-report-progress.log
       - name: Verify all ten sharded validator layout logs
         shell: bash
         run: |
