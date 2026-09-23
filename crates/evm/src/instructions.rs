@@ -45,6 +45,9 @@ impl StorageCreditsBackend for StorageCreditsContext<'_, '_, '_> {
         key: U256,
         skip_cold_load: bool,
     ) -> Result<SLoad, Self::Error> {
+        // Credit writes read the balance first. Load its account metadata too so the
+        // pending state carries it alongside slot changes into the block output.
+        self.state.host().load_account(&address, false, false)?;
         self.state.host().sload(&address, &key, skip_cold_load)
     }
 
@@ -132,28 +135,51 @@ mod tests {
     use alloy_primitives::{Bytes, Signature, TxKind};
     use evm2::{
         bytecode::Bytecode,
-        evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
+        evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
     };
+    use reth_execution_types::{BlockState, TransactionChanges, native_account};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
     use tempo_primitives::TempoTxEnvelope;
 
     #[test]
     fn sstore_consumes_tip1060_storage_credit() {
+        assert_sstore_storage_credit(0, 1, 1, 0);
+    }
+
+    #[test]
+    fn sstore_mints_tip1060_storage_credit() {
+        assert_sstore_storage_credit(1, 0, 0, 1);
+    }
+
+    fn assert_sstore_storage_credit(
+        initial_value: u8,
+        new_value: u8,
+        initial_credit: u64,
+        expected_credit: u64,
+    ) {
         let caller = Address::repeat_byte(0x11);
         let contract = Address::repeat_byte(0x22);
         let credit_slot = StorageCredits::slot(contract);
         let mut database = InMemoryDB::default();
+        let credit_account =
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef])));
+        database.insert_account_info(&STORAGE_CREDITS_ADDRESS, credit_account.clone());
         database.insert_account_info(
             &contract,
-            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[
-                0x60, 0x01, // PUSH1 1
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from(vec![
+                0x60, new_value, // PUSH1 new_value
                 0x60, 0x00, // PUSH1 0
                 0x55, // SSTORE
                 0x00, // STOP
             ]))),
         );
-        database.insert_account_storage(&STORAGE_CREDITS_ADDRESS, &credit_slot, &U256::ONE);
+        database.insert_account_storage(&contract, &U256::ZERO, &U256::from(initial_value));
+        database.insert_account_storage(
+            &STORAGE_CREDITS_ADDRESS,
+            &credit_slot,
+            &U256::from(initial_credit),
+        );
 
         let mut evm = build_tempo_evm(
             TempoHardfork::T7,
@@ -181,17 +207,32 @@ mod tests {
         let result = evm
             .transact(&Recovered::new_unchecked(tx, caller))
             .unwrap()
-            .commit();
-        assert!(result.status);
+            .detach();
+        assert!(result.result.status);
+
+        // Check the persisted block output: correct slot values alone do not guarantee that
+        // the storage-owning precompile retains its account metadata across this conversion.
+        let mut changes = TransactionChanges::default();
+        result.pending_state.visit(&mut changes).unwrap();
+        let mut block = BlockState::new();
+        block.commit(&changes);
+        let bundle = block.into_bundle();
         assert_eq!(
-            evm.sload(&STORAGE_CREDITS_ADDRESS, &credit_slot, false)
-                .unwrap()
-                .value,
-            U256::ZERO,
+            bundle.storage(&STORAGE_CREDITS_ADDRESS, credit_slot),
+            Some(U256::from(expected_credit)),
         );
         assert_eq!(
-            evm.sload(&contract, &U256::ZERO, false).unwrap().value,
-            U256::ONE,
+            bundle.storage(&contract, U256::ZERO),
+            Some(U256::from(new_value)),
+        );
+        let account = bundle.account(&STORAGE_CREDITS_ADDRESS).unwrap();
+        assert_eq!(
+            native_account(account.info.as_ref().unwrap()),
+            credit_account
+        );
+        assert_eq!(
+            native_account(account.original_info.as_ref().unwrap()),
+            credit_account,
         );
     }
 }
