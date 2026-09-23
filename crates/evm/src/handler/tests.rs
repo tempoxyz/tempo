@@ -1945,6 +1945,103 @@ fn test_2d_authorization_refund_for_absent_caller() {
     }
 }
 
+#[test_case::test_case(TempoHardfork::T1)]
+#[test_case::test_case(TempoHardfork::T1B)]
+#[test_case::test_case(TempoHardfork::T4)]
+fn test_aa_create_protocol_nonce_overflow(spec: TempoHardfork) {
+    use evm2::bytecode::Bytecode;
+
+    for nonce_key in [U256::ONE, TEMPO_EXPIRING_NONCE_KEY] {
+        for protocol_nonce in [u64::MAX, u64::MAX - 1] {
+            for with_followup_call in [false, true] {
+                let mut evm = test_evm(spec);
+                evm.overlay_db_mut().insert_account_info(
+                    &SIGNER,
+                    AccountInfo::default().with_nonce(protocol_nonce),
+                );
+                let target = Address::repeat_byte(0x22);
+                evm.overlay_db_mut().insert_account_info(
+                    &target,
+                    AccountInfo::default().with_code(Bytecode::new_legacy(
+                        alloy_primitives::bytes!("602a60005260206000f3"),
+                    )),
+                );
+                let mut calls = vec![Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    // Deploy a single STOP byte.
+                    input: alloy_primitives::bytes!("600060005360016000f3"),
+                }];
+                if with_followup_call {
+                    calls.push(Call {
+                        to: TxKind::Call(target),
+                        value: U256::ZERO,
+                        input: Bytes::new(),
+                    });
+                }
+                let tx = TempoTransaction {
+                    chain_id: 1,
+                    nonce_key,
+                    valid_before: Some(30.try_into().unwrap()),
+                    gas_limit: 1_000_000,
+                    fee_token: Some(PATH_USD_ADDRESS),
+                    calls,
+                    ..Default::default()
+                };
+                let (intrinsic, _, _) = intrinsic(spec, tx.clone(), secp256k1_signature()).unwrap();
+                let env = aa_env_for(SIGNER, tx);
+                let replay_hash = if spec.is_t1b() {
+                    env.unique_tx_identifier()
+                } else {
+                    env.tx_hash()
+                };
+                let result = evm
+                    .transact(&Recovered::new_unchecked(env, SIGNER))
+                    .unwrap()
+                    .commit();
+                assert!(result.status, "{result:?}");
+                let overflow = protocol_nonce == u64::MAX;
+                if overflow {
+                    assert_eq!(result.created_address, None);
+                    assert_eq!(
+                        result.total_gas_spent,
+                        intrinsic + if with_followup_call { 18 } else { 0 }
+                    );
+                }
+                if with_followup_call {
+                    assert_eq!(result.output.as_ref(), U256::from(42).to_be_bytes::<32>());
+                } else if overflow {
+                    assert!(result.output.is_empty());
+                }
+                assert_eq!(
+                    evm.state_mut().account(&SIGNER, false).unwrap().nonce(),
+                    u64::MAX
+                );
+                let created = evm
+                    .state_mut()
+                    .account_info_untracked(&SIGNER.create(protocol_nonce))
+                    .unwrap();
+                if overflow {
+                    assert!(
+                        created.is_none(),
+                        "overflow must not create an account: {created:?}"
+                    );
+                } else {
+                    assert_eq!(created.unwrap().code_hash, alloy_primitives::keccak256([0]));
+                }
+                StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+                    let nonces = NonceManager::new();
+                    if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                        assert!(nonces.is_expiring_nonce_seen(replay_hash, 0).unwrap());
+                    } else {
+                        assert_eq!(nonces.nonces[SIGNER][nonce_key].read().unwrap(), 1);
+                    }
+                });
+            }
+        }
+    }
+}
+
 /// Genesis revalidates nonce gas when a 2D CREATE also creates the caller account.
 #[test]
 fn test_genesis_2d_create_gas_revalidation() {
@@ -4055,6 +4152,88 @@ mod keychain {
             result.is_ok(),
             "Same-tx auth+use should pass when key does not exist, got: {result:?}"
         );
+    }
+
+    #[test_case::test_case(TempoHardfork::T1)]
+    #[test_case::test_case(TempoHardfork::T1A)]
+    fn test_same_tx_key_authorization_oog_fee_accounting(spec: TempoHardfork) {
+        for (gas_limit, gas_price) in [
+            (400_000, 1_000_000_000_000),
+            (400_000, 0),
+            (1_000_000, 1_000_000_000_000),
+        ] {
+            let (signer, user) = generate_keypair();
+            let (access_signer, key) = generate_keypair();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
+            );
+            let (mut evm, _) = make_evm(user, key, None, spec, None, false);
+            let balance = U256::from(10_000_000);
+            StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+                TIP20Setup::path_usd(user)
+                    .with_issuer(user)
+                    .with_mint(user, balance)
+                    .apply()
+                    .unwrap();
+            });
+            evm.state_mut().commit_transaction();
+            evm.state_mut().clear_transaction_state();
+
+            let tx = TempoTransaction {
+                chain_id: 1,
+                fee_token: Some(PATH_USD_ADDRESS),
+                max_priority_fee_per_gas: gas_price,
+                max_fee_per_gas: gas_price,
+                gas_limit,
+                calls: vec![call(Bytes::new())],
+                key_authorization: Some(signed),
+                ..Default::default()
+            };
+            let signature = access_signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+            let env: TempoTxEnv = Recovered::new_unchecked(
+                TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Keychain(
+                    KeychainSignature::new_v1(user, PrimitiveSignature::Secp256k1(signature)),
+                ))),
+                user,
+            )
+            .into();
+            let result = evm.transact(&Recovered::new_unchecked(env, user));
+            let rejected = gas_limit == 400_000 && gas_price != 0;
+            if rejected {
+                assert!(
+                    matches!(
+                        result.as_ref().err().and_then(invalid_transaction),
+                        Some(TempoInvalidTransaction::CollectFeePreTx(FeePaymentError::Other(reason)))
+                            if reason.contains("KeyNotFound")
+                    ),
+                    "paid same-tx authorization OOG must reject: {result:?}"
+                );
+                drop(result);
+            } else {
+                let result = result.unwrap().commit();
+                assert_eq!(result.status, gas_limit != 400_000);
+                if !result.status {
+                    assert_eq!(result.tx_gas_used(), gas_limit);
+                }
+            }
+            assert_eq!(
+                evm.state_mut().account(&user, false).unwrap().nonce(),
+                u64::from(!rejected),
+            );
+            StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+                let key_info = AccountKeychain::new().keys[user][key].read().unwrap();
+                assert_eq!(key_info.expiry != 0, gas_limit != 400_000);
+                if rejected {
+                    assert_eq!(
+                        TIP20Token::from_address(PATH_USD_ADDRESS).unwrap().balances[user]
+                            .read()
+                            .unwrap(),
+                        balance
+                    );
+                }
+            });
+        }
     }
 
     #[test]

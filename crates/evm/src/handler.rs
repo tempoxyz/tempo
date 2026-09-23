@@ -936,46 +936,58 @@ fn apply_key_authorization(
             },
         );
 
-    match result {
+    let gas_used = match result {
         Ok(()) => {
-            // Cache inline key authorization expiry.
-            host.ext_mut().key_expiry = authorization.expiry.map(|expiry| expiry.get());
-
-            // Same-transaction auth+use accounting is deliberately outside the
-            // historical T1/T1A metered authorization call. Admin delegation must
-            // keep the actual signer as the transaction key.
-            if state.same_tx_authorization {
-                let result = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-                    let mut keychain = AccountKeychain::new();
-                    keychain.set_transaction_key(authorization.key_id)?;
-                    if !fee.collected.is_zero() {
-                        keychain.authorize_transfer(fee.fee_payer, fee.fee_token, fee.collected)?;
-                    }
-                    Ok::<_, TempoPrecompileError>(())
-                });
-                result.map_err(|error| match error {
-                    TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                    error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
-                    error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
-                        reason: error.to_string(),
-                    }),
-                })?;
+            if metered {
+                gas.spent()
+            } else {
+                0
             }
-
-            Ok(if metered { gas.spent() } else { 0 })
         }
         Err(TempoPrecompileError::OutOfGas) if metered => {
             host.state_mut().rollback(checkpoint, features);
-            Ok(u64::MAX)
+            u64::MAX
         }
-        Err(error) => Err(match error {
-            TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-            error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
-            error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
-                reason: error.to_string(),
-            }),
-        }),
+        Err(error) => {
+            return Err(match error {
+                TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
+                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+                error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
+                    reason: error.to_string(),
+                }),
+            });
+        }
+    };
+
+    // Cache inline key authorization expiry.
+    host.ext_mut().key_expiry = authorization.expiry.map(|expiry| expiry.get());
+
+    // Same-transaction auth+use accounting also runs after a T1/T1A authorization
+    // OOG rollback: nonzero sender-paid fees must fail with KeyNotFound.
+    // Admin delegation must keep the actual signer as the transaction key.
+    if state.same_tx_authorization {
+        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+            let mut keychain = AccountKeychain::new();
+            keychain
+                .set_transaction_key(authorization.key_id)
+                .map_err(|error| match error {
+                    TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
+                    error => HandlerError::external(error),
+                })?;
+            if !fee.collected.is_zero() {
+                keychain
+                    .authorize_transfer(fee.fee_payer, fee.fee_token, fee.collected)
+                    .map_err(|error| match error {
+                        TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
+                        error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+                        error => invalid(FeePaymentError::Other(error.to_string())),
+                    })?;
+            }
+            Ok::<_, HandlerError>(())
+        })?;
     }
+
+    Ok(gas_used)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1322,12 +1334,6 @@ fn execute_batch(
         host.state_mut().rollback(checkpoint, features);
         return Ok(result);
     }
-    if calls.first().is_some_and(|call| call.to.is_create()) {
-        host.state_mut()
-            .account(&caller, false)
-            .map_err(HandlerError::Fatal)?
-            .bump_nonce();
-    }
     let mut reservoir = reservoir;
     let mut refund = 0i64;
     let mut state_gas = 0i64;
@@ -1345,17 +1351,32 @@ fn execute_batch(
             host.state_mut().prewarm(&address);
         }
         let mut gas = GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir);
-        let frame = prepare_initial_frame(
-            host,
-            caller,
-            create_nonce,
-            call.to,
-            &call.input,
-            call.value,
-            &mut gas,
-        )?;
-        let mut result =
-            execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir);
+        let mut result = if call.to.is_create()
+            && !host
+                .state_mut()
+                .account(&caller, false)
+                .map_err(HandlerError::Fatal)?
+                .bump_nonce()
+        {
+            // An exhausted creator nonce returns successfully without executing initcode
+            // or consuming execution gas. Subsequent batch calls still execute.
+            MessageResult::<TempoEvmTypes> {
+                stop: InstrStop::Return,
+                gas,
+                ..MessageResult::<TempoEvmTypes>::default()
+            }
+        } else {
+            let frame = prepare_initial_frame(
+                host,
+                caller,
+                create_nonce,
+                call.to,
+                &call.input,
+                call.value,
+                &mut gas,
+            )?;
+            execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir)
+        };
         // Check if call succeeded
         if !result.is_success() {
             // Revert checkpoint - rolls back ALL state changes from all executed calls.
