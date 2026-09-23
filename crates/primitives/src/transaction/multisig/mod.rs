@@ -69,7 +69,7 @@ pub struct MultisigOwner {
 }
 
 /// Native multisig configuration carried by an account signature.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct MultisigConfig {
@@ -262,46 +262,6 @@ impl MultisigConfig {
             input.extend_from_slice(owner.owner.as_slice());
             input.push(owner.weight);
         }
-    }
-}
-
-// This cannot use `RlpDecodable`: the derived `Vec` decoder has no element limit and would decode
-// an unbounded owner list before validation.
-impl alloy_rlp::Decodable for MultisigConfig {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let header = alloy_rlp::Header::decode(buf)?;
-        if !header.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
-        }
-        let body = *buf;
-        let (mut fields, rest) = body.split_at(header.payload_length);
-        let salt = <B256 as alloy_rlp::Decodable>::decode(&mut fields)?;
-        let version = <u64 as alloy_rlp::Decodable>::decode(&mut fields)?;
-        let threshold = <u8 as alloy_rlp::Decodable>::decode(&mut fields)?;
-
-        let mut owner_fields = alloy_rlp::Header::decode_bytes(&mut fields, true)?;
-        let mut owners = Vec::new();
-        while !owner_fields.is_empty() {
-            if owners.len() == MAX_MULTISIG_OWNERS {
-                return Err(alloy_rlp::Error::Custom("too many multisig owners"));
-            }
-            owners.push(<MultisigOwner as alloy_rlp::Decodable>::decode(
-                &mut owner_fields,
-            )?);
-        }
-        if !fields.is_empty() {
-            return Err(alloy_rlp::Error::Custom(
-                "unexpected trailing multisig config fields",
-            ));
-        }
-
-        *buf = rest;
-        Ok(Self {
-            salt,
-            version,
-            threshold,
-            owners,
-        })
     }
 }
 
