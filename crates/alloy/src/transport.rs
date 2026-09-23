@@ -258,12 +258,6 @@ where
     }
 }
 
-fn validate_send_raw_request(request: &SerializedRequest) -> Result<&str, TransportError> {
-    let raw_tx = extract_raw_transaction(request.serialized().get())?;
-    decode_unsigned_tempo_aa(raw_tx)?;
-    Ok(raw_tx)
-}
-
 impl<D, R> RelayTransport<D, R> {
     async fn handle_sponsored_send_raw_transaction(
         &mut self,
@@ -275,7 +269,7 @@ impl<D, R> RelayTransport<D, R> {
     {
         let method = request.method();
         debug_assert!(SEND_METHODS.contains(&method));
-        let raw_tx = validate_send_raw_request(&request)?;
+        let raw_tx = extract_raw_transaction(request.serialized().get())?;
         let unsigned_tx = decode_unsigned_tempo_aa(raw_tx)?;
         let sponsor_raw_tx = encode_for_fee_payer_service(&unsigned_tx);
 

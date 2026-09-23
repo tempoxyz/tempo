@@ -1761,6 +1761,10 @@ impl<'de> Deserialize<'de> for PersistedSelector {
     {
         let encoded = Cow::<'de, str>::deserialize(deserializer)?;
         if let Some(hex) = encoded.strip_prefix("0x") {
+            if let Ok(selector) = alloy_primitives::hex::decode_to_array(hex) {
+                return Ok(Self(selector));
+            }
+            // Preserve the existing error messages and precedence for malformed selectors.
             let bytes = alloy_primitives::hex::decode(hex).map_err(de::Error::custom)?;
             return bytes
                 .try_into()
@@ -3548,6 +3552,37 @@ mod tests {
         assert_eq!(store.access_keys().unwrap()[0].address(), signer.address());
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn persisted_selector_preserves_hex_values_and_errors() {
+        for (input, expected) in [
+            ("0x00000000", [0; 4]),
+            ("0xaAbBcCdD", [0xaa, 0xbb, 0xcc, 0xdd]),
+            ("0x0x01020304", [1, 2, 3, 4]),
+        ] {
+            let selector: PersistedSelector =
+                serde_json::from_value(serde_json::json!(input)).unwrap();
+            assert_eq!(selector.0, expected, "{input}");
+        }
+
+        for input in [
+            "0x",
+            "0x010203",
+            "0x0102030405",
+            "0x1",
+            "0xgg",
+            "0x010203gg",
+            "0x0xgg",
+        ] {
+            let expected = match alloy_primitives::hex::decode(input.strip_prefix("0x").unwrap()) {
+                Ok(_) => "call selector must contain exactly four bytes".to_owned(),
+                Err(err) => err.to_string(),
+            };
+            let err =
+                serde_json::from_value::<PersistedSelector>(serde_json::json!(input)).unwrap_err();
+            assert_eq!(err.to_string(), expected, "{input}");
+        }
     }
 
     #[test]

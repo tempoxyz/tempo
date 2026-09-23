@@ -96,14 +96,7 @@ where
                         timestamp: ts,
                         ..Default::default()
                     });
-                    format!(
-                        "0x{}",
-                        id.hash
-                            .0
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<String>()
-                    )
+                    alloy_primitives::hex::encode_prefixed(id.hash.0)
                 });
                 Some(ForkInfo {
                     name: fork.name().to_string(),
