@@ -24,30 +24,31 @@ shadow worker are pipelined through a one-entry result queue: replay records bot
 the control result into both executors. Every shadow transaction therefore receives the same
 canonical prestate and accumulated block context as its control, so an early candidate difference
 cannot cause derivative mismatches in later transactions. Candidate pre-block and post-block
-behavior is still observed, with transaction probes and candidate post-block execution based on
+behavior is still observed, with shadow transactions and candidate post-block execution based on
 canonical state.
 
 All execution uses isolated in-memory overlays. State is never persisted, shared with block
 production, submitted to fork choice, or carried into the next block. Every block starts
-independently from its own canonical parent.
+independently from its own canonical parent. Replay executes only canonical transactions; it does
+not generate candidate-only transactions.
 
 The control also acts as a live re-execution test for the shipped binary: it continuously checks
 that the binary can execute canonical blocks successfully and reproduce their receipts under the
 active rules, catching STF-breaking changes before shadow differences are interpreted. A control
 failure terminates live replay because an unverified baseline cannot be attributed to the candidate
 rules. This validates receipt reproduction rather than full canonical state equality. A rejected
-shadow transaction is recorded as a finding; replay still commits the control result and probes
+shadow transaction is recorded as a finding; replay still commits the control result and executes
 later transactions. A failed pre- or post-block boundary is retained as a finding, and boundaries
 that could not execute are reported as incomplete coverage.
 
 ## Comparison model
 
-After execution finishes, analysis compares pre-block changes, transaction probes, and post-block
+After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
 changes in order. Transaction comparisons cover success, output, application and fee logs, receipt
 log order, receipt and block gas, and net account and storage transitions. This compares observable
 effects at completed boundaries, not opcode traces or internal write history.
 
-Because every transaction probe starts from the same canonical prefix, findings at later
+Because every shadow transaction starts from the same canonical prefix, findings at later
 transactions remain independent and are all compared. Fee provenance is recorded for classification
 but does not by itself exempt a state difference.
 

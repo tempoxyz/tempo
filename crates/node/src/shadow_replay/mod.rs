@@ -204,7 +204,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .chain_spec()
             .tempo_hardfork_at(block.timestamp());
         let rules = analysis::between(canonical, self.shadow_hardfork);
-        let report = Report::analyze(&real, &shadow, &rules);
+        let report = Report::analyze(&real, &shadow, &rules, &block.body().transactions);
         let outcome = report.outcome(&shadow);
         metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared")
             .increment(report.boundaries_evaluated as u64);
@@ -358,7 +358,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         }
         shadow.pre_block = Some(drain(executor.evm_mut().db_mut()));
 
-        // Candidate pre-block changes are evidence, not input to transaction probes.
+        // Candidate pre-block changes are evidence, not input to shadow transactions.
         executor.evm_mut().db_mut().cache = canonical_cache;
         executor.evm_mut().db_mut().bal_state = canonical_bal;
 
@@ -380,7 +380,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
                 return Ok(shadow);
             };
             executor.commit_transaction(canonical);
-            // The canonical commit is prestate for the next probe, not shadow evidence.
+            // The canonical commit is prestate for the next transaction, not shadow evidence.
             let _ = drain(executor.evm_mut().db_mut());
         }
 
@@ -422,13 +422,21 @@ fn transition(state: EvmState) -> TransitionState {
     evidence
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TxOutcome {
+    #[default]
+    Success,
+    Revert,
+    Halt,
+}
+
 /// Execution evidence retained for one successfully committed transaction.
 ///
 /// Section/block gas consumption is tracked separately because it can diverge even when
 /// receipt gas is unchanged.
 #[derive(Debug, Default)]
 struct ObservedTx {
-    success: bool,
+    outcome: TxOutcome,
     gas_used: u64,
     receipt_logs_hash: B256,
     block_gas_used: u64,
@@ -454,7 +462,11 @@ impl ObservedTx {
         }
         Self {
             block_gas_used: result.block_gas_used(),
-            success: execution.is_success(),
+            outcome: match execution {
+                reth_revm::context::result::ExecutionResult::Success { .. } => TxOutcome::Success,
+                reth_revm::context::result::ExecutionResult::Revert { .. } => TxOutcome::Revert,
+                reth_revm::context::result::ExecutionResult::Halt { .. } => TxOutcome::Halt,
+            },
             gas_used: execution.tx_gas_used(),
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
@@ -519,7 +531,7 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
         };
         let gas_used = receipt.cumulative_gas_used - previous_gas;
         previous_gas = receipt.cumulative_gas_used;
-        tx.success == receipt.success
+        (tx.outcome == TxOutcome::Success) == receipt.success
             && tx.gas_used == gas_used
             && tx.receipt_logs_hash == hash_logs(&receipt.logs)
     })
@@ -532,14 +544,11 @@ fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
 }
 
 fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChainSpec {
-    let mut c = canonical.clone();
-    for &fork in TempoHardfork::VARIANTS
-        .iter()
-        .take_while(|&&f| f <= hardfork)
-    {
-        c.inner.hardforks.insert(fork, ForkCondition::Timestamp(0));
-    }
-    c
+    let mut spec = canonical.clone();
+    spec.inner
+        .hardforks
+        .insert(hardfork, ForkCondition::Timestamp(0));
+    spec
 }
 
 #[cfg(test)]
@@ -552,15 +561,14 @@ mod tests {
     };
 
     #[test]
-    fn shadow_schedule_activates_prefix_without_mutating_canonical() {
+    fn shadow_schedule_only_overrides_candidate() {
         let canonical = TempoChainSpec::mainnet();
-        let activation = canonical.tempo_fork_activation(TempoHardfork::T13);
+        let t11 = canonical.tempo_fork_activation(TempoHardfork::T11);
+        let t13 = canonical.tempo_fork_activation(TempoHardfork::T13);
         let shadow = shadow_spec(&canonical, TempoHardfork::T12);
         assert_eq!(shadow.tempo_hardfork_at(0), TempoHardfork::T12);
-        assert_eq!(
-            canonical.tempo_fork_activation(TempoHardfork::T13),
-            activation
-        );
+        assert_eq!(shadow.tempo_fork_activation(TempoHardfork::T11), t11);
+        assert_eq!(canonical.tempo_fork_activation(TempoHardfork::T13), t13);
     }
 
     #[test]

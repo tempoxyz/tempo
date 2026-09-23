@@ -5,6 +5,7 @@ use super::{Boundary, Evidence, ReplayOutcome};
 use alloy_primitives::{Address, U256};
 use reth_revm::db::{TransitionAccount, TransitionState};
 use std::{collections::BTreeMap, fmt::Debug};
+use tempo_primitives::TempoTxEnvelope;
 
 mod expectations;
 pub(super) use expectations::between;
@@ -39,12 +40,21 @@ impl Report {
         }
     }
 
-    pub(super) fn analyze(real: &Evidence, shadow: &Evidence, rules: &[&Expectation]) -> Self {
+    pub(super) fn analyze(
+        real: &Evidence,
+        shadow: &Evidence,
+        rules: &[&Expectation],
+        txs: &[TempoTxEnvelope],
+    ) -> Self {
         let mut report = Self::default();
         let context = |boundary| Context {
             boundary,
             real,
             shadow,
+            tx: match boundary {
+                Boundary::Transaction(index) => txs.get(index),
+                _ => None,
+            },
         };
         if let Some((real, shadow)) = real.pre_block.as_ref().zip(shadow.pre_block.as_ref()) {
             report.record_state_diffs(&context(Boundary::PreBlock), real, shadow, rules);
@@ -59,7 +69,7 @@ impl Report {
             match shadow {
                 Ok(shadow) => {
                     let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
-                    diff.record("success", |tx| tx.success);
+                    diff.record("success", |tx| tx.outcome == super::TxOutcome::Success);
                     diff.record("output", |tx| tx.output_hash);
                     diff.record("logs", |tx| tx.logs_hash);
                     diff.record("fee_logs", |tx| tx.fee_logs_hash);

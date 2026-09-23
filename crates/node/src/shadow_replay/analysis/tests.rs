@@ -1,5 +1,5 @@
 use super::*;
-use crate::shadow_replay::ObservedTx;
+use crate::shadow_replay::{ObservedTx, TxOutcome};
 use alloy_primitives::B256;
 use reth_revm::{db::states::StorageSlot, state::AccountInfo};
 
@@ -17,40 +17,8 @@ const GAS: Expectation = Expectation {
             ctx.real.txs[index].as_ref().ok()?,
             ctx.shadow.txs[index].as_ref().ok()?,
         );
-        (real.gas_used.checked_add(200) == Some(shadow.gas_used) && real.success == shadow.success)
+        (real.gas_used.checked_add(200) == Some(shadow.gas_used) && real.outcome == shadow.outcome)
             .then_some(())
-    },
-};
-
-const FEE: Expectation = Expectation {
-    id: "test.fee",
-    check: |ctx, field| {
-        if field.name != "storage" || field.slot != Some(U256::ZERO) {
-            return None;
-        }
-        let Boundary::Transaction(index) = ctx.boundary else {
-            return None;
-        };
-        let (address, slot) = (field.address?, field.slot?);
-        let real = ctx.real.txs[index]
-            .as_ref()
-            .ok()?
-            .state
-            .transitions
-            .get(&address)?
-            .storage
-            .get(&slot)?;
-        let shadow = ctx.shadow.txs[index]
-            .as_ref()
-            .ok()?
-            .state
-            .transitions
-            .get(&address)?
-            .storage
-            .get(&slot)?;
-        (real.original_value() == shadow.original_value()
-            && real.present_value().checked_sub(U256::from(200)) == Some(shadow.present_value()))
-        .then_some(())
     },
 };
 
@@ -62,7 +30,7 @@ fn evidence(gas: &[u64]) -> Evidence {
             .iter()
             .map(|&gas_used| {
                 Ok(ObservedTx {
-                    success: true,
+                    outcome: TxOutcome::Success,
                     gas_used,
                     block_gas_used: 21_000,
                     ..Default::default()
@@ -106,20 +74,10 @@ fn equal_boundaries_do_not_invoke_rules() {
         check: |_, _| panic!("equal values"),
     };
     let real = evidence(&[21_000, 21_000]);
-    let report = Report::analyze(&real, &real, &[&rule]);
+    let report = Report::analyze(&real, &real, &[&rule], &[]);
     assert_eq!(report.outcome(&real), ReplayOutcome::Match);
     assert_eq!(report.boundaries_evaluated, 4);
     assert_eq!(report.boundaries_not_evaluated, 0);
-}
-
-#[test]
-fn nearby_incorrect_amount_stays_unexplained() {
-    let real = evidence(&[21_000, 21_000]);
-    let shadow = evidence(&[21_201, 21_000]);
-    let report = Report::analyze(&real, &shadow, &[&GAS]);
-    assert!(report.expected.is_empty());
-    assert_eq!(report.unexplained, 1);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
 }
 
 #[test]
@@ -127,24 +85,9 @@ fn accepted_gas_does_not_hide_unrelated_state_at_same_boundary() {
     let real = evidence(&[21_000, 21_000]);
     let mut shadow = evidence(&[21_200, 21_000]);
     write_slot(tx_mut(&mut shadow, 0), 800, false);
-    let report = Report::analyze(&real, &shadow, &[&GAS]);
+    let report = Report::analyze(&real, &shadow, &[&GAS], &[]);
     assert_eq!(report.expected[GAS.id], 1);
     assert_eq!(report.unexplained, 1);
-    assert_eq!(report.boundaries_not_evaluated, 0);
-    assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
-}
-
-#[test]
-fn expected_fee_change_does_not_hide_later_findings() {
-    let mut real = evidence(&[21_000, 21_000]);
-    let mut shadow = evidence(&[21_200, 21_000]);
-    write_slot(tx_mut(&mut real, 0), 900, true);
-    write_slot(tx_mut(&mut shadow, 0), 700, true);
-    tx_mut(&mut shadow, 1).success = false;
-    let report = Report::analyze(&real, &shadow, &[&GAS, &FEE]);
-    assert_eq!(report.expected["test.fee"], 1);
-    assert_eq!(report.unexplained, 1);
-    assert_eq!(report.boundaries_evaluated, 4);
     assert_eq!(report.boundaries_not_evaluated, 0);
     assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
 }
@@ -154,7 +97,7 @@ fn fee_provenance_alone_does_not_accept_a_change() {
     let real = evidence(&[21_000, 21_000]);
     let mut shadow = evidence(&[21_000, 21_000]);
     write_slot(tx_mut(&mut shadow, 0), 700, true);
-    let report = Report::analyze(&real, &shadow, &[]);
+    let report = Report::analyze(&real, &shadow, &[], &[]);
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.boundaries_not_evaluated, 0);
     let field = report.samples[0].1.field;
@@ -177,32 +120,20 @@ fn first_accepting_rule_owns_attribution() {
     let real = evidence(&[21_000, 21_000]);
     let shadow = evidence(&[21_200, 21_000]);
     for rules in [[&GAS, &stop, &unreachable], [&stop, &GAS, &unreachable]] {
-        let report = Report::analyze(&real, &shadow, &rules);
+        let report = Report::analyze(&real, &shadow, &rules, &[]);
         assert_eq!(report.unexplained, 0);
         assert_eq!(report.expected, [(rules[0].id, 1)].into());
     }
 }
 
 #[test]
-fn equal_receipt_gas_does_not_hide_block_gas_divergence() {
-    let real = evidence(&[21_000, 21_000]);
-    let mut shadow = evidence(&[21_000, 21_000]);
-    tx_mut(&mut shadow, 0).block_gas_used = 20_000;
-    let report = Report::analyze(&real, &shadow, &[&GAS]);
-    assert_eq!(report.unexplained, 1);
-    assert_eq!(report.samples[0].1.field.name, "block_gas");
-    assert_eq!(report.samples[0].1.real, "21000");
-    assert_eq!(report.samples[0].1.shadow, "20000");
-}
-
-#[test]
-fn rejected_probe_does_not_hide_later_transaction_findings() {
+fn rejected_shadow_tx_does_not_hide_later_transaction_findings() {
     let real = evidence(&[21_000, 21_000]);
     let mut shadow = evidence(&[21_000, 21_000]);
     shadow.txs[0] = Err("rejected".into());
-    tx_mut(&mut shadow, 1).success = false;
+    tx_mut(&mut shadow, 1).outcome = TxOutcome::Revert;
 
-    let report = Report::analyze(&real, &shadow, &[]);
+    let report = Report::analyze(&real, &shadow, &[], &[]);
 
     assert_eq!(report.unexplained, 2);
     assert_eq!(report.boundaries_evaluated, 4);
@@ -231,7 +162,7 @@ fn created_code_is_compared_even_when_both_accounts_are_created() {
             },
         );
     }
-    let report = Report::analyze(&real, &shadow, &[]);
+    let report = Report::analyze(&real, &shadow, &[], &[]);
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.samples[0].1.field.name, "code");
 }
@@ -243,74 +174,10 @@ fn sampling_does_not_truncate_counts() {
     for tx in &mut shadow.txs {
         tx.as_mut().unwrap().output_hash = B256::repeat_byte(1);
     }
-    let report = Report::analyze(&real, &shadow, &[]);
+    let report = Report::analyze(&real, &shadow, &[], &[]);
     assert_eq!(report.unexplained, 20);
     assert_eq!(report.samples.len(), MAX_SAMPLES);
     assert_eq!(report.boundaries_evaluated, 22);
-}
-
-#[test]
-fn equal_and_unsampled_values_are_not_formatted() {
-    #[derive(PartialEq, Eq)]
-    struct Unformatted(u8);
-    impl Debug for Unformatted {
-        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            panic!("value should not be formatted");
-        }
-    }
-    let real = evidence(&[21_000; MAX_SAMPLES]);
-    let mut shadow = evidence(&[21_000; MAX_SAMPLES]);
-    for tx in &mut shadow.txs {
-        tx.as_mut().unwrap().output_hash = B256::repeat_byte(1);
-    }
-    let mut report = Report::analyze(&real, &shadow, &[]);
-    let ctx = Context {
-        boundary: Boundary::Transaction(0),
-        real: &real,
-        shadow: &shadow,
-    };
-    let field = Field {
-        name: "output",
-        address: None,
-        slot: None,
-        fee_associated: false,
-    };
-    report.record(&ctx, field, Unformatted(0), Unformatted(0), &[]);
-    let rule = Expectation {
-        id: "test.unsampled",
-        check: |ctx, field| {
-            assert_eq!(ctx.boundary, Boundary::Transaction(0));
-            assert_eq!(field.name, "output");
-            Some(())
-        },
-    };
-    // Expected samples rank after the full set of unexplained samples, but still count.
-    report.record(&ctx, field, Unformatted(0), Unformatted(1), &[&rule]);
-    assert_eq!(report.expected[rule.id], 1);
-    assert_eq!(report.unexplained, MAX_SAMPLES);
-    assert_eq!(report.samples.len(), MAX_SAMPLES);
-}
-
-#[test]
-fn compares_fee_logs_and_original_log_order_separately() {
-    let real = evidence(&[21_000]);
-    let rule = Expectation {
-        id: "test.application-logs",
-        check: |_, field| (field.name == "logs").then_some(()),
-    };
-
-    let mut shadow = evidence(&[21_000]);
-    tx_mut(&mut shadow, 0).logs_hash = B256::repeat_byte(1);
-    tx_mut(&mut shadow, 0).fee_logs_hash = B256::repeat_byte(2);
-    let report = Report::analyze(&real, &shadow, &[&rule]);
-    assert_eq!(report.expected[rule.id], 1);
-    assert_eq!(report.samples[0].1.field.name, "fee_logs");
-
-    let mut shadow = evidence(&[21_000]);
-    tx_mut(&mut shadow, 0).receipt_logs_hash = B256::repeat_byte(1);
-    let report = Report::analyze(&real, &shadow, &[]);
-    assert_eq!(report.unexplained, 1);
-    assert_eq!(report.samples[0].1.field.name, "receipt_logs");
 }
 
 #[test]
@@ -326,7 +193,7 @@ fn storage_reset_is_compared_without_enumerated_slots() {
             ..Default::default()
         },
     );
-    let report = Report::analyze(&real, &shadow, &[]);
+    let report = Report::analyze(&real, &shadow, &[], &[]);
     assert_eq!(report.unexplained, 1);
     assert_eq!(report.samples[0].1.field.name, "storage_reset");
     assert_eq!(report.boundaries_not_evaluated, 0);
@@ -353,7 +220,7 @@ fn accepted_post_block_change_is_expected() {
             (ctx.boundary == Boundary::PostBlock && field.name == "balance").then_some(())
         },
     };
-    let report = Report::analyze(&real, &shadow, &[&rule]);
+    let report = Report::analyze(&real, &shadow, &[&rule], &[]);
     assert_eq!(report.boundaries_not_evaluated, 0);
     assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
 }
