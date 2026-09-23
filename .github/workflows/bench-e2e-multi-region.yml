@@ -22,21 +22,24 @@ jobs:
         run: |
           set -euo pipefail
           bucket=tempo-benchmark-artifacts-934822761402-us-east-1
-          prefix=runs/bench-e2e-multi-region-35883541989-1/artifacts/load-generator/baseline-1/
           mkdir -p diagnostics
+          for phase in baseline-1 feature-1; do
+          prefix="runs/bench-e2e-multi-region-35883541989-1/artifacts/load-generator/$phase/"
+          mkdir -p "diagnostics/$phase"
           aws s3api list-objects-v2 --bucket "$bucket" --prefix "$prefix" \
             --query 'Contents[?ends_with(Key, `-results.tar.gz`)].Key' --output json > result-keys.json
           jq -r '.[]?' result-keys.json | while IFS= read -r key; do
             [[ "$key" == "$prefix"*"-results.tar.gz" ]] || exit 1
             aws s3 cp "s3://$bucket/$key" saved-results.tar.gz --only-show-errors
-            tar -tzf saved-results.tar.gz > diagnostics/archive-members.txt
-            for member in load-generator.log txgen-send.err txgen-generate.err load-generator-exit-code.txt; do
+            tar -tzf saved-results.tar.gz > "diagnostics/$phase/archive-members.txt"
+            for member in load-generator.log txgen-send.err txgen-generate.err load-generator-exit-code.txt report.json txgen-report.json; do
               if tar -tzf saved-results.tar.gz | grep -Fx "./$member" >/dev/null; then
-                tar -xOzf saved-results.tar.gz "./$member" > "diagnostics/$member"
+                tar -xOzf saved-results.tar.gz "./$member" > "diagnostics/$phase/$member"
               fi
             done
           done
-          test -s diagnostics/load-generator.log
+          done
+          test -s diagnostics/baseline-1/load-generator.log
       - name: Read current experiment load-generator diagnostics
         shell: bash
         run: |
