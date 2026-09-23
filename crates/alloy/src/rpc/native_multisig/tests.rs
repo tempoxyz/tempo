@@ -60,14 +60,23 @@ fn spec() -> MultisigSimulationSpec {
     }
 }
 
-#[test]
-fn simulation_spec_roundtrips_config_as_rlp_bytes() {
-    let spec = spec();
+#[test_case::test_case(2, true; "valid")]
+#[test_case::test_case(0, false; "zero threshold")]
+#[test_case::test_case(4, false; "unreachable threshold")]
+#[test_case::test_case(9, false; "threshold over cap")]
+fn simulation_spec_roundtrips_config_as_rlp_bytes(threshold: u8, valid: bool) {
+    let mut spec = spec();
+    spec.config.threshold = threshold;
     let json = serde_json::to_value(&spec).unwrap();
     assert!(json["config"].as_str().unwrap().starts_with("0x"));
+    let decoded = serde_json::from_value::<MultisigSimulationSpec>(json).unwrap();
+    assert_eq!(decoded, spec);
+    let account = Address::repeat_byte(9);
+    assert_eq!(decoded.validate_owners(account).is_ok(), valid);
+    #[cfg(feature = "revm")]
     assert_eq!(
-        serde_json::from_value::<MultisigSimulationSpec>(json).unwrap(),
-        spec
+        create_mock_native_multisig_signature(account, &decoded).is_ok(),
+        valid
     );
 }
 
