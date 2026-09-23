@@ -23,6 +23,7 @@ pub mod storage_credits;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
+pub mod tip20_funder;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
