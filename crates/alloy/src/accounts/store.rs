@@ -1937,13 +1937,8 @@ impl TryFrom<PersistedKeyAuthorization> for SignedKeyAuthorization {
             PersistedKeyAuthorization::Rlp(value) => {
                 let bytes = alloy_primitives::hex::decode(value)
                     .map_err(|_| PersistedKeyError::InvalidAuthorizationRlp)?;
-                let mut encoded = bytes.as_slice();
-                let authorization = <Self as alloy_rlp::Decodable>::decode(&mut encoded)
-                    .map_err(|_| PersistedKeyError::InvalidAuthorizationRlp)?;
-                if !encoded.is_empty() {
-                    return Err(PersistedKeyError::InvalidAuthorizationRlp);
-                }
-                Ok(authorization)
+                alloy_rlp::decode_exact(&bytes)
+                    .map_err(|_| PersistedKeyError::InvalidAuthorizationRlp)
             }
         }
     }
@@ -3822,7 +3817,7 @@ mod tests {
             "chainId": 4217,
             "keyType": "secp256k1",
             "privateKey": alloy_primitives::hex::encode_prefixed(access_key.to_bytes()),
-            "keyAuthorization": alloy_primitives::hex::encode_prefixed(encoded),
+            "keyAuthorization": alloy_primitives::hex::encode_prefixed(&encoded),
         }]));
 
         let store = TempoAccountsStore::open(&path).unwrap();
@@ -3830,6 +3825,14 @@ mod tests {
             store.access_keys().unwrap()[0].key_authorization(),
             Some(&authorization)
         );
+
+        encoded.push(0x80);
+        assert!(matches!(
+            SignedKeyAuthorization::try_from(PersistedKeyAuthorization::Rlp(
+                alloy_primitives::hex::encode_prefixed(encoded),
+            )),
+            Err(PersistedKeyError::InvalidAuthorizationRlp)
+        ));
 
         fs::remove_file(path).unwrap();
     }
