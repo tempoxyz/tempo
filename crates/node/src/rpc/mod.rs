@@ -17,7 +17,7 @@ use futures::TryFutureExt;
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_primitives_traits::{HeaderTy, SealedHeaderFor, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcConvert, RpcTxReq};
-use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
+use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
@@ -53,13 +53,15 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::{
     EthApiError, EthApiSettings, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
-    SignError, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    RpcInvalidTransactionError, SignError, builder::config::PendingBlockKind,
+    receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{FeeTokenResolver, TempoEvmEnv, TempoEvmTypes, TempoStateAccess};
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
+use tempo_transaction_pool::TempoTransactionPoolExt;
 use tokio::sync::Mutex;
 
 /// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
@@ -75,7 +77,7 @@ pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
 pub trait TempoEthApiBounds:
     RpcNodeCore<
         Primitives = TempoPrimitives,
-        Pool: TransactionPool<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
+        Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
         Evm: ConfigureEvm<
             Primitives = TempoPrimitives,
             BlockExecutorFactory: BlockExecutorFactory<
@@ -91,7 +93,7 @@ pub trait TempoEthApiBounds:
 impl<N> TempoEthApiBounds for N where
     N: RpcNodeCore<
             Primitives = TempoPrimitives,
-            Pool: TransactionPool<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
+            Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
             Evm: ConfigureEvm<
                 Primitives = TempoPrimitives,
                 BlockExecutorFactory: BlockExecutorFactory<
@@ -277,7 +279,6 @@ where
             let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                 0 // expiring nonce must be 0
             } else {
-                // 2D nonce: fetch from storage
                 let from = if let Some(from) = request.from {
                     from
                 } else {
@@ -285,13 +286,25 @@ where
                 };
                 let slot = NonceManager::new().nonces[from][nonce_key].slot();
                 self.spawn_blocking_io(move |this| {
-                    this.latest_state()?
+                    let on_chain_nonce: u64 = this
+                        .latest_state()?
                         .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
-                        .map_err(Self::Error::from_eth_err)
+                        .map_err(Self::Error::from_eth_err)?
+                        .unwrap_or_default()
+                        .saturating_to();
+
+                    // Pending 2D transactions form a gap-free sequence on each lane.
+                    let highest_pending_nonce = this
+                        .pool()
+                        .get_pending_transactions_by_address_and_nonce_key(from, nonce_key)
+                        .iter()
+                        .map(|tx| tx.nonce())
+                        .max();
+
+                    next_lane_nonce(on_chain_nonce, highest_pending_nonce)
+                        .map_err(Self::Error::from)
                 })
                 .await?
-                .unwrap_or_default()
-                .saturating_to()
             };
 
             Ok(nonce)
@@ -583,5 +596,39 @@ where
             .build();
 
         Ok(TempoEthApi::new(eth_api))
+    }
+}
+
+/// Returns the next lane nonce, accounting for pending transactions without regressing state.
+fn next_lane_nonce(
+    on_chain_nonce: u64,
+    highest_pending_nonce: Option<u64>,
+) -> Result<u64, EthApiError> {
+    match highest_pending_nonce {
+        Some(pending) if pending >= on_chain_nonce => {
+            pending
+                .checked_add(1)
+                .ok_or(EthApiError::InvalidTransaction(
+                    RpcInvalidTransactionError::NonceMaxValue,
+                ))
+        }
+        _ => Ok(on_chain_nonce),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_lane_nonce_handles_stale_entries_and_overflow() {
+        assert_eq!(next_lane_nonce(5, Some(3)).unwrap(), 5);
+
+        assert!(matches!(
+            next_lane_nonce(0, Some(u64::MAX)),
+            Err(EthApiError::InvalidTransaction(
+                RpcInvalidTransactionError::NonceMaxValue
+            ))
+        ));
     }
 }

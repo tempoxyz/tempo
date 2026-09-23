@@ -13,6 +13,7 @@ use evm2::{
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
+use reth_chainspec::EthChainSpec as _;
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
     BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
@@ -20,7 +21,7 @@ use reth_evm::{
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::EvmState;
 use std::sync::Arc;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -176,6 +177,7 @@ impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
 pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
+    t13_active_at_genesis: bool,
     section: BlockSection,
     extra_data: Bytes,
 
@@ -196,6 +198,8 @@ impl<'a> TempoBlockExecutor<'a> {
     ) -> Self {
         let block_gas_limit = evm.block().gas_limit.to::<u64>();
         Self {
+            t13_active_at_genesis: chain_spec
+                .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
             incentive_gas_used: 0,
             block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
@@ -555,7 +559,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if self.evm().config_spec_id().is_t10() {
             self.deploy_zone_factory_at_boundary()?;
         }
-        if self.evm().config_spec_id().is_t13() {
+        // Chains starting at T13 supply their runtime code in genesis. Preserve those
+        // allocations (including locally compiled contracts on test chains). Chains
+        // that activate T13 later still follow the normal runtime upgrade path.
+        if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
 
@@ -751,7 +758,10 @@ mod tests {
     };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use evm2::evm::{AccountInfo, InMemoryDB};
+    use evm2::{
+        evm::{AccountInfo, InMemoryDB},
+        interpreter::Host as _,
+    };
     use rand::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
     use std::{
@@ -1762,10 +1772,79 @@ mod tests {
     }
 
     #[test]
+    fn t13_at_genesis_preserves_zone_runtimes() {
+        // Use the actual genesis timestamp, not just t13Time == 0.
+        for (genesis_timestamp, activation) in [(0, 0), (100, 50), (100, 100)] {
+            let mut genesis = DEV.genesis().clone();
+            genesis.timestamp = genesis_timestamp;
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t13Time".into(), activation)
+                .unwrap();
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let mut db = InMemoryDB::default();
+            let mut expected = Vec::new();
+            for (index, address) in [
+                ZONE_FACTORY_ADDRESS,
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let code = Bytecode::new_raw(Bytes::from(vec![0x00, index as u8]));
+                let info = AccountInfo {
+                    balance: U256::from(42),
+                    nonce: 7,
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                };
+                db.insert_account_info(&address, info.clone());
+                db.insert_account_storage(&address, &U256::from(9), &U256::from(123));
+                expected.push((address, info));
+            }
+            for block_number in [1, 2] {
+                let mut executor = TestExecutorBuilder::default()
+                    .with_spec(TempoHardfork::T13)
+                    .with_block_number(block_number)
+                    .with_parent_beacon_block_root(B256::ZERO)
+                    .build(&mut db, &chainspec);
+                let mut block = *executor.evm().block();
+                block.timestamp = U256::from(genesis_timestamp + block_number);
+                executor.evm_mut().set_block(block);
+                executor.apply_pre_execution_changes().unwrap();
+                for (address, info) in &expected {
+                    assert_eq!(
+                        &executor
+                            .evm_mut()
+                            .state_mut()
+                            .account_info_untracked(address)
+                            .unwrap()
+                            .unwrap(),
+                        info
+                    );
+                    assert_eq!(
+                        executor
+                            .evm_mut()
+                            .sload(address, &U256::from(9), false)
+                            .unwrap()
+                            .value,
+                        U256::from(123)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn zone_runtime_upgrade_activates_at_t13() {
-        for (activation, expected_runtimes) in [
+        for (activation, timestamp, expected_runtimes) in [
             (
                 u64::MAX,
+                10,
                 [
                     ZONE_PORTAL_RUNTIME,
                     ZONE_VERIFIER_RUNTIME,
@@ -1773,7 +1852,26 @@ mod tests {
                 ],
             ),
             (
-                0,
+                10,
+                9,
+                [
+                    ZONE_PORTAL_RUNTIME,
+                    ZONE_VERIFIER_RUNTIME,
+                    ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                10,
+                10,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                10,
+                11,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
                     T13_ZONE_VERIFIER_RUNTIME,
@@ -1790,13 +1888,16 @@ mod tests {
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(if activation == 0 {
+                .with_spec(if timestamp >= activation {
                     TempoHardfork::T13
                 } else {
                     TempoHardfork::T12
                 })
                 .with_parent_beacon_block_root(B256::ZERO)
                 .build(&mut db, &chainspec);
+            let mut block = *executor.evm().block();
+            block.timestamp = U256::from(timestamp);
+            executor.evm_mut().set_block(block);
             executor.apply_pre_execution_changes().unwrap();
             for (address, expected) in [
                 ZONE_PORTAL_IMPL_ADDRESS,

@@ -225,7 +225,7 @@ alloy-eips = { version = "2.4.2", default-features = false }
 evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "16fc93b4e2cbc21ea2095eb79f1d89e925e4f87c", default-features = false }
 evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "16fc93b4e2cbc21ea2095eb79f1d89e925e4f87c" }
 alloy-genesis = { version = "2.4.2", default-features = false }
-alloy-hardforks = "0.4.8"
+alloy-hardforks = "0.4.9"
 alloy-json-rpc = "2.4.2"
 alloy-network = { version = "2.4.2", default-features = false }
 alloy-provider = { version = "2.4.2", default-features = false }
