@@ -30,7 +30,7 @@ Burns and bounded input debits also retire free credit. Fees always charge ordin
 
 ## Discovery
 
-Deploy the read-only [FundingDiscovery helper](../crates/contracts/solidity/README.md) with the policy address. It returns ordered source candidates through ordinary static calls. Candidates are estimates, not reserved funds; execution obtains fresh quotes and validates the current policy.
+Call `FundingPolicy.discover(policyId, account, token, amount)` at the native policy address. It returns ordered source candidates through ordinary EVM static calls. Candidates are estimates, not reserved funds; execution obtains fresh quotes and validates the current policy.
 
 ## Verification
 

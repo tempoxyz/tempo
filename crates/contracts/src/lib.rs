@@ -13,7 +13,6 @@ pub use tempo_hardfork::TempoHardfork;
 
 use alloy_primitives::{Address, B256, address, b256};
 
-pub mod funding_discovery;
 pub mod zones;
 
 /// Default address for the Multicall3 contract on most chains. See: <https://github.com/mds1/multicall>

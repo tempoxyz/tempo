@@ -1,4 +1,8 @@
-use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
+use crate::{
+    ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
+    discovery::{DiscoveryFrame, TempoFrame},
+    instructions,
+};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
@@ -19,7 +23,6 @@ pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardf
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
-#[expect(clippy::type_complexity)]
 pub struct TempoEvm<DB: Database, I> {
     /// Inner EVM type.
     #[deref]
@@ -29,7 +32,7 @@ pub struct TempoEvm<DB: Database, I> {
         I,
         EthInstructions<EthInterpreter, TempoContext<DB>>,
         PrecompilesMap,
-        EthFrame<EthInterpreter>,
+        TempoFrame,
     >,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
@@ -137,14 +140,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Inner helper function to create a new Tempo EVM with empty logs.
     #[inline]
-    #[expect(clippy::type_complexity)]
     fn new_inner(
         inner: Evm<
             TempoContext<DB>,
             I,
             EthInstructions<EthInterpreter, TempoContext<DB>>,
             PrecompilesMap,
-            EthFrame<EthInterpreter>,
+            TempoFrame,
         >,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
@@ -242,7 +244,7 @@ where
     type Context = TempoContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, TempoContext<DB>>;
     type Precompiles = PrecompilesMap;
-    type Frame = EthFrame<EthInterpreter>;
+    type Frame = TempoFrame;
 
     fn all(
         &self,
@@ -252,7 +254,12 @@ where
         &Self::Precompiles,
         &FrameStack<Self::Frame>,
     ) {
-        self.inner.all()
+        (
+            &self.inner.ctx,
+            &self.inner.instruction,
+            &self.inner.precompiles,
+            &self.inner.frame_stack,
+        )
     }
 
     fn all_mut(
@@ -263,7 +270,12 @@ where
         &mut Self::Precompiles,
         &mut FrameStack<Self::Frame>,
     ) {
-        self.inner.all_mut()
+        (
+            &mut self.inner.ctx,
+            &mut self.inner.instruction,
+            &mut self.inner.precompiles,
+            &mut self.inner.frame_stack,
+        )
     }
 
     fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
@@ -277,18 +289,96 @@ where
         ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
         ContextError<DB::Error>,
     > {
-        self.inner.frame_init(frame_input)
+        use revm::context_interface::local::OutFrame;
+        let first = self.inner.frame_stack.index().is_none();
+        let mut slot = if first {
+            self.inner.frame_stack.start_init()
+        } else {
+            self.inner.frame_stack.get_next()
+        };
+        let frame = slot.get(TempoFrame::default);
+        frame.discovery = None;
+        let result = if DiscoveryFrame::matches(&self.inner.ctx, &frame_input) {
+            DiscoveryFrame::new(&mut self.inner.ctx, frame_input, self.actions.clone()).map(
+                |discovery| {
+                    frame.discovery = Some(Box::new(discovery));
+                    ItemOrResult::Item(())
+                },
+            )
+        } else {
+            EthFrame::init_with_context(
+                OutFrame::new_init(&mut frame.eth),
+                &mut self.inner.ctx,
+                &mut self.inner.precompiles,
+                frame_input,
+            )
+            .map(|result| result.map_item(|_| ()))
+        };
+        let token = slot.consume();
+        // Register the initialized pooled slot even when initialization returns immediately.
+        unsafe {
+            if first {
+                self.inner.frame_stack.end_init(token);
+            } else {
+                self.inner.frame_stack.push(token);
+            }
+        }
+        match result {
+            Ok(ItemOrResult::Item(())) => Ok(ItemOrResult::Item(self.inner.frame_stack.get())),
+            Ok(ItemOrResult::Result(result)) => {
+                self.inner.frame_stack.pop();
+                Ok(ItemOrResult::Result(result))
+            }
+            Err(error) => {
+                self.inner.frame_stack.pop();
+                Err(error)
+            }
+        }
     }
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
-        self.inner.frame_run()
+        let frame = self.inner.frame_stack.get();
+        if let Some(discovery) = &mut frame.discovery {
+            return discovery.run(
+                &mut self.inner.ctx,
+                u64::from(
+                    self.inner.instruction.gas_table()[revm::bytecode::opcode::STATICCALL as usize],
+                ),
+            );
+        }
+        let action = frame.eth.interpreter.run_plain(
+            self.inner.instruction.instruction_table(),
+            self.inner.instruction.gas_table(),
+            &mut self.inner.ctx,
+        );
+        let result = frame
+            .eth
+            .process_next_action::<_, ContextError<DB::Error>>(&mut self.inner.ctx, action)?;
+        if result.is_result() {
+            frame.eth.set_finished(true);
+        }
+        Ok(result)
     }
 
     fn frame_return_result(
         &mut self,
         result: <Self::Frame as FrameTr>::FrameResult,
     ) -> Result<Option<<Self::Frame as FrameTr>::FrameResult>, ContextError<DB::Error>> {
-        self.inner.frame_return_result(result)
+        if self.inner.frame_stack.get().is_finished() {
+            self.inner.frame_stack.pop();
+        }
+        if self.inner.frame_stack.index().is_none() {
+            return Ok(Some(result));
+        }
+        let parent = self.inner.frame_stack.get();
+        if let Some(discovery) = &mut parent.discovery {
+            discovery.accept(&mut self.inner.ctx, result);
+        } else {
+            parent
+                .eth
+                .return_result::<_, ContextError<DB::Error>>(&mut self.inner.ctx, result)?;
+        }
+        Ok(None)
     }
 }
 
@@ -299,6 +389,50 @@ where
 {
     type Inspector = I;
 
+    fn inspect_frame_run(
+        &mut self,
+    ) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
+        use revm::inspector::{handler::frame_end, inspect_instructions};
+        let frame = self.inner.frame_stack.get();
+        if let Some(discovery) = &mut frame.discovery {
+            let mut result = discovery.run(
+                &mut self.inner.ctx,
+                u64::from(
+                    self.inner.instruction.gas_table()[revm::bytecode::opcode::STATICCALL as usize],
+                ),
+            )?;
+            if let ItemOrResult::Result(output) = &mut result {
+                frame_end(
+                    &mut self.inner.ctx,
+                    &mut self.inner.inspector,
+                    &discovery.input,
+                    output,
+                );
+            }
+            return Ok(result);
+        }
+        let action = inspect_instructions(
+            &mut self.inner.ctx,
+            &mut frame.eth.interpreter,
+            &mut self.inner.inspector,
+            self.inner.instruction.instruction_table(),
+            self.inner.instruction.gas_table(),
+        );
+        let mut result = frame
+            .eth
+            .process_next_action::<_, ContextError<DB::Error>>(&mut self.inner.ctx, action)?;
+        if let ItemOrResult::Result(output) = &mut result {
+            frame_end(
+                &mut self.inner.ctx,
+                &mut self.inner.inspector,
+                &frame.eth.input,
+                output,
+            );
+            frame.eth.set_finished(true);
+        }
+        Ok(result)
+    }
+
     fn all_inspector(
         &self,
     ) -> (
@@ -308,7 +442,13 @@ where
         &FrameStack<Self::Frame>,
         &Self::Inspector,
     ) {
-        self.inner.all_inspector()
+        (
+            &self.inner.ctx,
+            &self.inner.instruction,
+            &self.inner.precompiles,
+            &self.inner.frame_stack,
+            &self.inner.inspector,
+        )
     }
 
     fn all_mut_inspector(
@@ -320,7 +460,13 @@ where
         &mut FrameStack<Self::Frame>,
         &mut Self::Inspector,
     ) {
-        self.inner.all_mut_inspector()
+        (
+            &mut self.inner.ctx,
+            &mut self.inner.instruction,
+            &mut self.inner.precompiles,
+            &mut self.inner.frame_stack,
+            &mut self.inner.inspector,
+        )
     }
 }
 

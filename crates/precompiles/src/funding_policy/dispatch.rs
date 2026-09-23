@@ -12,6 +12,8 @@ impl Precompile for FundingPolicy {
         }
         dispatch!(calldata, |call| match call {
             IFundingPolicy::IFundingPolicyCalls {
+                // EVM execution handles discovery because it can suspend for source callbacks.
+                discover(call) => view(call, |_| Err::<IFundingPolicy::Discovery, _>(super::invalid_policy())),
                 policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
                 policyExists(call) => view(call, |c| self.policy_exists(c.policyId)),
                 getPolicy(call) => view(call, |c| self.get_policy(c.policyId)),

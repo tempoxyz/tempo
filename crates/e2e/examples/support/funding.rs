@@ -365,6 +365,22 @@ pub(super) async fn run_demo(
                 "{scenario}: receipt differs"
             );
             if scenario.starts_with("delegated") {
+                use tempo_contracts::precompiles::{FUNDING_POLICY_ADDRESS, IFundingPolicy};
+                let discovery = IFundingPolicy::new(FUNDING_POLICY_ADDRESS, peer.clone())
+                    .discover(1, owner.address(), PATH_USD_ADDRESS, U256::from(50 * UNIT))
+                    .block(height.into())
+                    .call()
+                    .await?;
+                assert_eq!(discovery.token, PATH_USD_ADDRESS);
+                assert_eq!(discovery.amount, U256::from(50 * UNIT));
+                assert_eq!(discovery.sources.len(), 2);
+                assert!(
+                    discovery
+                        .sources
+                        .iter()
+                        .all(|candidate| candidate.target == SOURCE && !candidate.data.is_empty())
+                );
+
                 use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain};
                 let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, peer.clone());
                 assert_eq!(

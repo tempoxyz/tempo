@@ -38,4 +38,4 @@ The tests cover a two-input DEX payment, sponsorship, simulation, estimation, tr
 
 See [owner funding qualification](owner-funding-qualification.md) for the four-validator demo, gas measurements, security coverage, and remaining release gates.
 
-Funding Policy storage is native; discovery uses a separate read-only Solidity helper. ABI routes pair one output `token` with ordered sources. Token maps encode routes in ascending token-address order.
+Funding Policy stores policies and exposes read-only discovery through native coordination of EVM static calls. ABI routes pair one output `token` with ordered sources. Token maps encode routes in ascending token-address order.

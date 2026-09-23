@@ -88,4 +88,33 @@ mod tests {
             call
         );
     }
+    #[test]
+    fn discovery_preserves_target_and_independent_estimates() {
+        let result = IFundingPolicy::Discovery {
+            token: Address::repeat_byte(1),
+            amount: U256::from(50),
+            slippageBps: 100,
+            sources: vec![
+                IFundingPolicy::SourceCandidate {
+                    target: Address::repeat_byte(2),
+                    data: Bytes::from_static(&[1]),
+                    availableAmount: U256::from(30),
+                },
+                IFundingPolicy::SourceCandidate {
+                    target: Address::repeat_byte(2),
+                    data: Bytes::from_static(&[2]),
+                    availableAmount: U256::from(40),
+                },
+            ],
+        };
+        assert_eq!(
+            IFundingPolicy::discoverCall::SIGNATURE,
+            "discover(uint64,address,address,uint256)"
+        );
+        assert_eq!(
+            IFundingPolicy::discoverCall::abi_decode_returns_validate(&result.abi_encode())
+                .unwrap(),
+            result
+        );
+    }
 }

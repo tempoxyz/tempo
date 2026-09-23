@@ -719,3 +719,79 @@ fn token_support_is_public_and_grants_no_input_permission() {
         .unwrap();
     assert!(!result.instruction_result().is_ok(), "{result:?}");
 }
+
+#[test]
+fn policy_discovery_returns_executable_native_dex_requests() {
+    use tempo_contracts::precompiles::{FUNDING_POLICY_ADDRESS, IFundingPolicy};
+    use tempo_precompiles::funding_policy::FundingPolicy;
+    let (mut evm, a, b) = setup_dex();
+    let policy_id = StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        FundingPolicy::new(FUNDING_POLICY_ADDRESS)
+            .create_policy(
+                ACCOUNT,
+                IFundingPolicy::Policy {
+                    admins: vec![ACCOUNT],
+                    slippageBps: 0,
+                    routes: vec![IFundingPolicy::Route {
+                        token: PATH_USD_ADDRESS,
+                        sources: vec![IFundingPolicy::Source {
+                            target: SOURCE,
+                            data: vec![b, a].abi_encode().into(),
+                        }],
+                    }],
+                },
+            )
+            .unwrap()
+    });
+    let result = TempoEvmHandler::new()
+        .execute_funding_call_with(
+            &mut evm,
+            &mut GasTracker::new(30_000_000, 30_000_000, 0),
+            crate::handler::funding::FundingCall {
+                caller: ACCOUNT,
+                source: FUNDING_POLICY_ADDRESS,
+                is_static: true,
+                permission: None,
+                data: IFundingPolicy::discoverCall {
+                    policyId: policy_id,
+                    account: ACCOUNT,
+                    token: PATH_USD_ADDRESS,
+                    amount: U256::from(50 * UNIT),
+                }
+                .abi_encode()
+                .into(),
+            },
+            TempoEvmHandler::run_exec_loop,
+        )
+        .unwrap();
+    assert!(result.instruction_result().is_ok(), "{result:?}");
+    let discovery =
+        IFundingPolicy::discoverCall::abi_decode_returns_validate(result.output().data()).unwrap();
+    assert_eq!(discovery.sources.len(), 2);
+    assert_eq!(balance(&mut evm, b, ACCOUNT), U256::from(200 * UNIT));
+    let result = run(
+        &mut evm,
+        &[requirement(
+            PATH_USD_ADDRESS,
+            50 * UNIT,
+            discovery
+                .sources
+                .into_iter()
+                .map(|c| ITIP20Funder::Source {
+                    target: c.target,
+                    data: c.data,
+                })
+                .collect(),
+        )],
+        vec![transfer(PATH_USD_ADDRESS, 50 * UNIT)],
+        true,
+        LIMIT,
+        0,
+    );
+    assert!(result.instruction_result().is_ok(), "{result:?}");
+    assert_eq!(balance(&mut evm, b, ACCOUNT), U256::from(150 * UNIT));
+    assert_eq!(
+        balance(&mut evm, PATH_USD_ADDRESS, RECIPIENT),
+        U256::from(50 * UNIT)
+    );
+}

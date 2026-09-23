@@ -420,6 +420,21 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                 1
             );
             assert_eq!(policies.policyIdCounter().call().await?, 2);
+            let discovery = policies
+                .discover(1, owner.address(), PATH_USD_ADDRESS, U256::from(50 * UNIT))
+                .call()
+                .await?;
+            assert_eq!(discovery.token, PATH_USD_ADDRESS);
+            assert_eq!(discovery.amount, U256::from(50 * UNIT));
+            assert_eq!(discovery.slippageBps, 100);
+            assert_eq!(discovery.sources.len(), 2);
+            let expected = if nonce == 4 { [50, 50] } else { [35, 50] };
+            for (candidate, available) in discovery.sources.into_iter().zip(expected) {
+                assert_eq!(candidate.target, SOURCE);
+                assert!(!candidate.data.is_empty());
+                assert_eq!(candidate.availableAmount, U256::from(available * UNIT));
+            }
+
             assert_eq!(
                 keychain
                     .getRemainingLimitWithPeriod(owner.address(), key.address(), PATH_USD_ADDRESS)
