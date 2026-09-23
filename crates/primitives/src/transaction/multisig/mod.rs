@@ -317,7 +317,7 @@ impl alloy_rlp::Decodable for MultisigConfig {
 }
 
 /// Native multisig transaction signature.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct MultisigSignature {
     /// Native multisig account authorized by this signature.
@@ -468,10 +468,6 @@ impl MultisigSignature {
         Self::try_new(account, config, signatures)
             .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))
     }
-
-    fn rlp_payload_length(&self) -> usize {
-        self.account.length() + self.config.length() + self.signatures.length()
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -500,30 +496,6 @@ impl<'de> Deserialize<'de> for MultisigSignature {
 impl alloy_rlp::Decodable for MultisigSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         Self::decode_rlp(buf)
-    }
-}
-
-impl alloy_rlp::Encodable for MultisigSignature {
-    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let payload_length = self.rlp_payload_length();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(out);
-        self.account.encode(out);
-        self.config.encode(out);
-        self.signatures.encode(out);
-    }
-
-    fn length(&self) -> usize {
-        let payload_length = self.rlp_payload_length();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .length()
-            + payload_length
     }
 }
 
