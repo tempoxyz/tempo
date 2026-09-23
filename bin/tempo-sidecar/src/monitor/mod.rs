@@ -53,7 +53,7 @@ impl FilterExt for Filter {
     /// Restricts the filter to events where both, topic 2 and topic 3, are among the input tokens.
     ///
     /// WARNING: Caller must ensure that the filter targets fee AMM mint events:
-    /// - `Mint(address indexed sender, address indexed userToken, address indexed validatorToken, ..)`
+    /// - `Mint(address sender, address indexed to, address indexed userToken, address indexed validatorToken, ..)`
     fn with_minted_tokens<'a>(mut self, tokens: impl Iterator<Item = &'a Address>) -> Self {
         for addr in tokens {
             let b256 = addr.into_word();
@@ -205,7 +205,7 @@ impl Monitor {
 
         let mut new_pools = 0;
         for log in logs {
-            let (user_token, validator_token) = parse_mint_tokens(&log);
+            let (user_token, validator_token) = parse_mint_tokens(&log)?;
             if self.known_pairs.insert((user_token, validator_token)) {
                 new_pools += 1;
             }
@@ -317,11 +317,67 @@ pub async fn prometheus_metrics(handle: poem::web::Data<&PrometheusHandle>) -> R
 }
 
 /// Parses user and validator token addresses from a `FeeAMM::Mint` event log.
-///
-/// WARNING: Caller is responsible for ensuring the input is a `FeeAMM::Mint` event.
-fn parse_mint_tokens(log: &Log) -> (Address, Address) {
-    (
-        Address::from_word(log.topics()[2]),
-        Address::from_word(log.topics()[3]),
-    )
+fn parse_mint_tokens(log: &Log) -> Result<(Address, Address)> {
+    let event = log.log_decode::<Mint>()?.inner.data;
+    Ok((event.userToken, event.validatorToken))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{B256, Bytes, U256};
+
+    fn mint_log() -> Log {
+        let event = Mint {
+            sender: Address::repeat_byte(0x11),
+            to: Address::repeat_byte(0x22),
+            userToken: Address::repeat_byte(0x33),
+            validatorToken: Address::repeat_byte(0x44),
+            amountValidatorToken: U256::from(123),
+            liquidity: U256::from(456),
+        };
+        Log {
+            inner: alloy::primitives::Log {
+                address: TIP_FEE_MANAGER_ADDRESS,
+                data: event.encode_log_data(),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mint_tokens_match_indexed_addresses() {
+        let log = mint_log();
+        assert_eq!(
+            parse_mint_tokens(&log).unwrap(),
+            (Address::repeat_byte(0x33), Address::repeat_byte(0x44),)
+        );
+        assert_eq!(
+            parse_mint_tokens(&log).unwrap(),
+            (
+                Address::from_word(log.topics()[2]),
+                Address::from_word(log.topics()[3]),
+            )
+        );
+    }
+
+    #[test]
+    fn mint_tokens_reject_malformed_logs() {
+        let log = mint_log();
+        for count in 0..4 {
+            let mut truncated = log.clone();
+            truncated
+                .inner
+                .data
+                .set_topics_unchecked(log.topics()[..count].to_vec());
+            assert!(parse_mint_tokens(&truncated).is_err());
+        }
+        let mut wrong_event = log.clone();
+        wrong_event.inner.data.topics_mut()[0] = B256::ZERO;
+        assert!(parse_mint_tokens(&wrong_event).is_err());
+
+        let mut missing_data = log;
+        missing_data.inner.data.data = Bytes::new();
+        assert!(parse_mint_tokens(&missing_data).is_err());
+    }
 }
