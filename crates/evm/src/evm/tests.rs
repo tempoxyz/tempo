@@ -5718,12 +5718,6 @@ mod runtime_tests {
         }
     }
 
-    struct StorageActionSnapshotLabels {
-        addresses: BTreeMap<Address, &'static str>,
-        slots: BTreeMap<(Address, U256), &'static str>,
-        tip20_slots: BTreeMap<U256, &'static str>,
-    }
-
     fn snapshot_storage_actions(
         actions: &[StorageAction],
         labels: &StorageActionSnapshotLabels,
@@ -5780,6 +5774,12 @@ mod runtime_tests {
                     }
                 })
                 .collect()
+    }
+
+    struct StorageActionSnapshotLabels {
+        addresses: BTreeMap<Address, &'static str>,
+        slots: BTreeMap<(Address, U256), &'static str>,
+        tip20_slots: BTreeMap<U256, &'static str>,
     }
 
     impl StorageActionSnapshotLabels {

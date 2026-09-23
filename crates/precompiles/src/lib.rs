@@ -154,6 +154,10 @@ pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
+sol! {
+    error DelegateCallNotAllowed();
+}
+
 /// Tempo's built-in and protocol precompiles for EVM2.
 #[derive(Debug)]
 pub struct TempoPrecompiles<T: EvmTypesHost> {
@@ -233,10 +237,6 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             unreachable!("Tempo precompile address checked before dispatch")
         }
     }
-}
-
-sol! {
-    error DelegateCallNotAllowed();
 }
 
 impl<T> PrecompileProvider<T> for TempoPrecompiles<T>

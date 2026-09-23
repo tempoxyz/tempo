@@ -270,62 +270,6 @@ where
     }
 }
 
-/// Extension state required by an EVM-backed precompile storage context.
-pub trait EvmStorageExt {
-    /// Returns the storage action recorder.
-    fn storage_actions(&self) -> StorageActions;
-
-    /// Returns the transaction-local non-creditable slots.
-    fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>>;
-}
-
-enum GasTrackerStorage<'a> {
-    Borrowed(&'a mut GasTracker),
-    Owned(GasTracker),
-}
-
-impl GasTrackerStorage<'_> {
-    #[inline]
-    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        if self.remaining() < gas {
-            Err(TempoPrecompileError::OutOfGas)
-        } else {
-            self.spend(gas).map_err(|_| TempoPrecompileError::OutOfGas)
-        }
-    }
-
-    #[inline]
-    fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        let spill = gas.saturating_sub(self.reservoir());
-        if self.remaining() < spill {
-            Err(TempoPrecompileError::OutOfGas)
-        } else {
-            self.spend_state(gas)
-                .map_err(|_| TempoPrecompileError::OutOfGas)
-        }
-    }
-}
-
-impl Deref for GasTrackerStorage<'_> {
-    type Target = GasTracker;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Borrowed(gas_tracker) => gas_tracker,
-            Self::Owned(gas_tracker) => gas_tracker,
-        }
-    }
-}
-
-impl DerefMut for GasTrackerStorage<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Self::Borrowed(gas_tracker) => gas_tracker,
-            Self::Owned(gas_tracker) => gas_tracker,
-        }
-    }
-}
-
 impl<T> StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_, T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
@@ -685,6 +629,62 @@ where
     #[inline]
     fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         self.tip1060_storage_credit_minting_enabled = enabled;
+    }
+}
+
+/// Extension state required by an EVM-backed precompile storage context.
+pub trait EvmStorageExt {
+    /// Returns the storage action recorder.
+    fn storage_actions(&self) -> StorageActions;
+
+    /// Returns the transaction-local non-creditable slots.
+    fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>>;
+}
+
+enum GasTrackerStorage<'a> {
+    Borrowed(&'a mut GasTracker),
+    Owned(GasTracker),
+}
+
+impl GasTrackerStorage<'_> {
+    #[inline]
+    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if self.remaining() < gas {
+            Err(TempoPrecompileError::OutOfGas)
+        } else {
+            self.spend(gas).map_err(|_| TempoPrecompileError::OutOfGas)
+        }
+    }
+
+    #[inline]
+    fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        let spill = gas.saturating_sub(self.reservoir());
+        if self.remaining() < spill {
+            Err(TempoPrecompileError::OutOfGas)
+        } else {
+            self.spend_state(gas)
+                .map_err(|_| TempoPrecompileError::OutOfGas)
+        }
+    }
+}
+
+impl Deref for GasTrackerStorage<'_> {
+    type Target = GasTracker;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(gas_tracker) => gas_tracker,
+            Self::Owned(gas_tracker) => gas_tracker,
+        }
+    }
+}
+
+impl DerefMut for GasTrackerStorage<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Borrowed(gas_tracker) => gas_tracker,
+            Self::Owned(gas_tracker) => gas_tracker,
+        }
     }
 }
 

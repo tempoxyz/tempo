@@ -184,66 +184,6 @@ pub(super) struct TempoFeeContext {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct TempoHandlerHooks;
 
-pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError {
-    HandlerError::external(error.into())
-}
-
-fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(TempoPrecompileError::EvmError(code)) => Err(HandlerError::Fatal(code)),
-        Err(error) => Err(HandlerError::external(error)),
-    }
-}
-
-fn settle_storage_credit_refunds(
-    host: &mut Evm<'_, TempoEvmTypes>,
-    result: &mut evm2::interpreter::MessageResult<TempoEvmTypes>,
-) -> HandlerResult<()> {
-    if !host.config_spec_id().is_t7() || !result.is_success() {
-        return Ok(());
-    }
-
-    let slots = host
-        .state_mut()
-        .take_transient_storage(&STORAGE_CREDITS_ADDRESS);
-    if slots.is_empty() {
-        return Ok(());
-    }
-
-    let settled = map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-        host,
-        || {
-            let mut storage = StorageCtx;
-            let mut settled = 0i64;
-            for (key, word) in slots {
-                let state = TransientState::try_from(word)?;
-                if state.pending_refunds == 0 {
-                    continue;
-                }
-
-                let old_word = storage.sload(STORAGE_CREDITS_ADDRESS, key)?;
-                let mut balance = u64::from_word(old_word)?;
-                let credits = state.pending_refunds.min(balance);
-                if credits == 0 {
-                    continue;
-                }
-
-                balance -= credits;
-                settled = settled.saturating_add(credits as i64);
-                let new_word = U256::from(balance);
-                debug_assert_ne!(new_word, old_word);
-                storage.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
-            }
-            Ok(settled)
-        },
-    ))?;
-    result
-        .gas
-        .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
-    Ok(())
-}
-
 impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
     fn adjust_intrinsic_gas(
         host: &mut Evm<'_, TempoEvmTypes>,
@@ -466,6 +406,66 @@ impl TempoHandlerHooks {
 
         Ok(())
     }
+}
+
+pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError {
+    HandlerError::external(error.into())
+}
+
+fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(TempoPrecompileError::EvmError(code)) => Err(HandlerError::Fatal(code)),
+        Err(error) => Err(HandlerError::external(error)),
+    }
+}
+
+fn settle_storage_credit_refunds(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    result: &mut evm2::interpreter::MessageResult<TempoEvmTypes>,
+) -> HandlerResult<()> {
+    if !host.config_spec_id().is_t7() || !result.is_success() {
+        return Ok(());
+    }
+
+    let slots = host
+        .state_mut()
+        .take_transient_storage(&STORAGE_CREDITS_ADDRESS);
+    if slots.is_empty() {
+        return Ok(());
+    }
+
+    let settled = map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
+        host,
+        || {
+            let mut storage = StorageCtx;
+            let mut settled = 0i64;
+            for (key, word) in slots {
+                let state = TransientState::try_from(word)?;
+                if state.pending_refunds == 0 {
+                    continue;
+                }
+
+                let old_word = storage.sload(STORAGE_CREDITS_ADDRESS, key)?;
+                let mut balance = u64::from_word(old_word)?;
+                let credits = state.pending_refunds.min(balance);
+                if credits == 0 {
+                    continue;
+                }
+
+                balance -= credits;
+                settled = settled.saturating_add(credits as i64);
+                let new_word = U256::from(balance);
+                debug_assert_ne!(new_word, old_word);
+                storage.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
+            }
+            Ok(settled)
+        },
+    ))?;
+    result
+        .gas
+        .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    Ok(())
 }
 
 fn handle_legacy(
