@@ -836,7 +836,13 @@ impl PoolTransaction for TempoPooledTransaction {
     ) -> Result<Self, RawPoolTransactionError> {
         let transaction = Self::decode_raw_transaction(data)?;
         let signer = cache
-            .recover(&transaction)
+            .recover_with(&transaction, |transaction| match transaction {
+                // AA recovery also caches the expiring nonce hash reused below.
+                TempoTxEnvelope::AA(tx) => tx
+                    .recover_signer_with_expiring_nonce_hash()
+                    .map(|(signer, _)| signer),
+                _ => transaction.recover_signer(),
+            })
             .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?;
         let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
             tx.tx()
