@@ -478,7 +478,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
         // 2D or expiring nonces, no protocol nonces
         && tx
             .transaction
-            .nonce_key()
+            .nonce_key_ref()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
 }
 

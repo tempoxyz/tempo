@@ -320,11 +320,11 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/github-sts@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
@@ -478,18 +478,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup Terraform
-        uses: tempoxyz/gh-actions/actions/setup-terraform@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/setup-terraform@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           version: 1.14.7
 
       - name: Setup Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           toolchain: stable
 
       - name: Configure AWS credentials
         if: env.BENCH_INPUT_CLOUD == 'aws'
-        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
@@ -517,14 +517,14 @@ jobs:
 
       - name: Authenticate to Google Cloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           workload_identity_provider: ${{ env.BENCH_GCP_WIF_PROVIDER }}
           service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
 
       - name: Setup Google Cloud CLI
         if: env.BENCH_INPUT_CLOUD == 'gcp'
-        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
 
@@ -787,10 +787,15 @@ jobs:
 
             let dashboardSection = '';
             try {
-              const clickhouseRunId = fs.readFileSync(`${resultsDir}/clickhouse-run-id.txt`, 'utf8').trim();
-              if (clickhouseRunId) {
-                const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
-                dashboardSection = `\n\n### Internal dashboard\n\n[Internal dashboard](${dashboardUrl})\n`;
+              if (fs.existsSync(`${resultsDir}/clickhouse-run-id.txt`)) {
+                // The wrapper report uses the workflow ID; txgen's report has the ClickHouse UUID.
+                const phase = process.env.BENCH_INPUT_CLICKHOUSE_RUN;
+                const report = JSON.parse(fs.readFileSync(`${resultsDir}/${phase}/txgen-report.json`, 'utf8'));
+                const clickhouseRunId = report.benchmark_id;
+                if (clickhouseRunId) {
+                  const dashboardUrl = `http://go/dev/tempo-internal-perf/benchmark/${encodeURIComponent(clickhouseRunId)}`;
+                  dashboardSection = `\n- [Internal dashboard](${dashboardUrl})\n`;
+                }
               }
             } catch (e) {
               core.info(`Unable to read ClickHouse run ID for internal dashboard: ${e.message}`);
@@ -828,7 +833,14 @@ jobs:
               core.info(`Unable to resolve job URL: ${e.message}`);
             }
 
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${dashboardSection}`;
+            const observabilityHeading = '\n## Observability\n';
+            if (summary.includes(observabilityHeading)) {
+              summary = summary.replace(observabilityHeading, () => observabilityHeading + dashboardSection);
+            } else if (dashboardSection) {
+              summary += observabilityHeading + dashboardSection;
+            }
+
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;
             await core.summary.addRaw(body).write();
 
       - name: Wait for infrastructure teardown

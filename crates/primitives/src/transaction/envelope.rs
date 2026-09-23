@@ -315,7 +315,12 @@ impl TempoTxEnvelope {
 
     /// Returns the nonce key of this transaction if it's an [`AASigned`] transaction.
     pub fn nonce_key(&self) -> Option<U256> {
-        self.as_aa().map(|tx| tx.tx().nonce_key)
+        self.nonce_key_ref().copied()
+    }
+
+    /// Returns a reference to the nonce key if this is an [`AASigned`] transaction.
+    pub fn nonce_key_ref(&self) -> Option<&U256> {
+        self.as_aa().map(|tx| &tx.tx().nonce_key)
     }
 
     /// Returns true if this is a Tempo transaction

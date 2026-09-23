@@ -165,6 +165,11 @@ impl TempoPooledTransaction {
         self.inner.transaction.nonce_key()
     }
 
+    /// Returns a reference to the nonce key if this is an [`AASigned`](tempo_primitives::AASigned) transaction.
+    pub fn nonce_key_ref(&self) -> Option<&U256> {
+        self.inner.transaction.nonce_key_ref()
+    }
+
     /// Returns the storage slot for the nonce key of this transaction.
     pub fn nonce_key_slot(&self) -> Option<U256> {
         *self.nonce_key_slot.get_or_init(|| {
