@@ -725,6 +725,18 @@ fn policy_discovery_returns_executable_native_dex_requests() {
     use tempo_contracts::precompiles::{FUNDING_POLICY_ADDRESS, IFundingPolicy};
     use tempo_precompiles::funding_policy::FundingPolicy;
     let (mut evm, a, b) = setup_dex();
+    use tempo_contracts::funding_discovery::{
+        FUNDING_DISCOVERY_ADDRESS, FUNDING_DISCOVERY_RUNTIME, IFundingDiscovery,
+    };
+    let code = revm::state::Bytecode::new_raw(FUNDING_DISCOVERY_RUNTIME);
+    evm.inner.ctx.db_mut().insert_account_info(
+        FUNDING_DISCOVERY_ADDRESS,
+        revm::state::AccountInfo {
+            code_hash: code.hash_slow(),
+            code: Some(code),
+            ..Default::default()
+        },
+    );
     let policy_id = StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
         FundingPolicy::new(FUNDING_POLICY_ADDRESS)
             .create_policy(
@@ -749,10 +761,10 @@ fn policy_discovery_returns_executable_native_dex_requests() {
             &mut GasTracker::new(30_000_000, 30_000_000, 0),
             crate::handler::funding::FundingCall {
                 caller: ACCOUNT,
-                source: FUNDING_POLICY_ADDRESS,
+                source: FUNDING_DISCOVERY_ADDRESS,
                 is_static: true,
                 permission: None,
-                data: IFundingPolicy::discoverCall {
+                data: IFundingDiscovery::discoverCall {
                     policyId: policy_id,
                     account: ACCOUNT,
                     token: PATH_USD_ADDRESS,
@@ -766,7 +778,8 @@ fn policy_discovery_returns_executable_native_dex_requests() {
         .unwrap();
     assert!(result.instruction_result().is_ok(), "{result:?}");
     let discovery =
-        IFundingPolicy::discoverCall::abi_decode_returns_validate(result.output().data()).unwrap();
+        IFundingDiscovery::discoverCall::abi_decode_returns_validate(result.output().data())
+            .unwrap();
     assert_eq!(discovery.sources.len(), 2);
     assert_eq!(balance(&mut evm, b, ACCOUNT), U256::from(200 * UNIT));
     let result = run(

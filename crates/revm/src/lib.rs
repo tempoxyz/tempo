@@ -8,7 +8,6 @@
 use tracing as _;
 
 mod common;
-mod discovery;
 pub use common::{TempoStateAccess, TempoTx};
 pub mod error;
 pub mod evm;
@@ -21,7 +20,6 @@ mod instructions;
 mod signature_gas;
 mod tx;
 
-pub use discovery::TempoFrame;
 pub use error::TempoInvalidTransaction;
 pub use evm::TempoEvm;
 pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};

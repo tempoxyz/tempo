@@ -572,6 +572,7 @@ impl GenesisArgs {
         );
 
         insert_zone_state_at_genesis(self.t10_time, self.t13_time, &mut genesis_alloc);
+        insert_funding_discovery_at_genesis(self.t13_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -696,6 +697,21 @@ impl GenesisArgs {
         genesis.config = chain_config;
 
         Ok((genesis, consensus_config))
+    }
+}
+
+fn insert_funding_discovery_at_genesis(
+    t13_time: u64,
+    genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
+) {
+    use tempo_contracts::funding_discovery::{
+        FUNDING_DISCOVERY_ADDRESS, FUNDING_DISCOVERY_RUNTIME,
+    };
+    if t13_time == 0 {
+        genesis_alloc
+            .entry(FUNDING_DISCOVERY_ADDRESS)
+            .or_default()
+            .code = Some(FUNDING_DISCOVERY_RUNTIME);
     }
 }
 
@@ -1272,6 +1288,21 @@ mod tests {
             ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
+
+    #[test]
+    fn funding_discovery_genesis_activation() {
+        use tempo_contracts::funding_discovery::{
+            FUNDING_DISCOVERY_ADDRESS, FUNDING_DISCOVERY_RUNTIME,
+        };
+        let mut alloc = BTreeMap::new();
+        insert_funding_discovery_at_genesis(1, &mut alloc);
+        assert!(!alloc.contains_key(&FUNDING_DISCOVERY_ADDRESS));
+        insert_funding_discovery_at_genesis(0, &mut alloc);
+        assert_eq!(
+            alloc[&FUNDING_DISCOVERY_ADDRESS].code,
+            Some(FUNDING_DISCOVERY_RUNTIME)
+        );
+    }
 
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {

@@ -420,10 +420,13 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                 1
             );
             assert_eq!(policies.policyIdCounter().call().await?, 2);
-            let discovery = policies
-                .discover(1, owner.address(), PATH_USD_ADDRESS, U256::from(50 * UNIT))
-                .call()
-                .await?;
+            let discovery = tempo_contracts::funding_discovery::IFundingDiscovery::new(
+                tempo_contracts::funding_discovery::FUNDING_DISCOVERY_ADDRESS,
+                provider.clone(),
+            )
+            .discover(1, owner.address(), PATH_USD_ADDRESS, U256::from(50 * UNIT))
+            .call()
+            .await?;
             assert_eq!(discovery.token, PATH_USD_ADDRESS);
             assert_eq!(discovery.amount, U256::from(50 * UNIT));
             assert_eq!(discovery.slippageBps, 100);

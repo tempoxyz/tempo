@@ -365,8 +365,10 @@ pub(super) async fn run_demo(
                 "{scenario}: receipt differs"
             );
             if scenario.starts_with("delegated") {
-                use tempo_contracts::precompiles::{FUNDING_POLICY_ADDRESS, IFundingPolicy};
-                let discovery = IFundingPolicy::new(FUNDING_POLICY_ADDRESS, peer.clone())
+                use tempo_contracts::funding_discovery::{
+                    FUNDING_DISCOVERY_ADDRESS, IFundingDiscovery,
+                };
+                let discovery = IFundingDiscovery::new(FUNDING_DISCOVERY_ADDRESS, peer.clone())
                     .discover(1, owner.address(), PATH_USD_ADDRESS, U256::from(50 * UNIT))
                     .block(height.into())
                     .call()

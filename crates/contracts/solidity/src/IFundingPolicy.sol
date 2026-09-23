@@ -18,21 +18,6 @@ interface IFundingPolicy {
         Route[] routes;
     }
 
-    struct SourceCandidate {
-        address target;
-        bytes data;
-        uint256 availableAmount;
-    }
-
-    struct Discovery {
-        address token;
-        uint256 amount;
-        uint16 slippageBps;
-        SourceCandidate[] sources;
-    }
-
-    error InvalidCandidate(address source);
-
     error TokenNotAllowed(address token);
     error PolicyNotFound();
     error Unauthorized();
@@ -44,11 +29,6 @@ interface IFundingPolicy {
     function getPolicy(uint64 policyId) external view returns (Policy memory policy);
     function modifyPolicy(uint64 policyId, uint16 slippageBps, Route[] calldata routes) external;
     function setAdmins(uint64 policyId, address[] calldata admins) external;
-
-    function discover(uint64 policyId, address account, address token, uint256 amount)
-        external
-        view
-        returns (Discovery memory);
 
     event PolicyCreated(uint64 indexed policyId, address indexed updater);
     /// @dev policyHash is keccak256(abi.encode(policy)) after the rule update.

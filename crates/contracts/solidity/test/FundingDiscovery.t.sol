@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import {IFundingPolicy} from "../src/IFundingPolicy.sol";
+import {IFundingDiscovery} from "../src/IFundingDiscovery.sol";
 
 interface IDiscoverySource {
     struct Candidate {
@@ -47,7 +47,7 @@ contract Source {
         uint256 budget_,
         bytes calldata data
     ) external view returns (IDiscoverySource.Candidate[] memory) {
-        require(msg.sender == address(0x1120000000000000000000000000000000000002));
+        require(msg.sender == address(0x1120000000000000000000000000000000000003));
         require(tx.origin == account);
         if (keccak256(data) == keccak256(hex"ff")) revert SourceFailure();
         require(account_ == account && token_ == token && amount_ == amount && budget_ == budget);
@@ -59,7 +59,7 @@ contract Source {
 contract DiscoveryCaller {
     fallback() external {
         (bool success, bytes memory result) =
-            address(0x1120000000000000000000000000000000000002).staticcall(msg.data);
+            address(0x1120000000000000000000000000000000000003).staticcall(msg.data);
         assembly {
             switch success
             case 0 { revert(add(result, 32), mload(result)) }
@@ -74,20 +74,8 @@ contract RecursiveSource {
         view
         returns (IDiscoverySource.Candidate[] memory)
     {
-        IFundingPolicy(address(0x1120000000000000000000000000000000000002))
+        IFundingDiscovery(address(0x1120000000000000000000000000000000000003))
             .discover(1, account, token, 50);
         return new IDiscoverySource.Candidate[](0);
-    }
-}
-
-contract DiscoveryDelegateCaller {
-    fallback() external {
-        (bool success, bytes memory result) =
-            address(0x1120000000000000000000000000000000000002).delegatecall(msg.data);
-        assembly {
-            switch success
-            case 0 { revert(add(result, 32), mload(result)) }
-            default { return(add(result, 32), mload(result)) }
-        }
     }
 }
