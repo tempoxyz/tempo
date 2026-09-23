@@ -18,6 +18,7 @@ class MetricsTests(unittest.TestCase):
                 row(m.P + "persisted_transactions_total", 100),
                 row(m.P + "save_blocks_duration_seconds_sum", 2),
                 row(m.P + "save_blocks_duration_seconds_count", 2),
+                row("reth_storage_providers_database_save_blocks_total", -5, quantile="0.99"),
                 row(m.T + "_sum", 1, table="HashedStorages", shard="2"),
                 row(m.T + "_count", 2, table="HashedStorages", shard="2"),
                 row("reth_storage_providers_static_file_segment_write_seconds_sum", 0.2, segment="Headers"),
