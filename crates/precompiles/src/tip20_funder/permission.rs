@@ -106,6 +106,14 @@ impl FundingPermission {
     }
 }
 
+/// Rejects source execution outside the protocol's matching input permission.
+pub(crate) fn require_active(funder: Address, account: Address, source: Address) -> Result<()> {
+    if !ACTIVE.is_set() || !ACTIVE.with(|permission| permission.matches(funder, account, source)) {
+        return Err(invalid_context());
+    }
+    Ok(())
+}
+
 /// Returns false outside funding or for another owner's funds, preserving ordinary authorization.
 pub(crate) fn meter_input(owner: Address, asset: Address, amount: U256) -> Result<bool> {
     input_permission(owner, asset, amount, true)
