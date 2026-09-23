@@ -1039,6 +1039,8 @@ where
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_transaction_execution_elapsed,
+            build_seconds = elapsed.as_secs_f64(),
+            transaction_execution_seconds = total_transaction_execution_elapsed.as_secs_f64(),
             ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,
             "Built payload"
