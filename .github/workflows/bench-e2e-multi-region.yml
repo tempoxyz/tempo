@@ -3,6 +3,10 @@ name: bench-e2e-multi-region
 on:
   workflow_call:
     inputs:
+      wait-for-run:
+        type: string
+        required: false
+        default: ""
       cloud:
         type: string
         required: false
@@ -98,6 +102,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      wait-for-run:
+        description: Optional multiregion smoke run ID that must succeed and finish teardown before provisioning.
+        type: string
+        required: false
+        default: ""
       cloud:
         description: Cloud provider used for disposable benchmark infrastructure.
         type: choice
@@ -580,6 +589,36 @@ jobs:
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
+
+      - name: Wait for prerequisite benchmark and teardown
+        if: inputs['wait-for-run'] != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          WAIT_FOR_RUN: ${{ inputs['wait-for-run'] }}
+        with:
+          script: |
+            const runId = Number(process.env.WAIT_FOR_RUN);
+            if (!/^[1-9][0-9]*$/.test(process.env.WAIT_FOR_RUN) || !Number.isSafeInteger(runId)) {
+              throw new Error('wait-for-run must be a positive integer workflow run ID');
+            }
+            for (let attempt = 0; attempt < 60; attempt++) {
+              const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: runId});
+              if (run.status === 'completed') {
+                if (run.conclusion !== 'success') throw new Error('Prerequisite benchmark did not succeed');
+                const {data: jobs} = await github.rest.actions.listJobsForWorkflowRun({...context.repo, run_id: runId});
+                const job = jobs.jobs.find(job => job.name === 'bench-e2e-multi-region');
+                for (const name of ['Start infrastructure teardown', 'Wait for infrastructure teardown']) {
+                  if (!job?.steps?.some(step => step.name === name && step.conclusion === 'success')) {
+                    throw new Error('Prerequisite benchmark is missing successful teardown: ' + name);
+                  }
+                }
+                core.info('Prerequisite benchmark succeeded and its infrastructure was torn down');
+                return;
+              }
+              core.info('Waiting for prerequisite benchmark ' + runId + ': ' + run.status);
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+            throw new Error('Prerequisite benchmark is still unfinished after 30 minutes; refusing to provision');
 
       - name: Generate initial validator state
         id: generate_initial_validator_state
