@@ -28,7 +28,9 @@
 //! samples that also expire by age. A single slow observation (a persistence
 //! commit landing on a block, one slow finish) therefore moves the estimate by
 //! at most one window slot instead of resetting it to the outlier, while a
-//! sustained change still takes over within a fraction of the window.
+//! sustained change still takes over within a fraction of the window. The
+//! network reservation can opt out of that damping on the way up, see
+//! [`EstimatorConfig::network_reserve_fast_rise`].
 
 use std::{
     collections::VecDeque,
@@ -54,6 +56,8 @@ pub const DEFAULT_NETWORK_BUDGET: Duration = Duration::from_millis(50);
 /// roughly the propagation and vote round trip measured on a 10 validator,
 /// four region deployment with 2.6 MB blocks.
 pub const DEFAULT_NETWORK_BUDGET_MAX: Duration = Duration::from_millis(250);
+/// Percentile of recent network samples reserved when no configuration is given.
+pub const DEFAULT_NETWORK_RESERVE_PERCENTILE: u8 = 75;
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
 ///
 /// `1.15` means "when cutoff work is 100 ms, expect the completed replayable
@@ -96,16 +100,23 @@ const MARSHAL_PERSIST_SAMPLE_TTL: Duration = Duration::from_secs(60);
 const NETWORK_SAMPLE_WINDOW: usize = 16;
 /// Network observations older than this are dropped.
 const NETWORK_SAMPLE_TTL: Duration = Duration::from_secs(120);
+/// Lowest accepted network reserve percentile: the median of the window.
+const MIN_NETWORK_RESERVE_PERCENTILE: u8 = 50;
+/// Highest accepted network reserve percentile: the slowest sample in the window.
+const MAX_NETWORK_RESERVE_PERCENTILE: u8 = 100;
 /// A proposal that has not been notarized after this long is not a usable
 /// network sample; the view was most likely nullified.
 const PENDING_PROPOSAL_TTL: Duration = Duration::from_secs(10);
 /// Upper bound on proposals awaiting their notarization.
 const MAX_PENDING_PROPOSALS: usize = 8;
 
-/// Percentile used for every learned reservation: the 75th.
+/// Percentile used for the marshal persistence and build time reservations:
+/// the 75th.
 ///
 /// The median ignores too much of the tail for a reservation, the 90th
-/// percentile of a 16 sample window is a single observation again.
+/// percentile of a 16 sample window is a single observation again. The
+/// network reservation defaults to the same percentile but is configurable,
+/// see [`EstimatorConfig::network_reserve_percentile`].
 const RESERVE_PERCENTILE: (usize, usize) = (3, 4);
 
 /// Identifies a proposal across epochs: `(epoch, view)`.
@@ -130,6 +141,26 @@ pub struct EstimatorConfig {
     /// Setting this equal to `network_budget` disables learning and restores
     /// a fixed reservation.
     pub network_budget_max: Duration,
+    /// Percentile of recent own-proposal network samples to reserve, from 50
+    /// (the median) to 100 (the slowest sample in the window).
+    ///
+    /// A higher percentile leaves fewer proposals whose network time exceeds
+    /// the reservation, at the cost of a smaller return budget and therefore
+    /// smaller blocks. The reservation stays clamped between `network_budget`
+    /// and `network_budget_max`.
+    pub network_reserve_percentile: u8,
+    /// Reserve at least the most recent network sample, not only the window
+    /// percentile.
+    ///
+    /// The percentile over the last 16 own proposals, up to two minutes of
+    /// them, lags a network that is getting slower, for example while blocks
+    /// grow, so the proposals made during the rise exceed their reservation
+    /// far more often than the percentile implies. With fast rise a single
+    /// slow sample lifts the reservation immediately, still clamped to
+    /// `network_budget_max`, and the next faster sample hands it back to the
+    /// window percentile: the reservation rises instantly and decays through
+    /// the window.
+    pub network_reserve_fast_rise: bool,
     /// Initial ratio of total replayable build work over work at tx cutoff.
     pub build_time_multiplier: f64,
 }
@@ -140,6 +171,8 @@ impl Default for EstimatorConfig {
             target_block_time: DEFAULT_TARGET_BLOCK_TIME,
             network_budget: DEFAULT_NETWORK_BUDGET,
             network_budget_max: DEFAULT_NETWORK_BUDGET_MAX,
+            network_reserve_percentile: DEFAULT_NETWORK_RESERVE_PERCENTILE,
+            network_reserve_fast_rise: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -176,13 +209,27 @@ impl EstimatorConfig {
         self
     }
 
+    /// Sets the percentile of recent network samples to reserve.
+    pub fn with_network_reserve_percentile(mut self, network_reserve_percentile: u8) -> Self {
+        self.network_reserve_percentile = network_reserve_percentile;
+        self
+    }
+
+    /// Sets whether the most recent network sample may lift the reservation
+    /// above the window percentile.
+    pub fn with_network_reserve_fast_rise(mut self, network_reserve_fast_rise: bool) -> Self {
+        self.network_reserve_fast_rise = network_reserve_fast_rise;
+        self
+    }
+
     /// Sets the initial build time multiplier.
     pub fn with_build_time_multiplier(mut self, build_time_multiplier: f64) -> Self {
         self.build_time_multiplier = build_time_multiplier;
         self
     }
 
-    /// Checks that the reservations leave room for a proposal.
+    /// Checks that the reservations leave room for a proposal and that the
+    /// learning knobs are in range.
     pub fn validate(&self) -> Result<(), String> {
         if self.network_budget >= self.target_block_time {
             return Err(format!(
@@ -200,6 +247,15 @@ impl EstimatorConfig {
             return Err(format!(
                 "maximum network budget ({:?}) must be smaller than the target block time ({:?})",
                 self.network_budget_max, self.target_block_time
+            ));
+        }
+        if !(MIN_NETWORK_RESERVE_PERCENTILE..=MAX_NETWORK_RESERVE_PERCENTILE)
+            .contains(&self.network_reserve_percentile)
+        {
+            return Err(format!(
+                "network reserve percentile ({}) must be between \
+                 {MIN_NETWORK_RESERVE_PERCENTILE} and {MAX_NETWORK_RESERVE_PERCENTILE}, inclusive",
+                self.network_reserve_percentile
             ));
         }
         if !(self.build_time_multiplier.is_finite() && self.build_time_multiplier >= 1.0) {
@@ -421,18 +477,45 @@ struct PendingProposal {
 #[derive(Clone, Debug)]
 struct NetworkTracker {
     samples: SampleWindow<u64>,
+    /// The most recent sample and when it was taken.
+    ///
+    /// The window only prunes when a sample is pushed, so every hook that
+    /// carries the clock drops this one once it is older than the window's
+    /// ttl.
+    last: Option<(Instant, u64)>,
     pending: VecDeque<PendingProposal>,
     floor: Duration,
     cap: Duration,
+    /// Percentile of the window that is reserved.
+    percentile: u8,
+    /// Whether the most recent sample lifts the reservation above the
+    /// window percentile.
+    fast_rise: bool,
 }
 
 impl NetworkTracker {
-    fn new(floor: Duration, cap: Duration) -> Self {
+    fn new(config: &EstimatorConfig) -> Self {
         Self {
             samples: SampleWindow::new(NETWORK_SAMPLE_WINDOW, NETWORK_SAMPLE_TTL),
+            last: None,
             pending: VecDeque::with_capacity(MAX_PENDING_PROPOSALS),
-            floor,
-            cap: cap.max(floor),
+            floor: config.network_budget,
+            cap: config.network_budget_max.max(config.network_budget),
+            percentile: config.network_reserve_percentile.clamp(
+                MIN_NETWORK_RESERVE_PERCENTILE,
+                MAX_NETWORK_RESERVE_PERCENTILE,
+            ),
+            fast_rise: config.network_reserve_fast_rise,
+        }
+    }
+
+    /// Forgets the most recent sample once it is older than the window's ttl.
+    fn expire_last(&mut self, now: Instant) {
+        if self
+            .last
+            .is_some_and(|(at, _)| now.saturating_duration_since(at) > self.samples.ttl)
+        {
+            self.last = None;
         }
     }
 
@@ -443,6 +526,7 @@ impl NetworkTracker {
         key: ProposalKey,
         expectation: ProposalExpectation,
     ) {
+        self.expire_last(now);
         self.pending.retain(|pending| {
             pending.key != key
                 && now.saturating_duration_since(pending.returned_at) <= PENDING_PROPOSAL_TTL
@@ -473,6 +557,7 @@ impl NetworkTracker {
         child_view: u64,
         child_timestamp_ms: u64,
     ) -> Option<Duration> {
+        self.expire_last(now);
         let index = self
             .pending
             .iter()
@@ -487,8 +572,9 @@ impl NetworkTracker {
             return None;
         }
         let network = elapsed.saturating_sub(pending.expected_remote);
-        self.samples
-            .push(now, network.as_nanos().min(u128::from(u64::MAX)) as u64);
+        let sample = network.as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.samples.push(now, sample);
+        self.last = Some((now, sample));
         Some(network)
     }
 
@@ -497,10 +583,22 @@ impl NetworkTracker {
     }
 
     /// Unclamped learned network time, if any proposal has completed.
+    ///
+    /// This is the configured percentile of the window, or with fast rise
+    /// the most recent sample when that is higher.
     fn observed(&self) -> Option<Duration> {
-        self.samples
-            .percentile(RESERVE_PERCENTILE.0, RESERVE_PERCENTILE.1)
-            .map(Duration::from_nanos)
+        let window = self.samples.percentile(usize::from(self.percentile), 100);
+        let last = self
+            .last
+            .filter(|_| self.fast_rise)
+            .map(|(_, sample)| sample);
+        // `None` orders below every sample.
+        window.max(last).map(Duration::from_nanos)
+    }
+
+    /// The most recent sample, until it is older than the window's ttl.
+    fn last_sample(&self) -> Option<Duration> {
+        self.last.map(|(_, sample)| Duration::from_nanos(sample))
     }
 
     fn reserve(&self) -> Duration {
@@ -653,6 +751,11 @@ pub struct EstimatorSnapshot {
     pub build_time_samples: usize,
     /// Learned network time before clamping, if any proposal completed.
     pub network_observed: Option<Duration>,
+    /// Most recent network sample, until it is older than the sample ttl.
+    ///
+    /// With [`EstimatorConfig::network_reserve_fast_rise`] the reservation is
+    /// at least this, within its floor and cap.
+    pub network_last_sample: Option<Duration>,
     /// Network reservation in use.
     pub network_reserve: Duration,
     /// Number of completed proposals in the window.
@@ -693,7 +796,7 @@ impl Estimator {
                 validation: ValidationLatencyEstimator::default(),
                 persist: MarshalPersistTracker::new(),
                 build_time: BuildTimeTracker::new(config.build_time_multiplier),
-                network: NetworkTracker::new(config.network_budget, config.network_budget_max),
+                network: NetworkTracker::new(&config),
             }),
         }
     }
@@ -874,6 +977,7 @@ impl Estimator {
                 / BUILD_TIME_MULTIPLIER_SCALE as f64,
             build_time_samples: state.build_time.samples.len(),
             network_observed: state.network.observed(),
+            network_last_sample: state.network.last_sample(),
             network_reserve,
             network_samples: state.network.samples.len(),
             pending_proposals: state.network.pending.len(),
@@ -899,6 +1003,26 @@ mod tests {
         EstimatorConfig::new(ms(550), ms(50))
     }
 
+    /// Plays one own proposal in `view`, returned `view` seconds after
+    /// `start`, whose child is built `network` later. Without expected
+    /// validator work the whole gap is the network sample.
+    fn own_proposal(estimator: &Estimator, start: Instant, view: u64, network: Duration) {
+        let returned = start + Duration::from_secs(view);
+        let returned_ms = 1_800_000_000_000 + view * 1000;
+        estimator.on_proposal_returned(
+            returned,
+            returned_ms,
+            (0, view),
+            ProposalExpectation::default(),
+        );
+        estimator.on_child_block_built(
+            returned + network,
+            (0, view),
+            view + 1,
+            returned_ms + network.as_millis() as u64,
+        );
+    }
+
     fn validation_latency_estimate(
         workload: ValidationLatencyWorkload,
         elapsed: Duration,
@@ -921,6 +1045,28 @@ mod tests {
         assert!(config().with_network_budget_max(ms(40)).validate().is_err());
         assert!(config().with_build_time_multiplier(0.9).validate().is_err());
         assert_eq!(config().initial_proposal_return_budget(), ms(500));
+    }
+
+    #[test]
+    fn config_validation_bounds_the_network_reserve_percentile() {
+        assert_eq!(config().network_reserve_percentile, 75);
+        assert!(!config().network_reserve_fast_rise);
+        for percentile in [50, 75, 100] {
+            assert!(
+                config()
+                    .with_network_reserve_percentile(percentile)
+                    .validate()
+                    .is_ok(),
+                "percentile {percentile} must be accepted"
+            );
+        }
+        for percentile in [0, 49, 101, u8::MAX] {
+            let err = config()
+                .with_network_reserve_percentile(percentile)
+                .validate()
+                .unwrap_err();
+            assert!(err.contains("network reserve percentile"), "{err}");
+        }
     }
 
     #[test]
@@ -1184,6 +1330,84 @@ mod tests {
         estimator.on_child_block_built(later + ms(40), (0, 2), 3, later_ms + 40);
         assert_eq!(estimator.snapshot().network_samples, 1);
         assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
+    }
+
+    #[test]
+    fn network_reserve_uses_the_configured_percentile() {
+        // Ten proposals with 100 to 190 ms of network time, out of order.
+        let samples = [150, 110, 190, 130, 170, 100, 180, 120, 160, 140];
+        // The rank rounds up: the 75th percentile of ten samples is the 8th
+        // smallest, the 90th the 9th.
+        for (percentile, expected) in [(50, 140), (75, 170), (90, 180), (100, 190)] {
+            let estimator = Estimator::new(config().with_network_reserve_percentile(percentile));
+            let now = Instant::now();
+            for (view, network) in (1..).zip(samples) {
+                own_proposal(&estimator, now, view, ms(network));
+            }
+            let budget = estimator.proposal_budget();
+            assert_eq!(budget.network_reserve, ms(expected), "p{percentile}");
+            assert_eq!(budget.return_budget, ms(550 - expected), "p{percentile}");
+        }
+    }
+
+    #[test]
+    fn network_reserve_fast_rise_follows_a_slow_sample_up_at_once() {
+        let plain = Estimator::new(config());
+        let fast = Estimator::new(config().with_network_reserve_fast_rise(true));
+        let now = Instant::now();
+        // Feeds the same own proposal to both estimators, returns their reserves.
+        let reserves = |view, network| {
+            own_proposal(&plain, now, view, network);
+            own_proposal(&fast, now, view, network);
+            (
+                plain.proposal_budget().network_reserve,
+                fast.proposal_budget().network_reserve,
+            )
+        };
+        for view in 1..=6 {
+            assert_eq!(reserves(view, ms(150)), (ms(150), ms(150)));
+        }
+        // One slow proposal: the window's p75 still reads 150 ms, while fast
+        // rise reserves the slow sample for the very next proposal.
+        assert_eq!(reserves(7, ms(240)), (ms(150), ms(240)));
+        assert_eq!(fast.snapshot().network_last_sample, Some(ms(240)));
+        assert_eq!(fast.proposal_budget().return_budget, ms(310));
+        // The next fast proposal hands the reservation back to the window.
+        assert_eq!(reserves(8, ms(150)), (ms(150), ms(150)));
+        assert_eq!(fast.snapshot().network_last_sample, Some(ms(150)));
+        // The last sample is reported with fast rise disabled too.
+        assert_eq!(plain.snapshot().network_last_sample, Some(ms(150)));
+    }
+
+    #[test]
+    fn network_reserve_fast_rise_is_capped_and_expires_with_the_window() {
+        let estimator = Estimator::new(config().with_network_reserve_fast_rise(true));
+        let now = Instant::now();
+        for view in 1..=6 {
+            own_proposal(&estimator, now, view, ms(150));
+        }
+        // A sample above the cap lifts the reservation only up to the cap.
+        own_proposal(&estimator, now, 7, ms(400));
+        let snapshot = estimator.snapshot();
+        assert_eq!(snapshot.network_last_sample, Some(ms(400)));
+        assert_eq!(snapshot.network_observed, Some(ms(400)));
+        assert_eq!(snapshot.network_reserve, ms(250));
+
+        // Without a newer sample the slow one still counts at exactly the
+        // window's ttl, as it would in the window, and is ignored once it is
+        // older. Any hook that carries the clock expires it, here blocks
+        // built on other proposers' parents.
+        let sampled_at = now + Duration::from_secs(7) + ms(400);
+        estimator.on_child_block_built(sampled_at + NETWORK_SAMPLE_TTL, (0, 20), 21, 0);
+        assert_eq!(estimator.proposal_budget().network_reserve, ms(250));
+        estimator.on_child_block_built(sampled_at + NETWORK_SAMPLE_TTL + ms(1), (0, 21), 22, 0);
+        let snapshot = estimator.snapshot();
+        assert_eq!(snapshot.network_last_sample, None);
+        assert_eq!(
+            snapshot.network_reserve,
+            ms(150),
+            "falls back to the window percentile"
+        );
     }
 
     #[test]
