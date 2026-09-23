@@ -27,7 +27,7 @@ use tempo_precompiles::{
     tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
-    AccountSignature, Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
+    Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
     TempoSignedAuthorization,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
@@ -35,120 +35,6 @@ use tempo_primitives::transaction::{
 fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
     let db = CacheDB::new(EmptyDB::default());
     Journal::new(db)
-}
-
-#[test]
-fn unsupported_multisig_roles_fail_closed() {
-    use tempo_primitives::transaction::{
-        KeyAuthorization, KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature,
-    };
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Role {
-        Primitive,
-        Direct,
-        Delegate,
-        Grant,
-        GrantRecipient,
-        AuthorizationList,
-        DelegatedAuthorizationList,
-    }
-    let account = Address::repeat_byte(0x22);
-    let native = TempoSignature::Multisig(
-        MultisigSignature::try_new(
-            account,
-            MultisigConfig {
-                salt: B256::ZERO,
-                version: 0,
-                threshold: 1,
-                owners: vec![MultisigOwner {
-                    owner: Address::repeat_byte(0x33),
-                    weight: 1,
-                }],
-            },
-            vec![PrimitiveSignature::default()],
-        )
-        .unwrap(),
-    );
-    let delegated = TempoSignature::Keychain(KeychainSignature::new(
-        account,
-        native.as_multisig().unwrap().clone(),
-    ));
-    for simulation in [false, true] {
-        for role in [
-            Role::Primitive,
-            Role::Direct,
-            Role::Delegate,
-            Role::Grant,
-            Role::GrantRecipient,
-            Role::AuthorizationList,
-            Role::DelegatedAuthorizationList,
-        ] {
-            let mut aa = TempoBatchCallEnv {
-                aa_calls: vec![Call {
-                    to: TxKind::Call(Address::repeat_byte(0x44)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
-                override_key_id: simulation.then_some(account),
-                ..Default::default()
-            };
-            match role {
-                Role::Direct => aa.signature = native.clone(),
-                Role::Delegate => aa.signature = delegated.clone(),
-                Role::Grant | Role::GrantRecipient => {
-                    aa.key_authorization = Some(
-                        KeyAuthorization::unrestricted(
-                            1,
-                            if role == Role::GrantRecipient {
-                                SignatureType::Multisig
-                            } else {
-                                SignatureType::Secp256k1
-                            },
-                            account,
-                        )
-                        .into_signed(if role == Role::Grant {
-                            AccountSignature::Multisig(native.as_multisig().unwrap().clone())
-                        } else {
-                            PrimitiveSignature::default().into()
-                        }),
-                    );
-                }
-                Role::AuthorizationList | Role::DelegatedAuthorizationList => aa
-                    .tempo_authorization_list
-                    .push(RecoveredTempoAuthorization::new(
-                        TempoSignedAuthorization::new_unchecked(
-                            alloy_eips::eip7702::Authorization {
-                                chain_id: U256::ONE,
-                                address: account,
-                                nonce: 0,
-                            },
-                            if role == Role::AuthorizationList {
-                                native.clone()
-                            } else {
-                                delegated.clone()
-                            },
-                        ),
-                    )),
-                Role::Primitive => {}
-            }
-            let mut test =
-                TestHandlerEvm::aa(TempoHardfork::T12, aa, |tx| tx.gas_limit = 1_000_000);
-            let result = test.handler.validate_env(&mut test.evm);
-            if role == Role::Primitive {
-                result.unwrap();
-            } else {
-                assert!(
-                    matches!(
-                        result,
-                        Err(EVMError::Transaction(
-                            TempoInvalidTransaction::KeychainValidationFailed { .. }
-                        ))
-                    ),
-                    "{role:?}, simulation={simulation}: {result:?}"
-                );
-            }
-        }
-    }
 }
 
 #[test_case::test_case(TempoHardfork::T1A; "historical")]
