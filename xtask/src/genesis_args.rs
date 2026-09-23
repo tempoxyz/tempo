@@ -1302,6 +1302,13 @@ mod tests {
             alloc[&FUNDING_DISCOVERY_ADDRESS].code,
             Some(FUNDING_DISCOVERY_RUNTIME)
         );
+        let dev: Genesis =
+            serde_json::from_str(include_str!("../../crates/chainspec/src/genesis/dev.json"))
+                .unwrap();
+        assert_eq!(
+            dev.alloc[&FUNDING_DISCOVERY_ADDRESS].code,
+            Some(FUNDING_DISCOVERY_RUNTIME)
+        );
     }
 
     #[test]
