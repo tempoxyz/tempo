@@ -41,11 +41,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          for region in us-east-1 us-west-2; do
+            aws ec2 describe-instances --region "$region" --filters \
+              Name=tag:BenchmarkRunId,Values=bench-e2e-multi-region-35883541989-1 \
+              --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,reason:StateTransitionReason,launch:LaunchTime,role:Tags[?Key==`Role`].Value|[0]}' \
+              --output json > "diagnostics/instances-$region.json"
+          done
           instances=$(aws ec2 describe-instances --filters \
             Name=tag:BenchmarkRunId,Values=bench-e2e-multi-region-35883541989-1 \
             Name=tag:Role,Values=load-generator Name=instance-state-name,Values=running \
             --query 'Reservations[].Instances[].InstanceId' --output json)
-          test "$(jq length <<< "$instances")" = 1
+          if [[ "$(jq length <<< "$instances")" != 1 ]]; then
+            echo 'No single running load generator; inspect scoped instance states.'
+            exit 0
+          fi
           instance=$(jq -r '.[0]' <<< "$instances")
           command='date -u; ps -eo pid,ppid,comm,wchan:30,etime,pcpu,pmem --sort=-pcpu | head -25; find /opt/tempo/load-generator -maxdepth 3 -type f \( -name txgen-send.err -o -name txgen-generate.err -o -name load-generator.log \) -exec tail -n 45 {} + | sed -E "s#(https?|wss?)://[^[:space:]]+#[endpoint]#g" | tail -c 20000'
           params=$(jq -cn --arg command "$command" '{commands:[$command],executionTimeout:["60"]}')
