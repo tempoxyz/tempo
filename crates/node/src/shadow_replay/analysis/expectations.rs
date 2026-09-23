@@ -7,7 +7,7 @@ use super::{AccountDelta, Field};
 use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post_fee_slot_change};
 use alloy::{
     consensus::Transaction as _,
-    primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, keccak256},
+    primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
     sol_types::SolCall as _,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -150,34 +150,43 @@ fn precompile_gas_or_storage(field: &Field, precompile: Address) -> bool {
 const T12_TIP20_CHANNEL: Expectation = Expectation {
     id: "t12.tip20-channel-reserve",
     check: |ctx, field| {
-        if precompile_gas_or_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS)
-            && ctx.call().any(|(kind, calldata)| {
-                kind.to() == Some(&TIP20_CHANNEL_RESERVE_ADDRESS)
-                    && [
-                        ITIP20ChannelReserve::openCall::SELECTOR,
-                        ITIP20ChannelReserve::settleCall::SELECTOR,
-                        ITIP20ChannelReserve::topUpCall::SELECTOR,
-                        ITIP20ChannelReserve::closeCall::SELECTOR,
-                        ITIP20ChannelReserve::withdrawCall::SELECTOR,
-                    ]
-                    .iter()
-                    .any(|selector| calldata.starts_with(selector))
-            })
-        {
-            ctx.observed_txs()?;
-            return Some(());
+        if !precompile_gas_or_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS) {
+            return None;
         }
-        None
+
+        let is_related = ctx.call().any(|(kind, calldata)| {
+            kind.to() == Some(&TIP20_CHANNEL_RESERVE_ADDRESS)
+                && [
+                    ITIP20ChannelReserve::openCall::SELECTOR,
+                    ITIP20ChannelReserve::settleCall::SELECTOR,
+                    ITIP20ChannelReserve::topUpCall::SELECTOR,
+                    ITIP20ChannelReserve::closeCall::SELECTOR,
+                    ITIP20ChannelReserve::withdrawCall::SELECTOR,
+                ]
+                .iter()
+                .any(|selector| calldata.starts_with(selector))
+        });
+        is_related.then_some(())?;
+        ctx.observed_txs().map(|_| ())
     },
 };
+
+// LiFiDiamond delegates this selector to GenericSwapFacetV3; swaps can call the DEX internally.
+const LIFI_DIAMOND: Address = address!("2cacae8e22418e65dcf7651c67aebe6288eb8243");
+const LIFI_SWAP_TOKENS_MULTIPLE_V3: [u8; 4] = [0x5f, 0xd9, 0xae, 0x2e];
 
 const T12_STABLECOIN_DEX: Expectation = Expectation {
     id: "t12.stablecoin-dex",
     check: |ctx, field| {
-        if precompile_gas_or_storage(field, STABLECOIN_DEX_ADDRESS)
-            && ctx.call().any(|(kind, calldata)| {
-                kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-                    && [
+        if !precompile_gas_or_storage(field, STABLECOIN_DEX_ADDRESS) {
+            return None;
+        }
+
+        let is_related = ctx.call().any(|(kind, calldata)| {
+            let selector = calldata.get(..4);
+            match kind.to() {
+                Some(to) if to == &STABLECOIN_DEX_ADDRESS => selector.is_some_and(|selector| {
+                    [
                         IStablecoinDEX::placeCall::SELECTOR,
                         IStablecoinDEX::placeFlipCall::SELECTOR,
                         IStablecoinDEX::cancelCall::SELECTOR,
@@ -189,13 +198,16 @@ const T12_STABLECOIN_DEX: Expectation = Expectation {
                         IStablecoinDEX::getTickLevelCall::SELECTOR,
                     ]
                     .iter()
-                    .any(|selector| calldata.starts_with(selector))
-            })
-        {
-            ctx.observed_txs()?;
-            return Some(());
-        }
-        None
+                    .any(|expected| selector == expected.as_slice())
+                }),
+                Some(to) if to == &LIFI_DIAMOND => {
+                    selector == Some(LIFI_SWAP_TOKENS_MULTIPLE_V3.as_slice())
+                }
+                _ => false,
+            }
+        });
+        is_related.then_some(())?;
+        ctx.observed_txs().map(|_| ())
     },
 };
 
