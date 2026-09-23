@@ -28,8 +28,8 @@ impl<const N: usize> Cache<N> {
 
     fn hash(&mut self, input: [u8; 64]) -> U256 {
         let mut tag = 0u64;
-        for word in input.chunks_exact(8) {
-            tag = (tag ^ u64::from_ne_bytes(word.try_into().unwrap()))
+        for word in input.as_chunks::<8>().0 {
+            tag = (tag ^ u64::from_ne_bytes(*word))
                 .wrapping_mul(0x9e37_79b9_7f4a_7c15)
                 .rotate_left(17);
         }
