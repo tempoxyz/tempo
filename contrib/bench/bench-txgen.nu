@@ -202,7 +202,7 @@ def run-txgen-bench-single [
 
 def "main run" [
     --mode: string = "e2e"
-    --preset: string = ""
+    --preset: string = "default"
     --tps: int = 10000
     --duration: int = 30
     --accounts: int = 1000

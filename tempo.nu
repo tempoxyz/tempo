@@ -2440,7 +2440,7 @@ def "main bench-init" [
 # Run a full benchmark: start infra, localnet, and txgen traffic
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
-    --preset: string = ""                           # Txgen preset name
+    --preset: string = "default"                    # Txgen preset name
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts

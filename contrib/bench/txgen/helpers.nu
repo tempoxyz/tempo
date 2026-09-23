@@ -51,10 +51,6 @@ def txgen-tip20-scenario-alias [name: string] {
         return (txgen-tip20-public-scenario)
     }
 
-    if $name == "default" {
-        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
-    }
-
     # Legacy preset names remain accepted, but active workflows should use scenario strings.
     if $name == "tip20" {
         return (txgen-tip20-base-scenario)
@@ -412,7 +408,10 @@ def txgen-static-preset-path [preset: string] {
 }
 
 def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
-    let preset_name = ($preset | str trim)
+    # Shared with the multi-region runner; keep workload selection in the assets.
+    let name = ($preset | str trim)
+    let aliases = (open ([ (txgen-presets-dir) "aliases.json" ] | path join))
+    let preset_name = ($aliases | get -o $name | default $name)
     let tip20_scenario = (txgen-parse-tip20-scenario $preset_name)
     if $tip20_scenario != null {
         return (txgen-render-tip20-spec $tip20_scenario $out_dir)
