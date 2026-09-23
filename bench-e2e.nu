@@ -1008,6 +1008,23 @@ def run-local-e2e-phase [run: record, ctx: record] {
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    mark-schelk-dirty-at $ctx.a.state_path
+    mark-schelk-dirty-at $ctx.b.state_path
+
+    # Restore the pristine layout cache without ever replacing the v2 source in
+    # the virgin snapshot. Uncached comparisons retain the offline conversion path.
+    for datadir in [$ctx.a.datadir $ctx.b.datadir] {
+        if $run_type == "feature" and $ctx.storage_layout_cache_key != "" {
+            bash scripts/bench-cache-storage-layout.sh activate $run.tempo $datadir $ctx.storage_layout_cache_key
+        } else {
+            bash scripts/bench-prepare-storage-layout.sh $run.tempo $datadir
+        }
+        if $env.LAST_EXIT_CODE != 0 { error make {msg: "benchmark storage layout preparation failed"} }
+    }
+    # Conversion reads/writes much more data than restoring the baseline. Start
+    # both sides cold so that migration cannot give the candidate a warm-cache lead.
+    sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+    if $env.LAST_EXIT_CODE != 0 { error make {msg: "could not normalize benchmark page cache"} }
 
     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
@@ -1016,8 +1033,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" or $ctx.general_gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -1083,8 +1100,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
-    mark-schelk-dirty-at $ctx.a.state_path
-    mark-schelk-dirty-at $ctx.b.state_path
 
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
     start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
@@ -1540,8 +1555,14 @@ def "main e2e" [
         mkdir $E2E_BLOAT_TMP_DIR
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
-        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+        # Generate the shared virgin snapshot with the baseline layout. The feature
+        # binary converts its restored copy before each phase, outside measurement.
+        let snapshot_wt = $"($BENCH_WORKTREES_DIR)/e2e-snapshot-baseline"
+        mkdir $BENCH_WORKTREES_DIR
+        if ($snapshot_wt | path exists) { git worktree remove --force $snapshot_wt }
+        git worktree add $snapshot_wt $baseline
+        build-in-worktree --no-default-features=$no_default_features $snapshot_wt $baseline $profile $snapshot_features $baseline
+        let tempo_bin = (worktree-bin $snapshot_wt $profile "tempo")
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
         cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
@@ -1665,6 +1686,29 @@ def "main e2e" [
     } | ignore
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
     let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    # Convert once per job, then snapshot both layouts under separate paths. The
+    # ordinary db/ remains v2, including for later jobs using an unsharded binary.
+    mut storage_layout_cache_key = ""
+    if $needs_baseline and $needs_feature {
+        let baseline_help = (run-external $baseline_tempo "--help" | complete)
+        let feature_help = (run-external $feature_tempo "--help" | complete)
+        if $baseline_help.exit_code != 0 or $feature_help.exit_code != 0 {
+            error make {msg: "could not inspect benchmark database layouts"}
+        }
+        if ($feature_help.stdout | str contains "bench-shard-storage") and not ($baseline_help.stdout | str contains "bench-shard-storage") {
+            $storage_layout_cache_key = $"($benchmark_id):($timestamp):($baseline):($feature)"
+            mark-schelk-dirty-at $E2E_A_STATE_PATH
+            mark-schelk-dirty-at $E2E_B_STATE_PATH
+            for datadir in [$a_db $b_db] {
+                bash scripts/bench-cache-storage-layout.sh prepare $feature_tempo $datadir $storage_layout_cache_key
+                if $env.LAST_EXIT_CODE != 0 { error make {msg: "could not prepare pristine sharded snapshot"} }
+            }
+            bench-promote-at $E2E_A_STATE_PATH $a_db
+            bench-promote-at $E2E_B_STATE_PATH $b_db
+            bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+            bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+        }
+    }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
@@ -1683,6 +1727,7 @@ def "main e2e" [
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
+        storage_layout_cache_key: $storage_layout_cache_key
         genesis: $genesis_path
         trusted_peers: $trusted_peers
         a: {

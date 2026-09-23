@@ -77,6 +77,14 @@ pub enum TempoSubcommand {
     /// and applies them to the genesis state.
     InitFromBinaryDump(Box<init_state::InitFromBinaryDump<TempoChainSpecParser>>),
 
+    /// Convert an offline benchmark MDBX directory to the experimental prefix-sharded layout.
+    /// Only use disposable snapshots: this schema cannot be opened by an unsharded binary.
+    BenchShardStorage {
+        /// Exact MDBX directory (the db subdirectory, not the node datadir).
+        #[arg(long)]
+        database: PathBuf,
+    },
+
     /// Patch a virgin block-0 database to use a new genesis header.
     Regenesis(Box<regenesis::Regenesis<TempoChainSpecParser>>),
 
@@ -109,6 +117,9 @@ pub enum TempoSubcommand {
 impl ExtendedCommand for TempoSubcommand {
     fn execute(self, runner: CliRunner) -> eyre::Result<()> {
         match self {
+            Self::BenchShardStorage { database } => {
+                reth_db::mdbx::migrate_storage_shards(&database)
+            }
             Self::Consensus(cmd) => {
                 runner.run_blocking_until_ctrl_c(cmd.run())?;
                 Ok(())
