@@ -292,6 +292,16 @@ on:
         type: string
         required: false
         default: ""
+      txgen-cores:
+        description: Physical cores reserved for txgen; even number, 0 uses shared CPUs.
+        type: string
+        required: false
+        default: "4"
+      baseline-txgen-cores:
+        description: Optional baseline-only override for CPU allocation comparisons.
+        type: string
+        required: false
+        default: ""
       baseline-env:
         type: string
         required: false
@@ -401,6 +411,8 @@ jobs:
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
+      BENCH_TXGEN_CORES: ${{ inputs.txgen-cores || '4' }}
+      BENCH_BASELINE_TXGEN_CORES: ${{ inputs.baseline-txgen-cores }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
@@ -621,7 +633,14 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install txgen
+      - name: Test benchmark CPU allocation
+        # CPU tests run before the expensive installs/builds and benchmark phases.
+        run: |
+          nu contrib/bench/cpu-layout.test.nu
+          nu contrib/bench/txgen/cpu-affinity.test.nu
+          node --test .github/scripts/bench-e2e-cpu-summary.test.js
+
+      - name: Install txgen binaries
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
           echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
@@ -910,6 +929,7 @@ jobs:
             --tps "$BENCH_TPS"
             --accounts "$BENCH_ACCOUNTS"
             --max-concurrent-requests "$BENCH_MAX_CONCURRENT_REQUESTS"
+            --txgen-cores "$BENCH_TXGEN_CORES"
             --gas-limit "$BENCH_GAS_LIMIT"
             --baseline "$BASELINE_REF"
             --feature "$FEATURE_REF"
@@ -940,6 +960,7 @@ jobs:
           [ -n "$effective_feature_args" ] && cmd+=(--feature-args="$effective_feature_args")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
+          [ -n "$BENCH_BASELINE_TXGEN_CORES" ] && cmd+=(--baseline-txgen-cores "$BENCH_BASELINE_TXGEN_CORES")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
           { [ "$BENCH_METRICS" = "true" ] || [ "$BENCH_VALSCOPE" = "true" ]; } && [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
@@ -1012,6 +1033,8 @@ jobs:
           [ -n "$BENCH_FEATURE_ARGS" ] && derek_cmd+=(feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && derek_cmd+=(bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && derek_cmd+=(bench-env="$BENCH_BENCH_ENV")
+          derek_cmd+=(txgen-cores="$BENCH_TXGEN_CORES")
+          [ -n "$BENCH_BASELINE_TXGEN_CORES" ] && derek_cmd+=(baseline-txgen-cores="$BENCH_BASELINE_TXGEN_CORES")
           [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
           DEREK_BENCH_COMMAND=""

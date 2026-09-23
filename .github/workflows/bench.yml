@@ -68,6 +68,8 @@ jobs:
       metrics: ${{ steps.args.outputs.metrics }}
       bench-args: ${{ steps.args.outputs.bench-args }}
       bench-env: ${{ steps.args.outputs.bench-env }}
+      txgen-cores: ${{ steps.args.outputs.txgen-cores }}
+      baseline-txgen-cores: ${{ steps.args.outputs.baseline-txgen-cores }}
       baseline-env: ${{ steps.args.outputs.baseline-env }}
       feature-env: ${{ steps.args.outputs.feature-env }}
       blocks: ${{ steps.args.outputs.blocks }}
@@ -201,6 +203,10 @@ jobs:
             const bloatValues = new Set(['1', '10', '100']);
             const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison' };
             const unknown = [];
+            intArgs.add('txgen-cores');
+            intArgs.add('baseline-txgen-cores');
+            defaults['txgen-cores'] = '4';
+            defaults['baseline-txgen-cores'] = '';
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
             const parseGasLimit = (value) => {
@@ -515,6 +521,8 @@ jobs:
             core.setOutput('metrics', metrics);
             core.setOutput('bench-args', benchArgs || '');
             core.setOutput('bench-env', benchEnv || '');
+            core.setOutput('txgen-cores', defaults['txgen-cores']);
+            core.setOutput('baseline-txgen-cores', defaults['baseline-txgen-cores']);
             core.setOutput('baseline-env', baselineEnv || '');
             core.setOutput('feature-env', featureEnv || '');
             core.setOutput('blocks', blocks);
@@ -667,6 +675,8 @@ jobs:
       metrics: ${{ needs.tempo-bench-ack.outputs.metrics }}
       bench-args: ${{ needs.tempo-bench-ack.outputs.bench-args }}
       bench-env: ${{ needs.tempo-bench-ack.outputs.bench-env }}
+      txgen-cores: ${{ needs.tempo-bench-ack.outputs.txgen-cores }}
+      baseline-txgen-cores: ${{ needs.tempo-bench-ack.outputs.baseline-txgen-cores }}
       baseline-env: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
       feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}

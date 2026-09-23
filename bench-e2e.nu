@@ -4,6 +4,7 @@
 # Shared build/cache/report helpers are sourced from tempo.nu; the replacement
 # e2e topology stays isolated here.
 source tempo.nu
+use contrib/bench/cpu-layout.nu [read-cpu-topology bench-cpu-layout]
 
 const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
@@ -998,6 +999,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let cpu_layout = ($ctx.cpu_layouts | get $run_type)
+    print $"CPU layout for ($phase): validator-a=($cpu_layout.a), validator-b=($cpu_layout.b), txgen=($cpu_layout.txgen), txgen physical cores=($cpu_layout.txgen_cores)"
     let genesis = ($run | get -o genesis | default $ctx.genesis)
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
@@ -1086,8 +1089,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $cpu_layout.a $ctx.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $cpu_layout.b $ctx.b.memory
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1156,6 +1159,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --duration $ctx.duration
                 --accounts $ctx.accounts
                 --max-concurrent-requests $ctx.max_concurrent_requests
+                --cpus $cpu_layout.txgen
                 --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
@@ -1320,6 +1324,10 @@ def e2e-generate-summary [results_dir: string] {
         let token_count = ($config | get -o token_count | default 4 | into int)
         let summary = (open $summary_path)
         let summary = ($summary | upsert config ($summary.config | upsert token_count $token_count | upsert run_side $run_side | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
+        let cpu_layout_path = $"($results_dir)/cpu-layout.json"
+        let summary = if ($cpu_layout_path | path exists) {
+            $summary | upsert config.cpu_layout (open $cpu_layout_path)
+        } else { $summary }
         $summary | to json | save -f $summary_path
     }
 
@@ -1362,6 +1370,8 @@ def "main e2e" [
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
+    --txgen-cores: int = 4                             # Physical cores reserved for txgen, split equally between validator groups; 0 reproduces shared CPUs
+    --baseline-txgen-cores: int = -1                    # Optional baseline-only override for same-host CPU allocation experiments
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
@@ -1440,6 +1450,16 @@ def "main e2e" [
     if $summary_warmup_blocks < 0 {
         print "Error: --summary-warmup-blocks must be non-negative"
         exit 1
+    }
+    # Fail before restoring snapshots or building binaries on incompatible hosts.
+    if $baseline_txgen_cores < -1 {
+        error make {msg: 'baseline-txgen-cores must be -1 or a non-negative even number'}
+    }
+    let topology = (read-cpu-topology)
+    let baseline_cpu_cores = if $baseline_txgen_cores == -1 { $txgen_cores } else { $baseline_txgen_cores }
+    let cpu_layouts = {
+        baseline: (bench-cpu-layout $E2E_A_CPUS $E2E_B_CPUS $baseline_cpu_cores $topology)
+        feature: (bench-cpu-layout $E2E_A_CPUS $E2E_B_CPUS $txgen_cores $topology)
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
     e2e-validate-token-count $token_count
@@ -1612,6 +1632,7 @@ def "main e2e" [
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
     print $"BENCH_RESULTS_DIR=($results_dir)"
+    ($cpu_layouts | insert topology $topology | insert kernel (^uname -r | str trim)) | to json | save -f $"($results_dir)/cpu-layout.json"
     cp $preset_path $"($results_dir)/txgen-spec.yml"
 
     git worktree prune
@@ -1692,7 +1713,6 @@ def "main e2e" [
             node_dir: $a_identity
             ip: $a_ip
             consensus_port: $a_consensus_port
-            cpus: $E2E_A_CPUS
             memory: $E2E_A_MEMORY
         }
         b: {
@@ -1702,7 +1722,6 @@ def "main e2e" [
             node_dir: $b_identity
             ip: $b_ip
             consensus_port: $b_consensus_port
-            cpus: $E2E_B_CPUS
             memory: $E2E_B_MEMORY
         }
         preset: $preset
@@ -1711,6 +1730,7 @@ def "main e2e" [
         duration: $duration
         accounts: $accounts
         max_concurrent_requests: $max_concurrent_requests
+        cpu_layouts: $cpu_layouts
         bloat: $bloat_mib
         token_count: $token_count
         txgen: $txgen

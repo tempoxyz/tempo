@@ -703,6 +703,15 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
 
+def txgen-run-shell [script: string, cpus: string] {
+    if $cpus == "" {
+        bash -lc $script | complete
+    } else {
+        # Affinity is inherited by both sides of the pipe and their workers.
+        taskset -c $cpus bash -lc $script | complete
+    }
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -715,6 +724,7 @@ def txgen-run-preset-pipeline [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
+    --cpus: string = ""                          # Pin the whole generation/send/collection pipeline
     --bench-args: string = ""
     --bench-env: string = ""
     --git-ref: string = ""
@@ -841,6 +851,7 @@ def txgen-run-preset-pipeline [
     let pr_number = ($env | get --optional BENCH_PR | default "")
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
+        "-m" $"txgen_cpus=($cpus)"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
@@ -890,7 +901,7 @@ def txgen-run-preset-pipeline [
         } else {
             print "  Streaming keychain setup transactions into bench send..."
         }
-        let setup_result = (bash -lc $setup_pipeline | complete)
+        let setup_result = (txgen-run-shell $setup_pipeline $cpus)
         if $setup_result.stdout != "" { print $setup_result.stdout }
         if $setup_result.stderr != "" { print $setup_result.stderr }
 
@@ -911,7 +922,7 @@ def txgen-run-preset-pipeline [
     let vault_start_block = if $is_vault {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
-    let result = (bash -lc $pipeline | complete)
+    let result = (txgen-run-shell $pipeline $cpus)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
 

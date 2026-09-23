@@ -226,6 +226,7 @@ function appendBuilderDetails(lines, summary) {
 function buildMarkdown(summary) {
   const c = summary.classification;
   const derekCommand = summary.config?.derek_command || '';
+  const cpuLayout = summary.config?.cpu_layout;
   const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
   const featureRemovedArgs = summary.config?.feature_removed_args || '';
   const runSide = summary.config?.run_side || 'comparison';
@@ -244,6 +245,10 @@ function buildMarkdown(summary) {
     `- Preset: ${summary.config.preset}`,
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
+    ...(cpuLayout ? ['baseline', 'feature'].map(side => {
+      const cpus = cpuLayout[side];
+      return `- ${side} CPUs: validator a \`${cpus.a}\`, validator b \`${cpus.b}\`, txgen \`${cpus.txgen || 'shared/unpinned'}\` (${cpus.txgen_cores} dedicated physical cores)`;
+    }) : []),
     `- Run pairs: ${summary.config.run_pairs}`,
     ...(runSide !== 'comparison' ? [`- Run side: ${runSide}`] : []),
     ...(baselineRemovedArgs ? [`- Baseline removed args: \`${baselineRemovedArgs}\``] : []),
