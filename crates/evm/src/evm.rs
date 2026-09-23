@@ -35,19 +35,7 @@ use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
 /// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoEvmFactory {
-    #[cfg(feature = "test-utils")]
-    precompile_overrides: Option<fn(&mut PrecompilesMap)>,
-}
-
-#[cfg(feature = "test-utils")]
-impl TempoEvmFactory {
-    /// Overrides precompiles in EVMs created by this factory for isolated integration tests.
-    pub const fn with_precompile_overrides(mut self, overrides: fn(&mut PrecompilesMap)) -> Self {
-        self.precompile_overrides = Some(overrides);
-        self
-    }
-}
+pub struct TempoEvmFactory;
 
 impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
@@ -64,19 +52,7 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        #[cfg(feature = "test-utils")]
-        {
-            let mut evm = TempoEvm::new(db, input);
-            evm.precompile_overrides = self.precompile_overrides;
-            if let Some(overrides) = self.precompile_overrides {
-                overrides(evm.components_mut().2);
-            }
-            evm
-        }
-        #[cfg(not(feature = "test-utils"))]
-        {
-            TempoEvm::new(db, input)
-        }
+        TempoEvm::new(db, input)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -85,7 +61,7 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        self.create_evm(db, input).with_inspector(inspector)
+        TempoEvm::new(db, input).with_inspector(inspector)
     }
 }
 
@@ -98,8 +74,6 @@ impl EvmFactory for TempoEvmFactory {
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
     inspect: bool,
-    #[cfg(feature = "test-utils")]
-    precompile_overrides: Option<fn(&mut PrecompilesMap)>,
 }
 
 impl<DB: Database> TempoEvm<DB> {
@@ -117,8 +91,6 @@ impl<DB: Database> TempoEvm<DB> {
         Self {
             inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
-            #[cfg(feature = "test-utils")]
-            precompile_overrides: None,
         }
     }
 }
@@ -173,8 +145,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
             inspect: true,
-            #[cfg(feature = "test-utils")]
-            precompile_overrides: self.precompile_overrides,
         }
     }
 
@@ -186,8 +156,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner: self.inner.with_fee_manager(fee_manager),
             inspect: self.inspect,
-            #[cfg(feature = "test-utils")]
-            precompile_overrides: self.precompile_overrides,
         }
     }
 
@@ -208,10 +176,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         let mut actions = self.inner.actions().clone();
         actions.enable();
         self.inner = self.inner.with_actions(actions);
-        #[cfg(feature = "test-utils")]
-        if let Some(overrides) = self.precompile_overrides {
-            overrides(&mut self.inner.inner.precompiles);
-        }
         self
     }
 
@@ -431,47 +395,6 @@ mod tests {
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
-
-    #[cfg(feature = "test-utils")]
-    #[test]
-    fn factory_precompile_overrides_are_opt_in_and_apply_with_inspectors() {
-        let address = tempo_contracts::precompiles::ZONE_VERIFIER_ADDRESS;
-        let env = evm_env_with_spec(TempoHardfork::T13);
-        let default = TempoEvmFactory::default().create_evm(EmptyDB::default(), env.clone());
-        assert!(default.components().2.get(&address).is_some());
-
-        let factory = TempoEvmFactory::default().with_precompile_overrides(|precompiles| {
-            precompiles.map_precompile_lookup(|address, previous| {
-                if *address == tempo_contracts::precompiles::ZONE_VERIFIER_ADDRESS {
-                    None
-                } else {
-                    previous.and_then(|lookup| lookup.lookup(address))
-                }
-            });
-        });
-        let plain = factory.create_evm(EmptyDB::default(), env.clone());
-        let inspected = factory.create_evm_with_inspector(EmptyDB::default(), env, NoOpInspector);
-        assert!(plain.components().2.get(&address).is_none());
-        assert!(inspected.components().2.get(&address).is_none());
-        assert!(plain.components().2.get(&PATH_USD_ADDRESS).is_some());
-        assert!(plain.with_actions().components().2.get(&address).is_none());
-        assert!(
-            inspected
-                .with_actions()
-                .components()
-                .2
-                .get(&address)
-                .is_none()
-        );
-        assert!(
-            TempoEvmFactory::default()
-                .create_evm(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T13))
-                .components()
-                .2
-                .get(&address)
-                .is_some()
-        );
-    }
 
     alloy_sol_types::sol! {
         enum TestZonePortalRole {

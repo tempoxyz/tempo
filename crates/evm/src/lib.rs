@@ -87,12 +87,8 @@ impl FeeTokenResolver for TempoEvmConfig {
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self::new_with_evm_factory(chain_spec, TempoEvmFactory::default())
-    }
-
-    /// Creates a configuration with an explicit EVM factory.
-    pub fn new_with_evm_factory(chain_spec: Arc<TempoChainSpec>, factory: TempoEvmFactory) -> Self {
-        let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), factory);
+        let inner =
+            EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
