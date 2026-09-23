@@ -39,6 +39,20 @@ class MetricsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.delta({"values": [[0, "5"]]})
 
+    def test_execution_and_full_processing_are_distinct(self):
+        rows = [row(m.P + "persisted_blocks_total", 2),
+                row(m.P + "save_blocks_duration_seconds_sum", 1)]
+        for metric, seconds in [
+            ("reth_sync_execution_execution_histogram", 0.2),
+            ("reth_sync_block_validation_total_duration", 0.8),
+            ("reth_sync_block_validation_state_root_histogram", 0.4),
+        ]:
+            rows.extend([row(metric + "_sum", seconds), row(metric + "_count", 2)])
+        report = m.analyze({"resultType": "matrix", "result": rows})["phases"][0]
+        self.assertAlmostEqual(report["mean_validator_execution_ms"], 100)
+        self.assertAlmostEqual(report["mean_new_payload_processing_ms"], 400)
+        self.assertAlmostEqual(report["mean_state_root_wait_ms"], 200)
+
     def test_aligns_late_registered_tables_with_persistence_counts(self):
         blocks = row(m.P + "persisted_blocks_total", 100)
         blocks["values"] = [[0, "0"], [5, "50"], [10, "100"]]
