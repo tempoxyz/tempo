@@ -495,6 +495,7 @@ fn signed_requirements_use_the_normal_and_inspected_batch_paths() {
         evm.inner.ctx.tx.tempo_tx_env = Some(Box::new(crate::TempoBatchCallEnv {
             aa_calls: calls.clone(),
             require_funds: vec![SignedRequirement {
+                policy_rules: None,
                 token: PATH_USD_ADDRESS,
                 amount: U256::from(50 * UNIT),
                 slippage_bps: Some(100),
