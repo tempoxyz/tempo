@@ -12,7 +12,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{Address, B256, Bytes, Keccak256, TxKind, U256};
-use alloy_rlp::{BufMut, Encodable};
+use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::{
     fmt::Debug,
     hash::{Hash, Hasher},
@@ -252,7 +252,7 @@ impl AASigned {
         let tx = TempoTransaction::rlp_decode_fields(buf)?;
 
         // Decode signature bytes
-        let sig_bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        let sig_bytes: Bytes = Decodable::decode(buf)?;
 
         // Check that we consumed the expected amount
         let consumed = remaining - buf.len();
@@ -261,7 +261,7 @@ impl AASigned {
         }
 
         // Parse signature
-        let signature = TempoSignature::from_bytes(sig_bytes).map_err(alloy_rlp::Error::Custom)?;
+        let signature = TempoSignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
 
         Ok(Self::new_unhashed(tx, signature))
     }
