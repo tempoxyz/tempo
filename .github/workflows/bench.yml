@@ -205,7 +205,7 @@ jobs:
             const unknown = [];
             intArgs.add('txgen-cores');
             intArgs.add('baseline-txgen-cores');
-            defaults['txgen-cores'] = '4';
+            defaults['txgen-cores'] = '0';
             defaults['baseline-txgen-cores'] = '';
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));

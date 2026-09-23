@@ -296,7 +296,7 @@ on:
         description: Physical cores reserved for txgen; even number, 0 uses shared CPUs.
         type: string
         required: false
-        default: "4"
+        default: "0"
       baseline-txgen-cores:
         description: Optional baseline-only override for CPU allocation comparisons.
         type: string
@@ -411,7 +411,7 @@ jobs:
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
-      BENCH_TXGEN_CORES: ${{ inputs.txgen-cores || '4' }}
+      BENCH_TXGEN_CORES: ${{ inputs.txgen-cores || '0' }}
       BENCH_BASELINE_TXGEN_CORES: ${{ inputs.baseline-txgen-cores }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}

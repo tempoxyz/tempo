@@ -7,7 +7,9 @@ CPU groups, preserving the existing placement instead of moving either validator
 across groups. The runner's actual socket/core topology is checked before any
 snapshot changes; overlapping groups, unavailable CPUs and split SMT cores are errors.
 
-On the current 16-core/32-thread runner layout, the default is:
+The default remains shared CPUs (`--txgen-cores 0`): reserving cores removes
+capacity from the validators and must be evaluated for each workload.
+On the current 16-core/32-thread runner layout, `--txgen-cores 4` gives:
 
 | Process | Physical cores | Logical CPU IDs |
 | --- | ---: | --- |
@@ -43,3 +45,28 @@ lower variance alone is not sufficient if the generator stops saturating the
 validators. Keep profiled runs separate from unprofiled confirmation runs.
 
 Tests: `nu contrib/bench/cpu-layout.test.nu`.
+
+## Initial sizing results
+
+Four paired repeats of `public-mix`, 90 seconds, 100 GiB bloat, 4 tokens,
+50k target TPS, 1000 accounts and 500 concurrent requests, with samply enabled
+and OTLP disabled. Every comparison uses node SHA
+`a31081eaf7000745cd747f620e974e9f2383ff6b` on both sides and txgen SHA
+`1a3e05e4caf7ecc0d83210ef84f6531d49b6b715`; each isolated allocation is compared
+against the original shared allocation on the same host.
+
+| Dedicated txgen cores | Runner | Shared TPS | Isolated TPS | TPS change | Shared / isolated TPS CV |
+| --- | --- | ---: | ---: | ---: | ---: |
+| [2](https://github.com/tempoxyz/tempo/actions/runs/35838124243) | ghr-euw-07 | 14,979 | 14,422 | -3.72% | 0.98% / 0.63% |
+| [4](https://github.com/tempoxyz/tempo/actions/runs/35838143865) | ghr-euw-05 | 15,126 | 13,664 | -9.67% | 0.77% / 0.63% |
+
+Both summaries classify the overall result as mixed and TPS as a regression.
+Neither allocation had sender failures or pool-empty builder stops; both had
+more than 700 build-budget stops across their four feature repeats. This supports
+txgen keeping these validators fed, not an ability to sustain 50k included TPS.
+The shared-CPU [same-commit control](https://github.com/tempoxyz/tempo/actions/runs/35837783670)
+was already stable (0.45% / 1.36% TPS CV, no significant difference).
+Four repeats are not sufficient to establish a general variance reduction.
+
+Six-core sizing and an unprofiled confirmation are pending. Do not enable
+isolation by default based on these profiled measurements.

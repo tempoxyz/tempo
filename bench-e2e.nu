@@ -1370,7 +1370,7 @@ def "main e2e" [
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
-    --txgen-cores: int = 4                             # Physical cores reserved for txgen, split equally between validator groups; 0 reproduces shared CPUs
+    --txgen-cores: int = 0                             # Physical cores reserved for txgen, split equally between validator groups; 0 preserves shared CPUs
     --baseline-txgen-cores: int = -1                    # Optional baseline-only override for same-host CPU allocation experiments
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
