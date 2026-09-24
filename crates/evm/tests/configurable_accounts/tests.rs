@@ -52,7 +52,7 @@ use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 fn native_factory_activation_preserves_state() {
     let factory = Address::repeat_byte(0x71);
     let mut genesis = DEV.genesis().clone();
-    for (field, value) in [("t12Time", 10), ("t13Time", u64::MAX)] {
+    for (field, value) in [("t12Time", 0), ("t13Time", 0), ("t14Time", 10)] {
         genesis
             .config
             .extra_fields
@@ -99,9 +99,9 @@ fn native_factory_activation_preserves_state() {
                 assert_eq!(
                     executor.evm().cfg_env().spec,
                     if timestamp < 10 {
-                        TempoHardfork::T11
+                        TempoHardfork::T13
                     } else {
-                        TempoHardfork::T12
+                        TempoHardfork::T14
                     }
                 );
                 executor.apply_pre_execution_changes().unwrap();
@@ -676,7 +676,7 @@ fn native_replay_rejects_account_authorization() {
     assert!(!supports_storage_action_replay(
         &tx.clone().into_signed(primitive.clone()).into()
     ));
-    // Even a primitive-signed primitive grant reads parent metadata at T12.
+    // Even a primitive-signed primitive grant reads parent metadata at T14.
     tx.key_authorization.as_mut().unwrap().signature =
         AccountSignature::try_from(primitive.clone()).unwrap();
     assert!(!supports_storage_action_replay(
