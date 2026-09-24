@@ -9,7 +9,7 @@
 //!   so precompile-driven storage writes honor the same accounting.
 
 use super::{CreditMode, StorageCredits, TransientState};
-use crate::storage::FromWord;
+use crate::storage::{FromWord, SstoreTransitionFlags};
 use alloy::primitives::{Address, U256};
 use evm2::{
     ExecutionError, HostError,
@@ -74,7 +74,7 @@ pub trait StorageCreditsBackend {
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<SStore, Self::Error>;
+    ) -> Result<SstoreTransitionFlags, Self::Error>;
 
     /// TLOAD `address[key]`.
     fn tload(&mut self, address: Address, key: U256) -> U256;
@@ -114,9 +114,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     key: Option<U256>,
     sstore: &SStore,
 ) -> Result<(), B::Error> {
+    let sstore_flags = SstoreTransitionFlags::from(sstore);
+
     // Only account for storage credits when the slot crosses the zero boundary (x→0 or 0→x).
     // If both values are zero or non-zero, slot occupancy is unchanged, so skip credits accounting.
-    if sstore.present_value.is_zero() == sstore.new_value.is_zero() {
+    if !sstore_flags.crosses_zero_boundary() {
         return Ok(());
     }
 
@@ -144,7 +146,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         u64::from_word(storage_credit_state_load.value).map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
-    if !sstore.present_value.is_zero() && sstore.new_value.is_zero() {
+    if sstore_flags.is_nonzero_to_zero() {
         // x→0: storage deletion doesn't mint on protocol fee/keychain bookkeeping slots.
         if let Some(key) = key
             && backend.is_non_creditable_slot(owner, key)
@@ -157,7 +159,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             credit = credit.saturating_add(1);
             was_changed = true;
         }
-    } else if sstore.present_value.is_zero() && !sstore.new_value.is_zero() {
+    } else if sstore_flags.is_zero_to_nonzero() {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.
         // EVM2's standard SSTORE accounting adds the 5k residual for clean writes
@@ -203,7 +205,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         )?;
 
         // Only when change happens charge additional gas.
-        if !flags.is_noop() && flags.is_clean() {
+        if flags.charges_clean_update() {
             backend.charge_gas(u64::from(
                 backend
                     .gas_params()

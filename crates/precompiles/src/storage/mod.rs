@@ -7,6 +7,7 @@ pub mod actions;
 pub use actions::{StorageAction, StorageActions};
 
 pub mod evm;
+pub use evm::SstoreTransitionFlags;
 pub mod hashmap;
 
 pub mod thread_local;

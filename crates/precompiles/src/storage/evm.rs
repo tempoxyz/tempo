@@ -4,6 +4,7 @@ use crate::{
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
+use bitflags::bitflags;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
@@ -345,7 +346,7 @@ where
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<SStore, Self::Error> {
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
         let result = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions.record_always(StorageAction::Sstore(
             address,
@@ -353,7 +354,7 @@ where
             result.present_value,
             value,
         ));
-        Ok(result)
+        Ok(result.into())
     }
 
     #[inline]
@@ -642,6 +643,108 @@ pub trait EvmStorageExt {
 
     /// Returns the transaction-local non-creditable slots.
     fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>>;
+}
+
+bitflags! {
+    /// SSTORE transition flags that drive gas/refund accounting.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SstoreTransitionFlags: u8 {
+        /// The slot's transaction-start value is zero.
+        const ORIGINAL_ZERO = 1 << 0;
+        /// The slot's pre-SSTORE value is zero.
+        const PRESENT_ZERO = 1 << 1;
+        /// The slot's post-SSTORE value is zero.
+        const NEW_ZERO = 1 << 2;
+        /// The slot's transaction-start value equals its pre-SSTORE value.
+        const ORIGINAL_EQ_PRESENT = 1 << 3;
+        /// The slot's transaction-start value equals its post-SSTORE value.
+        const ORIGINAL_EQ_NEW = 1 << 4;
+        /// The slot's pre-SSTORE current value equals its post-SSTORE value.
+        const PRESENT_EQ_NEW = 1 << 5;
+    }
+}
+
+impl SstoreTransitionFlags {
+    /// Computes the SSTORE transition flags from the values that drive gas/refund accounting.
+    pub fn from_values(original: U256, present: U256, new: U256) -> Self {
+        let mut flags = Self::empty();
+
+        if original.is_zero() {
+            flags |= Self::ORIGINAL_ZERO;
+        }
+        if present.is_zero() {
+            flags |= Self::PRESENT_ZERO;
+        }
+        if new.is_zero() {
+            flags |= Self::NEW_ZERO;
+        }
+        if original == present {
+            flags |= Self::ORIGINAL_EQ_PRESENT;
+        }
+        if original == new {
+            flags |= Self::ORIGINAL_EQ_NEW;
+        }
+        if present == new {
+            flags |= Self::PRESENT_EQ_NEW;
+        }
+
+        flags
+    }
+
+    /// Returns whether the write changes slot occupancy.
+    pub fn crosses_zero_boundary(&self) -> bool {
+        self.contains(Self::PRESENT_ZERO) != self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write creates an occupied slot.
+    pub fn is_zero_to_nonzero(&self) -> bool {
+        self.contains(Self::PRESENT_ZERO) && !self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write clears an occupied slot.
+    pub fn is_nonzero_to_zero(&self) -> bool {
+        !self.contains(Self::PRESENT_ZERO) && self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write changes the present value.
+    pub fn changes_present(&self) -> bool {
+        !self.contains(Self::PRESENT_EQ_NEW)
+    }
+
+    /// Returns whether this slot is still clean before the write.
+    ///
+    /// In EVM SSTORE terminology, "clean" means the transaction has not changed
+    /// the slot yet, so the transaction-start value (`original`) still equals
+    /// the current pre-write value (`present`).
+    pub fn is_original_eq_present(&self) -> bool {
+        self.contains(Self::ORIGINAL_EQ_PRESENT)
+    }
+
+    /// Returns whether the warm clean-update SSTORE cost applies.
+    ///
+    /// This is the `present != new && original == present` case: the write
+    /// changes a slot for the first time in the transaction. Dirty writes
+    /// (`original != present`) use different SSTORE accounting and do not pay
+    /// this clean-update charge again.
+    pub fn charges_clean_update(&self) -> bool {
+        self.changes_present() && self.is_original_eq_present()
+    }
+}
+
+impl From<&SStore> for SstoreTransitionFlags {
+    fn from(result: &SStore) -> Self {
+        Self::from_values(
+            result.original_value,
+            result.present_value,
+            result.new_value,
+        )
+    }
+}
+
+impl From<SStore> for SstoreTransitionFlags {
+    fn from(result: SStore) -> Self {
+        Self::from(&result)
+    }
 }
 
 enum GasTrackerStorage<'a> {

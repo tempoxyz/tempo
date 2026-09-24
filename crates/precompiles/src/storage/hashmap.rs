@@ -12,7 +12,7 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     error::TempoPrecompileError,
-    storage::PrecompileStorageProvider,
+    storage::{PrecompileStorageProvider, SstoreTransitionFlags},
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
@@ -321,20 +321,18 @@ impl StorageCreditsBackend for HashMapStorageProvider {
         key: U256,
         value: U256,
         _skip_cold_load: bool,
-    ) -> Result<SStore, Self::Error> {
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
         let present_value = self
             .internals
             .get(&(address, key))
             .copied()
             .unwrap_or(U256::ZERO);
         self.internals.insert((address, key), value);
-        Ok(SStore {
-            original_value: present_value,
+        Ok(SstoreTransitionFlags::from_values(
             present_value,
-            new_value: value,
-            is_cold: false,
-            _non_exhaustive: (),
-        })
+            present_value,
+            value,
+        ))
     }
 
     fn tload(&mut self, address: Address, key: U256) -> U256 {
