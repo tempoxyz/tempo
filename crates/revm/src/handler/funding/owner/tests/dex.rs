@@ -550,8 +550,8 @@ fn public_quotes_bound_availability_without_moving_funds() {
                 U256::from(ceiling)
             },
             maxCost: U256::from(budget),
-            requestData: (input, U256::from(cap)).abi_encode().into(),
-            policyData: Bytes::new(),
+            executionData: (input, U256::from(cap)).abi_encode().into(),
+            configData: Bytes::new(),
             ownerAuthorized: true,
         };
         let result = handler
@@ -586,7 +586,7 @@ fn public_quotes_bound_availability_without_moving_funds() {
                         account: owner,
                         assetOut: PATH_USD_ADDRESS,
                         amountOut: quote.amountOut,
-                        requestData: quote.requestData,
+                        executionData: quote.executionData,
                     }
                     .abi_encode()
                     .into(),
@@ -612,7 +612,7 @@ fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
             assetOut: PATH_USD_ADDRESS,
             amountOut: U256::from(50 * UNIT),
             maxCost: U256::from(40 * UNIT),
-            policyData: (input, U256::MAX).abi_encode().into(),
+            configData: (input, U256::MAX).abi_encode().into(),
         };
         let result = TempoEvmHandler::new()
             .execute_funding_call_with(
@@ -638,7 +638,7 @@ fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
     for (candidate, input) in candidates.iter().zip([b, a, b]) {
         assert_eq!(candidate.availableAmount, U256::from(40 * UNIT));
         assert_eq!(
-            <(Address, U256)>::abi_decode_validate(&candidate.requestData).unwrap(),
+            <(Address, U256)>::abi_decode_validate(&candidate.executionData).unwrap(),
             (input, U256::from(40 * UNIT))
         );
     }
@@ -656,7 +656,7 @@ fn discovery_preserves_order_and_requests_execute_with_shared_budget() {
                 .into_iter()
                 .map(|candidate| ITIP20Funder::Source {
                     target: SOURCE,
-                    data: candidate.requestData,
+                    data: candidate.executionData,
                 })
                 .collect(),
         )],
@@ -679,7 +679,7 @@ fn token_support_is_public_and_grants_no_input_permission() {
     let (mut evm, a, _) = setup_dex();
     let call = IFundingSource::supportsTokenCall {
         token: PATH_USD_ADDRESS,
-        policyData: (a, U256::MAX).abi_encode().into(),
+        configData: (a, U256::MAX).abi_encode().into(),
     };
     let result = TempoEvmHandler::new()
         .execute_funding_call_with(
@@ -707,7 +707,7 @@ fn token_support_is_public_and_grants_no_input_permission() {
         account: ACCOUNT,
         assetOut: PATH_USD_ADDRESS,
         amountOut: U256::from(UNIT),
-        requestData: (a, U256::from(UNIT)).abi_encode().into(),
+        executionData: (a, U256::from(UNIT)).abi_encode().into(),
     };
     let result = TempoEvmHandler::new()
         .execute_funding_call_with(
