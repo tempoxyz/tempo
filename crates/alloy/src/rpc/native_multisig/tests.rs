@@ -173,7 +173,7 @@ fn explicit_webauthn_approvals_charge_worst_case_data(size: u16) {
         signature: TempoSignature::Multisig(signature),
         ..Default::default()
     };
-    let fork = TempoHardfork::T12;
+    let fork = TempoHardfork::T14;
     let gas = tempo_gas_params(fork);
     let intrinsic = |env: &TempoBatchCallEnv| {
         calculate_aa_batch_intrinsic_gas(
