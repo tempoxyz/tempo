@@ -109,7 +109,7 @@ fn real_grant_checks_state_before_cryptography() {
             ..Default::default()
         };
         let result =
-            prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &block(), &mut db);
+            prepare_native_multisig_simulation(&mut request, TempoHardfork::T14, &block(), &mut db);
         match expected {
             Some(expected) => {
                 let Err(EthApiError::InvalidParams(message)) = result else {
@@ -128,7 +128,7 @@ fn real_grant_checks_state_before_cryptography() {
                 assert!(
                     prepare_native_multisig_simulation(
                         &mut request,
-                        TempoHardfork::T12,
+                        TempoHardfork::T14,
                         &block(),
                         &mut db
                     )
@@ -176,7 +176,7 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         .account = Some(wrong);
     let Err(EthApiError::InvalidParams(message)) = prepare_native_multisig_simulation(
         &mut wrong_metadata,
-        TempoHardfork::T12,
+        TempoHardfork::T14,
         &block(),
         &mut db,
     ) else {
@@ -186,7 +186,7 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         message,
         format!("key authorization account mismatch: expected {parent}, actual {wrong}")
     );
-    prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &block(), &mut db)
+    prepare_native_multisig_simulation(&mut request, TempoHardfork::T14, &block(), &mut db)
         .unwrap();
 
     let mut wrong_metadata = request.clone();
@@ -226,7 +226,7 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         ),
     ] {
         let Err(EthApiError::InvalidParams(message)) =
-            prepare_native_multisig_simulation(&mut invalid, TempoHardfork::T12, &block(), &mut db)
+            prepare_native_multisig_simulation(&mut invalid, TempoHardfork::T14, &block(), &mut db)
         else {
             panic!("expected {expected}")
         };
@@ -234,7 +234,7 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         assert!(!invalid.multisig_simulation_prepared);
     }
     // Repeated preparation must retain both valid roles after the rejected alternatives.
-    prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &block(), &mut db)
+    prepare_native_multisig_simulation(&mut request, TempoHardfork::T14, &block(), &mut db)
         .unwrap();
     let tx = request
         .try_into_tempo_tx_env(TempoTxEnv::default(), true)
@@ -251,13 +251,14 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
 
 #[derive(Clone, Copy)]
 enum WitnessRejection {
-    BeforeT12,
+    BeforeT14(TempoHardfork),
     Code,
     UnregisteredVersion,
     WrongIdentity,
 }
 
-#[test_case::test_case(WitnessRejection::BeforeT12; "before_t12")]
+#[test_case::test_case(WitnessRejection::BeforeT14(TempoHardfork::T12); "before_t14_at_t12")]
+#[test_case::test_case(WitnessRejection::BeforeT14(TempoHardfork::T13); "before_t14_at_t13")]
 #[test_case::test_case(WitnessRejection::Code; "account_has_code")]
 #[test_case::test_case(WitnessRejection::UnregisteredVersion; "unregistered_positive_version")]
 #[test_case::test_case(WitnessRejection::WrongIdentity; "wrong_initial_identity")]
@@ -276,13 +277,13 @@ fn rejects_invalid_witness_state(case: WitnessRejection) {
     if version != 0 {
         db.insert_commitment(account, spec.config.commitment().unwrap());
     }
-    prepare_native_multisig_simulation(&mut request.clone(), TempoHardfork::T12, &block(), &mut db)
+    prepare_native_multisig_simulation(&mut request.clone(), TempoHardfork::T14, &block(), &mut db)
         .unwrap();
-    let mut fork = TempoHardfork::T12;
+    let mut fork = TempoHardfork::T14;
     let expected = match case {
-        WitnessRejection::BeforeT12 => {
-            fork = TempoHardfork::T11;
-            "native multisig simulation requires T12 at the requested state".to_owned()
+        WitnessRejection::BeforeT14(pre_activation) => {
+            fork = pre_activation;
+            "native multisig simulation requires T14 at the requested state".to_owned()
         }
         WitnessRejection::Code => {
             db.0.entry(account).or_default().code_hash =
@@ -324,7 +325,7 @@ fn distinguishes_state_mismatch_from_corrupt_leaf() {
     db.insert_commitment(account, B256::repeat_byte(7));
     let error = prepare_native_multisig_simulation(
         &mut request.clone(),
-        TempoHardfork::T12,
+        TempoHardfork::T14,
         &block(),
         &mut db,
     )
@@ -333,7 +334,7 @@ fn distinguishes_state_mismatch_from_corrupt_leaf() {
     assert!(error.to_string().contains("requested state"));
     db.0.get_mut(&account).unwrap().extension = vec![1].into();
     assert!(matches!(
-        prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &block(), &mut db),
+        prepare_native_multisig_simulation(&mut request, TempoHardfork::T14, &block(), &mut db),
         Err(EthApiError::Internal(_))
     ));
 }
@@ -354,13 +355,13 @@ fn factory_is_required_and_registered_version_zero_is_valid() {
     assert!(
         prepare_native_multisig_simulation(
             &mut request.clone(),
-            TempoHardfork::T12,
+            TempoHardfork::T14,
             &TempoBlockEnv::default(),
             &mut db
         )
         .is_err()
     );
-    prepare_native_multisig_simulation(&mut request, TempoHardfork::T12, &block(), &mut db)
+    prepare_native_multisig_simulation(&mut request, TempoHardfork::T14, &block(), &mut db)
         .unwrap();
 }
 
