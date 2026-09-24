@@ -1,7 +1,7 @@
 use super::*;
 use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 use tempo_precompiles::{
-    PrecompileEnv, stablecoin_dex::StablecoinDEX, tip20_funder::native_dex::NativeDexFundingSource,
+    PrecompileEnv, stablecoin_dex::StablecoinDEX, tip20_funder::native_dex::DexFundingSource,
 };
 
 const MAKER: Address = address!("0000000000000000000000000000000000005000");
@@ -55,7 +55,7 @@ fn install(evm: &mut TestEvm) {
     );
     evm.inner.precompiles.extend_precompiles([(
         SOURCE,
-        NativeDexFundingSource::new(SOURCE, FUNDER).create_precompile(&env),
+        DexFundingSource::new(SOURCE, FUNDER).create_precompile(&env),
     )]);
 }
 
@@ -325,7 +325,7 @@ fn funding_source_registration_follows_t13() {
         assert_eq!(
             evm.inner
                 .precompiles
-                .get(&tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+                .get(&tempo_contracts::precompiles::DEX_FUNDING_SOURCE_ADDRESS)
                 .is_some(),
             spec.is_t13()
         );
@@ -502,7 +502,7 @@ fn signed_requirements_use_the_normal_and_inspected_batch_paths() {
                 sources: [request(a, U256::from(30 * UNIT)), request(b, U256::MAX)]
                     .into_iter()
                     .map(|source| FundingSource {
-                        target: tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS,
+                        target: tempo_contracts::precompiles::DEX_FUNDING_SOURCE_ADDRESS,
                         data: source.data,
                     })
                     .collect(),

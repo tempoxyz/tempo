@@ -10,7 +10,7 @@ const ACCOUNT: Address = address!("0000000000000000000000000000000000002000");
 const SOURCE: Address = address!("0000000000000000000000000000000000001000");
 const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
 
-fn setup() -> (HashMapStorageProvider, NativeDexFundingSource, Address) {
+fn setup() -> (HashMapStorageProvider, DexFundingSource, Address) {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
     let input = StorageCtx::enter(&mut storage, || {
         TIP20Setup::path_usd(ACCOUNT).apply().unwrap();
@@ -21,7 +21,7 @@ fn setup() -> (HashMapStorageProvider, NativeDexFundingSource, Address) {
         StablecoinDEX::new().create_pair(input).unwrap();
         input
     });
-    (storage, NativeDexFundingSource::new(SOURCE, FUNDER), input)
+    (storage, DexFundingSource::new(SOURCE, FUNDER), input)
 }
 
 fn quote(input: Address, cap: U256, budget: U256) -> IFundingSource::quoteCall {
@@ -288,7 +288,7 @@ fn token_support_rejects_non_parity_and_missing_routes() {
 
 #[test]
 fn verification_binds_input_and_cap_without_storage() {
-    let source = NativeDexFundingSource::new(SOURCE, FUNDER);
+    let source = DexFundingSource::new(SOURCE, FUNDER);
     for (input, cap, expected) in [
         (ACCOUNT, 30, true),
         (ACCOUNT, 31, false),
