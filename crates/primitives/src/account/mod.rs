@@ -13,12 +13,12 @@ pub fn encode_config_commitment(hash: B256) -> Bytes {
 }
 
 /// Validates the entire extension at the requested block's hardfork.
-pub fn decode_config_commitment(payload: &[u8], t12_active: bool) -> alloy_rlp::Result<B256> {
+pub fn decode_config_commitment(payload: &[u8], t14_active: bool) -> alloy_rlp::Result<B256> {
     if payload.is_empty() {
         return Ok(B256::ZERO);
     }
-    if !t12_active {
-        return Err(Error::Custom("account commitment before T12"));
+    if !t14_active {
+        return Err(Error::Custom("account commitment before T14"));
     }
     let hash = B256::try_from(payload)
         .map_err(|_| Error::Custom("account commitment must be 32 bytes"))?;
