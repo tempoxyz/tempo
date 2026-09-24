@@ -12,7 +12,10 @@ use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::ConfigureEvm as _;
-use reth_provider::{BlockReader as _, BlockSource, StateProviderBox, StateProviderFactory as _};
+use reth_provider::{
+    BlockReader as _, BlockSource, EvmStateProviderBox, StateProvider, StateProviderBox,
+    StateProviderFactory as _,
+};
 use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_precompiles::{
     storage::{StorageActions, StorageCtx},
@@ -23,6 +26,8 @@ use tempo_primitives::TempoHeader;
 use tracing::{Level, debug, instrument, warn};
 
 use crate::utils::public_key_to_b256;
+
+pub(crate) type ValidatorEvmDb = State<StateProviderDatabase<EvmStateProviderBox>>;
 
 /// Minimal execution-node interface needed to read validator config state.
 ///
@@ -37,9 +42,9 @@ pub(crate) trait ExecutionNode {
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
+        db: ValidatorEvmDb,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>>;
+    ) -> eyre::Result<TempoEvm<ValidatorEvmDb>>;
 }
 
 impl ExecutionNode for TempoFullNode {
@@ -60,9 +65,9 @@ impl ExecutionNode for TempoFullNode {
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
+        db: ValidatorEvmDb,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+    ) -> eyre::Result<TempoEvm<ValidatorEvmDb>> {
         self.evm_config
             .evm_for_block(db, header)
             .map_err(eyre::Report::new)
@@ -83,9 +88,9 @@ where
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
+        db: ValidatorEvmDb,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+    ) -> eyre::Result<TempoEvm<ValidatorEvmDb>> {
         (*self).evm_for_block(db, header)
     }
 }
@@ -156,11 +161,12 @@ where
 
     debug!(height = header.number(), "header found");
 
+    let state_provider = node.state_by_block_hash(block_hash).wrap_err_with(|| {
+        format!("failed to get state from node provider for hash `{block_hash}`")
+    })?;
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
-            node.state_by_block_hash(block_hash).wrap_err_with(|| {
-                format!("failed to get state from node provider for hash `{block_hash}`")
-            })?,
+            Box::new(state_provider.into_evm_state_provider()) as EvmStateProviderBox,
         ))
         .build();
 
