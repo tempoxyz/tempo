@@ -486,10 +486,12 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{N3f1, TryFromIterator as _};
     use rand::SeedableRng as _;
+    use reth_evm::{ConfigureEvm as _, database::StateProviderDatabase};
     use reth_provider::{
         StateProviderBox,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
+    use tempo_node::evm::{TempoEvm, TempoEvmConfig};
     use tempo_precompiles::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
@@ -520,8 +522,14 @@ mod tests {
             Ok(Box::new(self.provider.clone()))
         }
 
-        fn tempo_spec(&self, _header: &TempoHeader) -> tempo_chainspec::hardfork::TempoHardfork {
-            tempo_chainspec::hardfork::TempoHardfork::T8
+        fn evm_for_block(
+            &self,
+            db: StateProviderDatabase<StateProviderBox>,
+            header: &TempoHeader,
+        ) -> eyre::Result<TempoEvm<'static>> {
+            TempoEvmConfig::moderato()
+                .evm_for_block(db, header)
+                .map_err(eyre::Report::new)
         }
     }
 
