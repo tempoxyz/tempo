@@ -128,8 +128,8 @@ fn run_batch(
                     amountOut: U256::from(50),
                     assetOut: ASSET,
                     maxCost: U256::from(50),
-                    requestData: U256::from(mode).abi_encode().into(),
-                    policyData: Bytes::new(),
+                    executionData: U256::from(mode).abi_encode().into(),
+                    configData: Bytes::new(),
                     ownerAuthorized: true,
                 }
                 .abi_encode()
@@ -154,7 +154,7 @@ fn run_batch(
                                 account: ACCOUNT,
                                 assetOut: ASSET,
                                 amountOut: U256::from(50),
-                                requestData: plan.requestData,
+                                executionData: plan.executionData,
                             }
                             .abi_encode()
                             .into(),
@@ -425,8 +425,8 @@ fn public_quotes_grant_no_funding_authority() {
             amountOut: U256::from(50),
             assetOut: ASSET,
             maxCost: U256::from(50),
-            requestData: U256::ZERO.abi_encode().into(),
-            policyData: Bytes::new(),
+            executionData: U256::ZERO.abi_encode().into(),
+            configData: Bytes::new(),
             ownerAuthorized: true,
         }
         .abi_encode()
@@ -446,11 +446,11 @@ fn public_quotes_grant_no_funding_authority() {
             account: ACCOUNT,
             assetOut: ASSET,
             amountOut: U256::from(50),
-            requestData: IFundingSource::quoteCall::abi_decode_returns_validate(
+            executionData: IFundingSource::quoteCall::abi_decode_returns_validate(
                 result.output().unwrap(),
             )
             .unwrap()
-            .requestData,
+            .executionData,
         }
         .abi_encode()
         .into();
@@ -495,7 +495,7 @@ fn funded_callbacks_meter_real_tip20_debits_and_clear_authority() {
                 rate: RATE_SCALE,
                 maxAmountIn: U256::from(30),
                 amountOut: U256::ZERO,
-                requestData: Default::default(),
+                executionData: Default::default(),
             };
             let make_permission =
                 || FundingPermission::new(FUNDER, ACCOUNT, SOURCE, &plan, U256::from(30)).unwrap();
@@ -503,7 +503,7 @@ fn funded_callbacks_meter_real_tip20_debits_and_clear_authority() {
                 account: ACCOUNT,
                 assetOut: PATH_USD_ADDRESS,
                 amountOut: U256::from(50),
-                requestData: (
+                executionData: (
                     U256::from(mode),
                     alloy_primitives::B256::right_padding_from(b"prepared"),
                 )
@@ -619,7 +619,7 @@ fn input_permission_rejects_static_or_mismatched_callbacks() {
                 rate: RATE_SCALE,
                 maxAmountIn: U256::ONE,
                 amountOut: U256::ZERO,
-                requestData: Bytes::new(),
+                executionData: Bytes::new(),
             },
             U256::ONE,
         )
