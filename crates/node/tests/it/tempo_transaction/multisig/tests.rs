@@ -191,9 +191,24 @@ async fn native_rpc_historical_state_and_account_overrides() -> eyre::Result<()>
 #[tokio::test(flavor = "multi_thread")]
 async fn native_rpc_fill_and_access_list_preserve_authority() -> eyre::Result<()> {
     let mut env = environment().await?;
-    let account = NativeAccount::new(0x19, 2);
+    let mut account = NativeAccount::new(0x19, 3);
     env.fund_account(account.address).await?;
     let mut request = account.simulation_request();
+    // Model the same algorithms and WebAuthn length that will be submitted.
+    request["multisigSimulation"]["approvals"] = serde_json::to_value(
+        account.owners.iter().map(|owner| {
+            let signature = owner.sign(B256::ZERO)?;
+            let key_data = match &signature {
+                PrimitiveSignature::WebAuthn(signature) => Some(Bytes::copy_from_slice(
+                    &(signature.webauthn_data.len() as u16).to_be_bytes(),
+                )),
+                _ => None,
+            };
+            Ok::<_, eyre::Report>(serde_json::json!({
+                "owner": owner.address(), "keyType": signature.signature_type(), "keyData": key_data,
+            }))
+        }).collect::<eyre::Result<Vec<_>>>()?,
+    )?;
     request["to"] = serde_json::json!(OBSERVER);
     request["data"] = serde_json::json!("0x");
     let access: serde_json::Value = env
@@ -231,11 +246,15 @@ async fn native_rpc_fill_and_access_list_preserve_authority() -> eyre::Result<()
     let signature = account.quorum(grant.signature_hash(), false)?;
     let grant = grant.into_signed(signature);
     request["keyAuthorization"] = serde_json::to_value(&grant)?;
+    let estimate: U256 = env
+        .provider()
+        .raw_request("eth_estimateGas".into(), (request.clone(), "latest"))
+        .await?;
     let filled: serde_json::Value = env
         .provider()
         .raw_request("eth_fillTransaction".into(), (request.clone(),))
         .await?;
-    let tx = parse_filled_tx(&filled)?;
+    let mut tx = parse_filled_tx(&filled)?;
     assert_eq!(tx.key_authorization.as_ref(), Some(&grant));
     assert_eq!(tx.nonce, 0);
     assert_eq!(tx.chain_id, env.chain_id());
@@ -262,6 +281,13 @@ async fn native_rpc_fill_and_access_list_preserve_authority() -> eyre::Result<()
         .to_string();
     assert!(error.contains("real signed grant"), "{error}");
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    tx.gas_limit = estimate.to();
+    let signature = account.sign(&tx)?;
+    account.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        commitment(&env, account.address).await?,
+        account.config.commitment().unwrap()
+    );
     Ok(())
 }
 

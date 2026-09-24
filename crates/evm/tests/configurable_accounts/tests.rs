@@ -1,8 +1,9 @@
 use super::*;
 use alloy_consensus::Header;
-use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Signature, bytes, keccak256};
+use alloy_evm::{FromRecoveredTx, block::BlockExecutor};
+use alloy_primitives::{KECCAK256_EMPTY, Signature, bytes, keccak256};
 use alloy_sol_types::SolError;
+use reth_chainspec::EthChainSpec;
 use reth_ethereum_primitives::Block as EthereumBlock;
 use reth_evm::ConfigureEvm;
 use reth_execution_types::ExecutionOutcome;
@@ -24,7 +25,11 @@ use revm::{
     context::result::{EVMError, ExecutionResult},
     state::EvmStorageSlot,
 };
-use tempo_chainspec::spec::MODERATO;
+use std::sync::Arc;
+use tempo_chainspec::{
+    TempoChainSpec,
+    spec::{DEV, MODERATO},
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, PATH_USD_ADDRESS,
     account_keychain::IAccountKeychain, tip20::ITIP20,
@@ -34,7 +39,7 @@ use tempo_evm::{
 };
 use tempo_precompiles::{error::TempoPrecompileError, tip20::TIP20Token};
 use tempo_primitives::{
-    Block as TempoBlock, SignatureType, TempoTxEnvelope,
+    Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
         AccountSignature, CallScope, KeyAuthorization, KeychainSignature, SignedKeyAuthorization,
@@ -42,6 +47,254 @@ use tempo_primitives::{
     },
 };
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
+
+#[test]
+fn native_factory_activation_preserves_state() {
+    let factory = Address::repeat_byte(0x71);
+    let mut genesis = DEV.genesis().clone();
+    for (field, value) in [("t12Time", 10), ("t13Time", u64::MAX)] {
+        genesis
+            .config
+            .extra_fields
+            .insert(field.into(), serde_json::json!(value));
+    }
+    genesis
+        .config
+        .extra_fields
+        .insert("multisigRecoveryFactory".into(), serde_json::json!(factory));
+    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)));
+    for nonce in [0, 7] {
+        for code in [bytes!(""), bytes!("600000")] {
+            let mut db = State::builder().with_bundle_update().build();
+            let bytecode = Bytecode::new_legacy(code.clone());
+            db.insert_account_with_storage(
+                factory,
+                AccountInfo {
+                    nonce,
+                    balance: U256::from(42),
+                    code_hash: bytecode.hash_slow(),
+                    code: Some(bytecode),
+                    ..Default::default()
+                },
+                [(U256::from(3), U256::from(9))].into_iter().collect(),
+            );
+            for (number, timestamp) in [(1, 9), (2, 10), (3, 11)] {
+                let block = TempoBlock {
+                    header: TempoHeader {
+                        inner: Header {
+                            number,
+                            timestamp,
+                            gas_limit: 30_000_000,
+                            base_fee_per_gas: Some(0),
+                            parent_beacon_block_root: Some(B256::ZERO),
+                            ..Default::default()
+                        },
+                        general_gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+                .seal_slow();
+                let mut executor = config.executor_for_block(&mut db, &block).unwrap();
+                assert_eq!(
+                    executor.evm().cfg_env().spec,
+                    if timestamp < 10 {
+                        TempoHardfork::T11
+                    } else {
+                        TempoHardfork::T12
+                    }
+                );
+                executor.apply_pre_execution_changes().unwrap();
+                executor.finish().unwrap();
+                let info = db.basic(factory).unwrap().unwrap();
+                assert_eq!(
+                    info.nonce,
+                    if timestamp < 10 { nonce } else { nonce.max(1) }
+                );
+                assert_eq!(info.balance, U256::from(42));
+                assert_eq!(
+                    info.code.unwrap().original_bytes(),
+                    if timestamp < 10 {
+                        code.clone()
+                    } else {
+                        bytes!("ef")
+                    }
+                );
+                assert_eq!(db.storage(factory, U256::from(3)).unwrap(), U256::from(9));
+                let marker = db
+                    .basic(NATIVE_MULTISIG_ADDRESS)
+                    .unwrap()
+                    .unwrap_or_default();
+                assert_eq!(marker.is_empty_code_hash(), timestamp < 10);
+                db.merge_transitions(BundleRetention::Reverts);
+            }
+        }
+    }
+}
+
+#[test]
+fn native_commitment_only_account_evm_semantics() {
+    let target = Address::repeat_byte(0x44);
+    let commitment = B256::repeat_byte(0x99);
+    // EXTCODEHASH, zero/value CALL, and SELFDESTRUCT must treat the leaf as existing.
+    for operation in [0x3f, 0xf1, 0xff] {
+        for value in [0u8, 1] {
+            let mut gas = Vec::new();
+            for (nonce, extension) in [(1, B256::ZERO), (0, commitment), (0, B256::ZERO)] {
+                let mut f = Fixture::new();
+                f.evm.db_mut().insert_account(
+                    target,
+                    AccountInfo {
+                        nonce,
+                        ..Default::default()
+                    }
+                    .with_extension(encode_config_commitment(extension)),
+                );
+                let mut code = if operation == 0xf1 {
+                    vec![0x5f, 0x5f, 0x5f, 0x5f, 0x60, value, 0x73]
+                } else {
+                    vec![0x73]
+                };
+                code.extend_from_slice(target.as_slice());
+                match operation {
+                    0x3f => code.extend_from_slice(&[0x3f, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3]),
+                    0xf1 => code.extend_from_slice(&[0x5a, 0xf1, 0x00]),
+                    0xff => code.push(0xff),
+                    _ => unreachable!(),
+                }
+                let contract = Address::repeat_byte(0x55);
+                let call = f.install_contract(contract, code);
+                f.evm
+                    .db_mut()
+                    .load_cache_account(contract)
+                    .unwrap()
+                    .account
+                    .as_mut()
+                    .unwrap()
+                    .info
+                    .balance = U256::from(value);
+                let tx = f.signed(3, vec![call]);
+                let output = f
+                    .evm
+                    .transact(TempoTxEnv::from_recovered_tx(&tx, f.account))
+                    .unwrap();
+                assert!(output.result.is_success(), "{:?}", output.result);
+                if operation == 0x3f {
+                    let expected = if nonce != 0 || !extension.is_zero() {
+                        KECCAK256_EMPTY
+                    } else {
+                        B256::ZERO
+                    };
+                    assert_eq!(
+                        output.result.output().unwrap().as_ref(),
+                        expected.as_slice()
+                    );
+                }
+                gas.push(output.result.tx_gas_used());
+                f.evm.db_mut().commit(output.state);
+                if !extension.is_zero() {
+                    let info = f
+                        .evm
+                        .db_mut()
+                        .basic(target)
+                        .unwrap()
+                        .expect("config-only leaf must survive state clearing");
+                    assert_eq!(
+                        decode_config_commitment(&info.extension, true).unwrap(),
+                        commitment
+                    );
+                    assert_eq!(info.nonce, 0);
+                }
+            }
+            assert_eq!(gas[0], gas[1], "operation={operation:x}, value={value}");
+            if operation != 0x3f && value != 0 {
+                assert!(gas[2] > gas[1], "only an empty target pays new-account gas");
+            }
+        }
+    }
+}
+
+#[test]
+fn native_rotation_rejects_access_keys_and_callbacks() {
+    for (access_key, admin) in [(true, false), (true, true), (false, false)] {
+        let mut f = Fixture::new();
+        let next = MultisigConfig {
+            version: 1,
+            ..f.config.clone()
+        };
+        let rotation = Fixture::rotation(&f.config, &next);
+        let tx = if access_key {
+            let delegate = PrivateKeySigner::from_bytes(&B256::repeat_byte(2)).unwrap();
+            let mut authorization =
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, delegate.address());
+            if admin {
+                authorization = authorization.into_admin(f.account);
+            }
+            let approval = MultisigSignature::try_new(
+                f.account,
+                f.config.clone(),
+                vec![PrimitiveSignature::Secp256k1(
+                    f.owner
+                        .sign_hash_sync(&multisig_digest(
+                            authorization.signature_hash(),
+                            f.account,
+                            0,
+                        ))
+                        .unwrap(),
+                )],
+            )
+            .unwrap();
+            let tx = TempoTransaction {
+                chain_id: 1,
+                nonce: 3,
+                gas_limit: 1_000_000,
+                calls: vec![rotation],
+                key_authorization: Some(authorization.into_signed(approval)),
+                ..Default::default()
+            };
+            let signature = delegate
+                .sign_hash_sync(&KeychainSignature::signing_hash(
+                    tx.signature_hash(),
+                    f.account,
+                ))
+                .unwrap();
+            tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                f.account,
+                PrimitiveSignature::Secp256k1(signature),
+            )))
+        } else {
+            // Forward calldata to the precompile and bubble its revert data.
+            let mut code = bytes!("365f5f375f5f365f5f73").to_vec();
+            code.extend_from_slice(NATIVE_MULTISIG_ADDRESS.as_slice());
+            code.extend_from_slice(&bytes!("5af1503d5f5f3e3d5ffd"));
+            let mut call = f.install_contract(Address::repeat_byte(0x55), code);
+            call.input = rotation.input;
+            f.signed(3, vec![call])
+        };
+        let output = f
+            .evm
+            .transact(TempoTxEnv::from_recovered_tx(&tx, f.account))
+            .unwrap();
+        assert!(
+            matches!(output.result, ExecutionResult::Revert { .. }),
+            "{:?}",
+            output.result
+        );
+        assert_eq!(
+            output.result.output().unwrap().as_ref(),
+            INativeMultisig::UnauthorizedMultisigCaller {}.abi_encode()
+        );
+        assert!(
+            output
+                .result
+                .logs()
+                .iter()
+                .all(|log| log.address != NATIVE_MULTISIG_ADDRESS)
+        );
+        f.evm.db_mut().commit(output.state);
+        assert_eq!(f.commitment(), f.config.commitment().unwrap());
+    }
+}
 
 #[test]
 fn native_commitment_database_lifecycle() {
