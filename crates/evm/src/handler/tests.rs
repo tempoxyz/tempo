@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoEvmExt,
-    TempoEvmTx, TempoFeeManager, TempoPoolValidationError, TempoPoolValidationEvm,
-    tempo_tx_registry,
+    TempoEvmTx, TempoFeeManager, tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2930::{AccessList, AccessListItem};
@@ -567,7 +566,7 @@ fn test_self_sponsored_fee_payer_rejected_post_t2() {
     .into();
     let env = env.with_simulation_overrides(B256::ZERO, Some(caller), None);
     let mut evm = test_evm(TempoHardfork::T2);
-    let result = handle(TxRequest {
+    let result = prepare_aa(&mut TxRequest {
         envelope: &env,
         tx: Recovered::new_unchecked(env.as_aa().unwrap(), caller),
         host: &mut evm,
@@ -5132,7 +5131,7 @@ fn injected_database_error(fatal: bool) -> DatabaseError {
 }
 
 #[test]
-fn nonce_database_failures_reach_handler_and_pool() {
+fn nonce_database_failures_reach_handler_and_validation() {
     for fatal in [false, true] {
         for (nonce_key, index) in [
             (U256::ONE, None),
@@ -5210,17 +5209,16 @@ fn nonce_database_failures_reach_handler_and_pool() {
                 NoPrecompiles::default(),
                 TempoEvmExt::default(),
             );
-            evm.configure_for_pool();
-            let error = evm.validate_pool_transaction(tx).0.unwrap_err();
-            match error {
-                TempoPoolValidationError::Fatal(error) if fatal => {
-                    assert_eq!(error.downcast_ref::<DatabaseError>(), Some(&expected));
-                }
-                TempoPoolValidationError::Invalid(HandlerError::Database(error)) if !fatal => {
-                    assert_eq!(error, expected);
-                }
-                error => panic!("unexpected pool classification: {error:?}"),
-            }
+            evm.ext_mut().skip_valid_after_check = true;
+            evm.ext_mut().skip_liquidity_check = true;
+            let error = evm
+                .validate_tx(&Recovered::new_unchecked(tx, SIGNER))
+                .unwrap_err();
+            let HandlerError::Database(error) = error else {
+                panic!("expected database failure, got {error:?}");
+            };
+            assert_eq!(error, expected);
+            assert_eq!(error.is_fatal(), fatal);
         }
     }
 }

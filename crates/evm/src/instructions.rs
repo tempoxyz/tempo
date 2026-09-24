@@ -3,12 +3,15 @@
 use alloy_primitives::{Address, U256};
 use evm2::{
     EvmFeatures, HostError,
-    evm::{SLoad, SStore},
+    evm::SLoad,
     interpreter::{Gas, GasTracker, Host, InstrStop, InterpreterState, Result},
     version::{GasId, GasParams},
 };
 use evm2_macros::instruction;
-use tempo_precompiles::storage_credits::{StorageCreditsBackend, sstore_storage_credits};
+use tempo_precompiles::{
+    storage::SstoreTransitionFlags,
+    storage_credits::{StorageCreditsBackend, sstore_storage_credits},
+};
 
 use crate::TempoEvmTypes;
 
@@ -57,10 +60,11 @@ impl StorageCreditsBackend for StorageCreditsContext<'_, '_, '_> {
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<SStore, Self::Error> {
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
         self.state
             .host()
             .sstore(&address, &key, &value, skip_cold_load)
+            .map(Into::into)
     }
 
     fn tload(&mut self, address: Address, key: U256) -> U256 {

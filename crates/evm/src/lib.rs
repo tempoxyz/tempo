@@ -16,7 +16,6 @@ pub mod evm;
 mod fee_manager;
 mod handler;
 mod instructions;
-mod pool;
 #[cfg(test)]
 mod test_utils;
 mod transaction;
@@ -37,9 +36,6 @@ pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
     TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
     tempo_tx_registry,
-};
-pub use pool::{
-    TempoPoolValidationError, TempoPoolValidationEvm, TempoPoolValidationResult, ValidationContext,
 };
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};

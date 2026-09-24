@@ -5,14 +5,12 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
+use alloy_consensus::{Transaction, constants::KECCAK_EMPTY, transaction::Recovered};
 use alloy_primitives::{Address, B256, U256};
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
-use reth_evm::{
-    BlockExecutorFactory, ConfigureEvm, EvmEnv as _, EvmFor, database::StateProviderDatabase,
-};
+use reth_evm::{BlockExecutorFactory, ConfigureEvm, EvmEnv as _, database::StateProviderDatabase};
 use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -37,8 +35,8 @@ use tempo_chainspec::{
     spec::TEMPO_T7_BASE_FEE_FLOOR,
 };
 use tempo_evm::{
-    FeePaymentError, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction,
-    TempoPoolValidationError, TempoPoolValidationEvm, TempoStateAccess,
+    FeePaymentError, TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction,
+    TempoStateAccess,
 };
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
@@ -364,12 +362,17 @@ where
             &cached_state,
             StateProviderDatabase::new(&state_provider as &dyn StateProvider),
         );
-        let evm_env = self.cached_evm_env.read().clone();
+        let mut evm_env = self
+            .cached_evm_env
+            .read()
+            .clone()
+            .with_nonce_check_disabled();
+        evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
 
-        // Create one throwaway EVM through the configured factory for the whole batch. The
-        // pool constructor and validation hook own configuration and cleanup while the
-        // EVM and tip-scoped state cache keep repeated reads warm.
-        let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
+        // Reuse the configured EVM and its loaded reads for the whole batch.
+        let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
+        evm.ext_mut().skip_valid_after_check = true;
+        evm.ext_mut().skip_liquidity_check = true;
 
         transactions
             .into_iter()
@@ -401,16 +404,13 @@ where
 
     /// Validates one transaction with the given throwaway EVM.
     ///
-    /// The EVM's pool-validation hook is responsible for discarding transaction-local writes.
-    fn validate_one_with_evm<EV>(
+    /// Registered handlers validate the transaction; temporary writes are discarded.
+    fn validate_one_with_evm(
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
-        evm: &mut EV,
-    ) -> TransactionValidationOutcome<TempoPooledTransaction>
-    where
-        EV: TempoPoolValidationEvm,
-    {
+        evm: &mut TempoEvm<'_>,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Get the hardfork active at the current tip
         let spec = self.active_hardfork();
 
@@ -487,33 +487,38 @@ where
         // authorization, and balance checks.
         //
         // Returns resolved fee token and key expiry for pool caching.
-        let result = if let Some(tx_env) = transaction.cached_tx_env() {
-            let (result, _) = evm.validate_pool_transaction(tx_env.clone());
-            result
-        } else {
-            let (result, tx_env) = evm.validate_pool_transaction(transaction.tx_env_slow());
-            transaction.cache_tx_env(tx_env);
-            result
-        };
-        let validation_ctx = match result {
-            Ok(ctx) => ctx,
-            Err(TempoPoolValidationError::Fatal(err)) => {
+        let tx_env = transaction
+            .cached_tx_env()
+            .cloned()
+            .unwrap_or_else(|| transaction.tx_env_slow());
+        let tx = Recovered::new_unchecked(tx_env, *transaction.sender_ref());
+        let result = evm.validate_tx(&tx);
+        transaction.cache_tx_env(tx.into_inner());
+        let fee_token = evm.ext_mut().resolved_fee_token.take();
+        let key_expiry = evm.ext_mut().key_expiry.take();
+        match result {
+            Ok(()) => {}
+            Err(HandlerError::Fatal(err)) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
-            Err(TempoPoolValidationError::Invalid(err)) => {
+            Err(HandlerError::Database(err)) if err.is_fatal() => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+            Err(err) => {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
                     InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(err)),
                 );
             }
-        };
+        }
+        let fee_token = fee_token.expect("successful Tempo handler resolves a fee token");
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
-        transaction.set_resolved_fee_token(validation_ctx.fee_token);
+        transaction.set_resolved_fee_token(fee_token);
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
-        if let Some(key_expiry) = validation_ctx.key_expiry {
+        if let Some(key_expiry) = key_expiry {
             let min_allowed = self
                 .inner
                 .fork_tracker()
@@ -540,9 +545,9 @@ where
         if !self.disable_fee_amm_check {
             let fee = transaction.fee_token_cost();
             match self.amm_liquidity_cache.has_enough_liquidity(
-                validation_ctx.fee_token,
+                fee_token,
                 fee,
-                evm.state_db_mut(),
+                evm.overlay_db_mut(),
             ) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -551,7 +556,7 @@ where
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
                             HandlerError::external(TempoInvalidTransaction::CollectFeePreTx(
                                 FeePaymentError::InsufficientAmmLiquidity {
-                                    user_token: Some(validation_ctx.fee_token),
+                                    user_token: Some(fee_token),
                                     validator_token: None,
                                     fee,
                                 },
@@ -569,7 +574,7 @@ where
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
         let inner_validation = {
-            let cached_state_provider = CachedAccountInfoReader::new(evm.state_db_mut());
+            let cached_state_provider = CachedAccountInfoReader::new(evm.overlay_db_mut());
             self.inner
                 .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
         };
@@ -621,7 +626,7 @@ where
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
-                        state_nonce = match evm.state_db_mut().with_read_only_storage_ctx(
+                        state_nonce = match evm.overlay_db_mut().with_read_only_storage_ctx(
                             spec,
                             StorageActions::disabled(),
                             || {
@@ -816,46 +821,32 @@ where
     }
 }
 
-/// Configuration capable of constructing an EVM with Tempo transaction-pool semantics.
+/// EVM configuration with the types required by Tempo's transaction pool.
 ///
-/// This pins pool validation to Tempo's EVM environment while allowing the configured EVM
-/// implementation to adapt its database and precompiles.
+/// Implemented automatically for compatible configurations; pool setup and validation
+/// remain in the transaction validator.
 pub trait ConfigureTempoPoolEvm:
     ConfigureEvm<
         Primitives = TempoPrimitives,
-        BlockExecutorFactory: BlockExecutorFactory<EvmTypes = TempoEvmTypes, EvmEnv = TempoEvmEnv>,
+        BlockExecutorFactory: for<'a> BlockExecutorFactory<
+            EvmTypes = TempoEvmTypes,
+            EvmEnv = TempoEvmEnv,
+            Evm<'a> = TempoEvm<'a>,
+        >,
     > + 'static
 {
-    /// Creates an EVM configured for validating a batch of pool transactions.
-    fn pool_evm<'a>(
-        &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
-        evm_env: TempoEvmEnv,
-    ) -> impl TempoPoolValidationEvm + 'a;
 }
 
-impl<T> ConfigureTempoPoolEvm for T
-where
+impl<T> ConfigureTempoPoolEvm for T where
     T: ConfigureEvm<
             Primitives = TempoPrimitives,
-            BlockExecutorFactory: BlockExecutorFactory<
+            BlockExecutorFactory: for<'a> BlockExecutorFactory<
                 EvmTypes = TempoEvmTypes,
                 EvmEnv = TempoEvmEnv,
+                Evm<'a> = TempoEvm<'a>,
             >,
-        > + 'static,
-    for<'a> EvmFor<'a, T>: TempoPoolValidationEvm,
+        > + 'static
 {
-    fn pool_evm<'a>(
-        &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
-        evm_env: TempoEvmEnv,
-    ) -> impl TempoPoolValidationEvm + 'a {
-        let mut evm_env = evm_env.with_nonce_check_disabled();
-        evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
-        let mut evm = self.evm_with_env(db, evm_env);
-        evm.configure_for_pool();
-        evm
-    }
 }
 
 #[cfg(test)]
@@ -866,8 +857,10 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use evm2::{
+        DatabaseError, TxResult,
         bytecode::Bytecode as EvmBytecode,
-        evm::{AccountInfo, Database, Db},
+        evm::{AccountInfo, Database, Db, InMemoryDB, precompile::NoPrecompiles},
+        registry::{HandlerResult, TxRegistry, TxRequest, handler},
     };
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
@@ -884,6 +877,7 @@ mod tests {
         TempoChainSpec,
         spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
+    use tempo_evm::{TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
@@ -3321,6 +3315,81 @@ mod tests {
                 panic!("the valid transaction was rejected after reusing the EVM: {outcome:?}");
             };
             assert_eq!(*state_nonce, 0, "validation must discard nonce writes");
+        }
+    }
+
+    #[test]
+    fn registered_handler_errors_keep_pool_classification() {
+        for (error, fatal) in [
+            (HandlerError::Fatal("injected fatal error".into()), true),
+            (
+                HandlerError::Database(DatabaseError::new(
+                    std::io::Error::other("injected database failure"),
+                    true,
+                )),
+                true,
+            ),
+            (
+                HandlerError::Database(DatabaseError::new(
+                    std::io::Error::other("injected input failure"),
+                    false,
+                )),
+                false,
+            ),
+            (
+                HandlerError::external(TempoInvalidTransaction::CallsValidation("custom policy")),
+                false,
+            ),
+        ] {
+            let tx = TxBuilder::eip1559(Address::repeat_byte(0x55)).build_eip1559();
+            let validator = setup_validator(&tx, 10);
+            let mut evm = build_tempo_evm(
+                TempoHardfork::T10,
+                MODERATO.chain_id(),
+                TempoBlockEnv::default(),
+                InMemoryDB::default(),
+                NoPrecompiles::default(),
+                TempoEvmExt::default(),
+            );
+            let expected = error.clone();
+            let mut registry = TxRegistry::new();
+            registry.register(2, |tx: &TempoTxEnv| Some(tx), handler(
+                move |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| -> HandlerResult<()> {
+                    request.host.ext_mut().resolved_fee_token = Some(PATH_USD_ADDRESS);
+                    request.host.ext_mut().key_expiry = Some(123);
+                    Err(error.clone())
+                },
+                |_, ()| -> HandlerResult<TxResult<TempoEvmTypes>> { panic!("pool validation must not execute calls") },
+            ));
+            evm.set_execution_config(
+                tempo_evm::tempo_execution_config(TempoHardfork::T10, MODERATO.chain_id()),
+                TempoHardfork::T10,
+                registry,
+                NoPrecompiles::default(),
+            );
+            let result = validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm);
+            match result {
+                TransactionValidationOutcome::Error(_, error) if fatal => match expected {
+                    HandlerError::Fatal(expected) => {
+                        assert_eq!(error.downcast_ref::<evm2::AnyError>(), Some(&expected));
+                    }
+                    HandlerError::Database(expected) => {
+                        assert_eq!(error.downcast_ref::<DatabaseError>(), Some(&expected));
+                    }
+                    _ => unreachable!("only fatal errors are classified as pool errors"),
+                },
+                TransactionValidationOutcome::Invalid(_, error) if !fatal => {
+                    let Some(TempoPoolTransactionError::Evm(error)) =
+                        error.downcast_other_ref::<TempoPoolTransactionError>()
+                    else {
+                        panic!("unexpected rejection: {error:?}");
+                    };
+                    assert_eq!(error, &expected);
+                }
+                result => panic!("unexpected classification: {result:?}"),
+            }
+            assert_eq!(evm.ext().resolved_fee_token, None);
+            assert_eq!(evm.ext().key_expiry, None);
         }
     }
 }

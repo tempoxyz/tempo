@@ -9,10 +9,10 @@ use alloy_primitives::{Address, TxKind, U256};
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, OpcodeConfig,
     SpecId, TxResult,
-    ethereum::{LazyTxEip7702, eip1559, eip2930, eip7702, finalize_gas, legacy},
+    ethereum::{LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, finalize_gas, legacy},
     evm::{DynDatabase, SystemTx, precompile::PrecompileProvider},
     handler::{GasSettlement, TxHandlerHooks},
-    registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
+    registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     version::GasId,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -449,52 +449,75 @@ fn settle_storage_credit_refunds(
     Ok(())
 }
 
-fn handle_legacy(
-    request: TxRequest<'_, '_, TempoEvmTypes, TxLegacy>,
-) -> HandlerResult<TxResult<TempoEvmTypes>> {
+enum PreparedLegacy {
+    System,
+    Transaction(PreparedTx),
+}
+
+fn prepare_legacy(
+    request: &mut TxRequest<'_, '_, TempoEvmTypes, TxLegacy>,
+) -> HandlerResult<PreparedLegacy> {
     validate_no_native_value(request.envelope)?;
     if request.envelope.evm_tx().is_system_tx() {
-        let tx = request.tx.inner();
-        let TxKind::Call(to) = tx.to else {
+        if !matches!(request.tx.to, TxKind::Call(_)) {
             return Err(invalid(
                 TempoInvalidTransaction::SystemTransactionMustBeCall,
             ));
-        };
-        let mut result = request.host.execute_system_call(
-            SystemTx::new(to, tx.input.clone()).with_caller(request.tx.signer()),
-        )?;
-        if !result.status {
-            return Err(invalid(TempoInvalidTransaction::SystemTransactionFailed(
-                format!("{:?}", result.stop),
-            )));
         }
-        result.total_gas_spent = 0;
-        result.state_gas_spent = 0;
-        result.refunded = 0;
-        return Ok(result);
+        return Ok(PreparedLegacy::System);
     }
-    legacy::handle_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
+    legacy::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
+        .map(PreparedLegacy::Transaction)
 }
 
-fn handle_eip2930(
-    request: TxRequest<'_, '_, TempoEvmTypes, TxEip2930>,
+fn execute_legacy(
+    request: TxRequest<'_, '_, TempoEvmTypes, TxLegacy>,
+    prepared: PreparedLegacy,
 ) -> HandlerResult<TxResult<TempoEvmTypes>> {
-    validate_no_native_value(request.envelope)?;
-    eip2930::handle_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
+    match prepared {
+        PreparedLegacy::Transaction(prepared) => {
+            legacy::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>(request, prepared)
+        }
+        PreparedLegacy::System => {
+            let tx = request.tx.inner();
+            let TxKind::Call(to) = tx.to else {
+                unreachable!("system transaction kind was validated during preparation");
+            };
+            let mut result = request.host.execute_system_call(
+                SystemTx::new(to, tx.input.clone()).with_caller(request.tx.signer()),
+            )?;
+            if !result.status {
+                return Err(invalid(TempoInvalidTransaction::SystemTransactionFailed(
+                    format!("{:?}", result.stop),
+                )));
+            }
+            result.total_gas_spent = 0;
+            result.state_gas_spent = 0;
+            result.refunded = 0;
+            Ok(result)
+        }
+    }
 }
 
-fn handle_eip1559(
-    request: TxRequest<'_, '_, TempoEvmTypes, TxEip1559>,
-) -> HandlerResult<TxResult<TempoEvmTypes>> {
+fn prepare_eip2930(
+    request: &mut TxRequest<'_, '_, TempoEvmTypes, TxEip2930>,
+) -> HandlerResult<PreparedTx> {
     validate_no_native_value(request.envelope)?;
-    eip1559::handle_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
+    eip2930::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }
 
-fn handle_eip7702(
-    request: TxRequest<'_, '_, TempoEvmTypes, LazyTxEip7702>,
-) -> HandlerResult<TxResult<TempoEvmTypes>> {
+fn prepare_eip1559(
+    request: &mut TxRequest<'_, '_, TempoEvmTypes, TxEip1559>,
+) -> HandlerResult<PreparedTx> {
     validate_no_native_value(request.envelope)?;
-    eip7702::handle_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
+    eip1559::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
+}
+
+fn prepare_eip7702(
+    request: &mut TxRequest<'_, '_, TempoEvmTypes, LazyTxEip7702>,
+) -> HandlerResult<PreparedTx> {
+    validate_no_native_value(request.envelope)?;
+    eip7702::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }
 
 fn validate_no_native_value(envelope: &TempoTxEnv) -> HandlerResult<()> {
@@ -507,18 +530,47 @@ fn validate_no_native_value(envelope: &TempoTxEnv) -> HandlerResult<()> {
 
 /// Returns the Tempo transaction registry for `spec_id`.
 pub fn tempo_tx_registry(spec_id: SpecId) -> TxRegistry<TempoEvmTypes, TxResult<TempoEvmTypes>> {
-    let mut registry = TxRegistry::new().with_handler(0, TempoTxEnv::as_legacy, handle_legacy);
+    let mut registry = TxRegistry::new().with_handler(
+        0,
+        TempoTxEnv::as_legacy,
+        handler(prepare_legacy, execute_legacy),
+    );
 
     if spec_id.enables(SpecId::BERLIN) {
-        registry.register(1, TempoTxEnv::as_eip2930, handle_eip2930);
+        registry.register(
+            1,
+            TempoTxEnv::as_eip2930,
+            handler(
+                prepare_eip2930,
+                eip2930::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
+            ),
+        );
     }
     if spec_id.enables(SpecId::LONDON) {
-        registry.register(2, TempoTxEnv::as_eip1559, handle_eip1559);
+        registry.register(
+            2,
+            TempoTxEnv::as_eip1559,
+            handler(
+                prepare_eip1559,
+                eip1559::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
+            ),
+        );
     }
     if spec_id.enables(SpecId::PRAGUE) {
-        registry.register(4, TempoTxEnv::as_eip7702, handle_eip7702);
+        registry.register(
+            4,
+            TempoTxEnv::as_eip7702,
+            handler(
+                prepare_eip7702,
+                eip7702::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
+            ),
+        );
     }
-    registry.register(0x76, TempoTxEnv::as_aa, super::handle);
+    registry.register(
+        0x76,
+        TempoTxEnv::as_aa,
+        handler(super::prepare_aa, super::execute_aa),
+    );
 
     registry
 }

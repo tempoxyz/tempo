@@ -9,19 +9,16 @@ pub use self::config::{
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks, invalid};
 use crate::{FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv};
-use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
     Evm, EvmFeatures, TxResult,
     env::TxEnv,
     ethereum::{
-        access_list_counts, eip1559, eip2930, eip7702, execute_initial_frame,
-        initial_gas_and_reservoir, legacy, prepare_initial_frame, validate_block_gas_limit,
-        validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
-        validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-        validate_nonce_not_overflow, validate_priority_fee, validate_tx_gas_limit_cap,
-        warm_access_list, warm_base_accounts,
+        access_list_counts, execute_initial_frame, initial_gas_and_reservoir,
+        prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
+        validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
+        validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{GasTracker, InstrStop, MessageResult},
@@ -1377,21 +1374,24 @@ fn execute_batch(
     Ok(result)
 }
 
-/// Validates and executes an AA transaction using Tempo's custom transaction lifecycle.
-///
-/// Performs standard validation plus AA-specific checks:
-/// - Priority fee validation (EIP-1559)
-/// - Time window validation (validAfter/validBefore)
-fn handle(
-    request: TxRequest<'_, '_, TempoEvmTypes, TempoAaTx>,
-) -> HandlerResult<TxResult<TempoEvmTypes>> {
-    Ok(handle_aa(request, true)?.expect("AA execution requested"))
+/// State shared between AA preparation and execution.
+struct PreparedAa {
+    caller: Address,
+    access_key: Option<Address>,
+    create_nonce: u64,
+    gas_price: U256,
+    intrinsic: u64,
+    initial_state_gas: u64,
+    floor_gas: u64,
+    state_refund: u64,
+    regular_refund: u64,
+    // Preserve the existing terminal OOG result from key authorization processing.
+    result: Option<TxResult<TempoEvmTypes>>,
 }
 
-fn handle_aa(
-    request: TxRequest<'_, '_, TempoEvmTypes, TempoAaTx>,
-    execute_calls: bool,
-) -> HandlerResult<Option<TxResult<TempoEvmTypes>>> {
+fn prepare_aa(
+    request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoAaTx>,
+) -> HandlerResult<PreparedAa> {
     let caller = request.tx.signer();
     let signed = request.tx.inner();
     let tx = signed.tx();
@@ -1571,7 +1571,7 @@ fn handle_aa(
     )?;
     let (state_refund, regular_refund) =
         apply_authorization_list(request.host, &tx.tempo_authorization_list, spec)?;
-    if key_auth_gas == u64::MAX
+    let result = if key_auth_gas == u64::MAX
         || key_auth_gas
             > tx.gas_limit
                 .saturating_sub(intrinsic)
@@ -1582,7 +1582,7 @@ fn handle_aa(
             gas: GasTracker::new_spent_with_reservoir(tx.gas_limit.saturating_sub(intrinsic), 0),
             ..MessageResult::<TempoEvmTypes>::default()
         };
-        return TempoHandlerHooks::settle_transaction(
+        Some(TempoHandlerHooks::settle_transaction(
             request.host,
             request.envelope,
             GasSettlement {
@@ -1594,15 +1594,47 @@ fn handle_aa(
                 state_refund: 0,
                 result,
             },
-        )
-        .map(Some);
-    }
-    intrinsic = intrinsic.saturating_add(key_auth_gas);
+        )?)
+    } else {
+        intrinsic = intrinsic.saturating_add(key_auth_gas);
+        None
+    };
 
-    // Pool admission validates the pre-execution lifecycle without running user calls.
-    if !execute_calls {
-        return Ok(None);
+    Ok(PreparedAa {
+        caller,
+        access_key: keychain.access_key,
+        create_nonce,
+        gas_price,
+        intrinsic,
+        initial_state_gas,
+        floor_gas,
+        state_refund,
+        regular_refund,
+        result,
+    })
+}
+
+fn execute_aa(
+    request: TxRequest<'_, '_, TempoEvmTypes, TempoAaTx>,
+    prepared: PreparedAa,
+) -> HandlerResult<TxResult<TempoEvmTypes>> {
+    let PreparedAa {
+        caller,
+        access_key,
+        create_nonce,
+        gas_price,
+        intrinsic,
+        initial_state_gas,
+        floor_gas,
+        state_refund,
+        regular_refund,
+        result,
+    } = prepared;
+    if let Some(result) = result {
+        return Ok(result);
     }
+    let tx = request.tx.inner().tx();
+    let spec = request.host.config_spec_id();
 
     // At Genesis, adding 2D nonce gas after validation could underflow the execution budget.
     // Preserve the historical fallback: execute with u64::MAX, but settle against the
@@ -1622,7 +1654,7 @@ fn handle_aa(
     let mut result = execute_batch(
         request.host,
         caller,
-        keychain.access_key,
+        access_key,
         create_nonce,
         gas_price,
         execution_gas,
@@ -1646,65 +1678,6 @@ fn handle_aa(
             result,
         },
     )
-    .map(Some)
-}
-
-/// Validates a transaction without executing its user calls.
-pub(crate) fn validate_transaction(
-    host: &mut Evm<'_, TempoEvmTypes>,
-    tx: &Recovered<TempoTxEnv>,
-) -> HandlerResult<()> {
-    if let Some(transaction) = tx.inner().as_aa() {
-        handle_aa(
-            TxRequest {
-                envelope: tx.inner(),
-                tx: Recovered::new_unchecked(transaction, tx.signer()),
-                host,
-                _non_exhaustive: (),
-            },
-            false,
-        )?;
-        return Ok(());
-    }
-
-    host.registry().try_get_by_type(tx.ty())?;
-    if !tx.inner().transaction().value().is_zero() {
-        return Err(invalid(TempoInvalidTransaction::ValueTransferNotAllowed));
-    }
-
-    if let Some(transaction) = tx.inner().as_legacy() {
-        legacy::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(TxRequest {
-            envelope: tx.inner(),
-            tx: Recovered::new_unchecked(transaction, tx.signer()),
-            host,
-            _non_exhaustive: (),
-        })?;
-    } else if let Some(transaction) = tx.inner().as_eip2930() {
-        eip2930::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(TxRequest {
-            envelope: tx.inner(),
-            tx: Recovered::new_unchecked(transaction, tx.signer()),
-            host,
-            _non_exhaustive: (),
-        })?;
-    } else if let Some(transaction) = tx.inner().as_eip1559() {
-        eip1559::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(TxRequest {
-            envelope: tx.inner(),
-            tx: Recovered::new_unchecked(transaction, tx.signer()),
-            host,
-            _non_exhaustive: (),
-        })?;
-    } else if let Some(transaction) = tx.inner().as_eip7702() {
-        eip7702::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(TxRequest {
-            envelope: tx.inner(),
-            tx: Recovered::new_unchecked(transaction, tx.signer()),
-            host,
-            _non_exhaustive: (),
-        })?;
-    } else {
-        return Err(HandlerError::UnsupportedTransactionType(tx.ty()));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
