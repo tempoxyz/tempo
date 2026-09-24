@@ -27,6 +27,8 @@ use tracing::{Level, debug, instrument, warn};
 
 use crate::utils::public_key_to_b256;
 
+pub(crate) type ValidatorEvmDb = State<StateProviderDatabase<EvmStateProviderBox>>;
+
 /// Minimal execution-node interface needed to read validator config state.
 ///
 /// Production code uses [`TempoFullNode`]. This trait exists so unit tests can
@@ -40,9 +42,9 @@ pub(crate) trait ExecutionNode {
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
+        db: ValidatorEvmDb,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>>;
+    ) -> eyre::Result<TempoEvm<ValidatorEvmDb>>;
 }
 
 impl ExecutionNode for TempoFullNode {
@@ -65,9 +67,9 @@ impl ExecutionNode for TempoFullNode {
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
+        db: ValidatorEvmDb,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
+    ) -> eyre::Result<TempoEvm<ValidatorEvmDb>> {
         self.evm_config
             .evm_for_block(db, header)
             .map_err(eyre::Report::new)
@@ -88,9 +90,9 @@ where
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
+        db: ValidatorEvmDb,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
+    ) -> eyre::Result<TempoEvm<ValidatorEvmDb>> {
         (*self).evm_for_block(db, header)
     }
 }
@@ -161,11 +163,12 @@ where
 
     debug!(height = header.number(), "header found");
 
+    let state_provider = node.state_by_block_hash(block_hash).wrap_err_with(|| {
+        format!("failed to get state from node provider for hash `{block_hash}`")
+    })?;
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
-            node.state_by_block_hash(block_hash).wrap_err_with(|| {
-                format!("failed to get state from node provider for hash `{block_hash}`")
-            })?,
+            Box::new(state_provider.into_evm_state_provider()) as EvmStateProviderBox,
         ))
         .build();
 
