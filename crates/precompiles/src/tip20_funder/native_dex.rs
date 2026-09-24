@@ -75,15 +75,15 @@ impl DexFundingSource {
 
     /// Compares input and cap without reading balances, liquidity, or mutable state.
     pub fn verify(&self, call: IFundingSource::verifyCall) -> Result<bool> {
-        let (input, cap) = self.decode(&call.requestData)?;
-        let (allowed_input, allowed_cap) = self.decode(&call.policyData)?;
+        let (input, cap) = self.decode(&call.executionData)?;
+        let (allowed_input, allowed_cap) = self.decode(&call.configData)?;
         Ok(input == allowed_input && cap <= allowed_cap)
     }
 
     /// Checks configured routes without reading account balances or orderbook liquidity.
     pub fn supports_token(&self, call: IFundingSource::supportsTokenCall) -> Result<bool> {
         self.validate_context()?;
-        let (input, _) = self.decode(&call.policyData)?;
+        let (input, _) = self.decode(&call.configData)?;
         match self.validate_route(input, call.token) {
             Ok(()) => Ok(true),
             Err(TempoPrecompileError::TIP20Funder(TIP20FunderError::InvalidAsset(_)))
@@ -107,7 +107,7 @@ impl DexFundingSource {
         self.validate_context()?;
         let currency = TIP20Token::from_address(call.assetOut)?.currency()?;
         self.validate_asset(call.assetOut, &currency)?;
-        let (asset_in, cap) = self.decode(&call.policyData)?;
+        let (asset_in, cap) = self.decode(&call.configData)?;
         let mut candidates = Vec::new();
         if asset_in == call.assetOut {
             return Ok(candidates);
@@ -122,7 +122,7 @@ impl DexFundingSource {
         )?;
         if !quote.amountOut.is_zero() {
             candidates.push(IFundingSource::Candidate {
-                requestData: quote.requestData,
+                executionData: quote.executionData,
                 availableAmount: quote.amountOut,
             });
         }
@@ -132,13 +132,13 @@ impl DexFundingSource {
     /// Data is ABI `(address assetIn, uint256 maxAmountIn)`; omitted caps encode as `uint256.max`.
     pub fn quote(&self, call: IFundingSource::quoteCall) -> Result<IFundingSource::Quote> {
         self.validate_context()?;
-        let (asset_in, cap) = self.decode(&call.requestData)?;
+        let (asset_in, cap) = self.decode(&call.executionData)?;
         let authorized = if call.ownerAuthorized {
-            call.policyData.is_empty()
+            call.configData.is_empty()
         } else {
             self.verify(IFundingSource::verifyCall {
-                requestData: call.requestData.clone(),
-                policyData: call.policyData.clone(),
+                executionData: call.executionData.clone(),
+                configData: call.configData.clone(),
             })?
         };
         if !authorized {
@@ -178,7 +178,7 @@ impl DexFundingSource {
             amountOut: U256::from(
                 self.available_output(account, asset_in, asset_out, amount_out, cap)?,
             ),
-            requestData: (asset_in, cap).abi_encode().into(),
+            executionData: (asset_in, cap).abi_encode().into(),
         })
     }
 
@@ -191,7 +191,7 @@ impl DexFundingSource {
             .into());
         }
         require_active(self.funder, call.account, self.address)?;
-        let (asset_in, cap) = self.decode(&call.requestData)?;
+        let (asset_in, cap) = self.decode(&call.executionData)?;
         self.validate_route(asset_in, call.assetOut)?;
         let contribution =
             self.available_output(call.account, asset_in, call.assetOut, call.amountOut, cap)?;

@@ -9,7 +9,7 @@ interface Token {
 // Compile deployed bytecode with solc 0.8.30, optimizer runs=200, evmVersion=cancun.
 contract OwnerFundingSource {
     address constant FUNDER = 0xFfFfFFfFfFffffFFFffFfFFfFFFfFffFffff1120;
-    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes requestData; }
+    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes executionData; }
     struct Request {
         address assetIn;
         uint256 rate;
@@ -21,10 +21,10 @@ contract OwnerFundingSource {
     }
     uint256 public calls;
 
-    function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
+    function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata configData, bool ownerAuthorized)
         external returns (Quote memory)
     {
-        require(ownerAuthorized && policyData.length == 0, "context");
+        require(ownerAuthorized && configData.length == 0, "context");
         Request memory r = abi.decode(data, (Request));
         require(r.expectedCost == 0 || r.expectedCost == maxCost, "cost");
         if (r.mode == 8) assembly { return(0, 1) }
