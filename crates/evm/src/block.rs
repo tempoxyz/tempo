@@ -723,7 +723,6 @@ mod tests {
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
-        Database as _,
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
     };
