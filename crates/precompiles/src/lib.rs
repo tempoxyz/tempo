@@ -241,7 +241,7 @@ pub fn extend_tempo_precompiles(
             Some(StablecoinDEX::create_precompile(&env))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NonceManager::create_precompile(&env))
-        } else if *address == NATIVE_MULTISIG_ADDRESS && env.cfg.spec.is_t12() {
+        } else if *address == NATIVE_MULTISIG_ADDRESS && env.cfg.spec.is_t14() {
             Some(NativeMultisig::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
             Some(ValidatorConfig::create_precompile(&env))
