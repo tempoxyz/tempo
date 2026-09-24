@@ -310,15 +310,15 @@ where
                 transport,
                 verify_rate: GOSSIP_VERIFY_RATE,
             });
-        let execution_node = self
+        let running = self
             .execution_node
             .as_ref()
-            .expect("execution node must be running before consensus")
-            .node
-            .clone()
-            .into();
+            .expect("execution node must be running before consensus");
+        let execution_node = running.node.clone().into();
+        let executed_state = running.executed_state.clone();
         let config = consensus::Builder {
             execution_node: Some(execution_node),
+            executed_state,
             network_identity: self.network_identity.clone(),
             gossip,
             blocker: self.oracle.control(self.public_key()),

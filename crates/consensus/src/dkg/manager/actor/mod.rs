@@ -121,7 +121,7 @@ impl Read for Message {
 
 pub(crate) struct Actor<
     TContext,
-    TExecutionLayer = Arc<tempo_node::TempoFullNode>,
+    TExecutionLayer = super::TempoExecutionLayer,
     TMarshal = crate::alias::marshal::Mailbox,
 > where
     TContext: BufferPooler + Clock + commonware_runtime::Metrics + Storage,

@@ -71,6 +71,7 @@ async fn follower_rpc_survives_execution_node_handle_drop() {
                 runtime: _runtime,
                 exit_fut: _exit_fut,
                 gossip: _gossip,
+                executed_state: _executed_state,
             } = execution_node;
 
             // Production drops this owner after starting the follower engine. The engine must

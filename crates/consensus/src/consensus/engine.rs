@@ -20,7 +20,7 @@ use commonware_runtime::{
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::NZUsize;
-use eyre::{OptionExt as _, WrapErr as _};
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -50,6 +50,11 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 // because there doesn't really seem to be a point putting it into an extra initializer.
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
+
+    /// Reads the state of blocks that the execution node's engine has
+    /// executed, including blocks on forks. Get it from the
+    /// [`tempo_node::TempoNode`] that launched `execution_node`.
+    pub executed_state: tempo_node::ExecutedState,
 
     /// Trusted network identity to register before initializing consensus actors.
     pub network_identity: tempo_chainspec::NetworkIdentity,
@@ -122,6 +127,11 @@ where
             .execution_node
             .clone()
             .ok_or_eyre("execution_node must be set using with_execution_node()")?;
+        ensure!(
+            self.executed_state.is_launched(),
+            "the engine of the execution node is not launched; `executed_state` \
+            must come from the `TempoNode` that launched `execution_node`",
+        );
 
         let epoch_length = execution_node
             .chain_spec()
@@ -250,7 +260,10 @@ where
             context.child("dkg_manager"),
             dkg::manager::Config {
                 epoch_strategy: epoch_strategy.clone(),
-                execution_node: execution_node.clone(),
+                execution_node: dkg::manager::TempoExecutionLayer {
+                    node: execution_node.clone(),
+                    executed_state: self.executed_state.clone(),
+                },
                 initial_share: self.share.clone(),
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),
