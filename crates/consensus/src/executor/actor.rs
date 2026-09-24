@@ -58,11 +58,11 @@
 //! An INVALID answer ends the walk that received it. A block that fails
 //! validation is cached as invalid by the execution layer, which then answers
 //! INVALID for it and for every descendant, so re-probing learns nothing.
-//! Timestamps are validated by the consensus application. For verification an
-//! INVALID is the candidate's verdict, whether it was the candidate or an
-//! ancestor that was rejected. Convergence stops until a newer consensus
-//! context selects the same head again or a finalized block is delivered.
-//! Other verification and build failures end the affected request.
+//! For verification an INVALID is the
+//! candidate's verdict, whether it was the candidate or an ancestor that was
+//! rejected. Convergence stops until a newer consensus context selects the
+//! same head again or a finalized block is delivered. Other verification and
+//! build failures end the affected request.
 //!
 //! An engine call that fails outright, rather than answering with a payload
 //! status, is fatal wherever it happens. The execution layer runs in this

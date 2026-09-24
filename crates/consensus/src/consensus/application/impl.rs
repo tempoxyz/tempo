@@ -29,7 +29,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
 };
-use tempo_primitives::{TempoConsensusContext, TempoHeader};
+use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
 
@@ -173,7 +173,7 @@ impl Inner {
             }
         };
 
-        // Keep the timestamp increasing even if the parent is ahead of our clock.
+        // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
         let mut epoch_millis = runtime.current().epoch_millis();
         if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
@@ -264,14 +264,11 @@ impl Inner {
     }
 
     /// Checks the header of a proposal before it is handed to the execution
-    /// layer: the consensus context it claims, its timestamp, and the DKG
-    /// data in `extra_data`.
+    /// layer: the consensus context it claims and the DKG data in `extra_data`.
     #[instrument(skip_all, err(Display))]
     async fn verify_header(
         &self,
-        runtime: &impl Clock,
         block: &Block,
-        parent: &Block,
         context: &Context<Digest, PublicKey>,
     ) -> eyre::Result<()> {
         let epoch_info = self
@@ -300,8 +297,6 @@ impl Inner {
             "mismatch in consensus context for block `{}`. expected `{expected_ctx:?}`. got `{ctx:?}`",
             block.digest()
         );
-
-        validate_timestamp(runtime, block.header(), parent.header()).await?;
 
         if epoch_info.last() == block.height() {
             info!(
@@ -439,15 +434,7 @@ where
         };
         tracing::Span::current().record("digest", tracing::field::display(block.digest()));
 
-        let Some(parent) = ancestry.next().await else {
-            warn!("ancestry ended before yielding the parent; abstaining");
-            return std::future::pending().await;
-        };
-
-        if let Err(reason) = self
-            .verify_header(&runtime, &block, &parent, &context)
-            .await
-        {
+        if let Err(reason) = self.verify_header(&block, &context).await {
             warn!(%reason, "header could not be verified; failing block");
             return false;
         }
@@ -464,6 +451,10 @@ where
                         duration,
                     );
                 }
+                // The EL has checked timestamp encoding and parent ordering.
+                // Only the local clock gates voting: in deferred mode this
+                // delays certification, while notarization may happen earlier.
+                wait_until_timestamp(&runtime, block.timestamp_millis()).await;
                 true
             }
             Ok(None) => false,
@@ -486,30 +477,13 @@ impl Reporter for Inner {
     }
 }
 
-/// Checks timestamp encoding and ordering, then waits for the local clock.
-/// The execution layer does not validate timestamps, including during ancestry repair.
-async fn validate_timestamp(
-    runtime: &impl Clock,
-    header: &TempoHeader,
-    parent: &TempoHeader,
-) -> eyre::Result<()> {
-    ensure!(
-        header.timestamp_millis_part < 1000,
-        "timestamp milliseconds part `{}` must be less than 1000",
-        header.timestamp_millis_part,
-    );
-    let timestamp = header.timestamp_millis();
-    ensure!(
-        timestamp > parent.timestamp_millis(),
-        "timestamp `{timestamp}` must be greater than parent timestamp `{}`",
-        parent.timestamp_millis(),
-    );
+/// Waits for a validated block's timestamp without making a validity decision.
+async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
     while runtime.current().epoch_millis() < timestamp {
         runtime
             .sleep_until(std::time::UNIX_EPOCH + Duration::from_millis(timestamp))
             .await;
     }
-    Ok(())
 }
 
 #[derive(Clone)]
@@ -536,86 +510,22 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic};
     use futures::FutureExt as _;
 
-    fn header(timestamp: u64) -> TempoHeader {
-        TempoHeader {
-            inner: alloy_consensus::Header {
-                timestamp: timestamp / 1000,
-                ..Default::default()
-            },
-            timestamp_millis_part: timestamp % 1000,
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn future_header_waits_for_local_clock_before_certification() {
         deterministic::Runner::default().start(|context| async move {
             let now = context.current().epoch_millis();
-            let parent = header(now);
-            let candidate = header(now + 100);
-            let mut verification =
-                std::pin::pin!(validate_timestamp(&context, &candidate, &parent));
+            let mut verification = std::pin::pin!(wait_until_timestamp(&context, now + 100));
             assert!(verification.as_mut().now_or_never().is_none());
             context.sleep(Duration::from_millis(99)).await;
             assert!(verification.as_mut().now_or_never().is_none());
             context.sleep(Duration::from_millis(1)).await;
-            verification.await.unwrap();
+            verification.await;
             // A validator whose clock has caught up reaches the same verdict.
-            validate_timestamp(&context, &candidate, &parent)
-                .await
-                .unwrap();
-        });
-    }
-
-    #[test]
-    fn malformed_timestamp_is_rejected_without_waiting() {
-        deterministic::Runner::default().start(|context| async move {
-            let now = context.current().epoch_millis();
-            let parent = header(now);
-            for millis in [1000, 1001, u64::MAX] {
-                let mut candidate = header(now + 1000);
-                candidate.timestamp_millis_part = millis;
-                let error = validate_timestamp(&context, &candidate, &parent)
+            assert!(
+                wait_until_timestamp(&context, now + 100)
                     .now_or_never()
-                    .expect("invalid encoding must fail before waiting for the clock")
-                    .unwrap_err();
-                assert!(error.to_string().contains("must be less than 1000"));
-            }
-        });
-    }
-
-    #[test]
-    fn timestamp_must_strictly_increase_even_for_a_future_parent() {
-        deterministic::Runner::default().start(|context| async move {
-            let parent_timestamp = context.current().epoch_millis() + 2000;
-            let parent = header(parent_timestamp);
-            for timestamp in [
-                parent_timestamp - 1000,
-                parent_timestamp - 1,
-                parent_timestamp,
-            ] {
-                let candidate = header(timestamp);
-                let error = validate_timestamp(&context, &candidate, &parent)
-                    .now_or_never()
-                    .expect("invalid ordering must fail before waiting for the clock")
-                    .unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains("must be greater than parent timestamp")
-                );
-            }
-        });
-    }
-
-    #[test]
-    fn timestamp_can_increase_within_a_second_or_across_its_boundary() {
-        deterministic::Runner::default().start(|context| async move {
-            for (parent_timestamp, timestamp) in [(1500, 1501), (1999, 2000)] {
-                validate_timestamp(&context, &header(timestamp), &header(parent_timestamp))
-                    .await
-                    .unwrap();
-            }
+                    .is_some()
+            );
         });
     }
 }
