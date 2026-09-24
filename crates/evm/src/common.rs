@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use evm2::{
-    Evm,
+    DatabaseError, Evm,
     bytecode::Bytecode,
     evm::{AccountInfo, Database, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
@@ -87,14 +87,11 @@ impl TempoTx for Recovered<TempoTxEnvelope> {
 ///
 /// The generic marker is used as a workaround to avoid conflicting implementations.
 pub trait TempoStateAccess<M = ()> {
-    /// Error type returned by storage operations.
-    type Error: core::fmt::Display;
-
     /// Returns [`AccountInfo`] for the given address.
-    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error>;
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError>;
 
     /// Returns the storage value for the given address and key.
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, DatabaseError>;
 
     /// Returns a read-only storage provider for the given spec.
     fn with_read_only_storage_ctx<R>(
@@ -163,9 +160,8 @@ pub trait TempoStateAccess<M = ()> {
                 )));
             }
 
-            Ok(Ok(()))
-        })
-        .map_err(|err: TempoPrecompileError| HandlerError::external(err))?
+            Ok::<_, TempoPrecompileError>(Ok(()))
+        })?
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -224,45 +220,43 @@ pub trait TempoStateAccess<M = ()> {
 }
 
 impl<DB: Database> TempoStateAccess<()> for DB {
-    type Error = DB::Error;
-
-    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
-        self.get_account(&address).map(Option::unwrap_or_default)
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
+        self.get_account(&address)
+            .map(Option::unwrap_or_default)
+            .map_err(|error| {
+                let fatal = DB::is_fatal(&error);
+                DatabaseError::new(error, fatal)
+            })
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
-        self.get_storage(&address, &key)
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, DatabaseError> {
+        self.get_storage(&address, &key).map_err(|error| {
+            let fatal = DB::is_fatal(&error);
+            DatabaseError::new(error, fatal)
+        })
     }
 }
 
 impl TempoStateAccess<((),)> for Evm<'_, TempoEvmTypes> {
-    type Error = String;
-
-    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
-        self.state_mut()
-            .account(&address, false)
-            .map(|mut account| {
-                account.warm();
-                account.get().cloned().unwrap_or_default()
-            })
-            .map_err(|code| self.error(code).to_string())
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
+        self.state_mut().account(&address).map(|mut account| {
+            account.warm();
+            account.get().cloned().unwrap_or_default()
+        })
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, DatabaseError> {
         self.state_mut()
-            .storage_slot(&address, key, false)
+            .storage_slot(&address, key)
             .map(|mut slot| {
                 slot.warm();
                 slot.current()
             })
-            .map_err(|code| self.error(code).to_string())
     }
 }
 
 impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
-    type Error = reth_storage_api::errors::provider::ProviderError;
-
-    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
         self.basic_account(&address)
             .map(Option::unwrap_or_default)
             .map(|account| AccountInfo {
@@ -272,11 +266,13 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
                 code: None,
                 _non_exhaustive: (),
             })
+            .map_err(|error| DatabaseError::new(error, true))
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, DatabaseError> {
         self.storage(address, key.into())
             .map(Option::unwrap_or_default)
+            .map_err(|error| DatabaseError::new(error, true))
     }
 }
 
@@ -343,14 +339,8 @@ where
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
-        let _ = self
-            .state
-            .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
-        let value = self
-            .state
-            .sload(address, key)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+        let _ = self.state.basic(address)?;
+        let value = self.state.sload(address, key)?;
 
         if let Some(actions) = &self.actions {
             actions.record(StorageAction::Sload(address, key, value));
@@ -364,10 +354,7 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> TempoResult<()> {
-        let info = self
-            .state
-            .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+        let info = self.state.basic(address)?;
         f(&info);
         Ok(())
     }
@@ -454,10 +441,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FeeTokenResolver, TempoFeeManager};
+    use crate::{FeeTokenResolver, TempoBlockEnv, TempoEvmExt, TempoFeeManager, build_tempo_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_primitives::{Signature, address, uint};
-    use evm2::evm::InMemoryDB;
+    use evm2::{
+        evm::{Bal, BalContext, InMemoryDB, bal::BalError, precompile::NoPrecompiles},
+        precompiles::PrecompileError,
+    };
+    use std::sync::Arc;
     use tempo_contracts::precompiles::{
         DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
     };
@@ -811,5 +802,59 @@ mod tests {
         ));
 
         Ok(())
+    }
+
+    #[test]
+    fn owned_database_errors_survive_tempo_storage_adapters() {
+        let mut db = InMemoryDB {
+            bal_context: BalContext::new()
+                .with_bal(Arc::new(Bal::default()))
+                .with_allow_db_fallback(false),
+            ..InMemoryDB::default()
+        };
+        let db_error = db
+            .get_token_balance(
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                TempoHardfork::T7,
+                StorageActions::disabled(),
+            )
+            .unwrap_err();
+        let mut evm = build_tempo_evm(
+            TempoHardfork::T7,
+            1,
+            TempoBlockEnv::default(),
+            db,
+            NoPrecompiles::default(),
+            TempoEvmExt::default(),
+        );
+        let live_error = evm
+            .get_token_balance(
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                TempoHardfork::T7,
+                StorageActions::disabled(),
+            )
+            .unwrap_err();
+        let precompile_error =
+            StorageCtx::enter_evm(&mut evm, || StorageCtx.sload(PATH_USD_ADDRESS, U256::ZERO))
+                .unwrap_err();
+        for error in [db_error, live_error, precompile_error] {
+            let HandlerError::Database(handler_error) = HandlerError::from(error.clone()) else {
+                panic!("expected database error at handler boundary");
+            };
+            let Err(PrecompileError::Database(precompile_error)) = error.into_precompile_result()
+            else {
+                panic!("expected database error at precompile boundary");
+            };
+            assert_eq!(handler_error, precompile_error);
+            assert!(!handler_error.is_fatal());
+            assert_eq!(
+                handler_error.downcast_ref::<BalError>(),
+                Some(&BalError::AccountNotFound {
+                    address: PATH_USD_ADDRESS,
+                })
+            );
+        }
     }
 }

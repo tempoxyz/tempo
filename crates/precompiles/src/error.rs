@@ -15,9 +15,10 @@ use alloy::{
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use evm2::{
-    ErrorCode,
+    DatabaseError, LoadError,
     evm::precompile::PrecompileOutput,
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
+    registry::HandlerError,
 };
 use tempo_contracts::{
     TempoHardfork,
@@ -119,10 +120,9 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
-    /// Fatal EVM2 host or database error.
-    #[error("Fatal EVM2 error: {0:?}")]
-    #[from(skip)]
-    EvmError(ErrorCode),
+    /// An owned database failure, including invalid BAL coverage.
+    #[error(transparent)]
+    Database(DatabaseError),
 
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
@@ -134,12 +134,42 @@ pub enum TempoPrecompileError {
     Fatal(String),
 }
 
-impl From<ErrorCode> for TempoPrecompileError {
-    fn from(code: ErrorCode) -> Self {
-        if code == ErrorCode::COLD_LOAD_SKIPPED {
-            Self::OutOfGas
-        } else {
-            Self::EvmError(code)
+impl From<LoadError> for TempoPrecompileError {
+    fn from(error: LoadError) -> Self {
+        match error {
+            LoadError::ColdLoadSkipped => Self::OutOfGas,
+            LoadError::Database(error) => Self::Database(error),
+        }
+    }
+}
+
+impl From<TempoPrecompileError> for HandlerError {
+    fn from(error: TempoPrecompileError) -> Self {
+        match error {
+            TempoPrecompileError::Database(error) => Self::Database(error),
+            TempoPrecompileError::Fatal(error) => Self::Fatal(error.into()),
+            error @ (TempoPrecompileError::StablecoinDEX(_)
+            | TempoPrecompileError::TIP20(_)
+            | TempoPrecompileError::TIP20Factory(_)
+            | TempoPrecompileError::TIP20ChannelReserveError(_)
+            | TempoPrecompileError::RolesAuthError(_)
+            | TempoPrecompileError::AddrRegistryError(_)
+            | TempoPrecompileError::TIP403RegistryError(_)
+            | TempoPrecompileError::FeeManagerError(_)
+            | TempoPrecompileError::TIPFeeAMMError(_)
+            | TempoPrecompileError::NonceError(_)
+            | TempoPrecompileError::Panic(_)
+            | TempoPrecompileError::StorageDeltaUnderflow(_)
+            | TempoPrecompileError::ValidatorConfigError(_)
+            | TempoPrecompileError::ValidatorConfigV2Error(_)
+            | TempoPrecompileError::AccountKeychainError(_)
+            | TempoPrecompileError::SignatureVerifierError(_)
+            | TempoPrecompileError::ReceivePolicyGuardError(_)
+            | TempoPrecompileError::StorageCreditsError(_)
+            | TempoPrecompileError::CurrentCommitteeError(_)
+            | TempoPrecompileError::ZoneFactoryError(_)
+            | TempoPrecompileError::OutOfGas
+            | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
         }
     }
 }
@@ -171,7 +201,7 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::EvmError(_) | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::Database(_) | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -181,7 +211,7 @@ impl TempoPrecompileError {
     pub fn is_system_error(&self) -> bool {
         match self {
             Self::OutOfGas
-            | Self::EvmError(_)
+            | Self::Database(_)
             | Self::Fatal(_)
             | Self::Panic(_)
             | Self::StorageDeltaUnderflow(_) => true,
@@ -265,8 +295,8 @@ impl TempoPrecompileError {
             Self::OutOfGas => {
                 return Err(PrecompileHalt::OutOfGas.into());
             }
-            Self::EvmError(code) => {
-                return Err(format!("EVM2 database error {code:?}").into());
+            Self::Database(error) => {
+                return Err(PrecompileError::Database(error));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -420,12 +450,13 @@ mod tests {
     #[test]
     fn evm2_state_errors_match_storage_load_semantics() {
         assert_eq!(
-            TempoPrecompileError::from(ErrorCode::COLD_LOAD_SKIPPED),
+            TempoPrecompileError::from(LoadError::ColdLoadSkipped),
             TempoPrecompileError::OutOfGas
         );
+        let error = DatabaseError::new(core::fmt::Error, false);
         assert_eq!(
-            TempoPrecompileError::from(ErrorCode::BAL_NOT_COVERED),
-            TempoPrecompileError::EvmError(ErrorCode::BAL_NOT_COVERED)
+            TempoPrecompileError::from(LoadError::Database(error.clone())),
+            TempoPrecompileError::Database(error)
         );
     }
 

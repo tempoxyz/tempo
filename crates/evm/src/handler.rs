@@ -31,7 +31,9 @@ use evm2::{
 };
 use std::cmp::Ordering;
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-use tempo_contracts::precompiles::IAccountKeychain::SignatureType as PrecompileSignatureType;
+use tempo_contracts::precompiles::{
+    IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError,
+};
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
@@ -670,8 +672,8 @@ pub(super) struct KeychainState {
 
 fn keychain_error(error: TempoPrecompileError) -> HandlerError {
     match error {
-        TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-        error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+        TempoPrecompileError::Database(error) => HandlerError::Database(error),
+        TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
         error => invalid(TempoInvalidTransaction::KeychainValidationFailed {
             reason: format!("{error:?}"),
         }),
@@ -950,8 +952,8 @@ fn apply_key_authorization(
         }
         Err(error) => {
             return Err(match error {
-                TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+                TempoPrecompileError::Database(error) => HandlerError::Database(error),
+                TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
                 error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
                     reason: error.to_string(),
                 }),
@@ -968,18 +970,13 @@ fn apply_key_authorization(
     if state.same_tx_authorization {
         StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut keychain = AccountKeychain::new();
-            keychain
-                .set_transaction_key(authorization.key_id)
-                .map_err(|error| match error {
-                    TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                    error => HandlerError::external(error),
-                })?;
+            keychain.set_transaction_key(authorization.key_id)?;
             if !fee.collected.is_zero() {
                 keychain
                     .authorize_transfer(fee.fee_payer, fee.fee_token, fee.collected)
                     .map_err(|error| match error {
-                        TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                        error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+                        TempoPrecompileError::Database(error) => HandlerError::Database(error),
+                        TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
                         error => invalid(FeePaymentError::Other(error.to_string())),
                     })?;
             }
@@ -1013,16 +1010,13 @@ fn apply_one_authorization(
     let Ok(authority) = authorization.recover_authority() else {
         return Ok(None);
     };
-    let mut account = host
-        .state_mut()
-        .account(&authority, false)
-        .map_err(HandlerError::Fatal)?;
+    let mut account = host.state_mut().account(&authority)?;
     account.warm();
     // Historically, the sender was touched before authorization processing, making even an
     // initially absent sender eligible for the pre-T1 refund when authorizing itself.
     let refund_eligible = account.exists() || account.is_touched();
     let nonce = account.nonce();
-    let code = account.load_code().map_err(HandlerError::Fatal)?;
+    let code = account.load_code()?;
     let delegated_now = !code.is_empty();
     if delegated_now && !code.is_eip7702() {
         return Ok(None);
@@ -1030,10 +1024,7 @@ fn apply_one_authorization(
     if authorization.nonce != nonce {
         return Ok(None);
     }
-    let delegated_before_tx = account
-        .original_code()
-        .map_err(HandlerError::Fatal)?
-        .is_eip7702();
+    let delegated_before_tx = account.original_code()?.is_eip7702();
     let clearing = authorization.address.is_zero();
     account.set_delegation(authorization.address);
     Ok(Some(AppliedAuthorization {
@@ -1134,9 +1125,8 @@ fn prevalidate_call_scopes(
             gas.set_remaining(0);
             (InstrStop::PrecompileOOG, Default::default())
         }
-        Err(PrecompileError::Fatal(error)) => {
-            return Err(HandlerError::External(error));
-        }
+        Err(PrecompileError::Database(error)) => return Err(HandlerError::Database(error)),
+        Err(PrecompileError::Fatal(error)) => return Err(HandlerError::Fatal(error)),
         Ok(_) => unreachable!("Tempo precompile errors cannot produce success"),
     };
     Ok(Some(MessageResult::<TempoEvmTypes> {
@@ -1157,12 +1147,9 @@ fn apply_nonce(
     let spec = host.config_spec_id();
     let eip3607 = host.feature(EvmFeatures::EIP3607);
     let nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
-    let mut account = host
-        .state_mut()
-        .account(&caller, false)
-        .map_err(HandlerError::Fatal)?;
+    let mut account = host.state_mut().account(&caller)?;
     if eip3607 && account.code_hash() != KECCAK256_EMPTY {
-        let code = account.load_code().map_err(HandlerError::Fatal)?;
+        let code = account.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -1213,48 +1200,38 @@ fn apply_nonce(
         return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut nonces = NonceManager::new();
             let previous_pointer = if let Some(index) = aa.expiring_nonce_idx() {
-                let pointer = nonces.expiring_nonce_ring_ptr.read().map_err(|error| {
-                    invalid(TempoInvalidTransaction::NonceManagerError(
-                        error.to_string(),
-                    ))
-                })?;
+                let pointer = nonces.expiring_nonce_ring_ptr.read().map_err(nonce_error)?;
                 nonces
                     .expiring_nonce_ring_ptr
                     .write((pointer + index as u32) % capacity)
-                    .map_err(|error| {
-                        invalid(TempoInvalidTransaction::NonceManagerError(
-                            error.to_string(),
-                        ))
-                    })?;
+                    .map_err(nonce_error)?;
                 Some(pointer)
             } else {
                 None
             };
             nonces
                 .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                .map_err(|error| {
-                    if valid_before <= timestamp {
-                        invalid(TempoInvalidTransaction::NonceManagerError(format!(
-                            "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
-                        )))
-                    } else if valid_before > timestamp.saturating_add(max_expiry_secs) {
+                .map_err(|error| match error {
+                    TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
+                    TempoPrecompileError::NonceError(NonceError::InvalidExpiringNonceExpiry(_)) => {
                         let max_allowed = timestamp.saturating_add(max_expiry_secs);
-                        invalid(TempoInvalidTransaction::NonceManagerError(format!(
-                            "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
-                        )))
-                    } else {
-                        invalid(TempoInvalidTransaction::NonceManagerError(error.to_string()))
+                        if valid_before <= timestamp {
+                            invalid(TempoInvalidTransaction::NonceManagerError(format!(
+                                "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
+                            )))
+                        } else {
+                            invalid(TempoInvalidTransaction::NonceManagerError(format!(
+                                "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
+                            )))
+                        }
                     }
+                    error => nonce_error(error),
                 })?;
             if let Some(pointer) = previous_pointer {
                 nonces
                     .expiring_nonce_ring_ptr
                     .write(pointer)
-                    .map_err(|error| {
-                        invalid(TempoInvalidTransaction::NonceManagerError(
-                            error.to_string(),
-                        ))
-                    })?;
+                    .map_err(nonce_error)?;
             }
             Ok::<_, HandlerError>(protocol_nonce)
         });
@@ -1269,11 +1246,7 @@ fn apply_nonce(
                     account: caller,
                     nonceKey: tx.nonce_key,
                 })
-                .map_err(|error| {
-                    invalid(TempoInvalidTransaction::NonceManagerError(
-                        error.to_string(),
-                    ))
-                })?;
+                .map_err(nonce_error)?;
             match tx.nonce.cmp(&state) {
                 Ordering::Less | Ordering::Greater => {
                     return Err(HandlerError::InvalidNonce {
@@ -1286,11 +1259,7 @@ fn apply_nonce(
         }
         nonces
             .increment_nonce(caller, tx.nonce_key)
-            .map_err(|error| {
-                invalid(TempoInvalidTransaction::NonceManagerError(
-                    error.to_string(),
-                ))
-            })?;
+            .map_err(nonce_error)?;
         Ok::<_, HandlerError>(protocol_nonce)
     })
 }
@@ -1351,12 +1320,7 @@ fn execute_batch(
             host.state_mut().prewarm(&address);
         }
         let mut gas = GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir);
-        let mut result = if call.to.is_create()
-            && !host
-                .state_mut()
-                .account(&caller, false)
-                .map_err(HandlerError::Fatal)?
-                .bump_nonce()
+        let mut result = if call.to.is_create() && !host.state_mut().account(&caller)?.bump_nonce()
         {
             // An exhausted creator nonce returns successfully without executing initcode
             // or consuming execution gas. Subsequent batch calls still execute.
@@ -1375,7 +1339,7 @@ fn execute_batch(
                 call.value,
                 &mut gas,
             )?;
-            execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir)
+            execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir)?
         };
         // Check if call succeeded
         if !result.is_success() {
@@ -1383,10 +1347,7 @@ fn execute_batch(
             host.state_mut().rollback(checkpoint, features);
             if burn_create_nonce_on_failure && calls.first().is_some_and(|call| call.to.is_create())
             {
-                host.state_mut()
-                    .account(&caller, false)
-                    .map_err(HandlerError::Fatal)?
-                    .bump_nonce();
+                host.state_mut().account(&caller)?.bump_nonce();
             }
             let restored_reservoir = result.gas.reservoir().saturating_add_signed(state_gas);
             result.gas =
@@ -1558,8 +1519,7 @@ fn handle_aa(
         && request
             .host
             .state_mut()
-            .account_info_untracked(&caller)
-            .map_err(HandlerError::Fatal)?
+            .account_info_untracked(&caller)?
             .is_none_or(|account| account.nonce == 0)
     {
         intrinsic = intrinsic.saturating_add(u64::from(
@@ -1754,3 +1714,12 @@ fn translate_allowed_calls(authorization: &SignedKeyAuthorization) -> Vec<Precom
 
 #[cfg(test)]
 mod tests;
+
+fn nonce_error(error: TempoPrecompileError) -> HandlerError {
+    match error {
+        TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
+        error => invalid(TempoInvalidTransaction::NonceManagerError(
+            error.to_string(),
+        )),
+    }
+}

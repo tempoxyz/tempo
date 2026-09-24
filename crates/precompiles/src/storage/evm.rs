@@ -136,12 +136,12 @@ where
         key: U256,
         skip_cold_load: bool,
     ) -> Result<SLoad, TempoPrecompileError> {
-        self.evm.state_mut().account(&address, false)?.warm();
+        self.evm.state_mut().account(&address)?.warm();
         let mut slot = self
             .evm
             .state_mut()
             .storage(&address)
-            .into_slot(key, skip_cold_load)?;
+            .into_slot_with_skip(key, skip_cold_load)?;
         let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
         Ok(SLoad {
             value: slot.current(),
@@ -159,12 +159,12 @@ where
         value: U256,
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
-        self.evm.state_mut().account(&address, false)?.warm();
+        self.evm.state_mut().account(&address)?.warm();
         let mut slot = self
             .evm
             .state_mut()
             .storage(&address)
-            .into_slot(key, skip_cold_load)?;
+            .into_slot_with_skip(key, skip_cold_load)?;
         let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
         let (original_value, present_value) = slot.write(value);
         Ok(SStore {
@@ -365,7 +365,7 @@ where
         self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
 
         let was_empty = {
-            let mut account = self.evm.state_mut().account(&address, false)?;
+            let mut account = self.evm.state_mut().account(&address)?;
             let was_empty = account.get().is_none_or(AccountInfo::is_empty);
             account.set_code_slow(code);
             was_empty
@@ -406,7 +406,7 @@ where
         let mut account = self
             .evm
             .state_mut()
-            .account(&address, insufficient_gas_for_cold_load)?;
+            .account_with_skip(&address, insufficient_gas_for_cold_load)?;
         let is_cold = self.version.feature(EvmFeatures::EIP2929) && account.warm();
 
         if !self.spec.is_t4() {
@@ -827,7 +827,7 @@ mod tests {
             let mut account = self
                 .evm
                 .state_mut()
-                .account(&address, false)
+                .account(&address)
                 .map_err(|code| eyre::eyre!("failed to load account: {code:?}"))?;
             Ok(account
                 .load_code()

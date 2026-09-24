@@ -21,7 +21,7 @@ use tempo_contracts::precompiles::TIPFeeAMMError;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
-    error::{Result as TempoResult, TempoPrecompileError},
+    error::TempoPrecompileError,
     storage::{FromWord, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
     tip20::TIP20Error,
@@ -240,7 +240,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
         settle_storage_credit_refunds(host, &mut gas.result)?;
         let gas_price = u128::try_from(gas.gas_price)
-            .map_err(|_| HandlerError::External("effective gas price does not fit u128".into()))?;
+            .map_err(|_| HandlerError::Fatal("effective gas price does not fit u128".into()))?;
         let gas_limit = gas.gas_limit;
         let mut result = finalize_gas(host, gas)?;
         if !host.feature(EvmFeatures::FEE_CHARGE) {
@@ -250,7 +250,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let collected = calc_gas_balance_spending(gas_limit, gas_price);
         let refund = collected
             .checked_sub(actual_spending)
-            .ok_or_else(|| HandlerError::External("actual fee exceeds upfront fee".into()))?;
+            .ok_or_else(|| HandlerError::Fatal("actual fee exceeds upfront fee".into()))?;
 
         if collected.is_zero() && !actual_spending.is_zero() {
             return Ok(result);
@@ -260,21 +260,21 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             .fee_payer()
             .map_err(|_| invalid(TempoInvalidTransaction::InvalidFeePayerSignature))?;
         let fee_token = host.ext().resolved_fee_token.ok_or_else(|| {
-            HandlerError::External("fee token was not resolved before settlement".into())
+            HandlerError::Fatal("fee token was not resolved before settlement".into())
         })?;
         let fee_manager = host.ext().fee_manager.clone();
         let beneficiary = host.block().beneficiary;
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            map_protocol_result(fee_manager.collect_fee_post_tx(
+            fee_manager.collect_fee_post_tx(
                 ProtocolFeeContext { host },
                 fee_payer,
                 actual_spending,
                 refund,
                 fee_token,
                 beneficiary,
-            ))?
+            )?
         };
         result.ext.validator_fee = validator_fee;
         Ok(result)
@@ -293,7 +293,7 @@ impl TempoHandlerHooks {
             .fee_payer()
             .map_err(|_| invalid(TempoInvalidTransaction::InvalidFeePayerSignature))?;
         let base_fee = u64::try_from(host.block().basefee)
-            .map_err(|_| HandlerError::External("block base fee does not fit u64".into()))?;
+            .map_err(|_| HandlerError::Fatal("block base fee does not fit u64".into()))?;
         let gas_price = envelope.evm_tx().effective_gas_price(Some(base_fee));
         let (collected, max_fee) = if host.feature(EvmFeatures::FEE_CHARGE) {
             (
@@ -308,18 +308,14 @@ impl TempoHandlerHooks {
         };
         let spec = host.config_spec_id();
 
-        map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-            host,
-            || {
-                AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
-                TIP20ChannelReserve::new()
-                    .set_channel_open_context_hash(envelope.channel_open_context_hash())
-            },
-        ))?;
+        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+            AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
+            TIP20ChannelReserve::new()
+                .set_channel_open_context_hash(envelope.channel_open_context_hash())
+        })?;
 
         let fee_manager = host.ext().fee_manager.clone();
-        let fee_token =
-            map_protocol_result(fee_manager.get_fee_token(host, envelope, fee_payer, spec))?;
+        let fee_token = fee_manager.get_fee_token(host, envelope, fee_payer, spec)?;
         host.ext_mut().resolved_fee_token = Some(fee_token);
         if !fee_token.is_tip20() {
             return Err(invalid(TempoInvalidTransaction::FeeTokenNotTip20 {
@@ -329,12 +325,8 @@ impl TempoHandlerHooks {
         if !max_fee.is_zero() {
             fee_manager.validate_fee_token(host, fee_token, spec)?;
         }
-        let balance = map_protocol_result(host.get_token_balance(
-            fee_token,
-            fee_payer,
-            spec,
-            StorageActions::disabled(),
-        ))?;
+        let balance =
+            host.get_token_balance(fee_token, fee_payer, spec, StorageActions::disabled())?;
         if balance < max_fee {
             return Err(invalid(FeePaymentError::InsufficientFeeTokenBalance {
                 fee: max_fee,
@@ -390,8 +382,8 @@ impl TempoHandlerHooks {
                         address: context.fee_token,
                     })
                 }
-                TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+                TempoPrecompileError::Database(error) => HandlerError::Database(error),
+                TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
                 error => invalid(FeePaymentError::Other(error.to_string())),
             });
         }
@@ -412,14 +404,6 @@ pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError
     HandlerError::external(error.into())
 }
 
-fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(TempoPrecompileError::EvmError(code)) => Err(HandlerError::Fatal(code)),
-        Err(error) => Err(HandlerError::external(error)),
-    }
-}
-
 fn settle_storage_credit_refunds(
     host: &mut Evm<'_, TempoEvmTypes>,
     result: &mut evm2::interpreter::MessageResult<TempoEvmTypes>,
@@ -435,33 +419,30 @@ fn settle_storage_credit_refunds(
         return Ok(());
     }
 
-    let settled = map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-        host,
-        || {
-            let mut storage = StorageCtx;
-            let mut settled = 0i64;
-            for (key, word) in slots {
-                let state = TransientState::try_from(word)?;
-                if state.pending_refunds == 0 {
-                    continue;
-                }
-
-                let old_word = storage.sload(STORAGE_CREDITS_ADDRESS, key)?;
-                let mut balance = u64::from_word(old_word)?;
-                let credits = state.pending_refunds.min(balance);
-                if credits == 0 {
-                    continue;
-                }
-
-                balance -= credits;
-                settled = settled.saturating_add(credits as i64);
-                let new_word = U256::from(balance);
-                debug_assert_ne!(new_word, old_word);
-                storage.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
+    let settled = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+        let mut storage = StorageCtx;
+        let mut settled = 0i64;
+        for (key, word) in slots {
+            let state = TransientState::try_from(word)?;
+            if state.pending_refunds == 0 {
+                continue;
             }
-            Ok(settled)
-        },
-    ))?;
+
+            let old_word = storage.sload(STORAGE_CREDITS_ADDRESS, key)?;
+            let mut balance = u64::from_word(old_word)?;
+            let credits = state.pending_refunds.min(balance);
+            if credits == 0 {
+                continue;
+            }
+
+            balance -= credits;
+            settled = settled.saturating_add(credits as i64);
+            let new_word = U256::from(balance);
+            debug_assert_ne!(new_word, old_word);
+            storage.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
+        }
+        Ok::<_, TempoPrecompileError>(settled)
+    })?;
     result
         .gas
         .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));

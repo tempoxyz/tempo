@@ -213,10 +213,6 @@ impl BestTransactionsPrewarming {
                 return None;
             }
 
-            if result.result.error_code.is_some() {
-                evm.ext().actions.clear();
-                return None;
-            }
             let actions = evm.ext().actions.take()?;
             let expiring_nonce = tx
                 .transaction

@@ -17,6 +17,7 @@ use reth_chainspec::EthChainSpec as _;
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
     BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
+    execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::EvmState;
@@ -222,11 +223,7 @@ impl<'a> TempoBlockExecutor<'a> {
     ) -> Result<(), BlockExecutionError> {
         let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
             Ok(info) => info,
-            Err(code) => {
-                return Err(BlockExecutionError::other(
-                    self.evm_mut().database_mut().error(code),
-                ));
-            }
+            Err(error) => return Err(map_database_error(error)),
         };
         if original
             .as_ref()
@@ -246,11 +243,7 @@ impl<'a> TempoBlockExecutor<'a> {
                 .storage_slot_untracked(&address, &slot)
             {
                 Ok(value) => value,
-                Err(code) => {
-                    return Err(BlockExecutionError::other(
-                        self.evm_mut().database_mut().error(code),
-                    ));
-                }
+                Err(error) => return Err(map_database_error(error)),
             };
             state.insert_storage(address, slot, original, value);
         }
@@ -269,11 +262,7 @@ impl<'a> TempoBlockExecutor<'a> {
             .account_info_untracked(&factory.address)
         {
             Ok(info) => info,
-            Err(code) => {
-                return Err(BlockExecutionError::other(
-                    self.evm_mut().database_mut().error(code),
-                ));
-            }
+            Err(error) => return Err(map_database_error(error)),
         };
         // Genesis allocations are authoritative, and the marker also records a completed
         // post-genesis installation.
@@ -309,11 +298,7 @@ impl<'a> TempoBlockExecutor<'a> {
                 .account_info_untracked(&destination)
             {
                 Ok(info) => info,
-                Err(code) => {
-                    return Err(BlockExecutionError::other(
-                        self.evm_mut().database_mut().error(code),
-                    ));
-                }
+                Err(error) => return Err(map_database_error(error)),
             };
             let current = original
                 .clone()
@@ -370,7 +355,7 @@ impl<'a> TempoBlockExecutor<'a> {
             .system_call(
                 SystemTx::new(CURRENT_COMMITTEE_ADDRESS, calldata).with_caller(Address::ZERO),
             )
-            .map_err(|err| BlockExecutionError::msg(err.to_string()))?
+            .map_err(map_handler_error)?
             .detach();
 
         if !result.result.status {

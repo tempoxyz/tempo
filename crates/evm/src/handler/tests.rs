@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoEvmExt,
-    TempoEvmTx, TempoFeeManager, tempo_tx_registry,
+    TempoEvmTx, TempoFeeManager, TempoPoolValidationError, TempoPoolValidationEvm,
+    tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2930::{AccessList, AccessListItem};
@@ -9,11 +10,12 @@ use alloy_primitives::{B256, Bytes, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use evm2::{
-    ExecutionConfig, SpecId,
-    evm::{InMemoryDB, precompile::NoPrecompiles},
+    DatabaseError, ExecutionConfig, SpecId,
+    bytecode::Bytecode,
+    evm::{DynDatabase, InMemoryDB, precompile::NoPrecompiles},
 };
 use proptest::prelude::*;
-use tempo_precompiles::{PATH_USD_ADDRESS, test_util::TIP20Setup};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, test_util::TIP20Setup};
 use tempo_primitives::{
     AASigned, TempoTransaction,
     subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
@@ -86,7 +88,7 @@ fn intrinsic_with_amsterdam(
 use alloy_consensus::{Signed, TxLegacy};
 use evm2::evm::AccountInfo;
 use std::sync::Arc;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIPFeeAMMError};
+use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP20Error, TIPFeeAMMError};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     storage::{ContractStorage, Handler, StorageActions},
@@ -171,7 +173,7 @@ fn collect_fee_pre_tx(evm: &mut crate::TempoEvm<'_>, tx: &TempoTxEnv) -> Handler
 }
 
 #[derive(Debug)]
-struct ValidatorTokenLookupFailsFeeManager;
+struct ValidatorTokenLookupFailsFeeManager(TempoPrecompileError);
 
 impl ProtocolFeeManager for ValidatorTokenLookupFailsFeeManager {
     fn get_fee_token(
@@ -189,9 +191,7 @@ impl ProtocolFeeManager for ValidatorTokenLookupFailsFeeManager {
         _host: &mut Evm<'_, TempoEvmTypes>,
         _beneficiary: Address,
     ) -> tempo_precompiles::error::Result<Address> {
-        Err(TempoPrecompileError::Fatal(
-            "injected validator token lookup failure".to_string(),
-        ))
+        Err(self.0.clone())
     }
 
     fn collect_fee_pre_tx(
@@ -489,7 +489,9 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_falls_back_when_pair_lookup_fa
     let fee = calc_gas_balance_spending(gas_limit, gas_price);
 
     let mut test = storage_evm(TempoHardfork::T5);
-    test.ext_mut().fee_manager = Arc::new(ValidatorTokenLookupFailsFeeManager);
+    test.ext_mut().fee_manager = Arc::new(ValidatorTokenLookupFailsFeeManager(
+        TempoPrecompileError::TIP20(TIP20Error::uninitialized()),
+    ));
 
     let user_token = StorageCtx::enter_evm_without_tip1060_accounting(&mut test, || {
         TIP20Setup::create("UserToken", "UTK", admin)
@@ -2013,10 +2015,7 @@ fn test_aa_create_protocol_nonce_overflow(spec: TempoHardfork) {
                 } else if overflow {
                     assert!(result.output.is_empty());
                 }
-                assert_eq!(
-                    evm.state_mut().account(&SIGNER, false).unwrap().nonce(),
-                    u64::MAX
-                );
+                assert_eq!(evm.state_mut().account(&SIGNER).unwrap().nonce(), u64::MAX);
                 let created = evm
                     .state_mut()
                     .account_info_untracked(&SIGNER.create(protocol_nonce))
@@ -4218,7 +4217,7 @@ mod keychain {
                 }
             }
             assert_eq!(
-                evm.state_mut().account(&user, false).unwrap().nonce(),
+                evm.state_mut().account(&user).unwrap().nonce(),
                 u64::from(!rejected),
             );
             StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
@@ -5096,4 +5095,169 @@ fn builds_evm_with_matching_tempo_spec_and_fee_rules() {
     assert!(!evm.version().features.contains(EvmFeatures::BALANCE_TOP_UP));
     assert!(evm.version().features.contains(EvmFeatures::FEE_CHARGE));
     assert_eq!(evm.version().gas_params[GasId::MaxRefundQuotient], 1);
+}
+
+struct FailingStorageDb {
+    address: Address,
+    successful_reads: usize,
+    error: DatabaseError,
+}
+
+impl DynDatabase for FailingStorageDb {
+    fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, DatabaseError> {
+        Ok(Some(AccountInfo::default().with_nonce(1)))
+    }
+
+    fn get_code_by_hash(&mut self, _hash: &B256) -> Result<Bytecode, DatabaseError> {
+        Ok(Bytecode::default())
+    }
+
+    fn get_storage(&mut self, address: &Address, _key: &U256) -> Result<U256, DatabaseError> {
+        if *address == self.address {
+            if self.successful_reads == 0 {
+                return Err(self.error.clone());
+            }
+            self.successful_reads -= 1;
+        }
+        Ok(U256::ZERO)
+    }
+
+    fn get_block_hash(&mut self, _number: &U256) -> Result<B256, DatabaseError> {
+        Ok(B256::ZERO)
+    }
+}
+
+fn injected_database_error(fatal: bool) -> DatabaseError {
+    DatabaseError::new(std::io::Error::other("injected database failure"), fatal)
+}
+
+#[test]
+fn nonce_database_failures_reach_handler_and_pool() {
+    for fatal in [false, true] {
+        for (nonce_key, index) in [
+            (U256::ONE, None),
+            (TEMPO_EXPIRING_NONCE_KEY, None),
+            (TEMPO_EXPIRING_NONCE_KEY, Some(1)),
+        ] {
+            let mut tx = aa_env(
+                TempoTransaction {
+                    chain_id: 1,
+                    nonce_key,
+                    valid_before: Some(20.try_into().unwrap()),
+                    gas_limit: 1_000_000,
+                    fee_token: Some(PATH_USD_ADDRESS),
+                    calls: vec![Call {
+                        to: TxKind::Call(Address::ZERO),
+                        value: U256::ZERO,
+                        input: Bytes::new(),
+                    }],
+                    ..Default::default()
+                },
+                secp256k1_signature(),
+            );
+            tx.set_expiring_nonce_idx(index);
+            let expected = injected_database_error(fatal);
+            // Fail each successive backing storage read, including loads needed by writes.
+            // Stop once every read has been covered and the nonce operation succeeds.
+            for nonce_check in [false, true] {
+                let mut reached_success = false;
+                for successful_reads in 0..16 {
+                    let mut evm = build_tempo_evm(
+                        TempoHardfork::T7,
+                        1,
+                        TempoBlockEnv::default(),
+                        FailingStorageDb {
+                            address: NONCE_PRECOMPILE_ADDRESS,
+                            successful_reads,
+                            error: expected.clone(),
+                        },
+                        NoPrecompiles::default(),
+                        TempoEvmExt::default(),
+                    );
+                    let mut version = *evm.version();
+                    version.features.set(EvmFeatures::NONCE_CHECK, nonce_check);
+                    evm.set_execution_config(
+                        ExecutionConfig::for_spec_and_version(TempoHardfork::T7, version),
+                        TempoHardfork::T7,
+                        tempo_tx_registry(SpecId::from(TempoHardfork::T7)),
+                        NoPrecompiles::default(),
+                    );
+                    match apply_nonce(&mut evm, &tx, tx.as_aa().unwrap()) {
+                        Err(HandlerError::Database(error)) => {
+                            assert_eq!(error, expected);
+                            assert_eq!(error.is_fatal(), fatal);
+                        }
+                        Ok(_) => {
+                            assert!(successful_reads > 0);
+                            reached_success = true;
+                            break;
+                        }
+                        result => panic!("expected database failure, got {result:?}"),
+                    }
+                }
+                assert!(reached_success, "nonce read sweep did not reach completion");
+            }
+
+            let mut evm = build_tempo_evm(
+                TempoHardfork::T7,
+                1,
+                TempoBlockEnv::default(),
+                FailingStorageDb {
+                    address: NONCE_PRECOMPILE_ADDRESS,
+                    successful_reads: 0,
+                    error: expected.clone(),
+                },
+                NoPrecompiles::default(),
+                TempoEvmExt::default(),
+            );
+            evm.configure_for_pool();
+            let error = evm
+                .validate_pool_transaction(&Recovered::new_unchecked(tx, SIGNER))
+                .unwrap_err();
+            match error {
+                TempoPoolValidationError::Fatal(error) if fatal => {
+                    assert_eq!(error.downcast_ref::<DatabaseError>(), Some(&expected));
+                }
+                TempoPoolValidationError::Invalid(HandlerError::Database(error)) if !fatal => {
+                    assert_eq!(error, expected);
+                }
+                error => panic!("unexpected pool classification: {error:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn fee_diagnostic_failure_preserves_insufficient_liquidity() {
+    for error in [
+        TempoPrecompileError::Database(injected_database_error(false)),
+        TempoPrecompileError::Database(injected_database_error(true)),
+        TempoPrecompileError::Fatal("injected validator token lookup failure".to_string()),
+    ] {
+        let mut evm = storage_evm(TempoHardfork::T5);
+        evm.ext_mut().fee_manager = Arc::new(ValidatorTokenLookupFailsFeeManager(error));
+        let result = TempoHandlerHooks::collect_fee(
+            &mut evm,
+            TempoFeeContext {
+                fee_payer: SIGNER,
+                fee_token: PATH_USD_ADDRESS,
+                collected: U256::ONE,
+            },
+            None,
+        );
+        let error = result.unwrap_err();
+        let Some(TempoInvalidTransaction::CollectFeePreTx(actual)) =
+            error.external_ref::<TempoInvalidTransaction>()
+        else {
+            panic!("expected fee validation error, got {error:?}");
+        };
+        assert_eq!(
+            *actual,
+            FeePaymentError::InsufficientAmmLiquidity {
+                user_token: None,
+                validator_token: None,
+                fee: U256::ONE,
+            },
+        );
+    }
 }

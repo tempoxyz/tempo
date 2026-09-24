@@ -9,6 +9,7 @@ use evm2::{
 };
 use reth_evm::{
     BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
+    execute::map_database_error,
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
@@ -172,9 +173,7 @@ impl TempoBlockExecutor<'_> {
         let mut state = PendingState::default();
 
         if commit_reads {
-            let original = db
-                .get_account(&sender)
-                .map_err(|code| BlockExecutionError::other(db.error(code)))?;
+            let original = db.get_account(&sender).map_err(map_database_error)?;
             state.insert_account(sender, original.clone(), original);
         }
 
@@ -186,9 +185,7 @@ impl TempoBlockExecutor<'_> {
                 }
 
                 if !inserted_account {
-                    let original = db
-                        .get_account(address)
-                        .map_err(|code| BlockExecutionError::other(db.error(code)))?;
+                    let original = db.get_account(address).map_err(map_database_error)?;
                     state.insert_account(*address, original.clone(), original);
                     inserted_account = true;
                 }
@@ -222,7 +219,7 @@ impl TempoBlockExecutor<'_> {
         let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
         let seen_expiry = db
             .get_storage(&NONCE_PRECOMPILE_ADDRESS, &seen_slot)
-            .map_err(|code| BlockExecutionError::other(db.error(code)))?;
+            .map_err(map_database_error)?;
         if !seen_expiry.is_zero() && seen_expiry > now {
             return Err(StorageActionReplayError::ActionConflict.into());
         }
@@ -233,12 +230,12 @@ impl TempoBlockExecutor<'_> {
         let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
         let old_hash = db
             .get_storage(&NONCE_PRECOMPILE_ADDRESS, &ring_slot)
-            .map_err(|code| BlockExecutionError::other(db.error(code)))?;
+            .map_err(map_database_error)?;
         if !old_hash.is_zero() {
             let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
             let old_expiry = db
                 .get_storage(&NONCE_PRECOMPILE_ADDRESS, &old_seen_slot)
-                .map_err(|code| BlockExecutionError::other(db.error(code)))?;
+                .map_err(map_database_error)?;
             if !old_expiry.is_zero() && old_expiry > now {
                 return Err(StorageActionReplayError::ActionConflict.into());
             }
@@ -561,7 +558,7 @@ impl ExpiringNonceReplayState {
                         &NONCE_PRECOMPILE_ADDRESS,
                         &NonceManager::new().expiring_nonce_ring_ptr.slot(),
                     )
-                    .map_err(|code| BlockExecutionError::other(db.error(code)))?;
+                    .map_err(map_database_error)?;
                 self.ring_ptr = Some(ptr);
                 ptr
             }

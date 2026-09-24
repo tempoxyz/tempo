@@ -12,8 +12,9 @@ use super::{CreditMode, StorageCredits, TransientState};
 use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
 use evm2::{
+    ExecutionError, HostError,
     evm::{SLoad, SStore},
-    interpreter::GasTracker,
+    interpreter::{GasTracker, InstrStop},
     version::{GasId, GasParams},
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
@@ -25,13 +26,15 @@ pub trait StorageCreditsErr: Sized {
     fn fatal_external() -> Self;
 }
 
-impl StorageCreditsErr for evm2::interpreter::InstrStop {
+impl StorageCreditsErr for HostError {
     fn out_of_gas() -> Self {
-        Self::OutOfGas
+        Self::Halt(InstrStop::OutOfGas)
     }
 
     fn fatal_external() -> Self {
-        Self::FatalExternalError
+        Self::Execution(ExecutionError::Fatal(
+            "invalid storage credits state".into(),
+        ))
     }
 }
 

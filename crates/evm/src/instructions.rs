@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, U256};
 use evm2::{
-    EvmFeatures,
+    EvmFeatures, HostError,
     evm::{SLoad, SStore},
     interpreter::{Gas, GasTracker, Host, InstrStop, InterpreterState, Result},
     version::{GasId, GasParams},
@@ -29,7 +29,7 @@ struct StorageCreditsContext<'a, 'state, 'host> {
 }
 
 impl StorageCreditsBackend for StorageCreditsContext<'_, '_, '_> {
-    type Error = InstrStop;
+    type Error = HostError;
 
     fn gas_params(&self) -> &GasParams {
         self.state.gas_params()
@@ -95,7 +95,8 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
     let state_load = cx
         .state
         .host()
-        .sstore(&destination, key, value, skip_cold_load)?;
+        .sstore(&destination, key, value, skip_cold_load)
+        .map_err(|error| cx.state.fail(error))?;
 
     if cx.state.host().config_spec_id().is_t7() {
         sstore_storage_credits(
@@ -106,7 +107,8 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
             destination,
             None,
             &state_load,
-        )?;
+        )
+        .map_err(|error| cx.state.fail(error))?;
     }
 
     cx.gas.spend(
@@ -134,8 +136,11 @@ mod tests {
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Bytes, Signature, TxKind};
     use evm2::{
+        ExecutionError,
         bytecode::Bytecode,
+        env::TxEnvExt,
         evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
+        interpreter::MessageExt,
     };
     use reth_execution_types::{BlockState, TransactionChanges, native_account};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -234,5 +239,40 @@ mod tests {
             native_account(account.original_info.as_ref().unwrap()),
             credit_account,
         );
+    }
+
+    #[test]
+    fn sstore_reports_invalid_storage_credit_state() {
+        let contract = Address::repeat_byte(0x22);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&contract, AccountInfo::default());
+        db.insert_account_info(&STORAGE_CREDITS_ADDRESS, AccountInfo::default());
+        db.insert_account_storage(
+            &STORAGE_CREDITS_ADDRESS,
+            &StorageCredits::slot(contract),
+            &U256::MAX,
+        );
+        let mut evm = build_tempo_evm(
+            TempoHardfork::T7,
+            1,
+            TempoBlockEnv::default(),
+            db,
+            NoPrecompiles::default(),
+            TempoEvmExt::default(),
+        );
+        let mut message = MessageExt {
+            destination: contract,
+            code_address: contract,
+            gas_limit: 1_000_000,
+            code: Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x55, 0x00])),
+            ..MessageExt::default()
+        };
+        let error = evm
+            .execute_message(&TxEnvExt::default(), &mut message)
+            .unwrap_err();
+        let ExecutionError::Fatal(error) = error else {
+            panic!("expected fatal error")
+        };
+        assert_eq!(error.to_string(), "invalid storage credits state");
     }
 }
