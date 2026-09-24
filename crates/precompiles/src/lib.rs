@@ -71,7 +71,7 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NATIVE_DEX_FUNDING_SOURCE_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    DEFAULT_FEE_TOKEN, DEX_FUNDING_SOURCE_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_FUNDER_ADDRESS,
@@ -258,10 +258,10 @@ pub fn extend_tempo_precompiles(
             Some(ZoneFactory::create_precompile(&env))
         } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t13() {
             Some(ZoneVerifier::create_precompile(&env))
-        } else if *address == NATIVE_DEX_FUNDING_SOURCE_ADDRESS && env.cfg.spec.is_t13() {
+        } else if *address == DEX_FUNDING_SOURCE_ADDRESS && env.cfg.spec.is_t13() {
             Some(
-                tip20_funder::native_dex::NativeDexFundingSource::new(
-                    NATIVE_DEX_FUNDING_SOURCE_ADDRESS,
+                tip20_funder::native_dex::DexFundingSource::new(
+                    DEX_FUNDING_SOURCE_ADDRESS,
                     TIP20_FUNDER_ADDRESS,
                 )
                 .create_precompile(&env),
@@ -321,10 +321,10 @@ macro_rules! tempo_precompile {
     }};
 }
 
-impl tip20_funder::native_dex::NativeDexFundingSource {
+impl tip20_funder::native_dex::DexFundingSource {
     /// Builds an unregistered source; deployment configuration supplies its addresses and parity assets.
     pub fn create_precompile(self, env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("NativeDexFundingSource", env: env, |input| { self.clone() })
+        tempo_precompile!("DexFundingSource", env: env, |input| { self.clone() })
     }
 }
 

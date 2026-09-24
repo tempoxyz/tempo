@@ -17,12 +17,12 @@ use tempo_contracts::precompiles::{IFundingSource, ITIP20, ITIP20Funder, TIP20Fu
 
 /// Funding through initialized, unpaused tokens with matching currency metadata.
 #[derive(Clone)]
-pub struct NativeDexFundingSource {
+pub struct DexFundingSource {
     address: Address,
     funder: Address,
 }
 
-impl NativeDexFundingSource {
+impl DexFundingSource {
     pub fn new(address: Address, funder: Address) -> Self {
         Self { address, funder }
     }
@@ -267,7 +267,7 @@ fn executable_output(
     Ok(low)
 }
 
-impl Precompile for NativeDexFundingSource {
+impl Precompile for DexFundingSource {
     fn call(&mut self, calldata: &[u8], caller: Address) -> PrecompileResult {
         if let Some(error) = charge_input_cost(&mut StorageCtx, calldata) {
             return error;

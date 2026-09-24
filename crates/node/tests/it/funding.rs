@@ -26,7 +26,7 @@ use tempo_primitives::{
 };
 
 const FUNDER: Address = tempo_contracts::precompiles::TIP20_FUNDER_ADDRESS;
-const SOURCE: Address = tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS;
+const SOURCE: Address = tempo_contracts::precompiles::DEX_FUNDING_SOURCE_ADDRESS;
 const UNIT: u64 = 1_000_000;
 
 fn signed(tx: TempoTransaction, owner: &PrivateKeySigner, sponsor: &PrivateKeySigner) -> Vec<u8> {
