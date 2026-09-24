@@ -1,13 +1,13 @@
-use crate::{TempoBlockEnv, TempoEvmExt, TempoEvmTypes, tempo_tx_registry};
+use crate::{TempoBlockEnv, TempoEvmTypes, tempo_tx_registry};
 use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
 use alloy_sol_types::{SolCall, SolError};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use evm2::{
-    Evm, EvmFeatures, ExecutionConfig, Inspector, SpecId,
+    EvmFeatures, ExecutionConfig, Inspector, SpecId,
     bytecode::Bytecode,
-    evm::{AccountInfo, InMemoryDB, SystemTx},
+    evm::{AccountInfo, DynDatabase, InMemoryDB, SystemTx},
     interpreter::{InstrStop, Interpreter, Message, MessageResult, op as opcode},
 };
 use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
@@ -36,7 +36,7 @@ use tempo_primitives::{
     },
 };
 
-use crate::{ProtocolFeeManager, TempoEvm, TempoFeeManager, TempoInvalidTransaction, TempoTxEnv};
+use crate::{TempoEvm, TempoInvalidTransaction, TempoTxEnv};
 
 // ==================== Test Constants ====================
 
@@ -48,34 +48,7 @@ const IDENTITY_PRECOMPILE: Address = Address::new([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
 ]);
 
-trait TestCacheExt {
-    fn storage_ref(&self, address: Address, key: U256) -> Result<U256, core::convert::Infallible>;
-    fn basic_ref(
-        &self,
-        address: Address,
-    ) -> Result<Option<&AccountInfo>, core::convert::Infallible>;
-}
-
-impl<DB> TestCacheExt for evm2::evm::CacheDB<DB> {
-    fn storage_ref(&self, address: Address, key: U256) -> Result<U256, core::convert::Infallible> {
-        Ok(self
-            .cache
-            .storage
-            .get(&address)
-            .and_then(|storage| storage.slots.get(&key))
-            .copied()
-            .unwrap_or_default())
-    }
-
-    fn basic_ref(
-        &self,
-        address: Address,
-    ) -> Result<Option<&AccountInfo>, core::convert::Infallible> {
-        Ok(self.cache.accounts.get(&address).and_then(Option::as_ref))
-    }
-}
-
-trait TestEvmExt {
+pub(super) trait TestEvmExt {
     fn transact_commit(
         &mut self,
         tx: TempoTxEnv,
@@ -106,26 +79,6 @@ impl TestEvmExt for TempoEvm<'_> {
         Ok(self
             .transact(&Recovered::new_unchecked(tx, signer))?
             .detach())
-    }
-}
-
-trait TestResultExt {
-    fn is_success(&self) -> bool;
-    fn output(&self) -> Option<&Bytes>;
-    fn logs(&self) -> &[alloy_primitives::Log];
-}
-
-impl TestResultExt for evm2::TxResult<TempoEvmTypes> {
-    fn is_success(&self) -> bool {
-        self.status
-    }
-
-    fn output(&self) -> Option<&Bytes> {
-        Some(&self.output)
-    }
-
-    fn logs(&self) -> &[alloy_primitives::Log] {
-        &self.logs
     }
 }
 
@@ -200,38 +153,33 @@ impl Inspector<TempoEvmTypes> for CountInspector {
 // ==================== Test Utility Functions ====================
 
 /// Create an empty EVM instance with default settings and no inspector.
-fn configured_evm(
+pub(super) fn configured_evm(
     spec: TempoHardfork,
     timestamp: u64,
     amsterdam: bool,
     database: InMemoryDB,
 ) -> TempoEvm<'static> {
-    let ext = TempoEvmExt::default();
-    let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-        spec,
-        ext.actions.clone(),
-        ext.non_creditable_slots.clone(),
-    );
+    use reth_evm::BlockExecutorFactory;
+
     let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, amsterdam);
     version.chain_id = 1;
     version.features.remove(EvmFeatures::BALANCE_CHECK);
     version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-    Evm::new_with_execution_config_and_ext(
-        ExecutionConfig::for_spec_and_version(spec, version),
-        spec,
-        TempoBlockEnv {
-            timestamp: U256::from(timestamp),
-            gas_limit: U256::from(30_000_000),
-            ..Default::default()
-        },
-        tempo_tx_registry(SpecId::OSAKA),
+    crate::TempoEvmConfig::moderato().evm_with_env(
         database,
-        precompiles,
-        ext,
+        crate::TempoEvmEnv {
+            spec,
+            version,
+            block: TempoBlockEnv {
+                timestamp: U256::from(timestamp),
+                gas_limit: U256::from(30_000_000),
+                ..Default::default()
+            },
+        },
     )
 }
 
-fn create_evm() -> TempoEvm<'static> {
+pub(super) fn create_evm() -> TempoEvm<'static> {
     configured_evm(TempoHardfork::Genesis, 0, false, InMemoryDB::default())
 }
 
@@ -349,7 +297,7 @@ fn create_evm_with_inspector<I: Inspector<TempoEvmTypes> + 'static>(
     evm
 }
 
-fn legacy_tx_env(
+pub(super) fn legacy_tx_env(
     caller: Address,
     nonce: u64,
     to: TxKind,
@@ -648,7 +596,7 @@ fn test_set_block_and_replay() {
     assert!(result.is_ok());
 
     let exec_result = result.unwrap();
-    assert!(exec_result.result.is_success());
+    assert!(exec_result.result.status);
 }
 
 #[test_case::test_case(TempoHardfork::T1)]
@@ -692,11 +640,8 @@ fn test_access_millis_timestamp(spec: TempoHardfork) -> eyre::Result<()> {
     let result = tempo_evm.transact_commit(tx_env)?;
 
     if !spec.is_t1c() {
-        assert!(result.is_success());
-        assert_eq!(
-            U256::from_be_slice(result.output().unwrap()),
-            U256::from(1000100)
-        );
+        assert!(result.status);
+        assert_eq!(U256::from_be_slice(&result.output), U256::from(1000100));
     } else {
         assert_eq!(result.stop, InstrStop::OpcodeNotFound);
     }
@@ -799,12 +744,12 @@ fn test_inspector_calls() -> eyre::Result<()> {
         .transact_detach(tx_env)
         .expect("execution should succeed");
 
-    assert!(result.result.is_success());
+    assert!(result.result.status);
 
     // Verify that a SupplyCapUpdate log was emitted by the TIP20 precompile
-    assert_eq!(result.result.logs().len(), 3);
+    assert_eq!(result.result.logs.len(), 3);
     // Log should be from TIP20_FACTORY
-    assert_eq!(result.result.logs()[0].address, PATH_USD_ADDRESS);
+    assert_eq!(result.result.logs[0].address, PATH_USD_ADDRESS);
 
     // Get the inspector and verify counts
     let inspector = evm
@@ -819,7 +764,7 @@ fn test_inspector_calls() -> eyre::Result<()> {
     assert_eq!(inspector.get_count(opcode::STOP), 1);
 
     // Verify all emitted logs were inspected
-    assert_eq!(inspector.log_count(), result.result.logs().len());
+    assert_eq!(inspector.log_count(), result.result.logs.len());
 
     // Verify call count (initial tx + CALL to PATH_USD)
     assert_eq!(inspector.call_count(), 2);
@@ -860,7 +805,7 @@ fn test_inspector_calls() -> eyre::Result<()> {
 
     // Execute the multi-call transaction with inspector
     let multi_result = multi_evm.transact_detach(tx_env)?;
-    assert!(multi_result.result.is_success(),);
+    assert!(multi_result.result.status,);
 
     // Verify inspector tracked all 3 calls
     let multi_inspector = multi_evm
@@ -923,7 +868,7 @@ fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
     assert_eq!(slot, U256::from(100_000));
 
     let result1 = evm.transact_commit(tx_env1)?;
-    assert!(result1.is_success());
+    assert!(result1.status);
     assert_eq!(result1.tx_gas_used(), 28_671);
 
     let spec = evm.config_spec_id();
@@ -950,7 +895,7 @@ fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
     let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
 
     let result2 = evm.transact_commit(tx_env2)?;
-    assert!(result2.is_success());
+    assert!(result2.status);
     assert_eq!(result2.tx_gas_used(), 31_286);
 
     let spec = evm.config_spec_id();
@@ -1000,7 +945,7 @@ fn test_tempo_tx() -> eyre::Result<()> {
 
     // Execute the transaction and commit state changes
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success());
+    assert!(result.status);
 
     // Test with KeychainSignature using key_authorization to provision the access key
     let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller);
@@ -1049,7 +994,7 @@ fn test_tempo_tx() -> eyre::Result<()> {
 
     // Execute the transaction with keychain signature and commit state changes
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success());
+    assert!(result.status);
 
     // Test a transaction with a failing call to TIP20 contract with wrong input
     let tx_fail = TxBuilder::new()
@@ -1061,7 +1006,7 @@ fn test_tempo_tx() -> eyre::Result<()> {
     let tx_env_fail = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx_fail), caller).into();
 
     let result_fail = evm.transact_detach(tx_env_fail)?;
-    assert!(!result_fail.result.is_success());
+    assert!(!result_fail.result.status);
 
     // Test 2D nonce transaction (nonce_key > 0)
     let nonce_key_2d = U256::from(42);
@@ -1082,13 +1027,13 @@ fn test_tempo_tx() -> eyre::Result<()> {
     );
 
     let result_2d = evm.transact_commit(tx_env_2d)?;
-    assert!(result_2d.is_success());
+    assert!(result_2d.status);
 
     // Verify 2D nonce was incremented
     let nonce_slot = NonceManager::new().nonces[caller][nonce_key_2d].slot();
     let stored_nonce = evm
-        .overlay_db()
-        .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
+        .overlay_db_mut()
+        .get_storage(&NONCE_PRECOMPILE_ADDRESS, &nonce_slot)
         .unwrap_or_default();
     assert_eq!(stored_nonce, U256::from(1));
 
@@ -1104,12 +1049,12 @@ fn test_tempo_tx() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx_2d_2), caller).into();
 
     let result_2d_2 = evm.transact_commit(tx_env_2d_2)?;
-    assert!(result_2d_2.is_success());
+    assert!(result_2d_2.status);
 
     // Verify nonce incremented again
     let stored_nonce_2 = evm
-        .overlay_db()
-        .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
+        .overlay_db_mut()
+        .get_storage(&NONCE_PRECOMPILE_ADDRESS, &nonce_slot)
         .unwrap_or_default();
     assert_eq!(stored_nonce_2, U256::from(2));
 
@@ -1155,7 +1100,7 @@ fn test_t3_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Resu
 
     let result = evm.transact_commit(tx_env)?;
     assert!(
-        !result.is_success(),
+        !result.status,
         "deny-all scope should now fail during paid execution"
     );
     assert!(
@@ -1351,7 +1296,7 @@ fn test_tempo_tx_time_window() -> eyre::Result<()> {
             Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
         let result = evm.transact_detach(tx_env)?;
-        assert!(result.result.is_success());
+        assert!(result.result.status);
     }
 
     // Test case 5: Transaction succeeds when within time window
@@ -1362,7 +1307,7 @@ fn test_tempo_tx_time_window() -> eyre::Result<()> {
             Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
         let result = evm.transact_detach(tx_env)?;
-        assert!(result.result.is_success());
+        assert!(result.result.status);
     }
 
     // Test case 6: Transaction fails when block_timestamp < valid_after in a window
@@ -1437,7 +1382,7 @@ fn test_tempo_tx_create_first_call() -> eyre::Result<()> {
     let mut evm = create_funded_evm(caller);
     let result = evm.transact_commit(tx_env)?;
 
-    assert!(result.is_success(), "CREATE as first call should succeed");
+    assert!(result.status, "CREATE as first call should succeed");
 
     Ok(())
 }
@@ -1666,7 +1611,7 @@ fn test_aa_tx_gas_baseline_identity_call() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success());
+    assert!(result.status);
 
     // With T1 TIP-1000: new account cost (250k) + base intrinsic (21k) + WebAuthn (~3.4k) + calldata
     let gas_used = result.tx_gas_used();
@@ -1712,7 +1657,7 @@ fn test_aa_tx_gas_sstore_new_slot() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "SSTORE transaction should succeed");
+    assert!(result.status, "SSTORE transaction should succeed");
 
     // With TIP-1000: new account (250k) + SSTORE to new slot (250k) + base costs
     let gas_used = result.tx_gas_used();
@@ -1761,10 +1706,7 @@ fn test_aa_tx_gas_sstore_warm_slot() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(
-        result.is_success(),
-        "SSTORE to existing slot should succeed"
-    );
+    assert!(result.status, "SSTORE to existing slot should succeed");
 
     // SSTORE to existing non-zero slot (reset) doesn't trigger the 250k new slot cost
     // But still has new account cost (250k) + cold SLOAD (2100) + warm SSTORE reset (~2900)
@@ -1811,10 +1753,7 @@ fn test_aa_tx_gas_multiple_sstores() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(
-        result.is_success(),
-        "Multiple SSTORE transaction should succeed"
-    );
+    assert!(result.status, "Multiple SSTORE transaction should succeed");
 
     // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
     let gas_used = result.tx_gas_used();
@@ -1840,15 +1779,15 @@ fn seed_storage_credit_balance(evm: &mut TempoEvm<'static>, owner: Address, bala
     );
 }
 
-fn storage_credit_word(evm: &TempoEvm<'static>, owner: Address) -> U256 {
+fn storage_credit_word(evm: &mut TempoEvm<'static>, owner: Address) -> U256 {
     let slot = StorageCredits::slot(owner);
-    evm.overlay_db()
-        .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
+    evm.overlay_db_mut()
+        .get_storage(&STORAGE_CREDITS_ADDRESS, &slot)
         .unwrap()
 }
 
 /// Read back the TIP-1060 storage credit balance stored for `owner` from the storage credits contract.
-fn storage_credit_balance(evm: &TempoEvm<'static>, owner: Address) -> u64 {
+fn storage_credit_balance(evm: &mut TempoEvm<'static>, owner: Address) -> u64 {
     u64::from_word(storage_credit_word(evm, owner)).unwrap()
 }
 
@@ -1965,7 +1904,7 @@ fn run_tx_on_tip1060_contract_with_setup(
     let signed_tx = key_pair.sign_tx(tx)?;
     let result = evm
         .transact_commit(Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into())?;
-    assert!(result.is_success(), "test transaction should succeed");
+    assert!(result.status, "test transaction should succeed");
 
     Ok((result.tx_gas_used(), evm))
 }
@@ -2008,7 +1947,7 @@ fn mint_storage_credits_with_clears(
     let signed_tx = key_pair.sign_tx(tx)?;
     let result = evm
         .transact_commit(Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into())?;
-    assert!(result.is_success(), "credit-minting prelude should succeed");
+    assert!(result.status, "credit-minting prelude should succeed");
     assert_eq!(
         storage_credit_balance(evm, contract),
         credits,
@@ -2149,15 +2088,15 @@ fn test_tip1060_refund_settlement_uses_pending_field_not_mode() -> eyre::Result<
             Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
         let result = evm.transact_commit(tx_env)?;
-        assert!(result.is_success());
+        assert!(result.status);
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             0,
             "settlement must not consume the transient mode field as storage credit balance in {mode:?} mode"
         );
         assert_eq!(
-            storage_credit_word(&evm, contract),
+            storage_credit_word(&mut evm, contract),
             U256::ZERO,
             "mode is transient and must not persist in the storage credit state word in {mode:?} mode"
         );
@@ -2204,7 +2143,7 @@ fn test_tip1060_set_mode_uses_transient_state_only() -> eyre::Result<()> {
 
     let result = evm.transact_commit(tx_env)?;
     assert!(
-        result.is_success(),
+        result.status,
         "setMode should not need the 250k TIP-1000 storage-creation charge"
     );
     assert!(
@@ -2213,19 +2152,19 @@ fn test_tip1060_set_mode_uses_transient_state_only() -> eyre::Result<()> {
     );
 
     assert_eq!(
-        storage_credit_balance(&evm, caller),
+        storage_credit_balance(&mut evm, caller),
         0,
         "setMode must not mint caller credits"
     );
     assert_eq!(
-        storage_credit_word(&evm, caller),
+        storage_credit_word(&mut evm, caller),
         U256::ZERO,
         "setMode must not create or update persistent caller state"
     );
 
     // Sentinel: setMode must not consume the precompile's own pre-seeded credit.
     assert_eq!(
-        storage_credit_balance(&evm, STORAGE_CREDITS_ADDRESS),
+        storage_credit_balance(&mut evm, STORAGE_CREDITS_ADDRESS),
         1,
         "storage-credits bookkeeping must not recursively consume its own storage credits"
     );
@@ -2266,13 +2205,13 @@ fn test_tip1060_sstore_clear_mints_storage_credit_without_legacy_refund() -> eyr
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "clear tx should succeed");
+    assert!(result.status, "clear tx should succeed");
     assert_eq!(
         result.refunded, 0,
         "TIP-1060 removes the legacy SSTORE clearing refund"
     );
     assert_eq!(
-        storage_credit_balance(&evm, contract),
+        storage_credit_balance(&mut evm, contract),
         1,
         "clearing a nonzero slot should mint one storage credit"
     );
@@ -2305,7 +2244,7 @@ fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
 
     for (case_id, (mode, expected_gas, expected_balance)) in cases.into_iter().enumerate() {
         let contract = Address::repeat_byte(0x60 + case_id as u8);
-        let (gas_used, evm) = run_tx_on_tip1060_contract(mode, contract, &create_clear_body)?;
+        let (gas_used, mut evm) = run_tx_on_tip1060_contract(mode, contract, &create_clear_body)?;
 
         assert!(
             gas_used >= noop_gas,
@@ -2318,7 +2257,7 @@ fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
         );
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_balance,
             "TIP-1060 post-tx storage credit balance should be exact in {mode:?} mode"
         );
@@ -2624,10 +2563,9 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
                     Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into(),
                 )?;
                 assert!(
-                    result.is_success(),
+                    result.status,
                     "{} / {} in {mode:?} should succeed",
-                    scenario.name,
-                    credit_case.name
+                    scenario.name, credit_case.name
                 );
 
                 assert_eq!(
@@ -2638,14 +2576,14 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
                     credit_case.name
                 );
                 assert_eq!(
-                    storage_credit_balance(&evm, contract),
+                    storage_credit_balance(&mut evm, contract),
                     expectation.expected_credits,
                     "{} / {} final persistent credit balance should stay exact in {mode:?}",
                     scenario.name,
                     credit_case.name
                 );
                 assert_eq!(
-                    evm.overlay_db().storage_ref(contract, U256::ZERO)?,
+                    evm.overlay_db_mut().get_storage(&contract, &U256::ZERO)?,
                     U256::from(scenario.expected_slot),
                     "{} / {} should leave the expected slot value in {mode:?}",
                     scenario.name,
@@ -2703,7 +2641,7 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
 
     // tx#1: deploy; constructor pays the one-time bootstrap creation.
     let deploy = evm.transact_commit(legacy_tx_env(caller, 0, TxKind::Create, init, GAS_LIMIT))?;
-    assert!(deploy.is_success(), "deploy reverted/halted: {deploy:?}");
+    assert!(deploy.status, "deploy reverted/halted: {deploy:?}");
     let contract = deploy
         .created_address
         .expect("CREATE should yield an address");
@@ -2718,8 +2656,8 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     ))?;
 
     let balance = evm
-        .overlay_db()
-        .storage_ref(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(contract))?
+        .overlay_db_mut()
+        .get_storage(&STORAGE_CREDITS_ADDRESS, &StorageCredits::slot(contract))?
         .as_limbs()[0];
     let slots = evm
         .overlay_db()
@@ -2736,7 +2674,7 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
         .unwrap_or(0);
     // Each Preserve recreation costs the full 245k creditable portion, so the churn loop
     // exhausts gas and reverts before any churned credit can subsidize a Direct create.
-    assert!(!call.is_success());
+    assert!(!call.status);
     assert_eq!(slots, 1);
     assert_eq!(balance, 0);
     Ok(())
@@ -2783,7 +2721,7 @@ fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> 
     let result = evm.transact_commit(
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx)?), caller).into(),
     )?;
-    assert!(result.is_success(), "preserve churn tx should succeed");
+    assert!(result.status, "preserve churn tx should succeed");
     assert_eq!(
         result.tx_gas_used(),
         1_027_757,
@@ -2791,7 +2729,7 @@ fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> 
     );
 
     assert_eq!(
-        storage_credit_balance(&evm, contract),
+        storage_credit_balance(&mut evm, contract),
         3,
         "each clear mints a credit and Preserve recreations pay 245k without consuming, so \
              three churn cycles accumulate three credits"
@@ -2835,23 +2773,25 @@ fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::
     let result = evm.transact_commit(
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx)?), caller).into(),
     )?;
-    assert!(result.is_success(), "direct reorder tx should succeed");
+    assert!(result.status, "direct reorder tx should succeed");
 
     // The fresh slot exists, the original slot is restored, and the credit balance nets to zero.
     assert_eq!(
-        evm.overlay_db()
-            .storage_ref(contract, U256::from(1))
+        evm.overlay_db_mut()
+            .get_storage(&contract, &U256::from(1))
             .unwrap(),
         U256::from(1),
         "the genuinely new slot must be created"
     );
     assert_eq!(
-        evm.overlay_db().storage_ref(contract, U256::ZERO).unwrap(),
+        evm.overlay_db_mut()
+            .get_storage(&contract, &U256::ZERO)
+            .unwrap(),
         U256::from(2),
         "the churned slot must be restored"
     );
     assert_eq!(
-        storage_credit_balance(&evm, contract),
+        storage_credit_balance(&mut evm, contract),
         0,
         "balance must net to zero after mint + Direct spend + dirty-restore repay"
     );
@@ -2903,12 +2843,9 @@ fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
         let signed_tx1 = key_pair.sign_tx(tx1)?;
         let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
         let result1 = evm.transact_commit(tx_env1)?;
-        assert!(
-            result1.is_success(),
-            "minting tx should succeed in {mode:?} mode"
-        );
+        assert!(result1.status, "minting tx should succeed in {mode:?} mode");
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_credit_tx1,
             "storage credit balance after the minting tx should be exact in {mode:?} mode"
         );
@@ -2923,7 +2860,7 @@ fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
         let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
         let result2 = evm.transact_commit(tx_env2)?;
         assert!(
-            result2.is_success(),
+            result2.status,
             "create-only tx should succeed in {mode:?} mode"
         );
 
@@ -2934,7 +2871,7 @@ fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
         );
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_credit_tx2,
             "storage credit balance after the create-only tx should be exact in {mode:?} mode"
         );
@@ -2990,9 +2927,9 @@ fn test_tip1060_direct_budget_caps_credit_consumption() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(budgeted_tx)?), caller)
             .into(),
     )?;
-    assert!(budgeted_result.is_success());
+    assert!(budgeted_result.status);
     assert_eq!(
-        storage_credit_balance(&evm, budgeted_contract),
+        storage_credit_balance(&mut evm, budgeted_contract),
         1,
         "budget 1 must consume exactly one of the two available credits"
     );
@@ -3006,9 +2943,9 @@ fn test_tip1060_direct_budget_caps_credit_consumption() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(unlimited_tx)?), caller)
             .into(),
     )?;
-    assert!(unlimited_result.is_success());
+    assert!(unlimited_result.status);
     assert_eq!(
-        storage_credit_balance(&evm, unlimited_contract),
+        storage_credit_balance(&mut evm, unlimited_contract),
         0,
         "setMode(Direct) has unlimited budget and must consume both available credits"
     );
@@ -3051,7 +2988,7 @@ fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
     store_gas(&mut bytecode, AFTER_CLEAR_GAS.1);
     bytecode.push(opcode::STOP);
 
-    let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+    let (_, mut evm) = run_tx_on_tip1060_contract_with_setup(
         CreditMode::Refund,
         contract,
         &bytecode,
@@ -3068,12 +3005,12 @@ fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
         },
     )?;
 
-    let word = |slot: u8| {
-        evm.overlay_db()
-            .storage_ref(contract, U256::from(slot))
+    let mut word = |slot: u8| {
+        evm.overlay_db_mut()
+            .get_storage(&contract, &U256::from(slot))
             .unwrap()
     };
-    let delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
+    let mut delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
 
     assert!(
         delta(EXHAUSTED_GAS) > STORAGE_CREDIT_VALUE
@@ -3082,7 +3019,7 @@ fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
     );
     let expected = (U256::from(CreditMode::Direct as u8), U256::ZERO, U256::ONE);
     assert_eq!((word(MODE_SLOT), word(1), word(2)), expected);
-    assert_eq!(storage_credit_balance(&evm, contract), 2);
+    assert_eq!(storage_credit_balance(&mut evm, contract), 2);
 
     Ok(())
 }
@@ -3180,19 +3117,20 @@ fn test_tip1060_reverted_scopes_unwind_credit_accounting() -> eyre::Result<()> {
             Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx)?), caller).into(),
         )?;
         assert!(
-            result.is_success(),
+            result.status,
             "top-level caller should ignore the reverted {} subcall",
             case.name
         );
 
         assert_eq!(
-            evm.overlay_db().storage_ref(case.callee, U256::ZERO)?,
+            evm.overlay_db_mut()
+                .get_storage(&case.callee, &U256::ZERO)?,
             case.expected_slot,
             "reverted {} storage write must unwind",
             case.name
         );
         assert_eq!(
-            storage_credit_balance(&evm, case.callee),
+            storage_credit_balance(&mut evm, case.callee),
             case.expected_credits,
             "reverted {} credit accounting must unwind",
             case.name
@@ -3221,7 +3159,7 @@ fn test_tip1060_refund_settlement_min_pending_balance() -> eyre::Result<()> {
         }
         bytecode.push(opcode::STOP);
 
-        let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+        let (_, mut evm) = run_tx_on_tip1060_contract_with_setup(
             CreditMode::Refund,
             contract,
             &bytecode,
@@ -3232,7 +3170,7 @@ fn test_tip1060_refund_settlement_min_pending_balance() -> eyre::Result<()> {
         )?;
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_balance,
             "settlement must consume exactly min(pending, balance) storage credits"
         );
@@ -3287,15 +3225,15 @@ fn test_tip1060_refund_settlement_is_per_account() -> eyre::Result<()> {
     let tx_env: TempoTxEnv =
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "multi-account tx should succeed");
+    assert!(result.status, "multi-account tx should succeed");
 
     assert_eq!(
-        storage_credit_balance(&evm, account_a),
+        storage_credit_balance(&mut evm, account_a),
         1,
         "A consumes its own storage credits"
     );
     assert_eq!(
-        storage_credit_balance(&evm, account_b),
+        storage_credit_balance(&mut evm, account_b),
         0,
         "B cannot consume A's extra storage credits"
     );
@@ -3336,12 +3274,9 @@ fn test_tip1060_same_tx_create_before_delete_different_slots() -> eyre::Result<(
     let tx_env: TempoTxEnv =
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
     let result = evm.transact_commit(tx_env)?;
-    assert!(
-        result.is_success(),
-        "create-before-delete tx should succeed"
-    );
+    assert!(result.status, "create-before-delete tx should succeed");
 
-    assert_eq!(storage_credit_balance(&evm, contract), 0);
+    assert_eq!(storage_credit_balance(&mut evm, contract), 0);
     assert_eq!(
         result.tx_gas_used(),
         295_868,
@@ -3393,9 +3328,9 @@ fn test_tip1060_direct_storage_credits_no_end_of_tx_double_benefit() -> eyre::Re
     let direct = evm.transact_commit(
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_direct), caller).into(),
     )?;
-    assert!(direct.is_success());
+    assert!(direct.status);
     assert_eq!(
-        storage_credit_balance(&evm, direct_contract),
+        storage_credit_balance(&mut evm, direct_contract),
         1,
         "Direct must not consume the surplus storage credit at settlement"
     );
@@ -3409,8 +3344,8 @@ fn test_tip1060_direct_storage_credits_no_end_of_tx_double_benefit() -> eyre::Re
     let refund = evm.transact_commit(
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_refund), caller).into(),
     )?;
-    assert!(refund.is_success());
-    assert_eq!(storage_credit_balance(&evm, refund_contract), 0);
+    assert!(refund.status);
+    assert_eq!(storage_credit_balance(&mut evm, refund_contract), 0);
 
     assert_eq!(
         direct.tx_gas_used(),
@@ -3437,7 +3372,7 @@ fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
     // Bytecode: SSTORE(0,0); STOP.
     let clear_bytecode = bytes!("600060005500");
 
-    let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+    let (_, mut evm) = run_tx_on_tip1060_contract_with_setup(
         CreditMode::Refund,
         contract,
         &clear_bytecode,
@@ -3448,7 +3383,7 @@ fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
             Ok(())
         },
     )?;
-    assert_eq!(storage_credit_balance(&evm, contract), u64::MAX);
+    assert_eq!(storage_credit_balance(&mut evm, contract), u64::MAX);
 
     Ok(())
 }
@@ -3483,14 +3418,14 @@ fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::R
     let mut unindexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
     let unindexed_result = unindexed_evm.transact_commit(unindexed_tx_env)?;
     assert!(
-        unindexed_result.is_success(),
+        unindexed_result.status,
         "unindexed expiring nonce tx should succeed"
     );
 
     let mut indexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
     let indexed_result = indexed_evm.transact_commit(indexed_tx_env)?;
     assert!(
-        indexed_result.is_success(),
+        indexed_result.status,
         "indexed expiring nonce tx should succeed"
     );
 
@@ -3500,7 +3435,7 @@ fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::R
         "pointer restore must not create a TIP-1060 settlement discount"
     );
     assert_eq!(
-        storage_credit_balance(&indexed_evm, NONCE_PRECOMPILE_ADDRESS),
+        storage_credit_balance(&mut indexed_evm, NONCE_PRECOMPILE_ADDRESS),
         0,
         "expiring nonce bookkeeping must not accrue storage credits"
     );
@@ -3547,7 +3482,7 @@ fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
             create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T12);
         let result = evm.transact(&build_env(nonce)?)?.commit();
         assert!(
-            result.is_success(),
+            result.status,
             "T12 must accept expiring nonce discriminator {nonce}"
         );
         assert_eq!(
@@ -3582,7 +3517,7 @@ fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::R
     let mut baseline_evm = create_funded_evm_t7(caller);
     let baseline_result = baseline_evm.transact_commit(tx_env.clone())?;
     assert!(
-        baseline_result.is_success(),
+        baseline_result.status,
         "baseline 2D nonce tx should succeed"
     );
 
@@ -3590,7 +3525,7 @@ fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::R
     seed_storage_credit_balance(&mut credited_evm, NONCE_PRECOMPILE_ADDRESS, 1);
     let credited_result = credited_evm.transact_commit(tx_env)?;
     assert!(
-        credited_result.is_success(),
+        credited_result.status,
         "preseeded-credit 2D nonce tx should succeed"
     );
 
@@ -3600,7 +3535,7 @@ fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::R
         "2D nonce bookkeeping must not consume nonce storage credits for a gas discount"
     );
     assert_eq!(
-        storage_credit_balance(&credited_evm, NONCE_PRECOMPILE_ADDRESS),
+        storage_credit_balance(&mut credited_evm, NONCE_PRECOMPILE_ADDRESS),
         1,
         "2D nonce bookkeeping must not consume pre-existing nonce storage credits"
     );
@@ -3632,7 +3567,7 @@ fn test_aa_tx_gas_create_contract() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "CREATE transaction should succeed");
+    assert!(result.status, "CREATE transaction should succeed");
 
     // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + base costs
     let gas_used = result.tx_gas_used();
@@ -3679,7 +3614,7 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
             Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller).into(),
         )?;
         assert!(
-            result.is_success(),
+            result.status,
             "T4 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
         );
         Ok(result.tx_gas_used())
@@ -3765,10 +3700,7 @@ fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Resul
                 "top-level CREATE should revert"
             );
         } else {
-            assert!(
-                result.is_success(),
-                "inner-CREATE caller swallows the revert"
-            );
+            assert!(result.status, "inner-CREATE caller swallows the revert");
         }
         Ok(result.tx_gas_used())
     };
@@ -3846,7 +3778,7 @@ fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
         let result = evm.transact_commit(
             Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller).into(),
         )?;
-        assert!(!result.is_success(), "the batch should fail");
+        assert!(!result.status, "the batch should fail");
         Ok(result.tx_gas_used())
     };
 
@@ -3887,8 +3819,8 @@ fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
 
     // Verify that account nonce is 0 before transaction
     assert_eq!(
-        evm.overlay_db()
-            .basic_ref(caller)
+        evm.overlay_db_mut()
+            .get_account(&caller)
             .ok()
             .flatten()
             .map(|a| a.nonce)
@@ -3901,7 +3833,7 @@ fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
     let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
 
     let result1 = evm.transact_commit(tx_env1)?;
-    assert!(result1.is_success(), "CREATE with 2D nonce should succeed");
+    assert!(result1.status, "CREATE with 2D nonce should succeed");
 
     // With TIP-1000: CREATE cost (500k) + new account (250k) + 2D nonce sender creation (250k) + base
     assert_eq!(
@@ -3926,10 +3858,7 @@ fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
     let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
 
     let result2 = evm.transact_commit(tx_env2)?;
-    assert!(
-        result2.is_success(),
-        "Second CREATE with 2D nonce should succeed"
-    );
+    assert!(result2.status, "Second CREATE with 2D nonce should succeed");
 
     // With TIP-1000: CREATE cost (500k) + new account (250k) + base (no extra 250k since caller.nonce != 0)
     assert_eq!(
@@ -3971,7 +3900,7 @@ fn test_aa_tx_gas_create_with_expiring_nonce() -> eyre::Result<()> {
     let result1 = evm1.transact_commit(
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx1)?), caller).into(),
     )?;
-    assert!(result1.is_success());
+    assert!(result1.status);
     let gas_nonce_zero = result1.tx_gas_used();
 
     // CREATE with caller.nonce == 1 (no extra 250k)
@@ -3993,7 +3922,7 @@ fn test_aa_tx_gas_create_with_expiring_nonce() -> eyre::Result<()> {
     let result2 = evm2.transact_commit(
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx2)?), caller).into(),
     )?;
-    assert!(result2.is_success());
+    assert!(result2.status);
     let gas_nonce_one = result2.tx_gas_used();
 
     // The fix adds 250k when caller.nonce == 0 for CREATE with non-zero nonce_key
@@ -4024,7 +3953,7 @@ fn test_aa_tx_gas_single_vs_multiple_calls() -> eyre::Result<()> {
     let signed_tx1 = key_pair.sign_tx(tx1)?;
     let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
     let result1 = evm1.transact_commit(tx_env1)?;
-    assert!(result1.is_success());
+    assert!(result1.status);
     let gas_single = result1.tx_gas_used();
 
     // Test 2: Three calls
@@ -4040,7 +3969,7 @@ fn test_aa_tx_gas_single_vs_multiple_calls() -> eyre::Result<()> {
     let signed_tx2 = key_pair.sign_tx(tx2)?;
     let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
     let result2 = evm2.transact_commit(tx_env2)?;
-    assert!(result2.is_success());
+    assert!(result2.status);
     let gas_triple = result2.tx_gas_used();
 
     // Three calls should cost more than single call
@@ -4096,7 +4025,7 @@ fn test_aa_tx_gas_sload_cold_vs_warm() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "SLOAD transaction should succeed");
+    assert!(result.status, "SLOAD transaction should succeed");
 
     // T1 costs: new account (250k) + cold SLOAD (2100) + warm SLOAD (100) + cold account (~2.6k)
     let gas_used = result.tx_gas_used();
@@ -4131,7 +4060,7 @@ fn test_system_call_and_inspector() -> eyre::Result<()> {
         let result = evm
             .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
             .commit();
-        assert!(result.is_success());
+        assert!(result.status);
     }
 
     // Test set_inspector and system call inspector preservation
@@ -4148,7 +4077,7 @@ fn test_system_call_and_inspector() -> eyre::Result<()> {
         let result = evm
             .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
             .commit();
-        assert!(result.is_success());
+        assert!(result.status);
 
         // Verify the inspector was preserved but not called.
         assert_eq!(
@@ -4177,7 +4106,7 @@ fn test_system_call_and_inspector() -> eyre::Result<()> {
         let result = evm
             .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
             .commit();
-        assert!(result.is_success());
+        assert!(result.status);
         assert_eq!(
             evm.inspector()
                 .unwrap()
@@ -4276,7 +4205,7 @@ fn test_key_authorization_t1(spec: TempoHardfork) -> eyre::Result<()> {
                 "Gas used should be gas limit"
             );
             assert!(
-                !result.is_success(),
+                !result.status,
                 "Transaction with insufficient gas should fail"
             );
             true // OOG: tx committed, nonce incremented
@@ -4313,8 +4242,8 @@ fn test_key_authorization_t1(spec: TempoHardfork) -> eyre::Result<()> {
         "key authorization OOG should be included, not rejected"
     );
     assert_eq!(
-        evm.overlay_db()
-            .basic_ref(authorization_authority.address)?
+        evm.overlay_db_mut()
+            .get_account(&authorization_authority.address)?
             .map(|account| account.code_hash),
         Some(Bytecode::new_eip7702(Address::repeat_byte(0x42)).hash_slow()),
         "EIP-7702 delegation should persist when key authorization runs out of gas"
@@ -4345,7 +4274,7 @@ fn test_key_authorization_t1(spec: TempoHardfork) -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "Transaction should succeed");
+    assert!(result.status, "Transaction should succeed");
 
     // Verify the key was authorized
     {
@@ -4435,9 +4364,9 @@ fn test_create_nonce_replay_regression() -> eyre::Result<()> {
             if pre_t1b {
                 assert_eq!(result.stop, InstrStop::OutOfGas);
                 assert_eq!(result.tx_gas_used(), gas_limit);
-                assert_eq!(evm.overlay_db().basic_ref(caller)?.unwrap().nonce, 0);
+                assert_eq!(evm.overlay_db_mut().get_account(&caller)?.unwrap().nonce, 0);
             } else {
-                assert!(result.is_success());
+                assert!(result.status);
             }
 
             let evm_spec = evm.config_spec_id();
@@ -4453,8 +4382,8 @@ fn test_create_nonce_replay_regression() -> eyre::Result<()> {
         }
 
         let nonce = evm
-            .overlay_db()
-            .basic_ref(caller)
+            .overlay_db_mut()
+            .get_account(&caller)
             .ok()
             .flatten()
             .map(|a| a.nonce)
@@ -4551,7 +4480,7 @@ fn test_double_charge_key_authorization_regression() -> eyre::Result<()> {
         let tx_env: TempoTxEnv =
             Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
         let result = evm.transact_commit(tx_env)?;
-        assert!(result.is_success());
+        assert!(result.status);
         Ok(result.tx_gas_used())
     }
 
@@ -4607,10 +4536,7 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx_baseline)?), caller)
             .into(),
     )?;
-    assert!(
-        result_baseline.is_success(),
-        "baseline transfer should succeed"
-    );
+    assert!(result_baseline.status, "baseline transfer should succeed");
     let gas_baseline = result_baseline.tx_gas_used();
 
     // Issue #3178 scenario: calls-format transfer with nonce_key != 0, caller.nonce == 0.
@@ -4629,7 +4555,7 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
         Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx_2d)?), caller).into(),
     )?;
     assert!(
-        result_2d.is_success(),
+        result_2d.status,
         "calls-format transfer with 2D nonce should succeed"
     );
     let gas_2d = result_2d.tx_gas_used();
@@ -4648,1702 +4574,4 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
     );
 
     Ok(())
-}
-
-mod runtime_tests {
-    use super::*;
-    use crate::{
-        ProtocolFeeContext, TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv, tempo_tx_registry,
-    };
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
-    use alloy_sol_types::{SolCall, SolError, SolValue};
-    use evm2::{
-        Evm, EvmFeatures, ExecutionConfig, SpecId,
-        bytecode::Bytecode,
-        evm::{
-            AccountInfo, InMemoryDB, PendingState, StateChangeSink, StateChangeSource,
-            StorageChange, SystemTx,
-        },
-        interpreter::{InstrStop, op as opcode},
-    };
-    use indexmap::IndexMap;
-    use std::{
-        collections::BTreeMap,
-        sync::{Arc, Mutex},
-    };
-    use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::{
-        precompiles::{
-            IZoneFactory, IZoneVerifier, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-            ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-        },
-        zones::{T13_ZONE_VERIFIER_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
-    };
-    use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-        error::TempoPrecompileError,
-        storage::{
-            ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey,
-            evm::EvmPrecompileStorageProvider,
-        },
-        storage_credits::StorageCredits,
-        test_util::TIP20Setup,
-        tip_fee_manager::{
-            IFeeManager, TipFeeManager,
-            amm::{Pool, PoolKey, compute_amount_out},
-            slots as fee_manager_slots,
-        },
-        tip20::{
-            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
-            slots as tip20_slots,
-        },
-        tip403_registry::slots as tip403_registry_slots,
-        zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
-    };
-    use tempo_primitives::{
-        AASigned, TempoAddressExt, TempoTransaction, TempoTxEnvelope,
-        transaction::{Call, PrimitiveSignature, TempoSignature},
-    };
-
-    alloy_sol_types::sol! {
-        enum TestZonePortalRole {
-            None,
-            Sequencer,
-            Account,
-            CallbackGateway,
-            PauseGuardian
-        }
-
-        enum TestZonePortalCapability {
-            PausePortal,
-            AccessPolicy
-        }
-
-        struct TestBlockTransition {
-            bytes32 prevBlockHash;
-            bytes32 nextBlockHash;
-        }
-
-        struct TestDepositQueueTransition {
-            bytes32 prevProcessedHash;
-            bytes32 nextProcessedHash;
-            uint64 prevDepositNumber;
-            uint64 nextDepositNumber;
-        }
-
-        interface TestZonePortal {
-            error InvalidProof();
-
-            function enableToken(address token) external;
-            function tokenEnablementHash() external view returns (bytes32);
-            function hasRole(address account, TestZonePortalRole role) external view returns (bool);
-            function isSequencer(address account) external view returns (bool);
-            function setAllowedAccount(address account, bool allowed) external;
-            function paused() external view returns (bool);
-            function pauseExpiry() external view returns (uint64);
-            function abdicationEffectiveAt(TestZonePortalCapability capability)
-                external
-                view
-                returns (uint64);
-            function pause() external;
-            function resume() external;
-            function submitBatch(
-                uint64 tempoBlockNumber,
-                uint64 recentTempoBlockNumber,
-                TestBlockTransition calldata blockTransition,
-                TestDepositQueueTransition calldata depositQueueTransition,
-                bytes32 withdrawalQueueHash,
-                bytes calldata verifierConfig,
-                bytes calldata proof,
-                uint256 nextZoneHeight,
-                bytes[] calldata signatures
-            ) external;
-        }
-
-        interface TestZoneMessenger {
-            function relayMessage(
-                uint32 zoneId,
-                address token,
-                bytes32 senderTag,
-                address target,
-                uint128 amount,
-                uint64 gasLimit,
-                bytes calldata data
-            ) external;
-        }
-
-        interface TestWithdrawalReceiver {
-            function onWithdrawalReceived(
-                uint32 zoneId,
-                address portal,
-                bytes32 senderTag,
-                address token,
-                uint128 amount,
-                bytes calldata data
-            ) external returns (bytes4);
-        }
-    }
-
-    trait TestCacheExt {
-        fn storage_ref(
-            &self,
-            address: Address,
-            key: U256,
-        ) -> Result<U256, core::convert::Infallible>;
-    }
-
-    impl<DB> TestCacheExt for evm2::evm::CacheDB<DB> {
-        fn storage_ref(
-            &self,
-            address: Address,
-            key: U256,
-        ) -> Result<U256, core::convert::Infallible> {
-            Ok(self
-                .cache
-                .storage
-                .get(&address)
-                .and_then(|storage| storage.slots.get(&key))
-                .copied()
-                .unwrap_or_default())
-        }
-    }
-
-    trait TestEvmExt {
-        fn transact_commit(
-            &mut self,
-            tx: TempoTxEnv,
-        ) -> evm2::registry::HandlerResult<evm2::TxResult<TempoEvmTypes>>;
-
-        fn transact_detach(
-            &mut self,
-            tx: TempoTxEnv,
-        ) -> evm2::registry::HandlerResult<evm2::evm::TxResultWithState<TempoEvmTypes>>;
-    }
-
-    impl TestEvmExt for TempoEvm<'_> {
-        fn transact_commit(
-            &mut self,
-            tx: TempoTxEnv,
-        ) -> evm2::registry::HandlerResult<evm2::TxResult<TempoEvmTypes>> {
-            let signer = tx.evm_tx().signer();
-            Ok(self
-                .transact(&Recovered::new_unchecked(tx, signer))?
-                .commit())
-        }
-
-        fn transact_detach(
-            &mut self,
-            tx: TempoTxEnv,
-        ) -> evm2::registry::HandlerResult<evm2::evm::TxResultWithState<TempoEvmTypes>> {
-            let signer = tx.evm_tx().signer();
-            Ok(self
-                .transact(&Recovered::new_unchecked(tx, signer))?
-                .detach())
-        }
-    }
-
-    trait TestResultExt {
-        fn is_success(&self) -> bool;
-    }
-
-    impl TestResultExt for evm2::TxResult<TempoEvmTypes> {
-        fn is_success(&self) -> bool {
-            self.status
-        }
-    }
-
-    fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
-        const SELECTOR_SHIFT_BITS: u8 = 224;
-        const ABI_WORD_BYTES: u8 = 32;
-
-        let mut code = vec![opcode::PUSH4];
-        code.extend_from_slice(&selector);
-        code.extend_from_slice(&[
-            opcode::PUSH1,
-            SELECTOR_SHIFT_BITS,
-            opcode::SHL,
-            opcode::PUSH0,
-            opcode::MSTORE,
-            opcode::PUSH1,
-            ABI_WORD_BYTES,
-            opcode::PUSH0,
-            opcode::RETURN,
-        ]);
-        Bytecode::new_raw(code.into())
-    }
-
-    fn configured_evm(
-        spec: TempoHardfork,
-        timestamp: u64,
-        amsterdam: bool,
-        database: InMemoryDB,
-    ) -> TempoEvm<'static> {
-        let ext = TempoEvmExt::default();
-        let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-            spec,
-            ext.actions.clone(),
-            ext.non_creditable_slots.clone(),
-        );
-        let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, amsterdam);
-        version.chain_id = 1;
-        version.features.remove(EvmFeatures::BALANCE_CHECK);
-        version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-        Evm::new_with_execution_config_and_ext(
-            ExecutionConfig::for_spec_and_version(spec, version),
-            spec,
-            TempoBlockEnv {
-                timestamp: U256::from(timestamp),
-                gas_limit: U256::from(30_000_000),
-                ..Default::default()
-            },
-            tempo_tx_registry(SpecId::OSAKA),
-            database,
-            precompiles,
-            ext,
-        )
-    }
-
-    fn initialize_zone_factory(db: &mut InMemoryDB, owner: Address) {
-        db.insert_account_info(
-            &ZONE_FACTORY_ADDRESS,
-            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
-        );
-        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
-        db.insert_account_storage(&ZONE_FACTORY_ADDRESS, &U256::ZERO, &factory_config);
-    }
-
-    fn create_evm() -> TempoEvm<'static> {
-        configured_evm(TempoHardfork::Genesis, 0, false, InMemoryDB::default())
-    }
-
-    fn legacy_tx_env(
-        caller: Address,
-        nonce: u64,
-        to: TxKind,
-        input: Bytes,
-        gas_limit: u64,
-    ) -> TempoTxEnv {
-        let tx = TxLegacy {
-            chain_id: Some(1),
-            nonce,
-            gas_limit,
-            to,
-            input,
-            ..Default::default()
-        };
-        let tx = Signed::new_unchecked(
-            tx,
-            alloy_primitives::Signature::test_signature(),
-            B256::ZERO,
-        );
-        Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), caller).into()
-    }
-
-    fn system_tx_env(to: TxKind, input: Bytes) -> TempoTxEnv {
-        let tx = TxLegacy {
-            chain_id: Some(1),
-            to,
-            input,
-            ..Default::default()
-        };
-        let tx = Signed::new_unhashed(
-            tx,
-            tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        );
-        Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), Address::ZERO).into()
-    }
-
-    #[test]
-    fn can_execute_system_tx() {
-        let mut evm = create_evm();
-        let result = evm
-            .transact_detach(system_tx_env(TxKind::Call(Address::ZERO), Bytes::new()))
-            .unwrap();
-
-        assert!(result.result.is_success());
-    }
-
-    #[test]
-    fn test_transact_raw() {
-        let mut evm = create_evm();
-
-        let tx = legacy_tx_env(
-            Address::repeat_byte(0x01),
-            0,
-            TxKind::Call(Address::repeat_byte(0x02)),
-            Bytes::new(),
-            21_000,
-        );
-
-        let result = evm.transact_detach(tx);
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
-        assert!(result.result.is_success());
-        assert_eq!(result.result.tx_gas_used(), 21_000);
-    }
-
-    #[test]
-    fn test_transact_raw_system_tx() {
-        let mut evm = create_evm();
-
-        // System transaction
-        let tx = system_tx_env(TxKind::Call(Address::repeat_byte(0x01)), Bytes::new());
-
-        let result = evm.transact_detach(tx);
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
-        assert!(result.result.is_success());
-        // System transactions should not consume gas
-        assert_eq!(result.result.tx_gas_used(), 0);
-    }
-
-    #[test]
-    fn test_transact_raw_system_tx_must_be_call() {
-        let mut evm = create_evm();
-
-        // System transaction with Create kind
-        let tx = system_tx_env(TxKind::Create, Bytes::new());
-
-        let result = evm.transact_detach(tx);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert!(matches!(
-            err.external_ref::<TempoInvalidTransaction>(),
-            Some(TempoInvalidTransaction::SystemTransactionMustBeCall)
-        ));
-    }
-
-    #[test]
-    fn test_transact_raw_system_tx_failed() {
-        let contract_addr = Address::repeat_byte(0xaa);
-        let mut evm = create_evm();
-        // Deploy a contract that always reverts: PUSH1 0x00 PUSH1 0x00 REVERT (0x60006000fd)
-        let revert_code = Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]);
-        evm.overlay_db_mut().insert_account_info(
-            &contract_addr,
-            AccountInfo::default().with_code(Bytecode::new_raw(revert_code)),
-        );
-
-        // System transaction that will fail with call to contract that reverts
-        let tx = system_tx_env(TxKind::Call(contract_addr), Bytes::new());
-
-        let result = evm.transact_detach(tx);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert!(matches!(
-            err.external_ref::<TempoInvalidTransaction>(),
-            Some(TempoInvalidTransaction::SystemTransactionFailed(_))
-        ));
-    }
-
-    #[test]
-    fn test_transact_system_call() {
-        let mut evm = create_evm();
-
-        let caller = Address::repeat_byte(0x01);
-        let contract = Address::repeat_byte(0x02);
-        let data = Bytes::from_static(&[0x01, 0x02, 0x03]);
-
-        let result = evm.system_call(SystemTx::new(contract, data).with_caller(caller));
-        assert!(result.is_ok());
-
-        let result = result.unwrap().discard();
-        assert!(result.is_success());
-    }
-
-    #[test]
-    fn zone_factory_created_portal_executes_deployed_runtime() {
-        let owner = Address::repeat_byte(0x11);
-        let admin = Address::repeat_byte(0x22);
-        let sequencer = Address::repeat_byte(0x33);
-        // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
-        let logic_runtime = Bytecode::new_raw(Bytes::from_static(&[
-            0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
-        ]));
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &ZONE_PORTAL_IMPL_ADDRESS,
-            AccountInfo::default().with_code(logic_runtime),
-        );
-        initialize_zone_factory(&mut db, owner);
-        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
-
-        let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-        StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(admin).apply()).unwrap();
-        drop(storage);
-
-        let result = evm
-            .system_call(
-                SystemTx::new(
-                    ZONE_FACTORY_ADDRESS,
-                    IZoneFactory::createZoneCall {
-                        params: IZoneFactory::CreateZoneParams {
-                            initialToken: PATH_USD_ADDRESS,
-                            accessMode: true,
-                            gatewayMode: true,
-                            allowedAccounts: vec![admin],
-                            zoneGateways: vec![Address::repeat_byte(0x44)],
-                            admin,
-                            sequencers: vec![sequencer],
-                            threshold: 1,
-                            rpcUrl: "https://zone.example".to_string(),
-                        },
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(owner),
-            )
-            .unwrap()
-            .commit();
-        assert!(result.is_success(), "createZone failed: {result:?}");
-        assert!(result.tx_gas_used() >= ZONE_CREATION_GAS);
-        assert!(result.execution_gas_spent() >= ZONE_CREATION_GAS);
-        let created = IZoneFactory::createZoneCall::abi_decode_returns(&result.output).unwrap();
-
-        let result = evm
-            .system_call(SystemTx::new(created.portal, Bytes::new()).with_caller(Address::ZERO))
-            .unwrap()
-            .discard();
-        assert!(result.is_success(), "portal call failed: {result:?}");
-        assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
-    }
-
-    #[test]
-    fn test_zone_verifier_runtime_is_shadowed_at_t13() {
-        let calldata = IZoneVerifier::verifyCall {
-            zoneId: 1,
-            tempoBlockNumber: 1,
-            anchorBlockNumber: 1,
-            anchorBlockHash: B256::ZERO,
-            expectedWithdrawalBatchIndex: 0,
-            nextZoneHeight: U256::ZERO,
-            blockTransition: IZoneVerifier::BlockTransition {
-                prevBlockHash: B256::ZERO,
-                nextBlockHash: B256::ZERO,
-            },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
-                prevProcessedHash: B256::ZERO,
-                nextProcessedHash: B256::ZERO,
-                prevDepositNumber: 0,
-                nextDepositNumber: 0,
-            },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
-                prevProcessedTokenCount: 0,
-                nextProcessedTokenCount: 0,
-            },
-            withdrawalQueueHash: B256::ZERO,
-            verifierConfig: Bytes::new(),
-            proof: Bytes::new(),
-        }
-        .abi_encode();
-
-        let execute = |spec| {
-            let mut db = InMemoryDB::default();
-            db.insert_account_info(
-                &ZONE_VERIFIER_ADDRESS,
-                AccountInfo::default().with_code(Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME)),
-            );
-            let mut evm = configured_evm(spec, 0, false, db);
-            let result = evm
-                .system_call(SystemTx::new(
-                    ZONE_VERIFIER_ADDRESS,
-                    calldata.clone().into(),
-                ))
-                .unwrap()
-                .discard();
-            assert!(result.is_success(), "Zone verifier call failed: {result:?}");
-            IZoneVerifier::verifyCall::abi_decode_returns(&result.output).unwrap()
-        };
-
-        assert!(execute(TempoHardfork::T10));
-        assert!(execute(TempoHardfork::T11));
-        assert!(execute(TempoHardfork::T12));
-        assert!(!execute(TempoHardfork::T13));
-    }
-
-    #[test]
-    fn zone_portal_runtime_commits_subsequent_token_enablements() {
-        let owner = Address::repeat_byte(0x11);
-        let admin = Address::repeat_byte(0x22);
-        let sequencer = Address::repeat_byte(0x33);
-        let portal_runtime = Bytecode::new_raw(ZONE_PORTAL_RUNTIME);
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &ZONE_PORTAL_IMPL_ADDRESS,
-            AccountInfo::default().with_code(portal_runtime),
-        );
-        initialize_zone_factory(&mut db, owner);
-        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
-
-        let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-        let second_token =
-            StorageCtx::enter(&mut storage, || -> Result<_, TempoPrecompileError> {
-                TIP20Setup::path_usd(admin).apply()?;
-                Ok(TIP20Setup::create("Second Token", "SECOND", admin)
-                    .apply()?
-                    .address())
-            })
-            .unwrap();
-        drop(storage);
-
-        let create = evm
-            .system_call(
-                SystemTx::new(
-                    ZONE_FACTORY_ADDRESS,
-                    IZoneFactory::createZoneCall {
-                        params: IZoneFactory::CreateZoneParams {
-                            initialToken: PATH_USD_ADDRESS,
-                            accessMode: true,
-                            gatewayMode: true,
-                            allowedAccounts: vec![],
-                            zoneGateways: vec![],
-                            admin,
-                            sequencers: vec![sequencer],
-                            threshold: 1,
-                            rpcUrl: "https://zone.example".to_string(),
-                        },
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(owner),
-            )
-            .unwrap()
-            .commit();
-        assert!(create.is_success(), "createZone failed: {create:?}");
-        let created = IZoneFactory::createZoneCall::abi_decode_returns(&create.output).unwrap();
-
-        let sequencer_status = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::isSequencerCall { account: sequencer }
-                        .abi_encode()
-                        .into(),
-                )
-                .with_caller(Address::ZERO),
-            )
-            .unwrap()
-            .discard();
-        assert!(
-            sequencer_status.is_success(),
-            "isSequencer failed: {sequencer_status:?}"
-        );
-        assert!(
-            TestZonePortal::isSequencerCall::abi_decode_returns(&sequencer_status.output).unwrap()
-        );
-
-        let account = Address::repeat_byte(0x55);
-        let set_account = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::setAllowedAccountCall {
-                        account,
-                        allowed: true,
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(admin),
-            )
-            .unwrap()
-            .commit();
-        assert!(
-            set_account.is_success(),
-            "setAllowedAccount failed: {set_account:?}"
-        );
-
-        let account_role = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::hasRoleCall {
-                        account,
-                        role: TestZonePortalRole::Account,
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(Address::ZERO),
-            )
-            .unwrap()
-            .discard();
-        assert!(
-            account_role.is_success(),
-            "hasRole failed: {account_role:?}"
-        );
-        assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&account_role.output).unwrap());
-
-        for call in [
-            TestZonePortal::pausedCall {}.abi_encode(),
-            TestZonePortal::pauseExpiryCall {}.abi_encode(),
-            TestZonePortal::abdicationEffectiveAtCall {
-                capability: TestZonePortalCapability::PausePortal,
-            }
-            .abi_encode(),
-        ] {
-            let result = evm
-                .system_call(SystemTx::new(created.portal, call.into()).with_caller(Address::ZERO))
-                .unwrap()
-                .discard();
-            assert!(result.is_success(), "pause ABI call failed: {result:?}");
-            assert_eq!(U256::from_be_slice(&result.output), U256::ZERO);
-        }
-
-        let pause = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::pauseCall {}.abi_encode().into(),
-                )
-                .with_caller(sequencer),
-            )
-            .unwrap()
-            .commit();
-        assert!(pause.is_success(), "pause failed: {pause:?}");
-
-        let submit = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::submitBatchCall {
-                        tempoBlockNumber: 0,
-                        recentTempoBlockNumber: 0,
-                        blockTransition: TestBlockTransition {
-                            prevBlockHash: B256::repeat_byte(1),
-                            nextBlockHash: B256::ZERO,
-                        },
-                        depositQueueTransition: TestDepositQueueTransition {
-                            prevProcessedHash: B256::ZERO,
-                            nextProcessedHash: B256::ZERO,
-                            prevDepositNumber: 0,
-                            nextDepositNumber: 0,
-                        },
-                        withdrawalQueueHash: B256::ZERO,
-                        verifierConfig: Bytes::new(),
-                        proof: Bytes::new(),
-                        nextZoneHeight: U256::ZERO,
-                        signatures: Vec::new(),
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(sequencer),
-            )
-            .unwrap()
-            .discard();
-        assert_eq!(submit.stop, InstrStop::Revert);
-        assert_eq!(
-            submit.output.as_ref(),
-            TestZonePortal::InvalidProof::SELECTOR
-        );
-
-        let resume = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::resumeCall {}.abi_encode().into(),
-                )
-                .with_caller(admin),
-            )
-            .unwrap()
-            .commit();
-        assert!(resume.is_success(), "resume failed: {resume:?}");
-
-        let paused = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::pausedCall {}.abi_encode().into(),
-                )
-                .with_caller(Address::ZERO),
-            )
-            .unwrap()
-            .discard();
-        assert!(
-            paused.is_success(),
-            "paused failed after resume: {paused:?}"
-        );
-        assert_eq!(U256::from_be_slice(&paused.output), U256::ZERO);
-
-        let enable = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::enableTokenCall {
-                        token: second_token,
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(admin),
-            )
-            .unwrap()
-            .commit();
-        assert!(enable.is_success(), "enableToken failed: {enable:?}");
-
-        let commitment = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    TestZonePortal::tokenEnablementHashCall {}
-                        .abi_encode()
-                        .into(),
-                )
-                .with_caller(Address::ZERO),
-            )
-            .unwrap()
-            .discard();
-        assert!(
-            commitment.is_success(),
-            "tokenEnablementHash failed: {commitment:?}"
-        );
-        let actual =
-            TestZonePortal::tokenEnablementHashCall::abi_decode_returns(&commitment.output)
-                .unwrap();
-        let initial = keccak256(
-            (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
-        );
-        let expected =
-            keccak256((initial, second_token, "Second Token", "SECOND", "USD").abi_encode_params());
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn zone_messenger_runtime_authorizes_registered_callback_gateway() {
-        let owner = Address::repeat_byte(0x11);
-        let admin = Address::repeat_byte(0x22);
-        let sequencer = Address::repeat_byte(0x33);
-        let gateway = Address::repeat_byte(0x44);
-        let mut db = InMemoryDB::default();
-        for (address, runtime) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
-        ] {
-            db.insert_account_info(
-                &address,
-                AccountInfo::default().with_code(Bytecode::new_raw(runtime)),
-            );
-        }
-        let callback_runtime =
-            runtime_returning_selector(TestWithdrawalReceiver::onWithdrawalReceivedCall::SELECTOR);
-        db.insert_account_info(&gateway, AccountInfo::default().with_code(callback_runtime));
-        initialize_zone_factory(&mut db, owner);
-        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
-
-        let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-        StorageCtx::enter(&mut storage, || {
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(ZONE_MESSENGER_ADDRESS, U256::from(100))
-                .apply()
-        })
-        .unwrap();
-        drop(storage);
-
-        let create = evm
-            .system_call(
-                SystemTx::new(
-                    ZONE_FACTORY_ADDRESS,
-                    IZoneFactory::createZoneCall {
-                        params: IZoneFactory::CreateZoneParams {
-                            initialToken: PATH_USD_ADDRESS,
-                            accessMode: false,
-                            gatewayMode: true,
-                            allowedAccounts: vec![],
-                            zoneGateways: vec![gateway],
-                            admin,
-                            sequencers: vec![sequencer],
-                            threshold: 1,
-                            rpcUrl: "https://zone.example".to_string(),
-                        },
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(owner),
-            )
-            .unwrap()
-            .commit();
-        assert!(create.is_success(), "createZone failed: {create:?}");
-        let created = IZoneFactory::createZoneCall::abi_decode_returns(&create.output).unwrap();
-
-        let relay = evm
-            .system_call(
-                SystemTx::new(
-                    ZONE_MESSENGER_ADDRESS,
-                    TestZoneMessenger::relayMessageCall {
-                        zoneId: created.zoneId,
-                        token: PATH_USD_ADDRESS,
-                        senderTag: B256::ZERO,
-                        target: gateway,
-                        amount: 1,
-                        gasLimit: 100_000,
-                        data: Bytes::new(),
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .with_caller(created.portal),
-            )
-            .unwrap()
-            .discard();
-        assert!(
-            relay.is_success(),
-            "registered gateway callback failed: {relay:?}"
-        );
-    }
-
-    #[test]
-    fn zone_factory_creation_oog_below_minimum_reverts_state() {
-        let owner = Address::repeat_byte(0x11);
-        let admin = Address::repeat_byte(0x22);
-        let sequencer = Address::repeat_byte(0x33);
-        let mut db = InMemoryDB::default();
-        initialize_zone_factory(&mut db, owner);
-        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
-
-        let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-        StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(admin).apply()).unwrap();
-        drop(storage);
-
-        let input = IZoneFactory::createZoneCall {
-            params: IZoneFactory::CreateZoneParams {
-                initialToken: PATH_USD_ADDRESS,
-                accessMode: true,
-                gatewayMode: true,
-                allowedAccounts: vec![admin],
-                zoneGateways: vec![Address::repeat_byte(0x44)],
-                admin,
-                sequencers: vec![sequencer],
-                threshold: 1,
-                rpcUrl: "https://zone.example".to_string(),
-            },
-        }
-        .abi_encode();
-
-        let result = evm
-            .transact_commit(legacy_tx_env(
-                owner,
-                0,
-                TxKind::Call(ZONE_FACTORY_ADDRESS),
-                input.into(),
-                ZONE_CREATION_GAS - 1,
-            ))
-            .unwrap();
-        assert!(!result.is_success());
-        assert_eq!(result.tx_gas_used(), ZONE_CREATION_GAS - 1);
-
-        StorageCtx::enter_evm(&mut evm, || {
-            let factory = ZoneFactory::new();
-            assert_eq!(factory.next_zone_id()?, 1);
-            assert!(!factory.is_zone_portal(portal_address(1))?);
-            Ok::<_, TempoPrecompileError>(())
-        })
-        .unwrap();
-    }
-
-    #[derive(Default)]
-    struct StorageState {
-        reconstructed: BTreeMap<(Address, U256), U256>,
-        first_loads: BTreeMap<(Address, U256), U256>,
-    }
-
-    impl StorageState {
-        fn apply_sload_value(
-            &mut self,
-            key: (Address, U256),
-            value: U256,
-            action: &str,
-            hardfork: TempoHardfork,
-        ) -> U256 {
-            match self.reconstructed.get(&key) {
-                Some(current) => {
-                    let (address, slot) = key;
-                    assert_eq!(
-                        *current, value,
-                        "{action} SLOAD value must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
-                    );
-                    *current
-                }
-                None => {
-                    self.first_loads.insert(key, value);
-                    self.reconstructed.insert(key, value);
-                    value
-                }
-            }
-        }
-    }
-
-    fn assert_storage_actions_reconstruct_evm_state(
-        actions: &[StorageAction],
-        state: &PendingState,
-        hardfork: TempoHardfork,
-    ) {
-        let mut storage_state = StorageState::default();
-
-        for action in actions {
-            match *action {
-                StorageAction::Sload(address, slot, value) => {
-                    let key = (address, slot);
-                    storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
-                }
-                StorageAction::Sstore(address, slot, sload_value, value) => {
-                    let key = (address, slot);
-                    storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
-                    storage_state.reconstructed.insert(key, value);
-                }
-                StorageAction::Sinc(address, slot, sload_value, delta) => {
-                    let key = (address, slot);
-                    let current =
-                        storage_state.apply_sload_value(key, sload_value, "SINC", hardfork);
-                    let value = current.checked_add(delta).unwrap_or_else(|| {
-                        panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
-                    });
-                    storage_state.reconstructed.insert(key, value);
-                }
-                StorageAction::Sdec(address, slot, sload_value, delta) => {
-                    let key = (address, slot);
-                    let current =
-                        storage_state.apply_sload_value(key, sload_value, "SDEC", hardfork);
-                    let value = current.checked_sub(delta).unwrap_or_else(|| {
-                        panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
-                    });
-                    storage_state.reconstructed.insert(key, value);
-                }
-                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
-                    let key = (action.address(), slot);
-                    let current =
-                        storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
-                    let mut pool = Pool::decode_from_slot(current);
-                    pool.apply_swap(
-                        amount_in,
-                        compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
-                    )
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "FeeAmmSwap invalid for {:?}:{slot:?} on {hardfork:?}: {err}",
-                            action.address()
-                        )
-                    });
-                    storage_state
-                        .reconstructed
-                        .insert(key, pool.encode_to_slot().unwrap());
-                }
-                StorageAction::FeeAmmLiquidityCheck(
-                    slot,
-                    sload_value,
-                    amount_out,
-                    has_enough_liquidity,
-                ) => {
-                    let key = (action.address(), slot);
-                    let current = storage_state.apply_sload_value(
-                        key,
-                        sload_value,
-                        "FeeAmmLiquidityCheck",
-                        hardfork,
-                    );
-                    let pool = Pool::decode_from_slot(current);
-                    assert_eq!(
-                        pool.has_enough_reserve_validator_token(amount_out),
-                        has_enough_liquidity,
-                        "FeeAmmLiquidityCheck mismatch for {:?}:{slot:?} on {hardfork:?}",
-                        action.address(),
-                    );
-                }
-            }
-        }
-
-        #[derive(Default)]
-        struct StorageChanges(Vec<StorageChange>);
-
-        impl StateChangeSink for StorageChanges {
-            type Error = core::convert::Infallible;
-
-            fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-                self.0.push(change);
-                Ok(())
-            }
-
-            fn storage_read(
-                &mut self,
-                address: Address,
-                key: U256,
-                value: U256,
-            ) -> Result<(), Self::Error> {
-                self.0.push(StorageChange {
-                    address,
-                    key,
-                    original: value,
-                    current: value,
-                });
-                Ok(())
-            }
-        }
-
-        let mut state_changes = StorageChanges::default();
-        state.visit(&mut state_changes).unwrap();
-        for storage_slot in state_changes.0 {
-            let address = storage_slot.address;
-            let slot = storage_slot.key;
-            let key = (address, slot);
-            let original_value = storage_state.first_loads.get(&key).unwrap_or_else(|| {
-                        panic!(
-                            "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
-                        )
-                    });
-            assert_eq!(
-                *original_value, storage_slot.original,
-                "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
-            );
-
-            let reconstructed_value = storage_state.reconstructed.get(&key).unwrap_or_else(|| {
-                        panic!(
-                            "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
-                        )
-                    });
-            assert_eq!(
-                *reconstructed_value, storage_slot.current,
-                "reconstructed present value mismatch for {address:?}:{slot:?} on {hardfork:?}",
-            );
-        }
-    }
-
-    fn snapshot_storage_actions(
-        actions: &[StorageAction],
-        labels: &StorageActionSnapshotLabels,
-    ) -> Vec<String> {
-        actions
-                .iter()
-                .map(|action| match *action {
-                    StorageAction::Sload(address, slot, value) => {
-                        format!(
-                            "Sload({}, {}, {value})",
-                            labels.address(address),
-                            labels.slot(address, slot)
-                        )
-                    }
-                    StorageAction::Sstore(address, slot, sload_value, value) => {
-                        format!(
-                            "Sstore({}, {}, {sload_value}, {value})",
-                            labels.address(address),
-                            labels.slot(address, slot)
-                        )
-                    }
-                    StorageAction::Sinc(address, slot, sload_value, delta) => {
-                        format!(
-                            "Sinc({}, {}, {sload_value}, {delta})",
-                            labels.address(address),
-                            labels.slot(address, slot)
-                        )
-                    }
-                    StorageAction::Sdec(address, slot, sload_value, delta) => {
-                        format!(
-                            "Sdec({}, {}, {sload_value}, {delta})",
-                            labels.address(address),
-                            labels.slot(address, slot)
-                        )
-                    }
-                    StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
-                        format!(
-                            "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
-                            labels.address(action.address()),
-                            labels.slot(action.address(), slot),
-                        )
-                    }
-                    StorageAction::FeeAmmLiquidityCheck(
-                        slot,
-                        slot_value,
-                        amount_out,
-                        has_enough_liquidity,
-                    ) => {
-                        format!(
-                            "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
-                            labels.address(action.address()),
-                            labels.slot(action.address(), slot),
-                        )
-                    }
-                })
-                .collect()
-    }
-
-    struct StorageActionSnapshotLabels {
-        addresses: BTreeMap<Address, &'static str>,
-        slots: BTreeMap<(Address, U256), &'static str>,
-        tip20_slots: BTreeMap<U256, &'static str>,
-    }
-
-    impl StorageActionSnapshotLabels {
-        fn address(&self, address: Address) -> String {
-            self.addresses
-                .get(&address)
-                .copied()
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("{address:?}"))
-        }
-
-        fn slot(&self, address: Address, slot: U256) -> String {
-            if address.is_tip20() {
-                self.tip20_slots.get(&slot)
-            } else {
-                self.slots.get(&(address, slot))
-            }
-            .copied()
-            .map(str::to_string)
-            .unwrap_or_else(|| slot.to_string())
-        }
-    }
-
-    #[derive(Debug)]
-    struct StorageActionsFeeManager {
-        fee_token: Arc<Mutex<Address>>,
-    }
-
-    impl ProtocolFeeManager for StorageActionsFeeManager {
-        fn get_fee_token(
-            &self,
-            _host: &mut Evm<'_, TempoEvmTypes>,
-            _tx: &TempoTxEnv,
-            _fee_payer: Address,
-            _spec: TempoHardfork,
-        ) -> tempo_precompiles::error::Result<Address> {
-            Ok(*self.fee_token.lock().unwrap())
-        }
-
-        fn collect_fee_pre_tx(
-            &self,
-            ctx: ProtocolFeeContext<'_, '_>,
-            fee_payer: Address,
-            user_token: Address,
-            max_amount: U256,
-            beneficiary: Address,
-            skip_liquidity_check: bool,
-        ) -> tempo_precompiles::error::Result<Address> {
-            TempoFeeManager::new().collect_fee_pre_tx(
-                ctx,
-                fee_payer,
-                user_token,
-                max_amount,
-                beneficiary,
-                skip_liquidity_check,
-            )
-        }
-
-        fn collect_fee_post_tx(
-            &self,
-            ctx: ProtocolFeeContext<'_, '_>,
-            fee_payer: Address,
-            actual_spending: U256,
-            refund_amount: U256,
-            fee_token: Address,
-            beneficiary: Address,
-        ) -> tempo_precompiles::error::Result<U256> {
-            TempoFeeManager::new().collect_fee_post_tx(
-                ctx,
-                fee_payer,
-                actual_spending,
-                refund_amount,
-                fee_token,
-                beneficiary,
-            )
-        }
-    }
-
-    #[test]
-    fn test_tip20_full_evm_storage_actions() {
-        for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-            if !hardfork.is_t5() {
-                continue;
-            }
-
-            let sender = Address::repeat_byte(0x01);
-            let recipient = Address::repeat_byte(0x02);
-            let beneficiary = Address::repeat_byte(0x03);
-            let starting_balance = U256::from(1_000_000);
-            let transfer_amount = U256::from(100);
-            let gas_limit = 1_000_000;
-            let gas_price = 1_000_000_000u64;
-            let amm_liquidity_reserve = 500_000u128;
-            let amm_liquidity = U256::from(amm_liquidity_reserve);
-
-            let actions = StorageActions::enabled();
-            let fee_token_override = Arc::new(Mutex::new(Address::ZERO));
-            let ext = TempoEvmExt {
-                actions: actions.clone(),
-                fee_manager: Arc::new(StorageActionsFeeManager {
-                    fee_token: fee_token_override.clone(),
-                }),
-                ..Default::default()
-            };
-            let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-                *hardfork,
-                actions.clone(),
-                ext.non_creditable_slots.clone(),
-            );
-            let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, *hardfork, false);
-            version.chain_id = 1;
-            if hardfork.is_t7() {
-                version.gas_params[evm2::version::GasId::MaxRefundQuotient] = 1;
-            }
-            version.features.remove(EvmFeatures::BALANCE_CHECK);
-            version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-            let mut evm = Evm::new_with_execution_config_and_ext(
-                ExecutionConfig::for_spec_and_version(*hardfork, version),
-                *hardfork,
-                TempoBlockEnv {
-                    beneficiary,
-                    basefee: U256::from(gas_price),
-                    gas_limit: U256::from(30_000_000),
-                    ..Default::default()
-                },
-                tempo_tx_registry(SpecId::OSAKA),
-                InMemoryDB::default(),
-                precompiles,
-                ext,
-            );
-
-            let (fee_token, two_hop_fee_token) = actions
-                .unrecorded(|| {
-                    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                        TIP20Setup::path_usd(sender)
-                            .with_issuer(sender)
-                            .with_mint(sender, starting_balance)
-                            .apply()?;
-                        let fee_token = TIP20Setup::create("FeeToken", "FEE", sender)
-                            .with_salt(B256::ZERO)
-                            .with_issuer(sender)
-                            .with_mint(sender, starting_balance)
-                            .with_mint(recipient, starting_balance)
-                            .apply()?;
-                        let two_hop_fee_token =
-                            TIP20Setup::create("TwoHopFeeToken", "2HOP", sender)
-                                .with_salt(B256::repeat_byte(0x01))
-                                .quote_token(fee_token.address())
-                                .with_issuer(sender)
-                                .with_mint(sender, starting_balance)
-                                .apply()?;
-
-                        let mut fee_manager = TipFeeManager::new();
-                        fee_manager.set_user_token(
-                            sender,
-                            IFeeManager::setUserTokenCall {
-                                token: fee_token.address(),
-                            },
-                        )?;
-                        fee_manager.mint(
-                            sender,
-                            fee_token.address(),
-                            PATH_USD_ADDRESS,
-                            amm_liquidity,
-                            sender,
-                        )?;
-                        let two_hop_first_pool_id =
-                            PoolKey::new(two_hop_fee_token.address(), fee_token.address()).get_id();
-                        let two_hop_first_pool_slot =
-                            U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
-                                .mapping_slot(fee_manager_slots::POOLS);
-                        StorageCtx.sstore(
-                            TIP_FEE_MANAGER_ADDRESS,
-                            two_hop_first_pool_slot,
-                            Pool {
-                                reserve_user_token: 0,
-                                reserve_validator_token: amm_liquidity_reserve,
-                            }
-                            .encode_to_slot()?,
-                        )?;
-
-                        Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
-                            fee_token.address(),
-                            two_hop_fee_token.address(),
-                        ))
-                    })
-                })
-                .expect("TIP20 setup should succeed");
-            evm.state_mut().commit_transaction();
-            evm.state_mut().clear_transaction_state();
-            assert_eq!(actions.take(), Some(vec![]));
-
-            let sender_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
-            let fee_manager_balance_slot =
-                TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
-            let recipient_balance_slot = recipient.mapping_slot(tip20_slots::BALANCES);
-            let sender_reward_info_slot = sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
-            let recipient_reward_info_slot = recipient.mapping_slot(tip20_slots::USER_REWARD_INFO);
-            let validator_token_slot =
-                beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
-            let user_token_slot = sender.mapping_slot(fee_manager_slots::USER_TOKENS);
-            let collected_fees_slot = PATH_USD_ADDRESS
-                .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
-            let pool_id = PoolKey::new(fee_token, PATH_USD_ADDRESS).get_id();
-            let pool_slot =
-                U256::from_be_bytes::<32>(pool_id.into()).mapping_slot(fee_manager_slots::POOLS);
-            let pending_pool_reservation_slot = U256::from_be_bytes::<32>(pool_id.into())
-                .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
-            let two_hop_direct_pool_id = PoolKey::new(two_hop_fee_token, PATH_USD_ADDRESS).get_id();
-            let two_hop_direct_pool_slot = U256::from_be_bytes::<32>(two_hop_direct_pool_id.into())
-                .mapping_slot(fee_manager_slots::POOLS);
-            let two_hop_first_pool_id = PoolKey::new(two_hop_fee_token, fee_token).get_id();
-            let two_hop_first_pool_slot = U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
-                .mapping_slot(fee_manager_slots::POOLS);
-            let two_hop_first_pending_pool_reservation_slot =
-                U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
-                    .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
-            let receive_policy_config_slot =
-                recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
-            let nonce_key = U256::from(42);
-            let sender_nonce_key_slot = nonce_key
-                .mapping_slot(sender.mapping_slot(tempo_precompiles::nonce::slots::NONCES));
-
-            #[rustfmt::skip]
-                let labels = StorageActionSnapshotLabels {
-                    addresses: BTreeMap::from([
-                        (PATH_USD_ADDRESS, "PATH_USD"),
-                        (fee_token, "FEE_TOKEN"),
-                        (two_hop_fee_token, "TWO_HOP_FEE_TOKEN"),
-                        (TIP_FEE_MANAGER_ADDRESS, "TIP_FEE_MANAGER"),
-                        (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
-                        (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
-                        (NONCE_PRECOMPILE_ADDRESS, "NONCE_MANAGER"),
-                    ]),
-                    slots: BTreeMap::from([
-                        ((TIP_FEE_MANAGER_ADDRESS, validator_token_slot), "validatorTokens[beneficiary]"),
-                        ((TIP_FEE_MANAGER_ADDRESS, user_token_slot), "userTokens[sender]"),
-                        ((TIP_FEE_MANAGER_ADDRESS, collected_fees_slot), "collectedFees[beneficiary][PATH_USD]"),
-                        ((TIP_FEE_MANAGER_ADDRESS, pool_slot), "pools[FEE_TOKEN][PATH_USD]"),
-                        ((TIP_FEE_MANAGER_ADDRESS, pending_pool_reservation_slot), "pendingFeeSwapReservation[FEE_TOKEN][PATH_USD]"),
-                        ((TIP_FEE_MANAGER_ADDRESS, two_hop_direct_pool_slot), "pools[TWO_HOP_FEE_TOKEN][PATH_USD]"),
-                        ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pool_slot), "pools[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
-                        ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pending_pool_reservation_slot), "pendingFeeSwapReservation[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
-                        ((TIP403_REGISTRY_ADDRESS, receive_policy_config_slot), "receivePolicies[recipient]"),
-                        ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
-                        ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(fee_token)), "storageCredits[FEE_TOKEN]"),
-                        ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(two_hop_fee_token)), "storageCredits[TWO_HOP_FEE_TOKEN]"),
-                        ((NONCE_PRECOMPILE_ADDRESS, sender_nonce_key_slot), "nonces[sender][42]"),
-                    ]),
-                    tip20_slots: BTreeMap::from([
-                        (tip20_slots::CURRENCY, "currency"),
-                        (tip20_slots::QUOTE_TOKEN, "quoteToken"),
-                        (tip20_slots::TRANSFER_POLICY_ID, "transferPolicyId"),
-                        (tip20_slots::PAUSED, "paused"),
-                        (tip20_slots::GLOBAL_REWARD_PER_TOKEN, "globalRewardPerToken"),
-                        (sender_balance_slot, "balances[sender]"),
-                        (fee_manager_balance_slot, "balances[FeeManager]"),
-                        (recipient_balance_slot, "balances[recipient]"),
-                        (sender_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[sender].rewardRecipient"),
-                        (sender_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[sender].rewardPerToken"),
-                        (sender_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[sender].rewardBalance"),
-                        (recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[recipient].rewardRecipient"),
-                        (recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[recipient].rewardPerToken"),
-                        (recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[recipient].rewardBalance"),
-                    ]),
-                };
-
-            let run_transfer = |evm: &mut TempoEvm<'_>,
-                                caller: Address,
-                                to: Address,
-                                amount: U256,
-                                nonce: u64,
-                                nonce_key: U256,
-                                fee_token: Address|
-             -> eyre::Result<Vec<String>> {
-                let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
-                *fee_token_override.lock().unwrap() = fee_token;
-                let tx: TempoTxEnv = if nonce_key.is_zero() {
-                    let tx = TxLegacy {
-                        chain_id: Some(1),
-                        nonce,
-                        gas_price: u128::from(gas_price),
-                        gas_limit,
-                        to: TxKind::Call(PATH_USD_ADDRESS),
-                        input: calldata,
-                        ..Default::default()
-                    };
-                    let tx = Signed::new_unchecked(
-                        tx,
-                        alloy_primitives::Signature::test_signature(),
-                        B256::ZERO,
-                    );
-                    Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), caller).into()
-                } else {
-                    Recovered::new_unchecked(
-                        TempoTxEnvelope::AA(AASigned::new_unhashed(
-                            TempoTransaction {
-                                chain_id: 1,
-                                fee_token: Some(fee_token),
-                                max_priority_fee_per_gas: u128::from(gas_price),
-                                max_fee_per_gas: u128::from(gas_price),
-                                gas_limit,
-                                calls: vec![Call {
-                                    to: TxKind::Call(PATH_USD_ADDRESS),
-                                    value: U256::ZERO,
-                                    input: calldata,
-                                }],
-                                nonce_key,
-                                nonce,
-                                ..Default::default()
-                            },
-                            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                                alloy_primitives::Signature::test_signature(),
-                            )),
-                        )),
-                        caller,
-                    )
-                    .into()
-                };
-                let result = evm
-                    .transact(&Recovered::new_unchecked(tx, caller))?
-                    .detach();
-                assert!(result.result.status, "hardfork: {hardfork:?}");
-                let actions = actions
-                    .take()
-                    .expect("storage action recording should be enabled");
-                assert_storage_actions_reconstruct_evm_state(
-                    &actions,
-                    &result.pending_state,
-                    *hardfork,
-                );
-                evm.commit_source(&result.pending_state);
-                Ok(snapshot_storage_actions(&actions, &labels))
-            };
-
-            let snapshot = IndexMap::from([
-                // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
-                (
-                    "direct_first_transfer",
-                    run_transfer(
-                        &mut evm,
-                        sender,
-                        recipient,
-                        transfer_amount,
-                        0,
-                        U256::ZERO,
-                        fee_token,
-                    )
-                    .unwrap(),
-                ),
-                // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
-                // and fee balances are no longer zero.
-                (
-                    "direct_second_transfer",
-                    run_transfer(
-                        &mut evm,
-                        sender,
-                        recipient,
-                        transfer_amount,
-                        1,
-                        U256::ZERO,
-                        fee_token,
-                    )
-                    .unwrap(),
-                ),
-                // Same as second transfer, but different fee token that requires a two-hop path.
-                (
-                    "twohop_first_transfer",
-                    run_transfer(
-                        &mut evm,
-                        sender,
-                        recipient,
-                        transfer_amount,
-                        2,
-                        U256::ZERO,
-                        two_hop_fee_token,
-                    )
-                    .unwrap(),
-                ),
-                // Same as third transfer.
-                (
-                    "twohop_second_transfer",
-                    run_transfer(
-                        &mut evm,
-                        sender,
-                        recipient,
-                        transfer_amount,
-                        3,
-                        U256::ZERO,
-                        two_hop_fee_token,
-                    )
-                    .unwrap(),
-                ),
-                // TIP-20 transfer with a 2D nonce.
-                (
-                    "2d_nonce_first_transfer",
-                    run_transfer(
-                        &mut evm,
-                        sender,
-                        recipient,
-                        transfer_amount,
-                        0,
-                        nonce_key,
-                        fee_token,
-                    )
-                    .unwrap(),
-                ),
-                (
-                    "2d_nonce_second_transfer",
-                    run_transfer(
-                        &mut evm,
-                        sender,
-                        recipient,
-                        transfer_amount,
-                        1,
-                        nonce_key,
-                        fee_token,
-                    )
-                    .unwrap(),
-                ),
-                // Clear sender balance, minting a storage credit for PATH_USD.
-                ("clear_balance_transfer", {
-                    let sender_balance = evm
-                        .overlay_db()
-                        .storage_ref(PATH_USD_ADDRESS, sender_balance_slot)
-                        .expect("sender balance slot should be available");
-                    run_transfer(
-                        &mut evm,
-                        sender,
-                        recipient,
-                        sender_balance,
-                        4,
-                        U256::ZERO,
-                        fee_token,
-                    )
-                    .unwrap()
-                }),
-                // Recreate sender balance, consuming the PATH_USD storage credit through an SSTORE.
-                (
-                    "recreate_balance_transfer",
-                    run_transfer(
-                        &mut evm,
-                        recipient,
-                        sender,
-                        transfer_amount,
-                        0,
-                        U256::ZERO,
-                        fee_token,
-                    )
-                    .unwrap(),
-                ),
-            ]);
-            insta::with_settings!({
-                snapshot_path => "../snapshots",
-                prepend_module_to_snapshot => false,
-            }, {
-                insta::assert_yaml_snapshot!(
-                    format!(
-                        "tempo_evm__evm__tests__tip20_full_evm_storage_actions_{}",
-                        hardfork.name()
-                    ),
-                    snapshot
-                );
-            });
-        }
-    }
-
-    /// Test that TempoEvm applies custom gas params via `tempo_gas_params()`.
-    /// This verifies the [TIP-1000] gas parameter override mechanism.
-    ///
-    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
-    #[test]
-    fn test_tempo_evm_applies_gas_params() {
-        // Create EVM with T1 hardfork to get TIP-1000 gas params
-        let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false);
-
-        // Verify gas params were applied (check a known T1 override)
-        // T1 has tx_eip7702_per_empty_account_cost = 12,500
-        let gas_params = &version.gas_params;
-        assert_eq!(
-            gas_params.get(evm2::version::GasId::TxEip7702PerEmptyAccountCost),
-            12_500,
-            "T1 should have EIP-7702 per empty account cost of 12,500"
-        );
-    }
-
-    /// Test that TempoEvm respects the gas limit cap passed in via EvmEnv.
-    /// Note: The 30M [TIP-1000] gas cap is set in ConfigureEvm::evm_env(), not here.
-    /// This test verifies that TempoEvm::new() preserves the cap from the input.
-    ///
-    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
-    #[test]
-    fn test_tempo_evm_respects_gas_cap() {
-        let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false);
-
-        // Verify gas limit cap is preserved
-        assert_eq!(
-            version.tx_gas_limit_cap,
-            TempoHardfork::T1.tx_gas_limit_cap().unwrap(),
-            "TempoEvm should preserve the gas limit cap from input"
-        );
-    }
-
-    /// Test that gas params differ between T0 and T1 hardforks.
-    #[test]
-    fn test_tempo_evm_gas_params_differ_t0_vs_t1() {
-        // Create T0 and T1 EVMs
-        let t0 = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T0, false);
-        let t1 = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false);
-
-        // T0 should have default EIP-7702 cost (25,000)
-        // T1 should have reduced cost (12,500)
-        let t0_eip7702_cost = t0
-            .gas_params
-            .get(evm2::version::GasId::TxEip7702PerEmptyAccountCost);
-        let t1_eip7702_cost = t1
-            .gas_params
-            .get(evm2::version::GasId::TxEip7702PerEmptyAccountCost);
-
-        assert_eq!(t0_eip7702_cost, 25_000, "T0 should have default 25,000");
-        assert_eq!(t1_eip7702_cost, 12_500, "T1 should have reduced 12,500");
-        assert_ne!(
-            t0_eip7702_cost, t1_eip7702_cost,
-            "Gas params should differ between T0 and T1"
-        );
-    }
-
-    /// Test that T1 has significantly higher state creation costs.
-    #[test]
-    fn test_tempo_evm_t1_state_creation_costs() {
-        use evm2::version::GasId;
-
-        let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1, false);
-        let gas_params = &version.gas_params;
-
-        // Verify TIP-1000 state creation cost increases
-        assert_eq!(
-            gas_params.get(GasId::SstoreSetWithoutLoadCost),
-            250_000,
-            "T1 SSTORE set cost should be 250,000"
-        );
-        assert_eq!(
-            gas_params.get(GasId::TxCreateCost),
-            500_000,
-            "T1 TX create cost should be 500,000"
-        );
-        assert_eq!(
-            gas_params.get(GasId::Create),
-            500_000,
-            "T1 CREATE opcode cost should be 500,000"
-        );
-        assert_eq!(
-            gas_params.get(GasId::NewAccountCost),
-            250_000,
-            "T1 new account cost should be 250,000"
-        );
-        assert_eq!(
-            gas_params.get(GasId::CodeDepositCost),
-            1_000,
-            "T1 code deposit cost should be 1,000 per byte"
-        );
-    }
 }

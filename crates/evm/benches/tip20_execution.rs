@@ -2,7 +2,7 @@
 //!
 //! By default this generates txgen-style AA TIP20 transfers from the benchmark mnemonic. Set
 //! `TEMPO_TIP20_EXEC_TXS` to a newline-delimited raw 2718 txgen output file to replay exact
-//! txgen transactions against the in-memory fixed-cache execution path.
+//! txgen transactions against the in-memory execution path.
 
 mod common;
 
@@ -468,7 +468,7 @@ fn tip20_execution(c: &mut Criterion) {
         ));
         execute_txs(
             &config,
-            fixture.prewarm_state_db(),
+            fixture.state_db(),
             &workload.transactions,
             workload.block_timestamp,
             hardfork,
@@ -506,7 +506,7 @@ fn tip20_execution(c: &mut Criterion) {
             ));
             execute_txs(
                 &config,
-                fixture.prewarm_state_db(),
+                fixture.state_db(),
                 &reward_workload.transactions,
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,

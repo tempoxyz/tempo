@@ -49,10 +49,6 @@ impl ExecutionFixture {
     pub(crate) fn state_db(&self) -> InMemoryDB {
         self.db.clone()
     }
-
-    pub(crate) fn prewarm_state_db(&self) -> InMemoryDB {
-        self.state_db()
-    }
 }
 
 pub(crate) fn current_active_hardfork() -> TempoHardfork {

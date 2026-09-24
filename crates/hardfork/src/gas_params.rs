@@ -99,19 +99,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tempo_override_gas_params_are_cached() {
+    fn test_tempo_override_gas_params_match_across_forks() {
         let t1 = version(SpecId::OSAKA, TempoHardfork::T1, false);
         let t5 = version(SpecId::OSAKA, TempoHardfork::T5, false);
         assert_eq!(
             t1.gas_params, t5.gas_params,
-            "T1+ TIP-1000 gas params should share the same table"
+            "T1+ TIP-1000 gas params should have equal values"
         );
 
         let amsterdam_t4 = version(SpecId::OSAKA, TempoHardfork::T4, true);
         let amsterdam_t5 = version(SpecId::OSAKA, TempoHardfork::T5, true);
         assert_eq!(
             amsterdam_t4.gas_params, amsterdam_t5.gas_params,
-            "Amsterdam gas params should share the same table"
+            "Amsterdam gas params should have equal values"
         );
     }
 
@@ -156,11 +156,11 @@ mod tests {
 
         assert_eq!(gas[GasId::MaxRefundQuotient], 1);
 
-        // T7+ shares the same table.
+        // T7+ has equal gas parameters.
         assert_eq!(
             gas,
             version(SpecId::OSAKA, TempoHardfork::T8, false).gas_params,
-            "T7+ TIP-1060 gas params should share the same table"
+            "T7+ TIP-1060 gas params should have equal values"
         );
     }
 

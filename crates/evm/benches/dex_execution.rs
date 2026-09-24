@@ -1,7 +1,7 @@
 //! Stablecoin DEX order execution benchmark.
 //!
 //! Generates txgen-style AA transactions that exercise DEX order storage against the in-memory
-//! fixed-cache execution path. This is intended as a small CodSpeed/flamegraph target for
+//! execution path. This is intended as a small CodSpeed/flamegraph target for
 //! TIP-1062 order storage layout work.
 
 #[expect(dead_code)]
@@ -350,9 +350,10 @@ fn dex_order_execution(c: &mut Criterion) {
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
             ));
+            // Validate the workload once before timing fresh copies of the seeded state.
             execute_txs(
                 &config,
-                fixture.prewarm_state_db(),
+                fixture.state_db(),
                 &dex_workload.transactions,
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
