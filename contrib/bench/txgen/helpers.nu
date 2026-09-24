@@ -729,8 +729,8 @@ def txgen-run-streaming-command [command: string] {
         "; exit 0"
     ] | str join)
 
-    # Redirect explicitly because this helper's caller captures its return value.
-    bash -lc $wrapped_command out> /dev/stdout err> /dev/stderr
+    # Append explicitly: callers capture the status, and stdout may be a service log.
+    bash -lc $wrapped_command out>> /dev/stdout err>> /dev/stderr
     let exit_code = (try {
         open --raw $status_path | str trim | into int
     } catch {

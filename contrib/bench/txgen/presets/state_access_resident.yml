@@ -1,0 +1,36 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range: [0, ${TXGEN_ACCOUNTS}]
+
+artifacts:
+  StateAccessBenchmark: ../state-access-benchmark.json
+
+templates:
+  state_access_resident:
+    type: tempo
+    from: { pool: users, select: random }
+    gas_limit: 10000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x535441544541434345535342454e434800000000"
+      abi: StateAccessBenchmark
+      function: touchStateDependent
+      args:
+        - { random_bytes: 32 }
+        # Same 4096 cold EVM reads and cursor write; only the working set changes.
+        - 1
+
+mix:
+  - template: state_access_resident
+    weight: 100

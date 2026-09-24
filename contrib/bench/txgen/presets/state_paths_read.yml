@@ -1,0 +1,51 @@
+# Ordinary resident-working-set control; no state-dependent address selection.
+chain_id: 1337
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range: [0, ${TXGEN_ACCOUNTS}]
+artifacts:
+  Vault:
+    abi: ../state-path-vault.abi.json
+    bytecode: ../vault/bytecodes/StrategyVault.bin
+setup:
+  steps:
+    - id: vault
+      deploy:
+        type: eip1559
+        from: {pool: users, select: {index: 0}}
+        nonce: 0
+        artifact: Vault
+        gas_limit: 30000000
+        constructor_args:
+          - "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+          - "State Path Control"
+          - "SPC"
+          - 6
+templates:
+  bytecode_read:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    calls:
+      - to: "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        abi: Vault
+        function: name
+        args: []
+      - to: "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        abi: Vault
+        function: symbol
+        args: []
+      - to: "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        abi: Vault
+        function: decimals
+        args: []
+mix:
+  - template: bytecode_read
+    weight: 100

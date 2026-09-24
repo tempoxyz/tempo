@@ -39,6 +39,7 @@ const PAYMENTS_BLOAT_WORST_CASE = {
 const GENERAL_STATE_ACCESS_WORST_CASE = {
     dependent_preset: "state_access_dependent"
     predictable_preset: "state_access_predictable"
+    resident_preset: "state_access_resident"
     tps: 50000
     duration: 1200
     summary_warmup_seconds: 600
@@ -204,8 +205,25 @@ def bench-restore-at [state_path: string, mount_point: string, datadir: string] 
             return
         }
         print $"Restoring snapshot from ($datadir).virgin..."
-        rm -rf $datadir
-        ^cp -a $"($datadir).virgin" $datadir
+        let target = ($datadir | path expand)
+        let mount = ($mount_point | path expand)
+        # A not-yet-created target cannot be canonicalized, but its parent can.
+        let parent = ($target | path dirname | path expand)
+        if $parent != $mount or ($target | str ends-with ".virgin") {
+            print $"Refusing to replace unexpected scratch path: ($target)"
+            exit 1
+        }
+        # Nodes run in privileged scopes, so scratch descendants can be root-owned.
+        let removed = (^sudo -n rm -rf --one-file-system -- $target | complete)
+        if $removed.exit_code != 0 or ($target | path exists) {
+            print $"Scratch removal failed: ($removed.stderr)"
+            exit 1
+        }
+        let copied = (^cp -aT -- $"($datadir).virgin" $target | complete)
+        if $copied.exit_code != 0 {
+            print $"Snapshot copy failed: ($copied.stderr)"
+            exit 1
+        }
     }
 }
 
@@ -1082,8 +1100,27 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
-    bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
-    bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    if not ($ctx | get -o single_restore | default false) {
+        bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
+        bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    }
+
+    if ($ctx | get -o observe_state_paths | default false) {
+        let checkpoint_tool = ($env.STATE_PATH_CHECKPOINT_TOOL? | default ($ctx.regenesis_tempo | path dirname | path join "read_finish_checkpoint"))
+        for datadir in [$ctx.a.datadir $ctx.b.datadir] {
+            let result = (run-external $checkpoint_tool ($datadir | path join "db") | complete)
+            if $result.exit_code != 0 {
+                print $"Cannot verify restored checkpoint: ($result.stderr)"
+                exit 1
+            }
+            let checkpoint = ($result.stdout | from json)
+            if $checkpoint.block_number != 0 {
+                print $"Ordinary control requires a genesis snapshot, got block ($checkpoint.block_number) at ($datadir)"
+                exit 1
+            }
+        }
+        print "  Verified both restored Finish checkpoints are at genesis."
+    }
 
     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
@@ -1113,7 +1150,18 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-a"
     let b_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-b"
     for dir in [$a_log_dir $b_log_dir] {
-        if ($dir | path exists) { rm -rf $dir }
+        if ($dir | path exists) {
+            let target = ($dir | path expand)
+            if ($target | path dirname) != ($LOCALNET_DIR | path expand) {
+                print $"Refusing to replace unexpected log path: ($target)"
+                exit 1
+            }
+            let removed = (^sudo -n rm -rf --one-file-system -- $target | complete)
+            if $removed.exit_code != 0 or ($target | path exists) {
+                print $"Log cleanup failed: ($removed.stderr)"
+                exit 1
+            }
+        }
         mkdir $dir
     }
 
@@ -1199,6 +1247,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
 
+    if $phase_exit == 0 and $ctx.observe_state_paths and $ctx.preset in ["state_access_dependent" "history_code" "history_write"] {
+        print "  Persisting ordinary blocks before the history workload (avoids genesis Merkle rebuild)..."
+        ^node contrib/bench/state-path-observer.cjs prime --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --output $"($ctx.results_dir)/state-path-priming-($phase).json"
+        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
+    }
+
     let tracy_output = $"($ctx.results_dir)/tracy-profile-($phase).tracy"
     let tracy_log = $"($ctx.results_dir)/tracy-capture-($phase).log"
     mut tracy_capture_started = false
@@ -1235,6 +1289,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
     let submit_rpc_url = if $ctx.isolated_roles { $a_rpc } else { [$a_rpc $b_rpc] | str join "," }
+    let observe_state_paths = ($ctx | get -o observe_state_paths | default false)
+    let observer_stop = $"($ctx.results_dir)/state-path-observer-($phase).stop"
+    if $phase_exit == 0 and $observe_state_paths {
+        job spawn {
+            ^node contrib/bench/state-path-observer.cjs watch --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --seconds (($ctx.duration + 600) | into string) --stop $observer_stop --output $"($ctx.results_dir)/state-path-observer-($phase).jsonl"
+        } | ignore
+    }
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
@@ -1299,6 +1360,19 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
     }
+
+    if $phase_exit == 0 and ($ctx | get -o validate_state_access | default false) {
+        print "  Auditing state-access receipts and traces after the measured load..."
+        ^node contrib/bench/state-access-validation.cjs audit --rpc $b_rpc --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
+        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
+    }
+
+    if $phase_exit == 0 and $observe_state_paths {
+        print "  Auditing contract access paths and waiting for durable state/trie persistence..."
+        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --warmup-seconds ($ctx.summary_warmup_seconds | into string) --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
+        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
+    }
+    if $observe_state_paths { "stop" | save -f $observer_stop }
 
     if $tracy_capture_started {
         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
@@ -1457,6 +1531,10 @@ def "main render-txgen-spec" [
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
+    --feature-binary: string = ""                       # Explicit local feature binary; recorded by SHA256, never cached
+    --xtask-binary: string = ""                         # Explicit genesis generator for zero-bloat local-binary initialization
+    --snapshot-suffix: string = ""                      # Separate snapshots; letters, digits, underscore, hyphen only
+    --single-restore                                    # One audited feature phase: reuse initial restore and retain stopped scratch
     --preset: string = ""                               # Txgen preset name
     --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
@@ -1469,6 +1547,8 @@ def "main e2e" [
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --bloat-keccak-signable-shared                       # Make the full shared bloat account range signable
     --state-access-bloat                                  # Fill the benchmark predeploy with direct-storage pages
+    --validate-state-access                               # Audit sampled receipts and traces after the measured load
+    --observe-state-paths                                 # Audit ordinary read/write controls and observe durable persistence
     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
@@ -1511,6 +1591,23 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    let feature_binary = if $feature_binary == "" { "" } else { $feature_binary | path expand }
+    let xtask_binary = if $xtask_binary == "" { "" } else { $xtask_binary | path expand }
+    if $snapshot_suffix != "" and not ($snapshot_suffix =~ '^[a-zA-Z0-9_-]+$') {
+        error make { msg: "--snapshot-suffix requires a simple filename suffix" }
+    }
+    if $single_restore and ($snapshot_suffix == "" or $run_pairs != 1 or $run_side != "feature" or not $observe_state_paths or $force_bloat or $init_only or $feature_binary == "") {
+        error make { msg: "--single-restore requires one observed local-binary feature phase and a dedicated prebuilt snapshot suffix" }
+    }
+    if $feature_binary != "" and ($run_side != "feature" or (($init_only or $force_bloat) and $bloat != 0)) {
+        error make { msg: "--feature-binary requires --run-side feature; initialization is restricted to --bloat 0" }
+    }
+    if $feature_binary != "" and not ($feature_binary | path exists) {
+        error make { msg: $"Feature binary not found: ($feature_binary)" }
+    }
+    if $xtask_binary != "" and ($feature_binary == "" or $bloat != 0 or not ($xtask_binary | path exists)) {
+        error make { msg: "--xtask-binary requires an existing executable, --feature-binary, and --bloat 0" }
+    }
     let preset_spec = if $preset_path == "" {
         txgen-resolve-bench-spec $preset
     } else {
@@ -1522,6 +1619,12 @@ def "main e2e" [
         }
     }
     let preset_path = $preset_spec.spec_path
+    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write" "state_access_dependent" "history_code" "history_write"]) {
+        error make { msg: "--observe-state-paths requires an isolated supported state-path preset" }
+    }
+    if ($preset in ["history_code" "history_write"] or ($preset == "state_access_dependent" and $observe_state_paths)) and (not $state_access_bloat or $snapshot_suffix != "history_paths" or not $observe_state_paths) {
+        error make { msg: "History presets require the dedicated history_paths state-access fixture and observer" }
+    }
     if not ($preset_path | path exists) {
         print $"Error: txgen preset file not found: ($preset_path)"
         exit 1
@@ -1610,8 +1713,9 @@ def "main e2e" [
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
     let bloat_mode_suffix = if $state_access_bloat { "_state_access" } else if $bloat_keccak_signable_shared { "_full_signable" } else { "" }
     let role_mode_suffix = if $isolated_roles { "_isolated_roles" } else { "" }
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
+    let extra_suffix = if $snapshot_suffix == "" { "" } else { $"_($snapshot_suffix)" }
+    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)($extra_suffix)"
+    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)($extra_suffix)"
     let a_identity = $a_db
     let b_identity = $b_db
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
@@ -1645,6 +1749,9 @@ def "main e2e" [
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db $isolated_roles)
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
+    if $feature_binary != "" and $should_init_snapshots and ($bloat_mib != 0 or $xtask_binary == "") {
+        error make { msg: "Local-binary initialization requires --bloat 0 and --xtask-binary; no dump import is allowed" }
+    }
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
         let missing_a = (e2e-snapshot-missing-files $a_db)
@@ -1669,14 +1776,21 @@ def "main e2e" [
         mkdir $E2E_BLOAT_TMP_DIR
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
-        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+        if $feature_binary == "" {
+            build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
+        }
+        let tempo_bin = if $feature_binary != "" { $feature_binary } else if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         let committee = if $isolated_roles { $a_validator } else { $E2E_VALIDATORS }
         let follower_args = if $isolated_roles { ["--followers" $b_validator] } else { [] }
         let state_access_args = if $state_access_bloat { ["--state-access-benchmark"] } else { [] }
         print $"Generating local e2e committee: ($committee)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args ...$state_access_args
+        if $xtask_binary != "" {
+            run-external $xtask_binary "generate-localnet" "-o" $init_dir "--accounts" ($genesis_accounts | into string) "--validators" $committee ...$follower_args "--seed" ($E2E_SEED | into string) "--force" ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
+        } else {
+            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args ...$state_access_args
+        }
+        if $env.LAST_EXIT_CODE != 0 { error make { msg: "Localnet generation failed" } }
 
         let trusted_peers = (trusted-peers-from-localnet $init_dir)
         if $trusted_peers == "" {
@@ -1753,7 +1867,6 @@ def "main e2e" [
     mkdir $results_dir
     print $"BENCH_RESULTS_DIR=($results_dir)"
     cp $preset_path $"($results_dir)/txgen-spec.yml"
-
     git worktree prune
     mkdir $BENCH_WORKTREES_DIR
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
@@ -1793,7 +1906,7 @@ def "main e2e" [
     if $needs_baseline {
         $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
     }
-    if $needs_feature {
+    if $needs_feature and $feature_binary == "" {
         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
     $builds | par-each { |b|
@@ -1804,7 +1917,16 @@ def "main e2e" [
         }
     } | ignore
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
-    let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    let feature_tempo = if $feature_binary != "" { $feature_binary } else if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    for build in [{side: baseline, binary: $baseline_tempo} {side: feature, binary: $feature_tempo}] {
+        if $build.binary != "" {
+            let digest = (^sha256sum $build.binary | split row " " | first)
+            let version = (run-external $build.binary "--version" | complete)
+            if $version.exit_code != 0 { error make { msg: $"($build.side) binary version check failed" } }
+            {path: $build.binary, sha256: $digest, version: $version.stdout, local_override: ($build.side == "feature" and $feature_binary != "")}
+                | to json | save -f $"($results_dir)/node-binary-($build.side).json"
+        }
+    }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
@@ -1849,6 +1971,7 @@ def "main e2e" [
         preset_path: $preset_path
         tps: $tps
         duration: $duration
+        summary_warmup_seconds: $summary_warmup_seconds
         accounts: $accounts
         max_concurrent_requests: $max_concurrent_requests
         scrape_interval_ms: $scrape_interval_ms
@@ -1886,6 +2009,9 @@ def "main e2e" [
         regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
         isolated_roles: $isolated_roles
+        validate_state_access: $validate_state_access
+        observe_state_paths: $observe_state_paths
+        single_restore: $single_restore
     }
 
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
@@ -1977,11 +2103,148 @@ def "main e2e" [
         try { git worktree remove --force $feature_wt } catch { }
     }
     cleanup-local-e2e-processes
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    if not $single_restore {
+        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    }
     if $e2e_exit != 0 {
         exit $e2e_exit
     }
+    # Named multi-case suites index standard reports without parsing console output.
+    $results_dir
+}
+
+# Shared dispatcher for the native command and its machine-readable dry-run plan.
+def run-state-access-case [options: record, config: record, workload: record] {
+    let baseline_args = ([$config.node_args $options.baseline_args] | where {|arg| $arg != ""} | str join " ")
+    let feature_args = ([$config.node_args $options.feature_args] | where {|arg| $arg != ""} | str join " ")
+    (main e2e
+        --baseline $options.baseline --feature $options.feature
+        --baseline-name $options.baseline_label --feature-name $options.feature_label
+        --feature-binary $options.feature_binary
+        --preset $workload.scenario --preset-path $"contrib/bench/txgen/presets/($workload.scenario).yml"
+        --tps $config.tps --duration $config.duration --accounts $config.accounts
+        --summary-warmup-blocks 0 --summary-warmup-seconds $config.warmup
+        --bloat ($config.fixture_requirements.bloat_mib // 1000)
+        --state-access-bloat --snapshot-suffix $config.fixture_requirements.snapshot_suffix
+        --isolated-roles --observe-state-paths --token-count 1
+        --gas-limit $config.gas_limit --general-gas-limit $config.gas_limit
+        --run-pairs $options.run_pairs --run-side $options.run_side
+        --baseline-args $baseline_args --feature-args $feature_args
+        --baseline-env $options.baseline_env --feature-env $options.feature_env
+        --bench-env $options.bench_env --profile $options.profile --no-cache=($options.no_cache)
+        --clickhouse-run ""
+        --single-restore=($options.feature_binary != "" and $options.run_pairs == 1))
+}
+
+# Runs under the same flock as the fixture tools and legacy measurement runner.
+def run-state-access-suite [plan_path: string] {
+    mut plan = (open $plan_path)
+    let suite_dir = ($plan_path | path dirname)
+    let fixture_check = (^node contrib/bench/state-access-config.cjs --ignore-env --check-fixtures | complete)
+    if $fixture_check.exit_code != 0 { error make {msg: $fixture_check.stderr} }
+    $plan = ($plan | upsert fixture ($fixture_check.stdout | from json))
+    let checkpoint_tool = ($env.STATE_PATH_CHECKPOINT_TOOL? | default $"target/($plan.options.profile)/examples/read_finish_checkpoint" | path expand)
+    if not ($checkpoint_tool | path exists) {
+        error make {msg: "Build the read_finish_checkpoint example or set STATE_PATH_CHECKPOINT_TOOL before running this suite"}
+    }
+    for side in [a b] {
+        let db = $"/reth-bench-($side)/tempo_e2e_($plan.configuration.fixture_requirements.bloat_mib)mb_state_access_isolated_roles_history_paths.virgin/db"
+        let checked = (run-external $checkpoint_tool $db | complete)
+        if $checked.exit_code != 0 { error make {msg: $checked.stderr} }
+        if ($checked.stdout | from json).block_number != 0 { error make {msg: "Prepared fixture is not at genesis"} }
+    }
+    $env.STATE_PATH_CHECKPOINT_TOOL = $checkpoint_tool
+    $plan = ($plan | upsert checkpoint_tool {path: $checkpoint_tool, sha256: (^sha256sum $checkpoint_tool | split row " " | first)})
+    for side in [baseline feature] {
+        if $plan.options.run_side == "comparison" or $plan.options.run_side == $side {
+            let reference = ($plan.options | get $side)
+            let resolved = (^git rev-parse --verify $"($reference)^{commit}" | complete)
+            if $resolved.exit_code != 0 { error make {msg: $resolved.stderr} }
+            $plan = ($plan | upsert options ($plan.options | upsert $side ($resolved.stdout | str trim)))
+        }
+    }
+    $plan | to json | save -f $plan_path
+    mut manifest = {configuration: $plan.configuration, options: $plan.options, fixture: $plan.fixture, builds: {}, cases: [], status: running}
+    $manifest | to json | save -f $"($suite_dir)/manifest.json"
+    $env.BENCH_DISABLE_SCHELK = "1"
+    $env.TXGEN_HISTORY_CODE_COUNT = ($plan.fixture.code_count | into string)
+    for workload in $plan.configuration.cases {
+        let fixture_check = (^node contrib/bench/state-access-config.cjs --ignore-env --check-fixtures | complete)
+        if $fixture_check.exit_code != 0 { error make {msg: $fixture_check.stderr} }
+        if ($fixture_check.stdout | from json) != $plan.fixture { error make {msg: "Fixture changed during suite"} }
+        $env.BENCHMARK_ID = $"($plan.benchmark_id)-($workload.id)"
+        print $"=== State-access case: ($workload.id) ==="
+        let results_dir = (run-state-access-case $plan.options $plan.configuration $workload)
+        $plan | to json | save -f $"($results_dir)/state-access-suite.json"
+        for side in [baseline feature] {
+            let provenance_path = $"($results_dir)/node-binary-($side).json"
+            if ($provenance_path | path exists) {
+                let provenance = (open $provenance_path)
+                let previous = ($manifest.builds | get -o $side)
+                if $previous != null and $previous.sha256 != $provenance.sha256 {
+                    error make {msg: $"($side) binary changed between workloads; not a matched comparison"}
+                }
+                $manifest = ($manifest | upsert builds ($manifest.builds | upsert $side $provenance))
+            }
+        }
+        $manifest = ($manifest | upsert cases ($manifest.cases | append {id: $workload.id, scenario: $workload.scenario, results_dir: $results_dir}))
+        $manifest | to json | save -f $"($suite_dir)/manifest.json"
+    }
+    $manifest | upsert status complete | to json | save -f $"($suite_dir)/manifest.json"
+    print $"STATE_ACCESS_SUITE_DIR=($suite_dir)"
+}
+
+# Matched SLOAD, bytecode and write workloads on the same prepared 100 GB state fixture.
+def "main state-access-bloat-worst-case" [
+    --baseline: string = "HEAD"                         # Baseline git SHA/ref
+    --feature: string = "HEAD"                          # Feature git SHA/ref
+    --case: string = "all"                              # all, sload, bytecode, or writes
+    --list                                              # List saved workloads without touching databases
+    --dry-run                                           # Print the resolved suite plan without building or running
+    --tps: int                                          # Offered TPS; defaults to the saved configuration (1000)
+    --duration: int                                     # Load seconds; defaults to the saved configuration (1200)
+    --summary-warmup-seconds: int                        # Excluded warmup; defaults to the saved configuration (600)
+    --run-pairs: int = 1                                # Baseline/feature run pairs, following normal e2e ordering
+    --run-side: string = "feature"                      # comparison, feature, or baseline
+    --baseline-args: string = ""                        # Additional baseline node arguments
+    --feature-args: string = ""                         # Additional feature node arguments
+    --baseline-env: string = ""                         # Environment vars for baseline nodes
+    --feature-env: string = ""                          # Environment vars for feature nodes
+    --bench-env: string = "RUST_LOG=error"               # Environment vars for txgen
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --feature-binary: string = ""                       # Explicit local binary, feature-only; otherwise build the git ref
+    --no-cache                                          # Skip binary cache
+] {
+    mut config_args = ["--resolve" "--ignore-env"]
+    if $case != "all" { $config_args = ($config_args | append ["--case" $case]) }
+    if $tps != null { $config_args = ($config_args | append ["--tps" ($tps | into string)]) }
+    if $duration != null { $config_args = ($config_args | append ["--duration" ($duration | into string)]) }
+    if $summary_warmup_seconds != null { $config_args = ($config_args | append ["--warmup" ($summary_warmup_seconds | into string)]) }
+    let resolved = (^node contrib/bench/state-access-config.cjs ...$config_args | complete)
+    if $resolved.exit_code != 0 { error make {msg: $resolved.stderr} }
+    let config = ($resolved.stdout | from json)
+    if $list { return ($config.cases | select id scenario description) }
+    if $run_pairs < 1 or $run_side not-in ["feature" "baseline" "comparison"] {
+        error make {msg: "Positive --run-pairs and --run-side comparison, feature, or baseline required"}
+    }
+    if $feature_binary != "" and $run_side != "feature" {
+        error make {msg: "--feature-binary requires --run-side feature"}
+    }
+    let options = {baseline: $baseline, feature: $feature, baseline_label: $baseline, feature_label: $feature,
+        feature_binary: $feature_binary, run_pairs: $run_pairs, run_side: $run_side, profile: $profile,
+        baseline_args: $baseline_args, feature_args: $feature_args, baseline_env: $baseline_env,
+        feature_env: $feature_env, bench_env: $bench_env, no_cache: $no_cache}
+    let timestamp = (date now | format date "%Y%m%d-%H%M%S-%3f")
+    let benchmark_id = $"state-access-bloat-($timestamp)"
+    let plan = {kind: native-e2e-state-access-suite, benchmark_id: $benchmark_id, configuration: $config, options: $options}
+    if $dry_run { return ($plan | to json) }
+    let suite_dir = $"($BENCH_RESULTS_DIR)/($benchmark_id)"
+    mkdir $suite_dir
+    let plan_path = ($"($suite_dir)/configuration.json" | path expand)
+    $plan | to json | save -f $plan_path
+    print $"STATE_ACCESS_SUITE_DIR=($suite_dir)"
+    ^flock --nonblock /tmp/tempo-general-state-access-20260922.lock node contrib/bench/state-access-suite-process.cjs $nu.current-exe $plan_path
 }
 
 # Worst-case payment workload: fully signable 100 GB state, active empty blacklist policy,
@@ -2048,6 +2311,8 @@ def "main general-state-access-worst-case" [
     --baseline: string = "HEAD"                         # Baseline git SHA/ref
     --feature: string = "HEAD"                          # Feature git SHA/ref
     --predictable                                       # Use the calldata-determined control workload
+    --resident                                          # Keep the same database but read one cache-resident page
+    --validate-state-access                             # Audit sampled receipts and traces after the measured load
     --tps: int = $GENERAL_STATE_ACCESS_WORST_CASE.tps   # Target TPS
     --duration: int = $GENERAL_STATE_ACCESS_WORST_CASE.duration # Duration in seconds
     --summary-warmup-seconds: int = $GENERAL_STATE_ACCESS_WORST_CASE.summary_warmup_seconds # Initial seconds excluded from summary
@@ -2063,7 +2328,12 @@ def "main general-state-access-worst-case" [
     --init-only                                         # Build snapshots without running load
     --no-cache                                          # Skip binary cache
 ] {
-    let preset = if $predictable {
+    if $predictable and $resident {
+        error make { msg: "--predictable and --resident are mutually exclusive" }
+    }
+    let preset = if $resident {
+        $GENERAL_STATE_ACCESS_WORST_CASE.resident_preset
+    } else if $predictable {
         $GENERAL_STATE_ACCESS_WORST_CASE.predictable_preset
     } else {
         $GENERAL_STATE_ACCESS_WORST_CASE.dependent_preset
@@ -2090,6 +2360,7 @@ def "main general-state-access-worst-case" [
         --summary-warmup-seconds $summary_warmup_seconds
         --bloat $GENERAL_STATE_ACCESS_WORST_CASE.bloat
         --state-access-bloat
+        --validate-state-access=($validate_state_access)
         --isolated-roles
         --token-count 1
         --gas-limit $GENERAL_STATE_ACCESS_WORST_CASE.gas_limit

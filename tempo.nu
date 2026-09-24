@@ -192,7 +192,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
 
 # Check if schelk is available
 def has-schelk [] {
-    (which schelk | length) > 0
+    ($env.BENCH_DISABLE_SCHELK? | default "") != "1" and (which schelk | length) > 0
 }
 
 # Check if MinIO client (mc) is available

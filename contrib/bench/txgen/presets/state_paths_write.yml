@@ -1,0 +1,45 @@
+# Ordinary ERC20 approval updates over a bounded set of users and one spender.
+chain_id: 1337
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range: [0, ${TXGEN_ACCOUNTS}]
+artifacts:
+  Vault:
+    abi: ../state-path-vault.abi.json
+    bytecode: ../vault/bytecodes/StrategyVault.bin
+setup:
+  steps:
+    - id: vault
+      deploy:
+        type: eip1559
+        from: {pool: users, select: {index: 0}}
+        nonce: 0
+        artifact: Vault
+        gas_limit: 30000000
+        constructor_args:
+          - "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+          - "State Path Control"
+          - "SPC"
+          - 6
+templates:
+  allowance_write:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+      abi: Vault
+      function: approve
+      args:
+        - "0x000000000000000000000000000000000000dead"
+        - {uniform: [1, 1000000]}
+mix:
+  - template: allowance_write
+    weight: 100
