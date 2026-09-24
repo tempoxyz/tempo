@@ -1,7 +1,6 @@
-use crate::{TempoEvmTypes, TempoTxEnv};
-use alloy_consensus::transaction::Recovered;
+use crate::TempoTxEnv;
 use alloy_primitives::Address;
-use evm2::{AnyError, Evm, registry::HandlerError};
+use evm2::{AnyError, registry::HandlerError};
 
 /// Error returned while validating a transaction with Tempo transaction-pool semantics.
 #[derive(Debug)]
@@ -47,39 +46,4 @@ pub trait TempoPoolValidationEvm: reth_evm::Evm<Transaction = TempoTxEnv> {
         &mut self,
         tx: TempoTxEnv,
     ) -> (TempoPoolValidationResult, TempoTxEnv);
-}
-
-impl TempoPoolValidationEvm for Evm<'_, TempoEvmTypes> {
-    fn configure_for_pool(&mut self) {
-        self.ext_mut().skip_valid_after_check = true;
-        self.ext_mut().skip_liquidity_check = true;
-    }
-
-    fn validate_pool_transaction(
-        &mut self,
-        tx: TempoTxEnv,
-    ) -> (TempoPoolValidationResult, TempoTxEnv) {
-        let signer = tx.evm_tx().signer();
-        let tx = Recovered::new_unchecked(tx, signer);
-        let result = crate::handler::validate_transaction(self, &tx)
-            .map(|()| ValidationContext {
-                fee_token: self
-                    .ext()
-                    .resolved_fee_token
-                    .expect("successful Tempo handler resolves a fee token"),
-                key_expiry: self.ext().key_expiry,
-            })
-            .map_err(|err| match err {
-                HandlerError::Fatal(error) => TempoPoolValidationError::Fatal(error),
-                HandlerError::Database(error) if error.is_fatal() => {
-                    TempoPoolValidationError::Fatal(AnyError::new(error))
-                }
-                err => TempoPoolValidationError::Invalid(err),
-            });
-        self.state_mut().clear_transaction_state();
-        self.ext_mut().resolved_fee_token = None;
-        self.ext_mut().key_expiry = None;
-        self.ext().non_creditable_slots.borrow_mut().clear();
-        (result, tx.into_inner())
-    }
 }

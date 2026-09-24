@@ -412,16 +412,14 @@ where
 
         // T7 is active on all supported networks. Fees below its floor can never become
         // executable; fees below the current dynamic base fee can wait for block selection.
-        let max_fee_per_gas = transaction.max_fee_per_gas();
-        if max_fee_per_gas < u128::from(TEMPO_T7_BASE_FEE_FLOOR) {
+        if transaction.max_fee_per_gas() < u128::from(TEMPO_T7_BASE_FEE_FLOOR) {
+            let error = HandlerError::FeeCapLessThanBaseFee {
+                max_fee_per_gas: U256::from(transaction.max_fee_per_gas()),
+                base_fee: U256::from(TEMPO_T7_BASE_FEE_FLOOR),
+            };
             return TransactionValidationOutcome::Invalid(
                 transaction,
-                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                    HandlerError::FeeCapLessThanBaseFee {
-                        max_fee_per_gas: U256::from(max_fee_per_gas),
-                        base_fee: U256::from(TEMPO_T7_BASE_FEE_FLOOR),
-                    },
-                )),
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(error)),
             );
         }
 
@@ -471,7 +469,12 @@ where
             );
         }
 
-        // Run the unified EVM validation pipeline and retain the transaction environment.
+        // Run the unified EVM validation pipeline.
+        // This covers: non-zero value, keychain version, intrinsic gas, fee payer/token
+        // resolution & validation, nonce checks (protocol, 2D, expiring), keychain
+        // authorization, and balance checks.
+        //
+        // Returns resolved fee token and key expiry for pool caching.
         let result = if let Some(tx_env) = transaction.cached_tx_env() {
             let (result, _) = evm.validate_pool_transaction(tx_env.clone());
             result
@@ -481,7 +484,7 @@ where
             result
         };
         let validation_ctx = match result {
-            Ok(context) => context,
+            Ok(ctx) => ctx,
             Err(TempoPoolValidationError::Fatal(err)) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }

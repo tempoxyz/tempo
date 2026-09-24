@@ -103,12 +103,12 @@ impl TempoPooledTransaction {
         encoded_length: usize,
     ) -> Self {
         let is_payment = transaction.is_payment_v2();
-        let in_memory_size = transaction.size();
         let value = transaction.value();
         let cost =
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
+        let in_memory_size = transaction.size();
         Self {
             inner: EthPooledTransaction {
                 transaction,
