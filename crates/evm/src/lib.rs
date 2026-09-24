@@ -207,10 +207,24 @@ impl ConfigureEvm for TempoEvmConfig {
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
         let blob_params = self.chain_spec.blob_params_at_timestamp(header.timestamp());
         let tempo_spec = self.chain_spec.tempo_hardfork_at(header.timestamp());
-        let block = block_env(
-            header,
-            blob_params,
-            TempoBlockExt {
+        let block = TempoBlockEnv {
+            number: U256::from(header.number()),
+            beneficiary: header.beneficiary(),
+            timestamp: U256::from(header.timestamp()),
+            gas_limit: U256::from(header.gas_limit()),
+            basefee: U256::from(header.base_fee_per_gas().unwrap_or_default()),
+            difficulty: header.difficulty(),
+            prevrandao: header
+                .mix_hash()
+                .map(|hash| U256::from_be_slice(hash.as_slice()))
+                .unwrap_or_default(),
+            blob_basefee: header
+                .excess_blob_gas()
+                .zip(blob_params)
+                .map(|(excess, params)| U256::from(params.calc_blob_fee(excess)))
+                .unwrap_or_default(),
+            slot_num: U256::from(header.slot_number().unwrap_or_default()),
+            ext: TempoBlockExt {
                 timestamp_millis_part: header.timestamp_millis_part,
                 epoch_length: self
                     .chain_spec
@@ -219,7 +233,8 @@ impl ConfigureEvm for TempoEvmConfig {
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
             },
-        );
+            _non_exhaustive: (),
+        };
         Ok(self.resolved_env(tempo_spec, block, blob_params))
     }
 
@@ -234,30 +249,25 @@ impl ConfigureEvm for TempoEvmConfig {
         let excess_blob_gas = parent
             .maybe_next_block_excess_blob_gas(blob_params)
             .or_else(|| blob_params.map(|_| 0));
-        let header = TempoHeader {
-            inner: alloy_consensus::Header {
-                parent_hash: parent.inner.hash_slow(),
-                beneficiary: attributes.suggested_fee_recipient,
-                timestamp: attributes.timestamp,
-                number: parent.number().saturating_add(1),
-                gas_limit: attributes.gas_limit,
-                base_fee_per_gas: Some(
-                    self.chain_spec
-                        .next_block_base_fee(parent, attributes.timestamp)
-                        .unwrap_or_default(),
-                ),
-                mix_hash: attributes.prev_randao,
-                slot_number: attributes.slot_number,
-                excess_blob_gas,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
         let tempo_spec = self.chain_spec.tempo_hardfork_at(attributes.timestamp);
-        let block = block_env(
-            &header,
-            blob_params,
-            TempoBlockExt {
+        let block = TempoBlockEnv {
+            number: U256::from(parent.number().saturating_add(1)),
+            beneficiary: attributes.suggested_fee_recipient,
+            timestamp: U256::from(attributes.timestamp),
+            gas_limit: U256::from(attributes.gas_limit),
+            basefee: U256::from(
+                self.chain_spec
+                    .next_block_base_fee(parent, attributes.timestamp)
+                    .unwrap_or_default(),
+            ),
+            difficulty: U256::ZERO,
+            prevrandao: U256::from_be_slice(attributes.prev_randao.as_slice()),
+            blob_basefee: excess_blob_gas
+                .zip(blob_params)
+                .map(|(excess, params)| U256::from(params.calc_blob_fee(excess)))
+                .unwrap_or_default(),
+            slot_num: U256::from(attributes.slot_number.unwrap_or_default()),
+            ext: TempoBlockExt {
                 timestamp_millis_part: attributes.timestamp_millis_part,
                 epoch_length: self
                     .chain_spec
@@ -266,7 +276,8 @@ impl ConfigureEvm for TempoEvmConfig {
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
             },
-        );
+            _non_exhaustive: (),
+        };
         Ok(self.resolved_env(tempo_spec, block, blob_params))
     }
 
@@ -320,33 +331,6 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,
         })
-    }
-}
-
-fn block_env(
-    header: &TempoHeader,
-    blob_params: Option<BlobParams>,
-    ext: TempoBlockExt,
-) -> TempoBlockEnv {
-    TempoBlockEnv {
-        number: U256::from(header.number()),
-        beneficiary: header.beneficiary(),
-        timestamp: U256::from(header.timestamp()),
-        gas_limit: U256::from(header.gas_limit()),
-        basefee: U256::from(header.base_fee_per_gas().unwrap_or_default()),
-        difficulty: header.difficulty(),
-        prevrandao: header
-            .mix_hash()
-            .map(|hash| U256::from_be_slice(hash.as_slice()))
-            .unwrap_or_default(),
-        blob_basefee: header
-            .excess_blob_gas()
-            .zip(blob_params)
-            .map(|(excess, params)| U256::from(params.calc_blob_fee(excess)))
-            .unwrap_or_default(),
-        slot_num: U256::from(header.slot_number().unwrap_or_default()),
-        ext,
-        _non_exhaustive: (),
     }
 }
 
