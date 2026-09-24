@@ -15,13 +15,13 @@ Matching currency metadata establishes the protocol's 1:1 reference assumption, 
 
 Sign the full funding array with the owner key. Access key funding remains disabled, including requirements whose balances are already satisfied. The native source's `data` is ABI `(address assetIn, uint256 maxAmountIn)`; use `uint256.max` for an uncapped caller request. The protocol still applies the aggregate shortfall budget.
 
-Anyone can call `discover(account, token, amount, maxCost, policyData)` with ABI-encoded `address[] inputTokens` as `policyData`. Candidates preserve input order and contain nonempty `requestData` and independent `availableAmount` estimates. Discovery grants no authority.
+Anyone can call `discover(account, token, amount, maxCost, configData)` with ABI-encoded `address[] inputTokens` as `configData`. Candidates preserve input order and contain nonempty `executionData` and independent `availableAmount` estimates. Discovery grants no authority.
 
-Do not sum estimates: candidates can share liquidity or inputs. Use candidate `requestData` directly as transaction source `data`.
+Do not sum estimates: candidates can share liquidity or inputs. Use candidate `executionData` directly as transaction source `data`.
 
 Anyone can call the native source's read-only `quote` to estimate one invocation. It accounts for the requested ceiling, wallet and DEX balances, liquidity, input caps, and cost budget. Quotes grant no spending authority.
 
-`Quote.requestData` is reusable by both `quote` and `fund`; re-quoting preserves the input and tightens its cap. The handler obtains a fresh quote before `fund` and independently verifies actual delivery and cost.
+`Quote.executionData` is reusable by both `quote` and `fund`; re-quoting preserves the input and tightens its cap. The handler obtains a fresh quote before `fund` and independently verifies actual delivery and cost.
 
 Funding runs before application calls under the same rollback checkpoint. A funding or application failure reverts swaps, token movements, and funding events. Fees and nonces follow normal transaction behavior. Fees require existing funds or a sponsor. Application calls must remain nonempty under the existing transaction rules.
 
