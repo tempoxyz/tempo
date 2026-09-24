@@ -43,7 +43,7 @@ fn protocol_discovery_uses_static_source_calls() {
     );
     assert!(result.is_success(), "{result:?}");
     let found =
-        IFundingDiscovery::discoverCall::abi_decode_returns(result.output().unwrap()).unwrap();
+        IFundingDiscovery::discover_0Call::abi_decode_returns(result.output().unwrap()).unwrap();
     assert_eq!(found.token, PATH_USD_ADDRESS);
     assert_eq!(found.amount, U256::from(50));
     assert_eq!(found.slippageBps, 100);
@@ -67,7 +67,7 @@ fn protocol_discovery_uses_static_source_calls() {
     );
     assert!(result.is_success(), "{result:?}");
     let found =
-        IFundingDiscovery::discoverCall::abi_decode_returns(result.output().unwrap()).unwrap();
+        IFundingDiscovery::discover_0Call::abi_decode_returns(result.output().unwrap()).unwrap();
     assert_eq!(found.sources.len(), 2);
     for (i, candidate) in found.sources.iter().enumerate() {
         assert_eq!(candidate.target, source);
@@ -87,7 +87,7 @@ fn protocol_discovery_uses_static_source_calls() {
             )
     );
 
-    let denied = IFundingDiscovery::discoverCall {
+    let denied = IFundingDiscovery::discover_0Call {
         token: Address::ZERO,
         amount: U256::ZERO,
         ..request
@@ -143,10 +143,10 @@ fn rules(sources: Vec<IFundingPolicy::Source>) -> IFundingPolicy::Rules {
     }
 }
 
-fn request() -> IFundingDiscovery::discoverCall {
-    IFundingDiscovery::discoverCall {
+fn request() -> IFundingDiscovery::discover_0Call {
+    IFundingDiscovery::discover_0Call {
         policyId: 1,
-        policyRules: rules(vec![]).abi_encode().into(),
+        rules: rules(vec![]).abi_encode().into(),
         account: ACCOUNT,
         token: PATH_USD_ADDRESS,
         amount: U256::from(50),
@@ -156,10 +156,10 @@ fn request() -> IFundingDiscovery::discoverCall {
 fn set_sources(
     evm: &mut TempoEvm<CacheDB<EmptyDB>, Trace>,
     sources: Vec<IFundingPolicy::Source>,
-) -> IFundingDiscovery::discoverCall {
+) -> IFundingDiscovery::discover_0Call {
     let rules = rules(sources);
-    let request = IFundingDiscovery::discoverCall {
-        policyRules: rules.abi_encode().into(),
+    let request = IFundingDiscovery::discover_0Call {
+        rules: rules.abi_encode().into(),
         ..request()
     };
     let update = IFundingPolicy::setRulesCall { policyId: 1, rules };
@@ -219,7 +219,7 @@ fn discovery_preserves_source_order_and_independent_estimates() {
     );
     assert!(result.is_success(), "{result:?}");
     let found =
-        IFundingDiscovery::discoverCall::abi_decode_returns(result.output().unwrap()).unwrap();
+        IFundingDiscovery::discover_0Call::abi_decode_returns(result.output().unwrap()).unwrap();
     assert_eq!(
         found.sources.iter().map(|c| c.target).collect::<Vec<_>>(),
         vec![b, a]
@@ -246,7 +246,7 @@ fn discovery_checks_policy_before_balance_and_skips_sources_when_satisfied() {
     );
     assert!(result.is_success(), "{result:?}");
     assert!(
-        IFundingDiscovery::discoverCall::abi_decode_returns(result.output().unwrap())
+        IFundingDiscovery::discover_0Call::abi_decode_returns(result.output().unwrap())
             .unwrap()
             .sources
             .is_empty()
@@ -390,7 +390,7 @@ fn discovery_out_of_gas_and_malformed_input_do_not_abort_execution() {
     let result = call(
         &mut evm,
         TxKind::Call(FUNDING_DISCOVERY_ADDRESS),
-        IFundingDiscovery::discoverCall::SELECTOR.to_vec().into(),
+        IFundingDiscovery::discover_0Call::SELECTOR.to_vec().into(),
     );
     assert!(!result.is_success());
     assert!(
@@ -430,7 +430,7 @@ fn recursive_discovery_is_bounded_by_evm_gas_and_unwinds() {
     assert!(deployed.is_success());
     let request = set_sources(&mut evm, vec![rule(deployed.created_address().unwrap())]);
     let mut configure = alloy_primitives::keccak256("setRules(bytes)")[..4].to_vec();
-    configure.extend((request.policyRules.clone(),).abi_encode_params());
+    configure.extend((request.rules.clone(),).abi_encode_params());
     assert!(
         call(
             &mut evm,
@@ -474,7 +474,7 @@ fn discovery_rejects_empty_source_return_data() {
 fn discovery_rejects_overflowing_cost_budget() {
     let mut evm = setup();
     let request = request();
-    let request = IFundingDiscovery::discoverCall {
+    let request = IFundingDiscovery::discover_0Call {
         amount: U256::MAX,
         ..request
     };

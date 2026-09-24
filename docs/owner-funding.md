@@ -8,7 +8,7 @@ The protocol defines these fixed addresses in `tempo-contracts`:
 | --- | --- | --- |
 | `TIP20_FUNDER_ADDRESS` | `0x1120000000000000000000000000000000000000` | Protocol funding caller and accounting identity. Solidity cannot initiate funding. |
 | `FUNDING_POLICY_ADDRESS` | `0x1120000000000000000000000000000000000002` | Shared policy storage and administration. |
-| `NATIVE_DEX_FUNDING_SOURCE_ADDRESS` | `0x1120000000000000000000000000000000000001` | Native DEX source implementing `supportsToken`, `discover`, `quote`, and `fund`. |
+| `DEX_FUNDING_SOURCE_ADDRESS` | `0x1120000000000000000000000000000000000001` | Native DEX source implementing `supportsToken`, `discover`, `quote`, and `fund`. |
 
 The native source requires initialized, unpaused TIP-20 tokens with matching currency metadata across the input, output, and every intermediate route token. The DEX currently supports USD pairs only. Newly created USD tokens need no funding allowlist entry, but must have a supported route and available liquidity.
 

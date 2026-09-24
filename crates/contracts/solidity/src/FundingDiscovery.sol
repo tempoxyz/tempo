@@ -28,28 +28,43 @@ interface IDiscoveryToken {
     function balanceOf(address account) external view returns (uint256);
 }
 
-/// @notice Estimates candidates under a stored policy without granting spending authority.
+/// @notice Estimates candidates under supplied rules without granting spending authority.
 contract FundingDiscovery is IFundingDiscovery {
     IFundingPolicy public constant fundingPolicy =
         IFundingPolicy(0x1120000000000000000000000000000000000002);
+
+    function discover(address account, address token, uint256 amount, bytes calldata rules)
+        external
+        view
+        returns (Discovery memory)
+    {
+        return discoverRules(account, token, amount, rules);
+    }
 
     function discover(
         uint64 policyId,
         address account,
         address token,
         uint256 amount,
-        bytes calldata policyRules
-    ) external view returns (Discovery memory result) {
+        bytes calldata rules
+    ) external view returns (Discovery memory) {
         IFundingPolicy.Policy memory policy = fundingPolicy.getPolicy(policyId);
         bytes32 domain = keccak256("tempo.funding-policy.rules.v1");
-        if (
-            policyRules.length == 0
-                || keccak256(abi.encode(domain, policyRules)) != policy.rulesHash
-        ) {
+        if (keccak256(abi.encode(domain, rules)) != policy.rulesHash) {
             revert IFundingPolicy.InvalidPolicyData();
         }
-        IFundingPolicy.Rules memory rules = abi.decode(policyRules, (IFundingPolicy.Rules));
-        if (keccak256(abi.encode(rules)) != keccak256(policyRules)) {
+        return discoverRules(account, token, amount, rules);
+    }
+
+    function discoverRules(address account, address token, uint256 amount, bytes calldata encoded)
+        private
+        view
+        returns (Discovery memory result)
+    {
+        IFundingPolicy.Rules memory rules;
+        try this.decodeRules(encoded) returns (IFundingPolicy.Rules memory decoded) {
+            rules = decoded;
+        } catch {
             revert IFundingPolicy.InvalidPolicyData();
         }
         uint256 routeIndex;
@@ -100,6 +115,18 @@ contract FundingDiscovery is IFundingDiscovery {
                     availableAmount: candidates[i][j].availableAmount
                 });
             }
+        }
+    }
+
+    /// @dev An external decoder lets discovery normalize malformed ABI errors before reading balances.
+    function decodeRules(bytes calldata encoded)
+        external
+        pure
+        returns (IFundingPolicy.Rules memory rules)
+    {
+        rules = abi.decode(encoded, (IFundingPolicy.Rules));
+        if (keccak256(abi.encode(rules)) != keccak256(encoded)) {
+            revert IFundingPolicy.InvalidPolicyData();
         }
     }
 }

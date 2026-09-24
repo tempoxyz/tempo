@@ -1,8 +1,10 @@
 # Funding discovery
 
-Call `FundingDiscovery.discover(policyId, account, token, amount, policyRules)` at `0x1120000000000000000000000000000000000003` before constructing a transaction. `policyRules` is `abi.encode(rules)` from the policy creation or rules-update event; its hash must match the current policy. Discovery uses ordinary EVM static calls to query sources in policy order with the same shortfall and aggregate cost budget.
+Call `FundingDiscovery.discover(account, token, amount, rules)` at `0x1120000000000000000000000000000000000003` to discover using supplied rules without a stored policy. `rules` is the canonical ABI encoding of `IFundingPolicy.Rules`.
 
-Copy candidate `target` and `data` into `requireFunds[].sources`. Candidates are independent estimates, not reserved funds. Execution validates the current policy, key permissions, available funds, and slippage.
+The overload `discover(policyId, account, token, amount, rules)` also verifies the rules against the stored policy commitment. Both use ordinary EVM static calls to query sources in rule order with the same shortfall and aggregate cost budget. Neither grants spending authority.
+
+Copy candidate `target` and `data` into `requireFunds[].sources`. Candidates are independent estimates, not reserved funds. Access key execution still requires `policyRules` matching its stored policy. Execution validates applicable key permissions, available funds, and slippage.
 
 The node installs the compiled Solidity runtime at T13. Ordinary EVM execution handles source calls; no custom discovery frames are required. Regenerate artifacts from the repository root:
 
