@@ -539,7 +539,7 @@ where
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
-        if self.inner.spec.is_t12_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t14_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(NATIVE_MULTISIG_ADDRESS, &[])?;
             if let Some(factory) = self.evm().block().multisig_recovery_factory {
                 self.reserve_multisig_factory(factory)?;
