@@ -236,7 +236,7 @@ on:
         required: true
         default: false
       bench-args:
-        description: Extra bench args.
+        description: Extra bench args. Prefix with --wait-for-run=<id> to require a successful multiregion run and teardown before provisioning.
         type: string
         required: false
         default: ""
@@ -270,7 +270,7 @@ jobs:
       packages: read
     name: bench-e2e-multi-region
     runs-on: depot-ubuntu-latest-8
-    timeout-minutes: 360
+    timeout-minutes: ${{ (inputs.cloud || 'aws') == 'aws' && (inputs.bloat || '100') != '0' && 720 || 360 }}
 
     env:
       TF_IN_AUTOMATION: "1"
@@ -279,6 +279,7 @@ jobs:
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
+      BENCH_NATIVE_SNAPSHOTS: ${{ (inputs.cloud || 'aws') == 'aws' && (inputs.bloat || '100') != '0' && 'true' || 'false' }}
       BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
       BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
       BENCH_GCP_WIF_PROVIDER: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
@@ -347,6 +348,41 @@ jobs:
 
             core.setFailed(`@${username} is not a member of ${org}`);
 
+      - name: Wait for prerequisite benchmark and teardown
+        if: startsWith(inputs['bench-args'], '--wait-for-run=')
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          WAIT_BENCH_ARGS: ${{ inputs['bench-args'] }}
+        with:
+          script: |
+            const args = process.env.WAIT_BENCH_ARGS;
+            const match = args.match(/^--wait-for-run=([1-9][0-9]*)(?:\s+|$)/);
+            const runId = Number(match?.[1]);
+            if (!match || !Number.isSafeInteger(runId)) {
+              throw new Error('wait-for-run must be a positive integer workflow run ID');
+            }
+            const remaining = args.slice(match[0].length);
+            if (remaining.includes('--wait-for-run')) throw new Error('Only one prerequisite run is supported');
+            for (let attempt = 0; attempt < 60; attempt++) {
+              const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: runId});
+              if (run.status === 'completed') {
+                if (run.conclusion !== 'success') throw new Error('Prerequisite benchmark did not succeed');
+                const {data: jobs} = await github.rest.actions.listJobsForWorkflowRun({...context.repo, run_id: runId});
+                const job = jobs.jobs.find(job => job.name === 'bench-e2e-multi-region');
+                for (const name of ['Start infrastructure teardown', 'Wait for infrastructure teardown']) {
+                  if (!job?.steps?.some(step => step.name === name && step.conclusion === 'success')) {
+                    throw new Error('Prerequisite benchmark is missing successful teardown: ' + name);
+                  }
+                }
+                core.exportVariable('BENCH_INPUT_BENCH_ARGS', remaining);
+                core.info('Prerequisite benchmark succeeded and its infrastructure was torn down');
+                return;
+              }
+              core.info('Waiting for prerequisite benchmark ' + runId + ': ' + run.status);
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+            throw new Error('Prerequisite benchmark is still unfinished after 30 minutes; refusing to provision');
+
       - name: Validate ValScope configuration
         if: env.BENCH_INPUT_VALSCOPE == 'true'
         env:
@@ -392,7 +428,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || '15938ab3c1884315e59af92f8b6d08187db12704' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -490,10 +526,11 @@ jobs:
       - name: Configure AWS credentials
         if: env.BENCH_INPUT_CLOUD == 'aws'
         uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
-        with:
+        with: &benchmark_aws_credentials
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: us-east-1
           role-duration-seconds: 21600
+          unset-current-credentials: true
 
       - name: Configure AWS S3 transfers
         if: env.BENCH_INPUT_CLOUD == 'aws'
@@ -581,11 +618,18 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
 
+      - name: Refresh AWS credentials before native baseline snapshot
+        if: env.BENCH_NATIVE_SNAPSHOTS == 'true' && steps.fetch_tempo_binaries.outcome == 'success'
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@bce53819ffa60fcdf8f0f349686d807e5a66a71b
+        with: *benchmark_aws_credentials
+
       - name: Generate initial validator state
         id: generate_initial_validator_state
         if: steps.fetch_tempo_binaries.outcome == 'success'
         continue-on-error: true
-        run: |
+        env:
+          BENCH_NATIVE_SNAPSHOT_BUILD_SIDE: ${{ env.BENCH_NATIVE_SNAPSHOTS == 'true' && 'baseline' || 'both' }}
+        run: &generate_validator_snapshot |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage generate-initial-validator-state \
             --cloud "$BENCH_INPUT_CLOUD" \
@@ -628,9 +672,27 @@ jobs:
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
+      - name: Refresh AWS credentials before native feature snapshot
+        if: env.BENCH_NATIVE_SNAPSHOTS == 'true' && steps.generate_initial_validator_state.outcome == 'success'
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@bce53819ffa60fcdf8f0f349686d807e5a66a71b
+        with: *benchmark_aws_credentials
+
+      - name: Generate native feature snapshot
+        id: generate_feature_snapshot
+        if: env.BENCH_NATIVE_SNAPSHOTS == 'true' && steps.generate_initial_validator_state.outcome == 'success'
+        continue-on-error: true
+        env:
+          BENCH_NATIVE_SNAPSHOT_BUILD_SIDE: feature
+        run: *generate_validator_snapshot
+
+      - name: Refresh AWS credentials before native validator initialization
+        if: env.BENCH_NATIVE_SNAPSHOTS == 'true' && steps.generate_feature_snapshot.outcome == 'success'
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@bce53819ffa60fcdf8f0f349686d807e5a66a71b
+        with: *benchmark_aws_credentials
+
       - name: Initialize ${{ env.BENCH_INPUT_VALIDATOR_COUNT }} validators with ${{ env.BENCH_INPUT_BLOAT }}GiB bloat file
         id: initialize_validator_state
-        if: steps.generate_initial_validator_state.outcome == 'success'
+        if: steps.generate_initial_validator_state.outcome == 'success' && (env.BENCH_NATIVE_SNAPSHOTS != 'true' || steps.generate_feature_snapshot.outcome == 'success')
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
@@ -722,6 +784,11 @@ jobs:
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
+      - name: Refresh AWS credentials before native infrastructure teardown
+        if: always() && !cancelled() && env.BENCH_NATIVE_SNAPSHOTS == 'true' && steps.checkout_benchmark_repo.outcome == 'success'
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@bce53819ffa60fcdf8f0f349686d807e5a66a71b
+        with: *benchmark_aws_credentials
+
       - name: Start infrastructure teardown
         if: always() && steps.checkout_benchmark_repo.outcome == 'success'
         run: |
@@ -771,6 +838,7 @@ jobs:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_FETCH_BINARIES_OUTCOME: ${{ steps.fetch_tempo_binaries.outcome }}
           BENCH_GENERATE_OUTCOME: ${{ steps.generate_initial_validator_state.outcome }}
+          BENCH_GENERATE_FEATURE_OUTCOME: ${{ steps.generate_feature_snapshot.outcome }}
           BENCH_INITIALIZE_OUTCOME: ${{ steps.initialize_validator_state.outcome }}
           BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
         with:
@@ -804,6 +872,7 @@ jobs:
             const lifecycleOutcomes = [
               process.env.BENCH_FETCH_BINARIES_OUTCOME,
               process.env.BENCH_GENERATE_OUTCOME,
+              process.env.BENCH_GENERATE_FEATURE_OUTCOME,
               process.env.BENCH_INITIALIZE_OUTCOME,
               process.env.BENCHMARK_OUTCOME,
             ];
@@ -850,7 +919,7 @@ jobs:
             --state-dir "$RUNNER_TEMP/terraform-destroy"
 
       - name: Check benchmark result
-        if: always() && (steps.fetch_tempo_binaries.outcome == 'failure' || steps.generate_initial_validator_state.outcome == 'failure' || steps.initialize_validator_state.outcome == 'failure' || steps.benchmark.outcome == 'failure')
+        if: always() && (steps.fetch_tempo_binaries.outcome == 'failure' || steps.generate_initial_validator_state.outcome == 'failure' || steps.generate_feature_snapshot.outcome == 'failure' || steps.initialize_validator_state.outcome == 'failure' || steps.benchmark.outcome == 'failure')
         run: exit 1
 
       - name: Fetch PR reporting token
