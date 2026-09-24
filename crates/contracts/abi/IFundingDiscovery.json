@@ -4,11 +4,6 @@
     "name": "discover",
     "inputs": [
       {
-        "name": "policyId",
-        "type": "uint64",
-        "internalType": "uint64"
-      },
-      {
         "name": "account",
         "type": "address",
         "internalType": "address"
@@ -24,9 +19,26 @@
         "internalType": "uint256"
       },
       {
-        "name": "rules",
-        "type": "bytes",
-        "internalType": "bytes"
+        "name": "slippageBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "sources",
+        "type": "tuple[]",
+        "internalType": "struct IFundingPolicy.Source[]",
+        "components": [
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "data",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -95,6 +107,11 @@
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "policyId",
+        "type": "uint64",
+        "internalType": "uint64"
       },
       {
         "name": "rules",

@@ -51,13 +51,13 @@ contract UnitSource {
         candidates = abi.encode(candidates_);
     }
 
-    function verify(bytes calldata requestData, bytes calldata policyData)
+    function verify(bytes calldata executionData, bytes calldata configData)
         external
         pure
         returns (bool)
     {
-        return requestData.length > 0 && keccak256(requestData) != keccak256(hex"ff")
-            && keccak256(policyData) == keccak256(hex"1122");
+        return executionData.length > 0 && keccak256(executionData) != keccak256(hex"ff")
+            && keccak256(configData) == keccak256(hex"1122");
     }
 
     function discover(
@@ -115,47 +115,64 @@ contract FundingDiscoveryTest {
         require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
     }
 
-    function testRulesOnlyDiscoveryWithoutPolicyStore() public {
+    function testNoncanonicalCommittedRulesRejectedBeforeBalanceShortcut() public {
+        setSources(new IFundingPolicy.Source[](0), 0);
+        bytes memory valid = rulesData;
+        for (uint256 i; i < 3; ++i) {
+            rulesData = i == 0 ? bytes("") : i == 1 ? bytes(hex"01") : bytes.concat(valid, hex"00");
+            store.set(
+                IFundingPolicy.Policy(
+                    new address[](0),
+                    keccak256(abi.encode(keccak256("tempo.funding-policy.rules.v1"), rulesData))
+                )
+            );
+            require(
+                bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector
+            );
+        }
+    }
+
+    function testPolicyFreeDiscoveryWithoutPolicyStore() public {
         token.set(ACCOUNT, 20_000_000);
         address target = source(30_000_000, 30_300_000, 2);
         setSources(single(target, hex"1122"), 100);
         IFundingDiscovery.Discovery memory expected =
-            helper.discover(1, ACCOUNT, address(token), 50_000_000, rulesData);
+            helper.discover(ACCOUNT, address(token), 50_000_000, 1, rulesData);
         vm.etch(address(store), hex"");
         IFundingDiscovery.Discovery memory result =
-            helper.discover(ACCOUNT, address(token), 50_000_000, rulesData);
+            helper.discover(ACCOUNT, address(token), 50_000_000, 100, single(target, hex"1122"));
         require(keccak256(abi.encode(result)) == keccak256(abi.encode(expected)));
         require(token.balanceOf(ACCOUNT) == 20_000_000);
     }
 
-    function testRulesOnlyDiscoveryAcceptsUncommittedRules() public {
+    function testPolicyFreeDiscoveryAcceptsUncommittedRules() public {
         setSources(new IFundingPolicy.Source[](0), 0);
         IFundingPolicy.Rules memory rules = abi.decode(rulesData, (IFundingPolicy.Rules));
         rules.maxSlippageBps = 100;
         rules.routes[0].sources = single(source(50, 50, 1), hex"1122");
         rulesData = abi.encode(rules);
-        IFundingDiscovery.Discovery memory result =
-            helper.discover(ACCOUNT, address(token), 50, rulesData);
+        IFundingDiscovery.Discovery memory result = helper.discover(
+            ACCOUNT, address(token), 50, rules.maxSlippageBps, rules.routes[0].sources
+        );
         require(result.slippageBps == 100 && result.sources.length == 1);
         require(bytes4(failure(1, address(token), 50)) == IFundingPolicy.InvalidPolicyData.selector);
     }
 
-    function testRulesOnlyValidationBeforeBalanceShortcut() public {
-        setSources(new IFundingPolicy.Source[](0), 100);
+    function testPolicyFreeValidationBeforeBalanceShortcut() public {
         token.set(ACCOUNT, 50);
-        require(helper.discover(ACCOUNT, address(token), 50, rulesData).sources.length == 0);
-        require(bytes4(failure(address(0xdead), 0)) == IFundingPolicy.TokenNotAllowed.selector);
-        rulesData = bytes.concat(rulesData, hex"00");
-        require(bytes4(failure(address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
-        rulesData = "";
-        require(bytes4(failure(address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
-        rulesData = hex"01";
-        require(bytes4(failure(address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
-        setSources(new IFundingPolicy.Source[](0), 10_001);
+        IFundingPolicy.Source[] memory sources = single(address(0), hex"1122");
+        require(helper.discover(ACCOUNT, address(token), 50, 100, sources).sources.length == 0);
+        setSources(sources, 10_001);
         require(bytes4(failure(address(token), 0)) == IFundingDiscovery.InvalidSlippage.selector);
     }
 
-    function testRulesOnlySourceFailuresAndInvalidCandidates() public {
+    function testPolicyFreeEmptySources() public view {
+        IFundingDiscovery.Discovery memory result =
+            helper.discover(ACCOUNT, address(token), 50, 100, new IFundingPolicy.Source[](0));
+        require(result.sources.length == 0 && result.slippageBps == 100 && result.amount == 50);
+    }
+
+    function testPolicyFreeSourceFailuresAndInvalidCandidates() public {
         IUnitDiscoverySource.Candidate[] memory candidates = new IUnitDiscoverySource.Candidate[](1);
         candidates[0] = IUnitDiscoverySource.Candidate(hex"ff", 50);
         address target = address(new UnitSource(ACCOUNT, address(token), 50, 50, candidates));
@@ -166,10 +183,16 @@ contract FundingDiscoveryTest {
     }
 
     function failure(address output, uint256 amount) internal view returns (bytes memory reason) {
+        IFundingPolicy.Rules memory rules = abi.decode(rulesData, (IFundingPolicy.Rules));
         (bool ok, bytes memory data) = address(helper)
             .staticcall(
                 abi.encodeWithSignature(
-                    "discover(address,address,uint256,bytes)", ACCOUNT, output, amount, rulesData
+                    "discover(address,address,uint256,uint16,(address,bytes)[])",
+                    ACCOUNT,
+                    output,
+                    amount,
+                    rules.maxSlippageBps,
+                    rules.routes[0].sources
                 )
             );
         require(!ok, "expected failure");
@@ -180,11 +203,11 @@ contract FundingDiscoveryTest {
         vm.deal(address(this), 1);
         (bool success,) = address(helper).call{value: 1}(
             abi.encodeWithSignature(
-                "discover(uint64,address,address,uint256,bytes)",
-                uint64(1),
+                "discover(address,address,uint256,uint64,bytes)",
                 ACCOUNT,
                 address(token),
                 50,
+                uint64(1),
                 rulesData
             )
         );
@@ -230,11 +253,11 @@ contract FundingDiscoveryTest {
         (bool ok, bytes memory data) = address(helper)
             .staticcall(
                 abi.encodeWithSignature(
-                    "discover(uint64,address,address,uint256,bytes)",
-                    id,
+                    "discover(address,address,uint256,uint64,bytes)",
                     ACCOUNT,
                     output,
                     amount,
+                    id,
                     rulesData
                 )
             );
@@ -251,7 +274,7 @@ contract FundingDiscoveryTest {
         sources[1] = IFundingPolicy.Source(second, hex"1122");
         setSources(sources, 100);
         IFundingDiscovery.Discovery memory result =
-            helper.discover(1, ACCOUNT, address(token), 50_000_000, rulesData);
+            helper.discover(ACCOUNT, address(token), 50_000_000, 1, rulesData);
         require(
             result.token == address(token) && result.amount == 50_000_000
                 && result.slippageBps == 100
@@ -275,8 +298,8 @@ contract FundingDiscoveryTest {
         require(bytes4(failure(2, address(token), 0)) == IFundingPolicy.PolicyNotFound.selector);
         require(bytes4(failure(1, address(0xdead), 0)) == IFundingPolicy.TokenNotAllowed.selector);
         token.set(ACCOUNT, 50);
-        require(helper.discover(1, ACCOUNT, address(token), 50, rulesData).sources.length == 0);
-        require(helper.discover(1, ACCOUNT, address(token), 0, rulesData).sources.length == 0);
+        require(helper.discover(ACCOUNT, address(token), 50, 1, rulesData).sources.length == 0);
+        require(helper.discover(ACCOUNT, address(token), 0, 1, rulesData).sources.length == 0);
     }
 
     function testEmptyRoutesRejectAndEmptySourcesReturnNoCandidates() public {
@@ -289,7 +312,7 @@ contract FundingDiscoveryTest {
         );
         require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.TokenNotAllowed.selector);
         setSources(new IFundingPolicy.Source[](0), 0);
-        require(helper.discover(1, ACCOUNT, address(token), 50, rulesData).sources.length == 0);
+        require(helper.discover(ACCOUNT, address(token), 50, 1, rulesData).sources.length == 0);
     }
 
     function testSourceFailuresPropagate() public {
@@ -323,11 +346,11 @@ contract FundingDiscoveryTest {
         (bool ok,) = address(helper)
             .call(
                 abi.encodeWithSignature(
-                    "discover(uint64,address,address,uint256,bytes)",
-                    uint64(1),
+                    "discover(address,address,uint256,uint64,bytes)",
                     ACCOUNT,
                     address(token),
                     50,
+                    uint64(1),
                     rulesData
                 )
             );
@@ -338,13 +361,13 @@ contract FundingDiscoveryTest {
         bps = uint16(uint256(bps) % 10_001);
         uint256 budget = uint256(amount) * (10_000 + uint256(bps)) / 10_000;
         setSources(single(source(amount, budget, 0), hex"1122"), bps);
-        helper.discover(1, ACCOUNT, address(token), amount, rulesData);
+        helper.discover(ACCOUNT, address(token), amount, 1, rulesData);
     }
 
     function testMaximumAmountAndOverflow() public {
         uint256 maximum = type(uint256).max;
         setSources(single(source(maximum, maximum, 0), hex"1122"), 0);
-        helper.discover(1, ACCOUNT, address(token), maximum, rulesData);
+        helper.discover(ACCOUNT, address(token), maximum, 1, rulesData);
         setSources(single(source(maximum, maximum, 0), hex"1122"), 1);
         require(bytes4(failure(1, address(token), maximum)) == bytes4(0x4e487b71));
     }

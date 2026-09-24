@@ -30,8 +30,8 @@ fn quote(input: Address, cap: U256, budget: U256) -> IFundingSource::quoteCall {
         amountOut: U256::from(50),
         assetOut: PATH_USD_ADDRESS,
         maxCost: budget,
-        requestData: (input, cap).abi_encode().into(),
-        policyData: Bytes::new(),
+        executionData: (input, cap).abi_encode().into(),
+        configData: Bytes::new(),
         ownerAuthorized: true,
     }
 }
@@ -56,7 +56,10 @@ fn caps_omission_zero_and_native_width_without_truncation() {
                 (plan.assetIn, plan.rate, plan.maxAmountIn),
                 (input, RATE_SCALE, expected)
             );
-            assert_eq!(source.decode(&plan.requestData).unwrap(), (input, expected));
+            assert_eq!(
+                source.decode(&plan.executionData).unwrap(),
+                (input, expected)
+            );
         }
     });
 }
@@ -69,8 +72,8 @@ fn quoting_rejects_unsupported_policy_and_malformed_data() {
             let mut call = quote(input, U256::MAX, U256::from(50));
             match mode {
                 1 => call.ownerAuthorized = false,
-                2 => call.policyData = Bytes::from_static(b"policy"),
-                3 => call.requestData = Bytes::from_static(b"invalid"),
+                2 => call.configData = Bytes::from_static(b"policy"),
+                3 => call.executionData = Bytes::from_static(b"invalid"),
                 _ => {}
             }
             assert!(source.quote(call).is_err());
@@ -97,7 +100,7 @@ fn fund_requires_matching_native_scope_even_when_no_input_available() {
             account: ACCOUNT,
             assetOut: PATH_USD_ADDRESS,
             amountOut: U256::from(50),
-            requestData: plan.requestData.clone(),
+            executionData: plan.executionData.clone(),
         };
         assert!(source.fund(FUNDER, call.clone()).is_err());
         for (account, address) in [(SOURCE, SOURCE), (ACCOUNT, ACCOUNT)] {
@@ -136,7 +139,7 @@ fn currency_metadata_allows_new_usd_assets_and_rejects_non_parity_assets() {
             .apply()
             .unwrap()
             .address();
-        call.requestData = (eur, U256::MAX).abi_encode().into();
+        call.executionData = (eur, U256::MAX).abi_encode().into();
         assert!(source.quote(call).is_err());
     });
 }
@@ -172,16 +175,16 @@ fn policy_quotes_preserve_input_and_tighten_reusable_caps() {
     StorageCtx::enter(&mut storage, || {
         let mut call = quote(input, U256::from(30), U256::from(50));
         call.ownerAuthorized = false;
-        call.policyData = (input, U256::MAX).abi_encode().into();
+        call.configData = (input, U256::MAX).abi_encode().into();
         let first = source.quote(call.clone()).unwrap();
-        call.requestData = first.requestData;
+        call.executionData = first.executionData;
         call.maxCost = U256::from(20);
         let second = source.quote(call.clone()).unwrap();
         assert_eq!(
-            source.decode(&second.requestData).unwrap(),
+            source.decode(&second.executionData).unwrap(),
             (input, U256::from(20))
         );
-        call.policyData = (PATH_USD_ADDRESS, U256::MAX).abi_encode().into();
+        call.configData = (PATH_USD_ADDRESS, U256::MAX).abi_encode().into();
         assert!(source.quote(call).is_err());
     });
 }
@@ -195,14 +198,14 @@ fn discovery_omits_zero_capacity_and_rejects_invalid_configuration() {
             assetOut: PATH_USD_ADDRESS,
             amountOut: U256::from(50),
             maxCost: U256::from(50),
-            policyData: (input, U256::MAX).abi_encode().into(),
+            configData: (input, U256::MAX).abi_encode().into(),
         };
         assert!(source.discover(call.clone()).unwrap().is_empty());
-        call.policyData = (input, U256::ZERO).abi_encode().into();
+        call.configData = (input, U256::ZERO).abi_encode().into();
         assert!(source.discover(call.clone()).unwrap().is_empty());
-        call.policyData = Bytes::new();
+        call.configData = Bytes::new();
         assert!(source.discover(call.clone()).is_err());
-        call.policyData = (Address::ZERO, U256::MAX).abi_encode().into();
+        call.configData = (Address::ZERO, U256::MAX).abi_encode().into();
         assert!(source.discover(call).is_err());
     });
 }
@@ -213,7 +216,7 @@ fn token_support_is_independent_of_balances_and_liquidity() {
     StorageCtx::enter(&mut storage, || {
         let mut call = IFundingSource::supportsTokenCall {
             token: PATH_USD_ADDRESS,
-            policyData: (input, U256::MAX).abi_encode().into(),
+            configData: (input, U256::MAX).abi_encode().into(),
         };
         assert!(source.supports_token(call.clone()).unwrap());
         assert_eq!(
@@ -224,13 +227,13 @@ fn token_support_is_independent_of_balances_and_liquidity() {
             U256::ZERO
         );
         for input in [PATH_USD_ADDRESS, Address::ZERO] {
-            call.policyData = (input, U256::MAX).abi_encode().into();
+            call.configData = (input, U256::MAX).abi_encode().into();
             assert!(!source.supports_token(call.clone()).unwrap());
         }
-        call.policyData = (input, U256::MAX).abi_encode().into();
+        call.configData = (input, U256::MAX).abi_encode().into();
         call.token = Address::ZERO;
         assert!(!source.supports_token(call.clone()).unwrap());
-        call.policyData = Bytes::from_static(b"malformed");
+        call.configData = Bytes::from_static(b"malformed");
         assert!(source.supports_token(call).is_err());
     });
 }
@@ -253,7 +256,7 @@ fn token_support_rejects_non_parity_and_missing_routes() {
                 !source
                     .supports_token(IFundingSource::supportsTokenCall {
                         token: PATH_USD_ADDRESS,
-                        policyData: (input, U256::MAX).abi_encode().into(),
+                        configData: (input, U256::MAX).abi_encode().into(),
                     })
                     .unwrap()
             );
@@ -262,7 +265,7 @@ fn token_support_rejects_non_parity_and_missing_routes() {
             source
                 .supports_token(IFundingSource::supportsTokenCall {
                     token: PATH_USD_ADDRESS,
-                    policyData: (input, U256::MAX).abi_encode().into(),
+                    configData: (input, U256::MAX).abi_encode().into(),
                 })
                 .unwrap()
         );
@@ -279,7 +282,7 @@ fn token_support_rejects_non_parity_and_missing_routes() {
             !source
                 .supports_token(IFundingSource::supportsTokenCall {
                     token: PATH_USD_ADDRESS,
-                    policyData: (input, U256::MAX).abi_encode().into(),
+                    configData: (input, U256::MAX).abi_encode().into(),
                 })
                 .unwrap()
         );
@@ -297,8 +300,8 @@ fn verification_binds_input_and_cap_without_storage() {
         assert_eq!(
             source
                 .verify(IFundingSource::verifyCall {
-                    requestData: (input, U256::from(cap)).abi_encode().into(),
-                    policyData: (ACCOUNT, U256::from(30)).abi_encode().into(),
+                    executionData: (input, U256::from(cap)).abi_encode().into(),
+                    configData: (ACCOUNT, U256::from(30)).abi_encode().into(),
                 })
                 .unwrap(),
             expected
@@ -307,8 +310,8 @@ fn verification_binds_input_and_cap_without_storage() {
     assert!(
         source
             .verify(IFundingSource::verifyCall {
-                requestData: Bytes::new(),
-                policyData: (ACCOUNT, U256::MAX).abi_encode().into(),
+                executionData: Bytes::new(),
+                configData: (ACCOUNT, U256::MAX).abi_encode().into(),
             })
             .is_err()
     );

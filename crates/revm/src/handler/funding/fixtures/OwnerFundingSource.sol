@@ -9,7 +9,7 @@ interface Token {
 // Compile deployed bytecode with solc 0.8.30, optimizer runs=200, evmVersion=cancun.
 contract OwnerFundingSource {
     address constant FUNDER = 0xFfFfFFfFfFffffFFFffFfFFfFFFfFffFffff1120;
-    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes requestData; }
+    struct Quote { address assetIn; uint256 rate; uint256 maxAmountIn; uint256 amountOut; bytes executionData; }
     struct Request {
         address assetIn;
         uint256 rate;
@@ -21,16 +21,16 @@ contract OwnerFundingSource {
     }
     uint256 public calls;
 
-    function verify(bytes calldata data, bytes calldata policyData) external pure returns (bool) {
+    function verify(bytes calldata data, bytes calldata configData) external pure returns (bool) {
         Request memory r = abi.decode(data, (Request));
-        return abi.decode(policyData, (address)) == r.assetIn;
+        return abi.decode(configData, (address)) == r.assetIn;
     }
 
-    function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
+    function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata configData, bool ownerAuthorized)
         external returns (Quote memory)
     {
         Request memory r = abi.decode(data, (Request));
-        require(ownerAuthorized ? policyData.length == 0 : abi.decode(policyData, (address)) == r.assetIn, "policy");
+        require(ownerAuthorized ? configData.length == 0 : abi.decode(configData, (address)) == r.assetIn, "policy");
         require(r.expectedCost == 0 || r.expectedCost == maxCost, "cost");
         if (r.mode == 8) assembly { return(0, 1) }
         if (r.mode == 9) calls++;

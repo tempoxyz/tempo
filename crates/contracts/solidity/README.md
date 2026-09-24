@@ -1,8 +1,8 @@
 # Funding discovery
 
-Call `FundingDiscovery.discover(account, token, amount, rules)` at `0x1120000000000000000000000000000000000003` to discover using supplied rules without a stored policy. `rules` is the canonical ABI encoding of `IFundingPolicy.Rules`.
+Call `FundingDiscovery.discover(account, token, amount, slippageBps, sources)` at `0x1120000000000000000000000000000000000003` to discover without a stored policy. `sources` is an ordered list of `{ target, data }` entries whose data is source configuration.
 
-The overload `discover(policyId, account, token, amount, rules)` also verifies the rules against the stored policy commitment. Both use ordinary EVM static calls to query sources in rule order with the same shortfall and aggregate cost budget. Neither grants spending authority.
+The overload `discover(account, token, amount, policyId, rules)` accepts canonical ABI-encoded `IFundingPolicy.Rules` and verifies their stored policy commitment. Both use ordinary EVM static calls to query sources in rule order with the same shortfall and aggregate cost budget. Neither grants spending authority.
 
 Copy candidate `target` and `data` into `requireFunds[].sources`. Candidates are independent estimates, not reserved funds. Access key execution still requires `policyRules` matching its stored policy. Execution validates applicable key permissions, available funds, and slippage.
 

@@ -148,7 +148,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
         for (candidate, asset) in candidates.iter().zip(assets) {
             assert_eq!(candidate.availableAmount, U256::from(50 * UNIT));
             assert_eq!(
-                <(Address, U256)>::abi_decode_validate(&candidate.requestData)?,
+                <(Address, U256)>::abi_decode_validate(&candidate.executionData)?,
                 (asset, U256::from(50 * UNIT))
             );
         }
@@ -172,7 +172,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                     owner.address(),
                     PATH_USD_ADDRESS,
                     quote.amountOut,
-                    quote.requestData
+                    quote.executionData
                 )
                 .call()
                 .await
@@ -198,7 +198,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                 },
                 FundingSource {
                     target: SOURCE,
-                    data: candidates[1].requestData.clone(),
+                    data: candidates[1].executionData.clone(),
                 },
             ],
         };

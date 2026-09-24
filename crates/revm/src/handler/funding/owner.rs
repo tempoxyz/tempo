@@ -241,8 +241,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 is_static: true,
                                 permission: None,
                                 data: IFundingSource::verifyCall {
-                                    requestData: request.data.clone(),
-                                    policyData: entry.data.clone(),
+                                    executionData: request.data.clone(),
+                                    configData: entry.data.clone(),
                                 }
                                 .abi_encode()
                                 .into(),
@@ -320,8 +320,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 amountOut: requirement.amount - balance,
                                 assetOut: requirement.token,
                                 maxCost: remaining_cost,
-                                requestData: request.data.clone(),
-                                policyData: policy_data,
+                                executionData: request.data.clone(),
+                                configData: policy_data,
                                 ownerAuthorized: key.is_zero(),
                             }
                             .abi_encode()
@@ -337,7 +337,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                             result.output().data(),
                         )
                         .map_err(|_| invalid_quote(request.target))?;
-                        if plan.requestData.is_empty()
+                        if plan.executionData.is_empty()
                             || plan.amountOut > requirement.amount - balance
                         {
                             return Err(invalid_quote(request.target));
@@ -371,7 +371,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 account,
                                 assetOut: requirement.token,
                                 amountOut: maximum,
-                                requestData: plan.requestData,
+                                executionData: plan.executionData,
                             }
                             .abi_encode()
                             .into(),

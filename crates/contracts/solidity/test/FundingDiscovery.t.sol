@@ -5,7 +5,7 @@ import {IFundingDiscovery} from "../src/IFundingDiscovery.sol";
 
 interface IDiscoverySource {
     struct Candidate {
-        bytes requestData;
+        bytes executionData;
         uint256 availableAmount;
     }
 
@@ -14,7 +14,7 @@ interface IDiscoverySource {
         address assetOut,
         uint256 amountOut,
         uint256 maxCost,
-        bytes calldata policyData
+        bytes calldata configData
     ) external view returns (Candidate[] memory);
 }
 
@@ -40,12 +40,12 @@ contract Source {
         candidates = abi.encode(candidates_);
     }
 
-    function verify(bytes calldata requestData, bytes calldata policyData)
+    function verify(bytes calldata executionData, bytes calldata configData)
         external
         pure
         returns (bool)
     {
-        return requestData.length > 0 && keccak256(policyData) == keccak256(hex"1122");
+        return executionData.length > 0 && keccak256(configData) == keccak256(hex"1122");
     }
 
     function discover(
@@ -89,7 +89,7 @@ contract RecursiveSource {
         returns (IDiscoverySource.Candidate[] memory)
     {
         IFundingDiscovery(address(0x1120000000000000000000000000000000000003))
-            .discover(1, account, token, 50, rules);
+            .discover(account, token, 50, 1, rules);
         return new IDiscoverySource.Candidate[](0);
     }
 }

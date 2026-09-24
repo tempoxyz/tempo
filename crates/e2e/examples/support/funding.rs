@@ -140,7 +140,7 @@ pub(super) async fn run_demo(
     for (candidate, asset) in candidates.iter().zip(assets) {
         assert_eq!(candidate.availableAmount, U256::from(50 * UNIT));
         assert_eq!(
-            <(Address, U256)>::abi_decode_validate(&candidate.requestData)?,
+            <(Address, U256)>::abi_decode_validate(&candidate.executionData)?,
             (asset, U256::from(50 * UNIT))
         );
         assert_eq!(
@@ -163,7 +163,7 @@ pub(super) async fn run_demo(
             },
             FundingSource {
                 target: SOURCE,
-                data: candidates[1].requestData.clone(),
+                data: candidates[1].executionData.clone(),
             },
         ],
     };

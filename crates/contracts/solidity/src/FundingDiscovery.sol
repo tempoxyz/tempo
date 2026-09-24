@@ -6,11 +6,11 @@ import {IFundingDiscovery} from "./IFundingDiscovery.sol";
 
 interface IDiscoverySource {
     struct Candidate {
-        bytes requestData;
+        bytes executionData;
         uint256 availableAmount;
     }
 
-    function verify(bytes calldata requestData, bytes calldata policyData)
+    function verify(bytes calldata executionData, bytes calldata configData)
         external
         view
         returns (bool);
@@ -20,7 +20,7 @@ interface IDiscoverySource {
         address assetOut,
         uint256 amountOut,
         uint256 maxCost,
-        bytes calldata policyData
+        bytes calldata configData
     ) external view returns (Candidate[] memory);
 }
 
@@ -33,19 +33,21 @@ contract FundingDiscovery is IFundingDiscovery {
     IFundingPolicy public constant fundingPolicy =
         IFundingPolicy(0x1120000000000000000000000000000000000002);
 
-    function discover(address account, address token, uint256 amount, bytes calldata rules)
-        external
-        view
-        returns (Discovery memory)
-    {
-        return discoverRules(account, token, amount, rules);
-    }
-
     function discover(
-        uint64 policyId,
         address account,
         address token,
         uint256 amount,
+        uint16 slippageBps,
+        IFundingPolicy.Source[] calldata sources
+    ) external view returns (Discovery memory) {
+        return discoverSources(account, token, amount, slippageBps, sources);
+    }
+
+    function discover(
+        address account,
+        address token,
+        uint256 amount,
+        uint64 policyId,
         bytes calldata rules
     ) external view returns (Discovery memory) {
         IFundingPolicy.Policy memory policy = fundingPolicy.getPolicy(policyId);
@@ -72,19 +74,30 @@ contract FundingDiscovery is IFundingDiscovery {
             ++routeIndex;
         }
         if (routeIndex == rules.routes.length) revert IFundingPolicy.TokenNotAllowed(token);
-        if (rules.maxSlippageBps > 10_000) revert InvalidSlippage();
+        return discoverSources(
+            account, token, amount, rules.maxSlippageBps, rules.routes[routeIndex].sources
+        );
+    }
+
+    function discoverSources(
+        address account,
+        address token,
+        uint256 amount,
+        uint16 slippageBps,
+        IFundingPolicy.Source[] memory sources
+    ) private view returns (Discovery memory result) {
+        if (slippageBps > 10_000) revert InvalidSlippage();
         result.token = token;
         result.amount = amount;
-        result.slippageBps = rules.maxSlippageBps;
+        result.slippageBps = slippageBps;
         result.sources = new Source[](0);
         uint256 balance = IDiscoveryToken(token).balanceOf(account);
         if (balance >= amount) return result;
 
         uint256 shortfall = amount - balance;
         // Divide first to avoid intermediate overflow; an unrepresentable final budget still reverts.
-        uint256 budget = shortfall + (shortfall / 10_000) * rules.maxSlippageBps
-            + ((shortfall % 10_000) * rules.maxSlippageBps) / 10_000;
-        IFundingPolicy.Source[] memory sources = rules.routes[routeIndex].sources;
+        uint256 budget = shortfall + (shortfall / 10_000) * slippageBps
+            + ((shortfall % 10_000) * slippageBps) / 10_000;
         IDiscoverySource.Candidate[][] memory candidates =
             new IDiscoverySource.Candidate[][](sources.length);
         uint256 count;
@@ -94,10 +107,10 @@ contract FundingDiscovery is IFundingDiscovery {
             for (uint256 j; j < candidates[i].length; ++j) {
                 IDiscoverySource.Candidate memory candidate = candidates[i][j];
                 if (
-                    candidate.requestData.length == 0 || candidate.availableAmount == 0
+                    candidate.executionData.length == 0 || candidate.availableAmount == 0
                         || candidate.availableAmount > shortfall
                         || !IDiscoverySource(sources[i].target)
-                            .verify(candidate.requestData, sources[i].data)
+                            .verify(candidate.executionData, sources[i].data)
                 ) {
                     revert InvalidCandidate(sources[i].target);
                 }
@@ -111,7 +124,7 @@ contract FundingDiscovery is IFundingDiscovery {
             for (uint256 j; j < candidates[i].length; ++j) {
                 result.sources[index++] = Source({
                     target: sources[i].target,
-                    data: candidates[i][j].requestData,
+                    data: candidates[i][j].executionData,
                     availableAmount: candidates[i][j].availableAmount
                 });
             }

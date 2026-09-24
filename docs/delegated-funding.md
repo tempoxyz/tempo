@@ -30,7 +30,7 @@ Burns and bounded input debits also retire free credit. Fees always charge ordin
 
 ## Discovery
 
-Call `FundingDiscovery.discover(policyId, account, token, amount)` at the fixed discovery address. It returns ordered source candidates through ordinary EVM static calls. Candidates are estimates, not reserved funds; execution obtains fresh quotes and validates the current policy.
+Call `FundingDiscovery.discover(account, token, amount, policyId, rules)` at the fixed discovery address. It returns ordered source candidates through ordinary EVM static calls. Candidates are estimates, not reserved funds; execution obtains fresh quotes and validates the current policy.
 
 ## Verification
 
