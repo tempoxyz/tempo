@@ -172,6 +172,8 @@ pub enum ConsensusSubcommand {
     /// Query current committee information from the previous epoch's DKG outcome and current contract state.
     #[command(alias = "validators-info")]
     Info(Info),
+    /// Claim accrued validator fees for a fee recipient and token.
+    ClaimValidatorFees(ClaimValidatorFees),
 }
 
 impl ConsensusSubcommand {
@@ -191,6 +193,7 @@ impl ConsensusSubcommand {
             Self::ShowVerificationKey(args) => args.run(),
             Self::Validator(args) => args.run().await,
             Self::Info(args) => args.run().await,
+            Self::ClaimValidatorFees(args) => args.run().await,
         }
     }
 }
@@ -1555,6 +1558,31 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
         .wrap_err("failed converting file decoded hex bytes to private key")
 }
 
+/// Claim fees accrued to an explicit recipient, including a previous fee recipient.
+#[derive(Debug, clap::Args)]
+pub struct ClaimValidatorFees {
+    /// Address to which the fees accrued. The claimed fees are sent to this address.
+    #[arg(long, value_name = "ADDRESS")]
+    fee_recipient: Address,
+
+    /// TIP-20 token address in which the fees accrued.
+    #[arg(long, value_name = "ADDRESS")]
+    token: Address,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
+}
+
+impl ClaimValidatorFees {
+    async fn run(self) -> eyre::Result<()> {
+        let call = IFeeManager::distributeFeesCall {
+            validator: self.fee_recipient,
+            token: self.token,
+        };
+        self.submit.call_to(TIP_FEE_MANAGER_ADDRESS, &call).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2053,5 +2081,55 @@ mod tests {
         let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
 
         assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
+    }
+
+    #[tokio::test]
+    async fn claim_validator_fees_dry_run_needs_no_wallet_or_rpc() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "claim-validator-fees",
+            "--fee-recipient",
+            TEST_FEE_RECIPIENT,
+            "--token",
+            TEST_VALIDATOR_TOKEN,
+            "--rpc-url",
+            "not-a-url",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        let cmd = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::ClaimValidatorFees(cmd),
+            )) => cmd,
+            other => panic!("expected ClaimValidatorFees, got `{other:?}`"),
+        };
+        assert_eq!(
+            cmd.fee_recipient,
+            TEST_FEE_RECIPIENT.parse::<Address>().unwrap()
+        );
+        assert_eq!(cmd.token, TEST_VALIDATOR_TOKEN.parse::<Address>().unwrap());
+        cmd.run().await.unwrap();
+    }
+
+    #[test]
+    fn claim_validator_fees_requires_recipient_and_token() {
+        for args in [
+            vec![],
+            vec!["--fee-recipient", TEST_FEE_RECIPIENT],
+            vec!["--token", TEST_VALIDATOR_TOKEN],
+        ] {
+            let error = TempoCli::try_parse_from(
+                ["tempo", "consensus", "claim-validator-fees"]
+                    .into_iter()
+                    .chain(args),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
     }
 }
