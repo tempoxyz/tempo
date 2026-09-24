@@ -10,7 +10,7 @@ const ACCOUNT: Address = address!("0000000000000000000000000000000000002000");
 const SOURCE: Address = address!("0000000000000000000000000000000000001000");
 const FUNDER: Address = address!("ffffffffffffffffffffffffffffffffffff1120");
 
-fn setup() -> (HashMapStorageProvider, NativeDexFundingSource, Address) {
+fn setup() -> (HashMapStorageProvider, DexFundingSource, Address) {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
     let input = StorageCtx::enter(&mut storage, || {
         TIP20Setup::path_usd(ACCOUNT).apply().unwrap();
@@ -23,7 +23,7 @@ fn setup() -> (HashMapStorageProvider, NativeDexFundingSource, Address) {
     });
     (
         storage,
-        NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, PATH_USD_ADDRESS]),
+        DexFundingSource::new(SOURCE, FUNDER, vec![input, PATH_USD_ADDRESS]),
         input,
     )
 }
@@ -136,10 +136,10 @@ fn all_route_assets_require_explicit_parity_approval() {
         call.assetOut = output;
         assert!(source.quote(call.clone()).is_err());
         // Both endpoints are allowed, but the common quote token is not.
-        let endpoints_only = NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, output]);
+        let endpoints_only = DexFundingSource::new(SOURCE, FUNDER, vec![input, output]);
         assert!(endpoints_only.quote(call.clone()).is_err());
         let all =
-            NativeDexFundingSource::new(SOURCE, FUNDER, vec![input, output, PATH_USD_ADDRESS]);
+            DexFundingSource::new(SOURCE, FUNDER, vec![input, output, PATH_USD_ADDRESS]);
         assert!(all.quote(call).is_ok());
     });
 }
@@ -215,7 +215,7 @@ fn token_support_is_independent_of_balances_and_liquidity() {
 
 #[test]
 fn verification_binds_input_and_cap_without_storage() {
-    let source = NativeDexFundingSource::new(SOURCE, FUNDER, vec![]);
+    let source = DexFundingSource::new(SOURCE, FUNDER, vec![]);
     for (input, cap, expected) in [
         (ACCOUNT, 30, true),
         (ACCOUNT, 31, false),

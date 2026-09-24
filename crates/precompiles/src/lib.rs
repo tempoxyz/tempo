@@ -313,10 +313,10 @@ macro_rules! tempo_precompile {
     }};
 }
 
-impl tip20_funder::native_dex::NativeDexFundingSource {
+impl tip20_funder::native_dex::DexFundingSource {
     /// Builds an unregistered source; deployment configuration supplies its addresses and parity assets.
     pub fn create_precompile(self, env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("NativeDexFundingSource", env: env, |input| { self.clone() })
+        tempo_precompile!("DexFundingSource", env: env, |input| { self.clone() })
     }
 }
 
