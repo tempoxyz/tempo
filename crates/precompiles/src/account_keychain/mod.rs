@@ -275,10 +275,7 @@ impl AccountKeychain {
         if is_admin && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
-        if signature_type == SignatureType::Multisig {
-            if !self.storage.spec().is_t12() {
-                return Err(AccountKeychainError::invalid_signature_type().into());
-            }
+        if signature_type == SignatureType::Multisig && self.storage.spec().is_t12() {
             if key_id == msg_sender {
                 return Err(AccountKeychainError::invalid_key_id().into());
             }
@@ -311,6 +308,10 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_already_revoked().into());
         }
 
+        // Before T12, value 3 followed the unsupported-type path after these reads.
+        if signature_type == SignatureType::Multisig && !self.storage.spec().is_t12() {
+            return Err(AccountKeychainError::invalid_signature_type().into());
+        }
         let signature_type = StoredSignatureType::try_from(signature_type)?;
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
