@@ -144,27 +144,37 @@ def find-tempo-pids [] {
 # 1. Run `tempo init` to create the database
 # 2. Generate state bloat binary file
 # 3. Run `tempo init-from-binary-dump` to load the bloat
-# Generate the bloat binary file once (skips if already exists)
+def recorded-bloat-size [marker: string] {
+    if not ($marker | path exists) { return (-1) }
+    try { open $marker | str trim | into int } catch { -1 }
+}
+
+# Reuse the bloat file only when its recorded size matches the request.
 def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-    if ($bloat_file | path exists) {
+    let size_marker = $"($LOCALNET_DIR)/state_bloat.mib"
+    if ($bloat_file | path exists) and (recorded-bloat-size $size_marker) == $bloat_size {
         print $"State bloat file already exists \(($bloat_size) MiB\)"
         return
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
     run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
+    $bloat_size | into string | save -f $size_marker
 }
 
 # Load the bloat file into a single node's database
-def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string] {
+def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string, bloat_size: int] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
     let db_path = $"($datadir)/db"
+    let size_marker = $"($datadir)/state_bloat.mib"
 
-    # Skip if this node already has a database with bloat loaded
     if ($db_path | path exists) {
-        print $"State bloat already loaded into ($datadir | path basename)"
-        return
+        if (recorded-bloat-size $size_marker) == $bloat_size {
+            print $"State bloat already loaded into ($datadir | path basename)"
+            return
+        }
+        error make { msg: $"Existing database ($datadir) has unknown or different state bloat; rerun localnet with --reset or bench with --force" }
     }
 
     # Remove existing reth database files while preserving key files (signing.key, signing.share, etc.)
@@ -184,6 +194,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
 
     print $"Loading state bloat into ($datadir | path basename)..."
     run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
+    $bloat_size | into string | save -f $size_marker
 }
 
 # ============================================================================
@@ -1934,7 +1945,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         # Custom genesis provided - check if bloat requires init
         if $bloat > 0 {
             generate-bloat-file $bloat $profile $skip_build
-            load-bloat-into-node $tempo_bin $genesis $datadir
+            load-bloat-into-node $tempo_bin $genesis $datadir $bloat
         }
         $genesis
     } else {
@@ -1956,7 +1967,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         # Apply state bloat if requested (requires fresh init)
         if $bloat > 0 {
             generate-bloat-file $bloat $profile $skip_build
-            load-bloat-into-node $tempo_bin $default_genesis $datadir
+            load-bloat-into-node $tempo_bin $default_genesis $datadir $bloat
         }
 
         $default_genesis
@@ -2081,7 +2092,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
     if $bloat > 0 {
         generate-bloat-file $bloat $profile $skip_build
         for node_dir in $validator_dirs {
-            load-bloat-into-node $tempo_bin $genesis_path $node_dir
+            load-bloat-into-node $tempo_bin $genesis_path $node_dir $bloat
         }
     }
 
@@ -2747,7 +2758,7 @@ def "main bench" [
                 rm -rf $feature_genesis_dir
 
                 # Generate bloat file (shared, fork-agnostic)
-                if $bloat > 0 and not ($bloat_file | path exists) {
+                if $bloat > 0 {
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
@@ -2821,7 +2832,7 @@ def "main bench" [
                     }
                 }
 
-                if $bloat > 0 and not ($bloat_file | path exists) {
+                if $bloat > 0 {
                     print $"Generating state bloat \(($bloat) MiB\) from baseline..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {

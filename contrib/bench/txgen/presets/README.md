@@ -9,6 +9,9 @@ weights and includes. Change the alias here to change the default everywhere.
 `public-mix` remains a supported explicit name for that workload. It requires
 nonzero state bloat; local `tempo.nu bench` and `bench-txgen.nu run` default
 to 1024 MiB. `bench-e2e.nu` and CI already default to nonzero bloat.
+Existing localnet databases with unknown or different bloat fail; use
+`nu tempo.nu bench --force` to rebuild them. Comparison snapshot rebuilds
+regenerate the bloat file for the requested size.
 
 For the previous transfer-only default, explicitly select
 `tip20:recipient=existing,fee-token=any_tip20` (local) or
