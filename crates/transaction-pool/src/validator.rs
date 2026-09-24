@@ -102,7 +102,7 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
     /// Minimum fee cap accepted by this chain's pool.
-    minimum_fee_cap: u64,
+    minimum_fee_cap: u128,
     /// Addresses checked against transaction senders and direct call targets.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
@@ -149,7 +149,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             disable_fee_amm_check: false,
-            minimum_fee_cap: TEMPO_T7_BASE_FEE_FLOOR,
+            minimum_fee_cap: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
@@ -167,7 +167,7 @@ where
     ///
     /// Tempo defaults to the T7 fee floor. Zero-base-fee chains such as Zones can opt into
     /// accepting zero-fee transactions without disabling any other admission checks.
-    pub const fn with_minimum_fee_cap(mut self, minimum_fee_cap: u64) -> Self {
+    pub const fn with_minimum_fee_cap(mut self, minimum_fee_cap: u128) -> Self {
         self.minimum_fee_cap = minimum_fee_cap;
         self
     }
@@ -427,7 +427,7 @@ where
 
         // Fees below the chain's configured floor can never become executable; fees below
         // the current dynamic base fee can wait for block selection.
-        if transaction.max_fee_per_gas() < u128::from(self.minimum_fee_cap) {
+        if transaction.max_fee_per_gas() < self.minimum_fee_cap {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
