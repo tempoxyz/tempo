@@ -264,14 +264,14 @@ impl TempoChainSpec {
 
     /// Builds a custom chain, rejecting invalid recovery factory or account-extension configuration.
     ///
-    /// When T12 is active at genesis, initializes absent or empty native-precompile code
+    /// When T14 is active at genesis, initializes absent or empty native-precompile code
     /// with the `0xEF` marker. If a recovery factory is configured, also replaces its code
     /// with `0xEF` and raises its nonce to at least one, preserving its balance and storage.
     /// These protocol reservations are applied before computing the genesis state root.
     pub fn try_from_genesis(mut genesis: Genesis) -> Result<Self, serde_json::Error> {
-        // Reservations use the T12 address space even when activation is scheduled later.
+        // Reservations use the T14 address space even when activation is scheduled later.
         let valid_native_address =
-            |address| crate::is_valid_native_account(address, TempoHardfork::T12);
+            |address| crate::is_valid_native_account(address, TempoHardfork::T14);
         // Extract Tempo genesis info from extra_fields
         let mut info = TempoGenesisInfo::extract_from(&genesis);
         // Parse this field separately so the legacy fallback for unrelated extras cannot
@@ -291,8 +291,8 @@ impl TempoChainSpec {
                 "multisigRecoveryFactory must be a nonzero, non-reserved address",
             ));
         }
-        let t12_active = info.t12_time.is_some_and(|time| time <= genesis.timestamp);
-        if t12_active {
+        let t14_active = info.t14_time.is_some_and(|time| time <= genesis.timestamp);
+        if t14_active {
             let marker = genesis.alloc.entry(NATIVE_MULTISIG_ADDRESS).or_default();
             if marker.code.as_ref().is_none_or(|code| code.is_empty()) {
                 marker.code = Some(bytes!("ef"));
@@ -308,7 +308,7 @@ impl TempoChainSpec {
         // whose original extension was valid. A hash alone cannot prove its derivation.
         for (address, account) in &genesis.alloc {
             let commitment =
-                decode_config_commitment(&account.extension, t12_active).map_err(|error| {
+                decode_config_commitment(&account.extension, t14_active).map_err(|error| {
                     <serde_json::Error as serde::de::Error>::custom(alloc::format!(
                         "invalid account extension for {address}: {error}"
                     ))
@@ -597,7 +597,7 @@ mod tests {
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(0));
+            .insert("t14Time".into(), serde_json::json!(0));
         let mut trailing = encode_config_commitment(B256::repeat_byte(1)).to_vec();
         trailing.push(0);
         for payload in [
@@ -614,12 +614,12 @@ mod tests {
     }
 
     #[test]
-    fn genesis_rejects_config_commitment_before_t12() {
+    fn genesis_rejects_config_commitment_before_t14() {
         let mut genesis = DEV.genesis().clone();
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(genesis.timestamp + 1));
+            .insert("t14Time".into(), serde_json::json!(genesis.timestamp + 1));
         genesis
             .alloc
             .entry(Address::repeat_byte(0x33))
@@ -629,13 +629,13 @@ mod tests {
     }
 
     #[test]
-    fn genesis_accepts_config_commitment_at_t12() {
+    fn genesis_accepts_config_commitment_at_t14() {
         let address = Address::repeat_byte(0x33);
         let mut genesis = DEV.genesis().clone();
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(genesis.timestamp));
+            .insert("t14Time".into(), serde_json::json!(genesis.timestamp));
         let payload = encode_config_commitment(B256::repeat_byte(1));
         genesis.alloc.entry(address).or_default();
         let empty_root = TempoChainSpec::try_from_genesis(genesis.clone())
@@ -666,7 +666,7 @@ mod tests {
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(0));
+            .insert("t14Time".into(), serde_json::json!(0));
         for address in [
             Address::ZERO,
             Address::from_word(U256::from(1).into()),
@@ -708,7 +708,7 @@ mod tests {
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(0));
+            .insert("t14Time".into(), serde_json::json!(0));
         genesis.alloc.entry(address).or_default().extension =
             encode_config_commitment(B256::repeat_byte(1)).into();
         // Empty code remains valid, but existing bytecode and factory-installed code do not.
@@ -748,7 +748,7 @@ mod tests {
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(genesis.timestamp));
+            .insert("t14Time".into(), serde_json::json!(genesis.timestamp));
         let address = Address::repeat_byte(0x33);
         let payload = encode_config_commitment(B256::repeat_byte(1));
         genesis.alloc.entry(address).or_default().extension = payload.clone().into();
@@ -760,12 +760,12 @@ mod tests {
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(genesis.timestamp + 1));
+            .insert("t14Time".into(), serde_json::json!(genesis.timestamp + 1));
         assert!(chain_value_parser(&serde_json::to_string(&genesis).unwrap()).is_err());
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(genesis.timestamp));
+            .insert("t14Time".into(), serde_json::json!(genesis.timestamp));
         genesis.alloc.entry(address).or_default().extension = vec![0x80].into();
         assert!(chain_value_parser(&serde_json::to_string(&genesis).unwrap()).is_err());
     }
@@ -777,7 +777,7 @@ mod tests {
         genesis
             .config
             .extra_fields
-            .insert("t12Time".into(), serde_json::json!(0));
+            .insert("t14Time".into(), serde_json::json!(0));
         genesis
             .config
             .extra_fields
