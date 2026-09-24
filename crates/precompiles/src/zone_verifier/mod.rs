@@ -41,10 +41,9 @@ impl ZoneVerifier {
         }
 
         match call.verifierConfig.as_ref() {
-            // Temporary rollout fallback. A later hardfork will remove this mode.
-            MODE_NO_PROOF => return Ok(self.storage.spec().is_t13() && call.proof.is_empty()),
             MODE_NITRO_V1 if !call.proof.is_empty() => {}
-            _ => return Ok(false),
+            // Allow temporary rollout fallback. A later hardfork will remove `NoProof` mode.
+            mode => return Ok(matches!(mode, MODE_NO_PROOF) && call.proof.is_empty()),
         }
 
         let block_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -266,28 +265,23 @@ mod tests {
     }
 
     #[test]
-    fn no_proof_requires_canonical_portal_empty_proof_and_active_hardfork() {
-        for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let verifier = ZoneVerifier::new();
-                let mut candidate = call();
-                candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
-                let portal = portal_address(candidate.zoneId);
-                assert_eq!(
-                    verifier.verify(portal, candidate.clone()).unwrap(),
-                    hardfork.is_t13()
-                );
-                assert!(!verifier.verify(Address::ZERO, candidate.clone()).unwrap());
-                candidate.proof = Bytes::from_static(&[1]);
+    fn no_proof_requires_canonical_portal_and_empty_proof() {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = ZoneVerifier::new();
+            let mut candidate = call();
+            candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
+            let portal = portal_address(candidate.zoneId);
+            assert!(verifier.verify(portal, candidate.clone()).unwrap());
+            assert!(!verifier.verify(Address::ZERO, candidate.clone()).unwrap());
+            candidate.proof = Bytes::from_static(&[1]);
+            assert!(!verifier.verify(portal, candidate.clone()).unwrap());
+            candidate.proof = Bytes::new();
+            for config in [&[][..], &[0], &[1, 2], &[3]] {
+                candidate.verifierConfig = Bytes::copy_from_slice(config);
                 assert!(!verifier.verify(portal, candidate.clone()).unwrap());
-                candidate.proof = Bytes::new();
-                for config in [&[][..], &[0], &[1, 2], &[3]] {
-                    candidate.verifierConfig = Bytes::copy_from_slice(config);
-                    assert!(!verifier.verify(portal, candidate.clone()).unwrap());
-                }
-            });
-        }
+            }
+        });
     }
 
     #[test]
