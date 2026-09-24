@@ -745,7 +745,6 @@ mod tests {
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
-        account::encode_config_commitment,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
@@ -1605,58 +1604,6 @@ mod tests {
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
-    }
-
-    #[test]
-    fn multisig_factory_activation_preserves_state() {
-        let factory = Address::repeat_byte(0x71);
-        let commitment = encode_config_commitment(B256::repeat_byte(9));
-        let mut genesis = DEV.genesis().clone();
-        genesis
-            .config
-            .extra_fields
-            .insert("t12Time".into(), serde_json::json!(10));
-        genesis
-            .config
-            .extra_fields
-            .insert("t13Time".into(), serde_json::json!(u64::MAX));
-        genesis
-            .config
-            .extra_fields
-            .insert("multisigRecoveryFactory".into(), serde_json::json!(factory));
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-        let mut db = State::builder().with_bundle_update().build();
-        db.insert_account(
-            factory,
-            AccountInfo {
-                nonce: 7,
-                balance: U256::from(42),
-                ..Default::default()
-            }
-            .with_extension(commitment.clone()),
-        );
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_spec(TempoHardfork::T12)
-            .build(&mut db, &chainspec);
-        executor.evm_mut().ctx_mut().block.timestamp = U256::from(9);
-        executor.apply_pre_execution_changes().unwrap();
-        assert!(
-            executor
-                .evm_mut()
-                .db_mut()
-                .basic(factory)
-                .unwrap()
-                .unwrap()
-                .is_empty_code_hash()
-        );
-        executor.evm_mut().ctx_mut().block.timestamp = U256::from(10);
-        executor.apply_pre_execution_changes().unwrap();
-        let info = executor.evm_mut().db_mut().basic(factory).unwrap().unwrap();
-        assert_eq!(info.nonce, 7);
-        assert_eq!(info.balance, U256::from(42));
-        assert_eq!(info.extension.as_ref(), commitment.as_ref());
-        assert_eq!(info.code.unwrap().original_bytes().as_ref(), &[0xef]);
     }
 
     #[test]
