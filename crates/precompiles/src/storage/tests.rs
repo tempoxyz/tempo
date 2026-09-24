@@ -44,13 +44,13 @@ pub(super) fn exercise_rollback(provider: &mut impl PrecompileStorageProvider) {
 fn hashmap_commitment_nested_rollback() {
     exercise_rollback(&mut HashMapStorageProvider::new_with_spec(
         1,
-        TempoHardfork::T12,
+        TempoHardfork::T14,
     ));
 }
 
 #[test]
 fn commitment_write_validation() {
-    let mut provider = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+    let mut provider = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
     let address = Address::repeat_byte(1);
     let hash = B256::repeat_byte(2);
     provider
@@ -68,10 +68,12 @@ fn commitment_write_validation() {
             .set_config_commitment(address, B256::ZERO, WriteGas::Intrinsic)
             .is_err()
     );
-    let mut historical = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-    assert!(
-        historical
-            .set_config_commitment(address, hash, WriteGas::Intrinsic)
-            .is_err()
-    );
+    for fork in [TempoHardfork::T12, TempoHardfork::T13] {
+        let mut historical = HashMapStorageProvider::new_with_spec(1, fork);
+        assert!(
+            historical
+                .set_config_commitment(address, hash, WriteGas::Intrinsic)
+                .is_err()
+        );
+    }
 }

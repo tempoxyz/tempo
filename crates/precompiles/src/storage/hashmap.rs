@@ -115,7 +115,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<(), TempoPrecompileError> {
-        if !self.spec.is_t12() || self.is_static || commitment.is_zero() {
+        if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
         let previous = self.config_commitment(address)?;

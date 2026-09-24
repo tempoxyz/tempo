@@ -403,7 +403,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<(), TempoPrecompileError> {
-        if !self.spec.is_t12() || self.is_static || commitment.is_zero() {
+        if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
         // The authorization read already charged account access (or was intrinsic).
@@ -775,13 +775,13 @@ mod tests {
 
     #[test]
     fn commitment_nested_journal_rollback() {
-        let mut evm = TestEvm::new(TempoHardfork::T12);
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         super::super::tests::exercise_rollback(&mut evm.provider_max_gas());
     }
 
     #[test]
     fn commitment_intrinsic_write_and_static_rejection() {
-        let mut evm = TestEvm::new(TempoHardfork::T12);
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let mut provider = evm.provider_max_gas();
         let address = Address::repeat_byte(1);
         let commitment = B256::repeat_byte(2);
@@ -831,7 +831,7 @@ mod tests {
         let next = B256::repeat_byte(2);
         for (previous, cost) in [(B256::ZERO, 20_000), (B256::repeat_byte(3), 5_000)] {
             for shortfall in [1, 0] {
-                let mut evm = TestEvm::new(TempoHardfork::T12);
+                let mut evm = TestEvm::new(TempoHardfork::T14);
                 {
                     let mut provider = evm.provider_max_gas();
                     if !previous.is_zero() {
