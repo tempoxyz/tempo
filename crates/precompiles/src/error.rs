@@ -125,7 +125,7 @@ pub enum TempoPrecompileError {
     #[error("State change during static call")]
     StaticCallNotAllowed,
 
-    /// A commitment write is zero, predates T12, or occurs in a read-only context.
+    /// A commitment write is zero, predates T14, or occurs in a read-only context.
     #[error("invalid account commitment write")]
     InvalidConfigCommitmentWrite,
     /// The calldata's 4-byte selector does not match any known precompile function.
