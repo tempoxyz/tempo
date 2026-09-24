@@ -50,11 +50,20 @@ struct CanonicalPool {
     provider: Provider,
     block: Block,
     transaction: TempoPooledTransaction,
+    validation_task: ValidationTask,
     service: tokio::task::JoinHandle<()>,
 }
 
 impl CanonicalPool {
     fn new(transaction: TempoPooledTransaction, commitment: Option<B256>) -> Self {
+        Self::new_with_validation_capacity(transaction, commitment, 1)
+    }
+
+    fn new_with_validation_capacity(
+        transaction: TempoPooledTransaction,
+        commitment: Option<B256>,
+        capacity: usize,
+    ) -> Self {
         let validator = setup_validator(&transaction, 1).with_disable_fee_amm_check(true);
         let provider = validator.client().clone();
         if let Some(commitment) = commitment {
@@ -70,8 +79,12 @@ impl CanonicalPool {
         let sealed = SealedBlock::seal_slow(block.clone());
         provider.add_block(sealed.hash(), block.clone());
         validator.on_new_head_block(&sealed);
-        let (validation, task) = TransactionValidationTaskExecutor::new(validator);
-        let service = tokio::spawn(task.run());
+        let (sender, validation_task) = ValidationTask::with_capacity(capacity);
+        let validation = TransactionValidationTaskExecutor {
+            validator: Arc::new(validator),
+            to_validation_task: Arc::new(sender),
+        };
+        let service = tokio::spawn(validation_task.clone().run());
         let pool = TempoTransactionPool::new(
             Pool::new(
                 validation.clone(),
@@ -90,6 +103,7 @@ impl CanonicalPool {
             provider,
             block,
             transaction,
+            validation_task,
             service,
         };
         fixture.restore_t12();
@@ -656,10 +670,12 @@ async fn batch_preserves_results_and_origins(mixed_origins: bool, configurable: 
 #[tokio::test]
 async fn configurable_batch_admits_before_the_tail_and_survives_a_new_head() {
     let native = NativeAccount::new();
-    let mut fixture = native.pool(1);
+    let mut fixture = CanonicalPool::new_with_validation_capacity(
+        native.transaction(1),
+        Some(native.config.commitment().unwrap()),
+        64,
+    );
     fixture.service.abort();
-    let (sender, service) = ValidationTask::with_capacity(64);
-    *fixture.validation.to_validation_task.lock().await = sender;
     let transactions: Vec<_> = (1..=17).map(|key| native.transaction(key)).collect();
     let hashes: Vec<_> = transactions.iter().map(|tx| *tx.hash()).collect();
     let pool = fixture.pool.clone();
@@ -672,15 +688,13 @@ async fn configurable_batch_admits_before_the_tail_and_survives_a_new_head() {
     fixture
         .validation
         .to_validation_task
-        .lock()
-        .await
         .send(Box::pin(async move {
             entered.send(()).unwrap();
             resume.await.unwrap();
         }))
         .await
         .unwrap();
-    fixture.service = tokio::spawn(service.run());
+    fixture.service = tokio::spawn(fixture.validation_task.clone().run());
     blocked.await.unwrap();
     assert!(admission.as_mut().now_or_never().is_none());
     assert!(hashes[..16].iter().all(|hash| fixture.pool.contains(hash)));
