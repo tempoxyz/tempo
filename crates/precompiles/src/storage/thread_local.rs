@@ -63,113 +63,6 @@ impl StorageCtx {
         STORAGE.set(&cell, f)
     }
 
-    /// Enters a storage context backed by a live Tempo EVM.
-    pub fn enter_evm<T, R>(evm: &mut Evm<'_, T>, f: impl FnOnce() -> R) -> R
-    where
-        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
-        T::EvmExt: EvmStorageExt,
-    {
-        let mut gas = GasTracker::new(u64::MAX);
-        Self::enter_evm_with_gas_tracker(evm, &mut gas, true, f)
-    }
-
-    /// Enters EVM-backed storage with TIP-1060 accounting disabled.
-    ///
-    /// Use when provider gas is not charged, or is charged externally, and the writes must not
-    /// mint, consume, or settle storage credits. If those writes create persistent storage, the
-    /// external charge must include `STORAGE_CREDIT_VALUE` unless exempt.
-    pub fn enter_evm_without_tip1060_accounting<T, R>(
-        evm: &mut Evm<'_, T>,
-        f: impl FnOnce() -> R,
-    ) -> R
-    where
-        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
-        T::EvmExt: EvmStorageExt,
-    {
-        let mut gas = GasTracker::new(u64::MAX);
-        Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f)
-    }
-
-    /// Enters EVM-backed storage with bounded regular gas and a state-gas reservoir.
-    pub fn enter_evm_with_gas_limit<T, R>(
-        evm: &mut Evm<'_, T>,
-        gas_limit: u64,
-        reservoir: u64,
-        f: impl FnOnce() -> R,
-    ) -> (R, GasTracker)
-    where
-        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
-        T::EvmExt: EvmStorageExt,
-    {
-        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
-        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, true, f);
-        (result, gas)
-    }
-
-    /// Like [`Self::enter_evm_with_gas_limit`], with TIP-1060 accounting disabled.
-    pub fn enter_evm_without_tip1060_accounting_with_gas_limit<T, R>(
-        evm: &mut Evm<'_, T>,
-        gas_limit: u64,
-        reservoir: u64,
-        f: impl FnOnce() -> R,
-    ) -> (R, GasTracker)
-    where
-        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
-        T::EvmExt: EvmStorageExt,
-    {
-        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
-        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f);
-        (result, gas)
-    }
-
-    /// Like [`Self::enter_evm_without_tip1060_accounting_with_gas_limit`], with an
-    /// explicit gas parameter table for historical metering compatibility.
-    pub fn enter_evm_without_tip1060_accounting_with_gas_limit_and_gas_params<T, R>(
-        evm: &mut Evm<'_, T>,
-        gas_limit: u64,
-        reservoir: u64,
-        gas_params: GasParams,
-        f: impl FnOnce() -> R,
-    ) -> (R, GasTracker)
-    where
-        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
-        T::EvmExt: EvmStorageExt,
-    {
-        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
-        let actions = evm.ext().storage_actions();
-        let non_creditable_slots = evm.ext().non_creditable_slots();
-        let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
-            .with_actions(actions)
-            .with_non_creditable_slots(non_creditable_slots)
-            .with_gas_params(gas_params);
-        storage.set_tip1060_storage_credits(false);
-        let result = Self::enter(&mut storage, f);
-        (result, gas)
-    }
-
-    fn enter_evm_with_gas_tracker<T, R>(
-        evm: &mut Evm<'_, T>,
-        gas: &mut GasTracker,
-        tip1060_storage_credits: bool,
-        f: impl FnOnce() -> R,
-    ) -> R
-    where
-        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
-        T::EvmExt: EvmStorageExt,
-    {
-        let actions = evm.ext().storage_actions();
-        let non_creditable_slots = evm.ext().non_creditable_slots();
-        let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, spec, false)
-            .with_actions(actions)
-            .with_non_creditable_slots(non_creditable_slots);
-        storage.set_tip1060_storage_credits(tip1060_storage_credits);
-
-        // The core logic of setting up thread-local storage is here.
-        Self::enter(&mut storage, f)
-    }
-
     /// Execute an infallible function with access to the current thread-local storage provider.
     ///
     /// # Panics
@@ -480,6 +373,115 @@ impl Drop for CheckpointGuard {
         if let Some(cp) = self.checkpoint.take() {
             StorageCtx::with_storage(|s| s.checkpoint_revert(cp));
         }
+    }
+}
+
+impl StorageCtx {
+    /// Enters a storage context backed by a live Tempo EVM.
+    pub fn enter_evm<T, R>(evm: &mut Evm<'_, T>, f: impl FnOnce() -> R) -> R
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let mut gas = GasTracker::new(u64::MAX);
+        Self::enter_evm_with_gas_tracker(evm, &mut gas, true, f)
+    }
+
+    /// Enters EVM-backed storage with TIP-1060 accounting disabled.
+    ///
+    /// Use when provider gas is not charged, or is charged externally, and the writes must not
+    /// mint, consume, or settle storage credits. If those writes create persistent storage, the
+    /// external charge must include `STORAGE_CREDIT_VALUE` unless exempt.
+    pub fn enter_evm_without_tip1060_accounting<T, R>(
+        evm: &mut Evm<'_, T>,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let mut gas = GasTracker::new(u64::MAX);
+        Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f)
+    }
+
+    /// Enters EVM-backed storage with bounded regular gas and a state-gas reservoir.
+    pub fn enter_evm_with_gas_limit<T, R>(
+        evm: &mut Evm<'_, T>,
+        gas_limit: u64,
+        reservoir: u64,
+        f: impl FnOnce() -> R,
+    ) -> (R, GasTracker)
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
+        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, true, f);
+        (result, gas)
+    }
+
+    /// Like [`Self::enter_evm_with_gas_limit`], with TIP-1060 accounting disabled.
+    pub fn enter_evm_without_tip1060_accounting_with_gas_limit<T, R>(
+        evm: &mut Evm<'_, T>,
+        gas_limit: u64,
+        reservoir: u64,
+        f: impl FnOnce() -> R,
+    ) -> (R, GasTracker)
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
+        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f);
+        (result, gas)
+    }
+
+    /// Like [`Self::enter_evm_without_tip1060_accounting_with_gas_limit`], with an
+    /// explicit gas parameter table for historical metering compatibility.
+    pub fn enter_evm_without_tip1060_accounting_with_gas_limit_and_gas_params<T, R>(
+        evm: &mut Evm<'_, T>,
+        gas_limit: u64,
+        reservoir: u64,
+        gas_params: GasParams,
+        f: impl FnOnce() -> R,
+    ) -> (R, GasTracker)
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
+        let actions = evm.ext().storage_actions();
+        let non_creditable_slots = evm.ext().non_creditable_slots();
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
+            .with_actions(actions)
+            .with_non_creditable_slots(non_creditable_slots)
+            .with_gas_params(gas_params);
+        storage.set_tip1060_storage_credits(false);
+        let result = Self::enter(&mut storage, f);
+        (result, gas)
+    }
+
+    fn enter_evm_with_gas_tracker<T, R>(
+        evm: &mut Evm<'_, T>,
+        gas: &mut GasTracker,
+        tip1060_storage_credits: bool,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let actions = evm.ext().storage_actions();
+        let non_creditable_slots = evm.ext().non_creditable_slots();
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, spec, false)
+            .with_actions(actions)
+            .with_non_creditable_slots(non_creditable_slots);
+        storage.set_tip1060_storage_credits(tip1060_storage_credits);
+
+        // The core logic of setting up thread-local storage is here.
+        Self::enter(&mut storage, f)
     }
 }
 
