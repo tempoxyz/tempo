@@ -3527,7 +3527,10 @@ fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
         Ok(Recovered::new_unchecked(
-            TempoTxEnv::from(TempoTxEnvelope::AA(signed_tx)),
+            TempoTxEnv::from(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(signed_tx),
+                caller,
+            )),
             caller,
         ))
     };

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Publish tempo-hardfork, tempo-contracts, tempo-primitives, tempo-chainspec, and tempo-alloy to crates.io
-# by stripping all reth-specific code and dependencies.
+# by stripping node-specific code and dependencies.
 #
 # Usage:
 #   ./scripts/publish-crates.sh              # dry-run (default)
@@ -120,12 +120,13 @@ cp -R "$REPO_ROOT/crates/alloy"      "$TMP_WORK_DIR/alloy"
 # ── 1. Delete compat modules ──────────────────────────────────────────────────
 log "Deleting node-internal compatibility modules …"
 rm -rf "$TMP_WORK_DIR/primitives/src/reth_compat"
-rm -f  "$TMP_WORK_DIR/alloy/src/rpc/revm_compat.rs"
+rm -f  "$TMP_WORK_DIR/primitives/src/block.rs"
+rm -f  "$TMP_WORK_DIR/hardfork/src/gas_params.rs"
 rm -f  "$TMP_WORK_DIR/alloy/src/rpc/reth_compat.rs"
 
 # ── 2. Strip reth/compat references from source ──────────────────────────────
 log "Stripping reth references from source …"
-python3 "$SANITIZE_RS" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy" "$TMP_WORK_DIR/chainspec"
+python3 "$SANITIZE_RS" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy" "$TMP_WORK_DIR/chainspec" "$TMP_WORK_DIR/hardfork"
 
 # All crate Cargo.toml files (used by multiple pipeline stages)
 CRATE_TOMLS=(
@@ -146,6 +147,7 @@ for crate_toml in "${CRATE_TOMLS[@]}"; do
     python3 "$SANITIZE_PY" sanitize_base "$crate_toml" "$WS_VERSION" "$REPO_ROOT/Cargo.toml"
 done
 
+python3 "$SANITIZE_PY" sanitize_hardfork "$TMP_WORK_DIR/hardfork/Cargo.toml"
 python3 "$SANITIZE_PY" sanitize_primitives "$TMP_WORK_DIR/primitives/Cargo.toml"
 python3 "$SANITIZE_PY" sanitize_chainspec "$TMP_WORK_DIR/chainspec/Cargo.toml"
 python3 "$SANITIZE_PY" sanitize_alloy "$TMP_WORK_DIR/alloy/Cargo.toml" "$REPO_ROOT/Cargo.toml"
@@ -215,13 +217,13 @@ for crate_toml in "${CRATE_TOMLS[@]}"; do
 done
 
 # Primitives: no forbidden features
-for feat in reth reth-codec serde-bincode-compat rpc; do
+for feat in reth reth-codec serde-bincode-compat rpc evm; do
     grep -qE "^\s*${feat}\s*=" "$TMP_WORK_DIR/primitives/Cargo.toml" && \
         err "Feature '$feat' still defined in tempo-primitives Cargo.toml"
 done
 
 # Alloy: no node-internal compatibility features
-for feat in revm reth; do
+for feat in reth; do
     grep -qE "^\s*${feat}\s*=" "$TMP_WORK_DIR/alloy/Cargo.toml" && \
         err "Feature '$feat' still defined in tempo-alloy Cargo.toml"
 done
@@ -236,8 +238,6 @@ done
 
 grep -rq 'feature = "reth"' "$TMP_WORK_DIR/alloy/src/" && \
     err "reth-gated code still in tempo-alloy source"
-grep -rq 'feature = "revm"' "$TMP_WORK_DIR/alloy/src/" && \
-    err "revm-gated code still in tempo-alloy source"
 
 # Exclude hardfork.rs: the tempo_hardfork! macro generates #[cfg(feature = "reth")]
 # blocks that are dead code when the reth feature is absent (suppressed via check-cfg).

@@ -22,7 +22,7 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
 /// Production [`PrecompileStorageProvider`] backed by EVM2's live transaction state.
 ///
-/// Wraps [`State`] and tracks gas consumption for storage operations.
+/// Wraps [`evm2::evm::State`] and tracks gas consumption for storage operations.
 pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     evm: &'evm mut Evm<'db, T>,
     version: Version,

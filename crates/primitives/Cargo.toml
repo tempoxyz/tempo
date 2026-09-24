@@ -80,6 +80,7 @@ test-utils = [
 	"reth-primitives-traits?/test-utils",
 ]
 std = [
+	"evm2?/std",
 	"alloy-consensus/secp256k1",
 	"alloy-consensus/std",
 	"alloy-eips/std",
@@ -104,6 +105,7 @@ std = [
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [
 	"dep:alloy-serde",
+	"evm2?/serde",
 	"alloy-consensus/serde",
 	"reth-primitives-traits?/serde",
 	"reth-ethereum-primitives?/serde",
@@ -141,6 +143,7 @@ arbitrary = [
 	"alloy-primitives/arbitrary",
 	"alloy-eips/arbitrary",
 	"commonware-cryptography/arbitrary",
+	"evm2?/arbitrary",
 	"reth-codecs?/arbitrary",
 	"alloy-serde?/arbitrary",
 	"reth-ethereum-primitives?/arbitrary",

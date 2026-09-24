@@ -505,10 +505,18 @@ where
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
             Err(err) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(err)),
-                );
+                let error = if let HandlerError::External(error) = &err
+                    && let Some(TempoInvalidTransaction::CollectFeePreTx(
+                        FeePaymentError::InsufficientFeeTokenBalance { fee, balance },
+                    )) = error.downcast_ref::<TempoInvalidTransaction>()
+                {
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds((*balance, *fee).into()),
+                    )
+                } else {
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(err))
+                };
+                return TransactionValidationOutcome::Invalid(transaction, error);
             }
         }
         let fee_token = fee_token.expect("successful Tempo handler resolves a fee token");

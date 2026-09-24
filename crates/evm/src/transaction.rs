@@ -2,7 +2,7 @@
 
 use alloy_consensus::{
     Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
-    transaction::{Either, Recovered, SignerRecoverable, TxHashRef},
+    transaction::{Either, Recovered, TxHashRef},
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
 pub use evm2::ethereum::RecoveredTxEnvelope;
@@ -549,15 +549,6 @@ impl Transaction for TempoTxEnv {
 
     fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
         self.transaction().authorization_list()
-    }
-}
-
-impl From<TempoTxEnvelope> for TempoTxEnv {
-    fn from(transaction: TempoTxEnvelope) -> Self {
-        transaction
-            .try_into_recovered()
-            .expect("consensus transaction must have a recoverable signer")
-            .into()
     }
 }
 

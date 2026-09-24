@@ -143,6 +143,8 @@ asm-keccak = [
 	"tempo-node/asm-keccak",
 	"reth-ethereum-cli/asm-keccak",
 	"revm/asm-keccak",
+	"reth-ethereum/asm-keccak",
+	"reth-storage-api/asm-keccak",
 ]
 keccak-cache-global = [
 	"alloy-primitives/keccak-cache-global",
