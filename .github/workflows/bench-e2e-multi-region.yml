@@ -270,7 +270,7 @@ jobs:
       packages: read
     name: bench-e2e-multi-region
     runs-on: depot-ubuntu-latest-8
-    timeout-minutes: 360
+    timeout-minutes: 720
 
     env:
       TF_IN_AUTOMATION: "1"
@@ -279,6 +279,7 @@ jobs:
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
+      BENCH_NATIVE_SNAPSHOTS: ${{ (inputs.cloud || 'aws') == 'aws' && (inputs.bloat || '100') != '0' && 'true' || 'false' }}
       BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
       BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
       BENCH_GCP_WIF_PROVIDER: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
@@ -427,7 +428,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || '5070d422285d394f848b75122091a2d653db60d8' }}
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'fd44d36fdadf5d25cb6e1f17bef78721568e43eb' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
