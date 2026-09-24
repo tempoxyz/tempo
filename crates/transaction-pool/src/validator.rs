@@ -942,7 +942,12 @@ mod tests {
         let provider = CountingDatabase {
             address,
             code_hash,
-            account: AccountInfo::new(account.balance, account.nonce, code_hash, bytecode.clone()),
+            account: AccountInfo::new(
+                account.balance,
+                account.nonce,
+                code_hash,
+                Some(bytecode.clone()),
+            ),
             bytecode: bytecode.clone(),
             account_reads: account_reads.clone(),
             bytecode_reads: bytecode_reads.clone(),

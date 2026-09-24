@@ -108,20 +108,6 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
-    /// Returns pending and queued transactions belonging to `sender`.
-    pub fn all_transactions_by_sender(
-        &self,
-        sender: Address,
-    ) -> AllPoolTransactions<TempoPooledTransaction> {
-        let mut transactions = self.protocol_pool.all_transactions();
-        transactions.pending.retain(|tx| tx.sender() == sender);
-        transactions.queued.retain(|tx| tx.sender() == sender);
-        self.aa_2d_pool
-            .read()
-            .append_all_transactions_by_sender(sender, &mut transactions);
-        transactions
-    }
-
     /// Updates the 2d nonce pool with the given state changes.
     ///
     /// Returns mined AA transactions.
@@ -988,7 +974,11 @@ where
         &self,
         sender: Address,
     ) -> AllPoolTransactions<Self::Transaction> {
-        Self::all_transactions_by_sender(self, sender)
+        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions_by_sender(sender, &mut transactions);
+        transactions
     }
 
     fn all_transaction_hashes(&self) -> Vec<B256> {
