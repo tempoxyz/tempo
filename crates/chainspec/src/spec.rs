@@ -538,6 +538,20 @@ mod tests {
     }
 
     #[test]
+    fn t14_activation_uses_genesis_timestamp() {
+        let mut genesis: alloy_genesis::Genesis =
+            serde_json::from_str(include_str!("genesis/dev.json")).unwrap();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t14Time".into(), 42_u64)
+            .unwrap();
+        let spec = super::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(spec.tempo_hardfork_at(41), TempoHardfork::T13);
+        assert_eq!(spec.tempo_hardfork_at(42), TempoHardfork::T14);
+    }
+
+    #[test]
     #[cfg(feature = "cli")]
     fn dev_genesis_contains_eip2935_history_storage() {
         use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
