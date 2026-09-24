@@ -13940,6 +13940,7 @@ dependencies = [
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
  "reth-storage-api",
+ "reth-storage-overlay",
  "reth-tracing",
  "reth-transaction-pool",
  "serde",
