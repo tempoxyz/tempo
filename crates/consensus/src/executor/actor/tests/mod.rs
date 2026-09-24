@@ -148,6 +148,7 @@ fn delivery_count_resets_only_after_a_successful_forkchoice_response() {
                     parent: (View::new(1), digest),
                 },
                 attributes(),
+                None,
             )
             .unwrap();
         let message = actor.mailbox.next().await.unwrap();
@@ -184,6 +185,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
                 parent: (View::new(view.saturating_sub(1)), GENESIS),
             },
             attributes: Box::new(attributes()),
+            deferred_extra_data: None,
             response,
         })
     }

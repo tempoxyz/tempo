@@ -45,7 +45,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{Config, ExecutionLayer, Mailbox, Marshal, init},
+    executor::{Config, DeferredExtraData, ExecutionLayer, Mailbox, Marshal, init},
 };
 
 /// The genesis digest all harness chains hang off.
@@ -1257,6 +1257,28 @@ where
         parent: Digest,
         attributes: TempoPayloadAttributes,
     ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
+        self.request_build(round, parent, attributes, None)
+    }
+
+    /// Requests a build with deferred extra data, which the executor resolves
+    /// after `parent` returned VALID.
+    pub(super) fn build_with_deferred_extra_data(
+        &self,
+        round: Round,
+        parent: Digest,
+        attributes: TempoPayloadAttributes,
+        deferred_extra_data: DeferredExtraData,
+    ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
+        self.request_build(round, parent, attributes, Some(deferred_extra_data))
+    }
+
+    fn request_build(
+        &self,
+        round: Round,
+        parent: Digest,
+        attributes: TempoPayloadAttributes,
+        deferred_extra_data: Option<DeferredExtraData>,
+    ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
         let parent_view = if parent == GENESIS {
             0
         } else {
@@ -1270,6 +1292,7 @@ where
                     parent: (View::new(parent_view), parent),
                 },
                 attributes,
+                deferred_extra_data,
             )
             .expect("actor should accept the build request")
     }
@@ -1288,6 +1311,7 @@ where
                     parent: (View::new(parent_view), parent),
                 },
                 attributes(),
+                None,
             )
             .expect("actor should accept the build request")
     }

@@ -1,20 +1,24 @@
 //! Scenario tests for proposal builds: forkchoice updates that carry
 //! payload attributes, and the payload jobs that deliver the built block.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
+use eyre::eyre;
+use futures::FutureExt as _;
+use parking_lot::Mutex;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
+use tokio::sync::oneshot;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, built_payload, make_block,
-    round,
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, attributes, built_payload,
+    make_block, round,
 };
-use crate::consensus::Digest;
+use crate::{consensus::Digest, executor::DeferredExtraData};
 
 #[test_traced]
 fn building_on_an_unfinalized_head_leaves_forkchoice_unchanged() {
@@ -910,5 +914,167 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
         assert_eq!(received.consensus_context(), Some(consensus_context));
         assert_eq!(received.payload_build_budget(), Some(build_budget));
         assert!(received.validation_latency_estimate().is_none());
+    });
+}
+
+/// A [`DeferredExtraData`] for a build, with handles for the test: `asked`
+/// records the parents that it is resolved with, and `answer` sends its
+/// result.
+struct ScriptedDeferredExtraData {
+    deferred_extra_data: DeferredExtraData,
+    asked: Arc<Mutex<Vec<Digest>>>,
+    answer: oneshot::Sender<eyre::Result<Bytes>>,
+}
+
+fn scripted_deferred_extra_data() -> ScriptedDeferredExtraData {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (answer, answered) = oneshot::channel();
+    let deferred_extra_data = DeferredExtraData::new({
+        let asked = asked.clone();
+        move |parent| {
+            asked.lock().push(parent.digest());
+            async move {
+                answered
+                    .await
+                    .unwrap_or_else(|_| Err(eyre!("the test dropped the answer")))
+            }
+            .boxed()
+        }
+    });
+    ScriptedDeferredExtraData {
+        deferred_extra_data,
+        asked,
+        answer,
+    }
+}
+
+#[test_traced]
+fn build_resolves_deferred_extra_data_between_the_valid_parent_and_the_fcu() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let digest = parent.digest();
+        h.execution.add_body(parent);
+        let release_parent = h
+            .execution
+            .script_delayed_new_payload(digest, Ok(PayloadStatusEnum::Valid));
+        h.execution
+            .script_built_payload(built_payload(&make_block(2, 2, digest)));
+
+        let ScriptedDeferredExtraData {
+            deferred_extra_data,
+            asked,
+            answer,
+        } = scripted_deferred_extra_data();
+        let budget = Duration::from_secs(10);
+        let build = h.build_with_deferred_extra_data(
+            round(2),
+            digest,
+            attributes().with_payload_build_budget(budget),
+            deferred_extra_data,
+        );
+        h.wait_until(|| h.execution.new_payloads() == vec![digest])
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(
+            asked.lock().is_empty(),
+            "the extra data must wait for the VALID answer for the parent",
+        );
+
+        release_parent.send(()).unwrap();
+        h.wait_until(|| asked.lock().as_slice() == [digest]).await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU],
+            "the FCU must wait for the extra data",
+        );
+
+        let extra_data = Bytes::from_static(b"dkg outcome");
+        answer.send(Ok(extra_data.clone())).unwrap();
+        build
+            .await
+            .expect("the build should complete with its extra data");
+        assert_eq!(
+            h.execution.fcus(),
+            vec![STARTUP_FCU, (digest, GENESIS, true)]
+        );
+        let received = h.execution.payload_attributes();
+        let [received] = received.as_slice() else {
+            panic!("expected exactly one attribute-carrying FCU");
+        };
+        assert_eq!(received.extra_data(), &extra_data);
+        assert!(
+            received
+                .payload_build_budget()
+                .is_some_and(|remaining| remaining <= budget),
+            "the build keeps its budget, less the wait for the extra data",
+        );
+    });
+}
+
+#[test_traced]
+fn failed_deferred_extra_data_ends_only_the_build() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let digest = parent.digest();
+        h.execution.add_body(parent);
+
+        let ScriptedDeferredExtraData {
+            deferred_extra_data,
+            asked,
+            answer,
+        } = scripted_deferred_extra_data();
+        let build =
+            h.build_with_deferred_extra_data(round(2), digest, attributes(), deferred_extra_data);
+        h.wait_until(|| asked.lock().as_slice() == [digest]).await;
+        answer
+            .send(Err(eyre!("the DKG actor dropped the request")))
+            .unwrap();
+        assert!(
+            build.await.is_err(),
+            "a build without its extra data must fail",
+        );
+        assert!(!h.execution.fcus().iter().any(|(_, _, attrs)| *attrs));
+
+        // The failed build released the slot.
+        h.execution
+            .script_built_payload(built_payload(&make_block(3, 2, digest)));
+        h.build(round(3), digest)
+            .await
+            .expect("a later build should complete");
+    });
+}
+
+#[test_traced]
+fn canceling_a_build_that_waits_for_deferred_extra_data_frees_the_slot() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        let parent = make_block(1, 1, GENESIS);
+        let digest = parent.digest();
+        h.execution.add_body(parent);
+
+        // The answer never comes, as for a DKG outcome that is not ready.
+        let ScriptedDeferredExtraData {
+            deferred_extra_data,
+            asked,
+            answer: _answer,
+        } = scripted_deferred_extra_data();
+        let build =
+            h.build_with_deferred_extra_data(round(2), digest, attributes(), deferred_extra_data);
+        h.wait_until(|| asked.lock().as_slice() == [digest]).await;
+        drop(build);
+
+        h.execution
+            .script_built_payload(built_payload(&make_block(3, 2, digest)));
+        h.build(round(3), digest)
+            .await
+            .expect("a later build should complete");
+        assert_eq!(
+            h.execution.payload_attributes().len(),
+            1,
+            "only the later build may reach the FCU",
+        );
     });
 }

@@ -22,9 +22,12 @@
 //! finalizing them is accepted. Finality work is scheduled ahead of builds,
 //! verification, and notarized convergence.
 //!
-//! Builds fetch and deliver their parent, then immediately issue the
-//! forkchoice update with payload attributes on VALID, using the finalized
-//! state captured when the build was scheduled.
+//! Builds fetch and deliver their parent, then issue the forkchoice update
+//! with payload attributes on VALID, using the finalized state captured when
+//! the build was scheduled. A proposal whose extra data depends on the
+//! post-state of its parent, such as the DKG outcome of a boundary block,
+//! first waits for that data. The build holds the slot while it waits, so no
+//! other forkchoice update can move the finalized state that it captured.
 //!
 //! # Block verification
 //!
@@ -2266,26 +2269,22 @@ async fn execute_forkchoice(
     execution_node: impl ExecutionLayer,
     cause: Span,
     target: LocalState,
-    build: Option<(Span, Box<Build>)>,
+    build: Option<(
+        Span,
+        oneshot::Sender<TempoBuiltPayload>,
+        TempoPayloadAttributes,
+    )>,
 ) -> ForkchoiceOutcome {
-    let build = build.filter(|(_, build)| {
-        if build.response.is_canceled() {
+    let (build, attributes) = match build {
+        Some((cause, response, attributes)) if !response.is_canceled() => {
+            (Some((cause, response)), Some(attributes))
+        }
+        Some(_) => {
             info!(
                 "dropping payload build request: subscriber went away while \
                 awaiting execution"
             );
-            return false;
-        }
-        true
-    });
-    let (build, attributes) = match build {
-        Some((cause, build)) => {
-            let Build {
-                attributes,
-                response,
-                ..
-            } = *build;
-            (Some((cause, response)), Some(*attributes))
+            (None, None)
         }
         None => (None, None),
     };
@@ -2299,7 +2298,11 @@ async fn execute_forkchoice(
 }
 
 /// Owns the execution slot while fetching and delivering the parent, then
-/// immediately starts the payload build if the parent is VALID.
+/// starts the payload build if the parent is VALID.
+///
+/// A build with [`Build::deferred_extra_data`] resolves that extra data
+/// between the VALID answer and the forkchoice update. The wait counts against
+/// the build budget.
 #[instrument(skip_all, parent = &cause, fields(
     round = %build.context.round,
     parent = %build.context.parent.1,
@@ -2309,15 +2312,22 @@ async fn execute_build(
     marshal: impl Marshal,
     cause: Span,
     mut target: LocalState,
-    mut build: Box<Build>,
+    build: Box<Build>,
     retained_parent: Option<Arc<Block>>,
 ) -> BuildOutcome {
-    let parent_digest = build.context.parent.1;
-    let parent_round = Round::new(build.context.round.epoch(), build.context.parent.0);
+    let Build {
+        context,
+        attributes,
+        deferred_extra_data,
+        mut response,
+    } = *build;
+    let mut attributes = *attributes;
+    let parent_digest = context.parent.1;
+    let parent_round = Round::new(context.round.epoch(), context.parent.0);
     let block = select! {
         biased;
 
-        () = build.response.cancellation() => {
+        () = response.cancellation() => {
             info!("build subscriber went away");
             return BuildOutcome::Aborted { delivery_attempted: false };
         },
@@ -2336,7 +2346,7 @@ async fn execute_build(
         };
     };
     target.head = (block.height(), parent_digest);
-    let status = match deliver_block(&execution_node, block)
+    let status = match deliver_block(&execution_node, Arc::clone(&block))
         .await
         .wrap_err("failed delivering build parent")
     {
@@ -2349,14 +2359,50 @@ async fn execute_build(
             delivery_attempted: true,
         };
     }
-    if build.response.is_canceled() {
+    if response.is_canceled() {
         info!("build subscriber went away");
         return BuildOutcome::Aborted {
             delivery_attempted: true,
         };
     }
+    if let Some(deferred) = deferred_extra_data {
+        let wait_start = Instant::now();
+        let extra_data = select! {
+            biased;
+
+            () = response.cancellation() => {
+                info!("build subscriber went away while the build waited for extra data");
+                return BuildOutcome::Aborted {
+                    delivery_attempted: true,
+                };
+            },
+            extra_data = deferred.resolve(block) => extra_data,
+        };
+        let extra_data = match extra_data {
+            Ok(extra_data) => extra_data,
+            Err(error) => {
+                warn!(%error, "failed to get the extra data of the proposal");
+                return BuildOutcome::Aborted {
+                    delivery_attempted: true,
+                };
+            }
+        };
+        attributes = attributes.with_extra_data(extra_data);
+        // The requester measured the budget when it sent the build, but we spent some time here
+        // for waiting for the extra data to be resolved.
+        if let Some(budget) = attributes.payload_build_budget() {
+            attributes =
+                attributes.with_payload_build_budget(budget.saturating_sub(wait_start.elapsed()));
+        }
+    }
     BuildOutcome::Forkchoice(
-        execute_forkchoice(execution_node, cause.clone(), target, Some((cause, build))).await,
+        execute_forkchoice(
+            execution_node,
+            cause.clone(),
+            target,
+            Some((cause, response, attributes)),
+        )
+        .await,
     )
 }
 

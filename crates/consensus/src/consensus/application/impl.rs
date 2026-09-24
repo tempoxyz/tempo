@@ -13,7 +13,7 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epocher as _, FixedEpocher},
+    types::{Epoch, Epocher as _, FixedEpocher},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{
@@ -22,7 +22,7 @@ use commonware_runtime::{
 };
 use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -33,7 +33,10 @@ use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    consensus::{Digest, block::Block},
+    executor::DeferredExtraData,
+};
 
 pub(in crate::consensus) struct Config<TContext> {
     /// Registers the application's metrics; spawns its work.
@@ -122,52 +125,34 @@ impl Inner {
             .containing(parent.height())
             .expect("epoch strategy is for all heights");
 
-        // Query DKG manager for ceremony data before building payload
-        // This data will be passed to the payload builder via attributes
-        let extra_data = if parent_epoch_info.last() == parent.height().next() {
-            // At epoch boundary: include public ceremony outcome
-            let outcome = self
-                .dkg_manager
-                .subscribe_dkg_outcome(parent.clone())
-                .await
-                .wrap_err("failed getting public dkg ceremony outcome")?;
-            ensure!(
-                round.epoch().next() == outcome.epoch(),
-                "outcome is for epoch `{}`, but we are trying to include the \
-                outcome for epoch `{}`",
-                outcome.epoch,
-                round.epoch().next(),
-            );
-            info!(
-                %outcome.epoch,
-                outcome.network_identity = %outcome.network_identity(),
-                outcome.dealers = ?outcome.dealers(),
-                outcome.players = ?outcome.players(),
-                outcome.next_players = ?outcome.next_players(),
-                "received DKG outcome; will include in payload builder attributes",
-            );
-            outcome.encode().into()
-        } else {
-            // Regular block: try to include DKG dealer log.
-            match self.dkg_manager.get_dealer_log(round.epoch()).await {
-                Err(error) => {
-                    warn!(
-                        %error,
-                        "failed getting signed dealer log for current epoch \
-                        because actor dropped response channel",
-                    );
-                    Bytes::default()
-                }
-                Ok(None) => Bytes::default(),
-                Ok(Some(log)) => {
-                    info!(
-                        "received signed dealer log; will include in payload \
-                        builder attributes"
-                    );
-                    log.encode().into()
-                }
-            }
-        };
+        let (extra_data, deferred_extra_data) =
+            if parent_epoch_info.last() == parent.height().next() {
+                // The boundary block carries the DKG outcome. The DKG actor reads
+                // part of it from the post-state of the parent, so the executor
+                // asks for it only after the parent returned VALID.
+                (Bytes::default(), Some(self.dkg_outcome(round.epoch())))
+            } else {
+                // Regular block: try to include DKG dealer log.
+                let extra_data = match self.dkg_manager.get_dealer_log(round.epoch()).await {
+                    Err(error) => {
+                        warn!(
+                            %error,
+                            "failed getting signed dealer log for current epoch \
+                            because actor dropped response channel",
+                        );
+                        Bytes::default()
+                    }
+                    Ok(None) => Bytes::default(),
+                    Ok(Some(log)) => {
+                        info!(
+                            "received signed dealer log; will include in payload \
+                            builder attributes"
+                        );
+                        log.encode().into()
+                    }
+                };
+                (extra_data, None)
+            };
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
         let mut epoch_millis = runtime.current().epoch_millis();
@@ -220,6 +205,7 @@ impl Inner {
                     parent: (parent_view, parent_digest),
                 },
                 attrs,
+                deferred_extra_data,
             )?
             .await
             .wrap_err(
@@ -257,6 +243,38 @@ impl Inner {
         runtime.sleep_until(runtime.current() + return_delay).await;
 
         Ok(proposal)
+    }
+
+    /// Returns the DKG outcome of a boundary block in `epoch` as deferred
+    /// extra data. The executor resolves it with the parent once the parent
+    /// returned VALID.
+    fn dkg_outcome(&self, epoch: Epoch) -> DeferredExtraData {
+        let dkg_manager = self.dkg_manager.clone();
+        DeferredExtraData::new(move |parent| {
+            async move {
+                let outcome = dkg_manager
+                    .subscribe_dkg_outcome(parent)
+                    .await
+                    .wrap_err("failed getting public dkg ceremony outcome")?;
+                ensure!(
+                    epoch.next() == outcome.epoch(),
+                    "outcome is for epoch `{}`, but we are trying to include the \
+                    outcome for epoch `{}`",
+                    outcome.epoch,
+                    epoch.next(),
+                );
+                info!(
+                    %outcome.epoch,
+                    outcome.network_identity = %outcome.network_identity(),
+                    outcome.dealers = ?outcome.dealers(),
+                    outcome.players = ?outcome.players(),
+                    outcome.next_players = ?outcome.next_players(),
+                    "received DKG outcome; will include in payload builder attributes",
+                );
+                Ok(outcome.encode().into())
+            }
+            .boxed()
+        })
     }
 
     /// Checks the header of a proposal before it is handed to the execution
@@ -533,7 +551,6 @@ impl Metrics {
 mod tests {
     use super::*;
     use commonware_runtime::{Runner as _, deterministic};
-    use futures::FutureExt as _;
 
     #[test]
     fn future_header_waits_for_local_clock_before_certification() {

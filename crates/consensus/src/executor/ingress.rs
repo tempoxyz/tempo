@@ -1,3 +1,4 @@
+use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
 use commonware_consensus::{
     Reporter,
@@ -7,7 +8,10 @@ use commonware_consensus::{
 };
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
-use futures::channel::{mpsc, oneshot};
+use futures::{
+    channel::{mpsc, oneshot},
+    future::BoxFuture,
+};
 use std::{sync::Arc, time::Duration};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tracing::Span;
@@ -73,18 +77,22 @@ impl Mailbox {
     /// the executor logs the cause.
     ///
     /// Fetches and delivers the parent, then starts the build if it is VALID.
+    /// If `deferred_extra_data` is set, the executor resolves it after the
+    /// VALID answer and puts the result into the extra data of `attributes`.
     /// A newer request can replace a queued build. Once started, the build
     /// continues until it finishes, fails, or its receiver is dropped.
     pub(crate) fn build_proposal(
         &self,
         context: Context<Digest, PublicKey>,
         attributes: TempoPayloadAttributes,
+        deferred_extra_data: Option<DeferredExtraData>,
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(Build {
                 context,
                 attributes: Box::new(attributes),
+                deferred_extra_data,
                 response,
             }))
             .wrap_err(
@@ -128,7 +136,41 @@ pub(super) enum Command {
 pub(super) struct Build {
     pub(super) context: Context<Digest, PublicKey>,
     pub(super) attributes: Box<TempoPayloadAttributes>,
+    /// Set for a proposal whose extra data depends on the post-state of its
+    /// parent.
+    pub(super) deferred_extra_data: Option<DeferredExtraData>,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,
+}
+
+/// Header extra data of a proposal that depends on the post-state of its
+/// parent, so it can be made only after the engine has executed the parent.
+///
+/// The executor resolves it once, after the engine returned VALID for the
+/// parent, and waits for the result before the forkchoice update that starts
+/// the build. The build holds the execution slot while it waits.
+///
+/// It must be `Sync` because it travels in the executor's mailbox messages.
+pub(crate) struct DeferredExtraData(
+    Box<dyn FnOnce(Arc<Block>) -> BoxFuture<'static, eyre::Result<Bytes>> + Send + Sync>,
+);
+
+impl DeferredExtraData {
+    pub(crate) fn new<F>(make: F) -> Self
+    where
+        F: FnOnce(Arc<Block>) -> BoxFuture<'static, eyre::Result<Bytes>> + Send + Sync + 'static,
+    {
+        Self(Box::new(make))
+    }
+
+    pub(super) fn resolve(self, parent: Arc<Block>) -> BoxFuture<'static, eyre::Result<Bytes>> {
+        (self.0)(parent)
+    }
+}
+
+impl std::fmt::Debug for DeferredExtraData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeferredExtraData")
+    }
 }
 
 #[derive(Debug)]
