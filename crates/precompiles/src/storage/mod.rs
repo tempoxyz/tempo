@@ -86,7 +86,7 @@ pub trait PrecompileStorageProvider {
     /// Reads the commitment with normal account-access gas. Already-loaded authorization
     /// code should decode its account info directly instead.
     fn config_commitment(&mut self, address: Address) -> Result<B256> {
-        let active = self.spec().is_t12();
+        let active = self.spec().is_t14();
         let mut result = Ok(B256::ZERO);
         self.with_account_info(address, &mut |info| {
             result = decode_config_commitment(&info.extension, active)

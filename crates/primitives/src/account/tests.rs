@@ -9,7 +9,7 @@ use reth_primitives_traits::Account;
 use revm::state::AccountInfo;
 
 #[test]
-fn commitment_roundtrip_and_historical_gate() {
+fn commitment_roundtrip_and_t14_gate() {
     assert!(encode_config_commitment(B256::ZERO).is_empty());
     for active in [false, true] {
         assert_eq!(decode_config_commitment(&[], active), Ok(B256::ZERO));
@@ -18,7 +18,10 @@ fn commitment_roundtrip_and_historical_gate() {
     let payload = encode_config_commitment(hash);
     assert_eq!(payload.as_ref(), hash.as_slice());
     assert_eq!(decode_config_commitment(&payload, true), Ok(hash));
-    assert!(decode_config_commitment(&payload, false).is_err());
+    assert_eq!(
+        decode_config_commitment(&payload, false),
+        Err(alloy_rlp::Error::Custom("account commitment before T14"))
+    );
 }
 
 #[test]
