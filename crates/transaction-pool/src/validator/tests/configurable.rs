@@ -106,21 +106,21 @@ impl CanonicalPool {
             validation_task,
             service,
         };
-        fixture.restore_t12();
+        fixture.restore_t14();
         fixture
     }
 
-    // The mock chain's head callback selects a pre-T12 fork.
-    fn restore_t12(&self) {
+    // The mock chain's head callback selects a pre-T14 fork.
+    fn restore_t14(&self) {
         let validator = self.validation.validator();
         validator
             .active_hardfork
-            .store(TempoHardfork::T12.variant_index(), Ordering::Relaxed);
+            .store(TempoHardfork::T14.variant_index(), Ordering::Relaxed);
         let mut env = validator.cached_evm_env.write();
         env.cfg_env = env
             .cfg_env
             .clone()
-            .with_spec_and_gas_params(TempoHardfork::T12, tempo_gas_params(TempoHardfork::T12));
+            .with_spec_and_gas_params(TempoHardfork::T14, tempo_gas_params(TempoHardfork::T14));
         env.block_env.multisig_recovery_factory = Some(FACTORY);
     }
 
@@ -141,7 +141,7 @@ impl CanonicalPool {
             mined_transactions: Vec::new(),
             update_kind: PoolUpdateKind::Commit,
         });
-        self.restore_t12();
+        self.restore_t14();
     }
 
     async fn insert_stale(&self, transaction: TempoPooledTransaction) -> Entry {
@@ -438,7 +438,7 @@ async fn policy_revalidation_preserves_same_block_fee_preference_changes() {
                     mined_transactions: Vec::new(),
                     update_kind: PoolUpdateKind::Commit,
                 });
-            fixture.restore_t12();
+            fixture.restore_t14();
             let event = CanonStateNotification::Commit {
                 new: fixture.chain(fixture.block.clone(), outcome),
             };
@@ -542,7 +542,7 @@ async fn configurable_grant_recipient_code_change_invalidates_from_canonical_eve
             mined_transactions: Vec::new(),
             update_kind: PoolUpdateKind::Commit,
         });
-    fixture.restore_t12();
+    fixture.restore_t14();
     let event = CanonStateNotification::Commit {
         new: fixture.chain(fixture.block.clone(), outcome),
     };
@@ -559,12 +559,12 @@ async fn configurable_registration_rollback_rechecks_intrinsic_gas() {
     let transaction = native.transaction(1);
     let signed = transaction.inner().as_aa().unwrap();
     let env = TempoTxEnv::from_recovered_tx(signed, native.account);
-    let gas = tempo_gas_params(TempoHardfork::T12);
+    let gas = tempo_gas_params(TempoHardfork::T14);
     let base = calculate_aa_batch_intrinsic_gas(
         env.tempo_tx_env.as_ref().unwrap(),
         &gas,
         None::<std::iter::Empty<&alloy_eips::eip2930::AccessListItem>>,
-        TempoHardfork::T12,
+        TempoHardfork::T14,
     )
     .unwrap()
     .initial_total_gas();
@@ -576,7 +576,7 @@ async fn configurable_registration_rollback_rechecks_intrinsic_gas() {
     fixture
         .provider
         .add_account(native.account, ExtendedAccount::new(0, U256::ZERO));
-    // Refresh only state; preserve the explicit T12 fixture environment.
+    // Refresh only state; preserve the explicit T14 fixture environment.
     fixture.validation.validator().cached_state.write().1 = Arc::new(StateCache::default());
     let result = fixture
         .validation
