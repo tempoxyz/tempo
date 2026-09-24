@@ -19,11 +19,11 @@ contract FundingSource {
     error SourceFailure(uint256 mode);
 
     // Intentionally non-view: mode 1 proves that the caller actually uses STATICCALL.
-    function quote(address account_, address assetOut, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata policyData, bool ownerAuthorized)
+    function quote(address account_, address assetOut, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata configData, bool ownerAuthorized)
         external returns (Quote memory)
     {
         require(account_ == ACCOUNT);
-        require(ownerAuthorized && policyData.length == 0);
+        require(ownerAuthorized && configData.length == 0);
         uint256 mode = abi.decode(data, (uint256));
         if (mode == 1) calls++;
         if (mode == 2) revert SourceFailure(mode);
