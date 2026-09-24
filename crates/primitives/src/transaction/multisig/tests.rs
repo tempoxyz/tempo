@@ -730,32 +730,35 @@ fn multisig_signature_decode_rejects_excess_approvals() {
 
 #[test]
 fn multisig_signature_shape_rejects_oversized_owner_signature() {
-    let signature = MultisigSignature::try_new(
-        Address::repeat_byte(0x11),
-        current_config(indexed_owner(2)),
-        vec![PrimitiveSignature::WebAuthn(WebAuthnSignature {
-            webauthn_data: Bytes::from(vec![0; MAX_WEBAUTHN_SIGNATURE_LENGTH + 1]),
-            r: B256::ZERO,
-            s: B256::ZERO,
-            pub_key_x: B256::ZERO,
-            pub_key_y: B256::ZERO,
-        })],
-    );
-
+    // A WebAuthn envelope one byte over the 2049-byte owner cap, not an unknown tag.
+    let owner_signature = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        webauthn_data: Bytes::from(vec![0; MAX_MULTISIG_OWNER_SIGNATURE_BYTES - 128]),
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+    });
+    let bytes = owner_signature.to_bytes();
+    assert_eq!(bytes.len(), MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1);
     assert_eq!(
-        signature,
+        MultisigSignature::try_new(
+            Address::repeat_byte(0x11),
+            current_config(indexed_owner(2)),
+            vec![owner_signature],
+        ),
         Err(MultisigSignatureError::OwnerSignatureTooLarge)
     );
-}
-
-#[test]
-fn multisig_signature_decode_rejects_oversized_owner_signature() {
     let encoded = encoded_multisig(
         Address::repeat_byte(0x11),
         &current_config(indexed_owner(2)),
-        vec![vec![0xaa; MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1]],
+        vec![bytes.to_vec()],
     );
-    assert_multisig_decode_rejected(&encoded);
+    assert_eq!(
+        MultisigSignature::decode(&mut encoded.as_slice()),
+        Err(alloy_rlp::Error::Custom(
+            "Invalid WebAuthn signature length"
+        )),
+    );
 }
 
 #[test]
