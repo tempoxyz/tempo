@@ -3,7 +3,7 @@ use crate::{
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Bytes, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
@@ -268,6 +268,45 @@ where
 
         Ok(())
     }
+
+    #[inline]
+    fn with_loaded_account<R>(
+        &mut self,
+        address: Address,
+        f: impl FnOnce(bool, &AccountInfo) -> R,
+    ) -> Result<R, TempoPrecompileError> {
+        let additional_cost = self.version.gas_params.cold_account_additional_cost();
+
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let warm_storage_read_cost =
+            u64::from(self.version.gas_params.get(GasId::WarmStorageReadCost));
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(warm_storage_read_cost)?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let mut account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, insufficient_gas_for_cold_load)?;
+        let is_cold = self.version.feature(EvmFeatures::EIP2929) && account.warm();
+
+        if !self.spec.is_t4() {
+            self.gas_tracker.deduct_gas(warm_storage_read_cost)?;
+        }
+
+        if is_cold {
+            self.gas_tracker.deduct_gas(additional_cost)?;
+        }
+
+        account.load_code()?;
+
+        let exists = account.exists();
+        let default = AccountInfo::default();
+        Ok(f(exists, account.get().unwrap_or(&default)))
+    }
 }
 
 impl<T> StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_, T>
@@ -391,52 +430,16 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        let additional_cost = self.version.gas_params.cold_account_additional_cost();
-
-        // T4+: pre-charge static gas to avoid cheap useless work.
-        let warm_storage_read_cost =
-            u64::from(self.version.gas_params.get(GasId::WarmStorageReadCost));
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(warm_storage_read_cost)?;
-            self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
-        };
-
-        let mut account = self
-            .evm
-            .state_mut()
-            .account_with_skip(&address, insufficient_gas_for_cold_load)?;
-        let is_cold = self.version.feature(EvmFeatures::EIP2929) && account.warm();
-
-        if !self.spec.is_t4() {
-            self.gas_tracker.deduct_gas(warm_storage_read_cost)?;
-        }
-
-        if is_cold {
-            self.gas_tracker.deduct_gas(additional_cost)?;
-        }
-
-        account.load_code()?;
-
-        let info = account.get().cloned().unwrap_or_default();
-        f(&info);
-        Ok(())
+        self.with_loaded_account(address, |_, info| f(info))
     }
 
     #[inline]
-    fn account_code(
-        &mut self,
-        address: Address,
-    ) -> Result<(alloy_primitives::B256, Bytecode), TempoPrecompileError> {
-        let mut result = None;
-        self.with_account_info(address, &mut |info| {
-            result = Some((
-                info.code_hash,
-                info.code.clone().unwrap_or_else(Bytecode::default),
-            ));
-        })?;
-        Ok(result.expect("account info callback is always invoked"))
+    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
+        self.with_loaded_account(address, |exists, info| {
+            let code_hash = if exists { info.code_hash } else { B256::ZERO };
+            let code = info.code.clone().unwrap_or_default();
+            (code_hash, code)
+        })
     }
 
     #[inline]
