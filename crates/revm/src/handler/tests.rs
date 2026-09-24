@@ -4520,7 +4520,7 @@ fn funding_intrinsic_prices_signed_extension_bytes() {
 
 #[test]
 fn funding_activation_and_simulated_access_keys() {
-    use tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS;
+    use tempo_contracts::precompiles::DEX_FUNDING_SOURCE_ADDRESS;
     use tempo_primitives::transaction::FundingRequirement;
     for (spec, key, expected) in [
         (
@@ -4548,7 +4548,7 @@ fn funding_activation_and_simulated_access_keys() {
             test.evm
                 .inner
                 .precompiles
-                .get(&NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+                .get(&DEX_FUNDING_SOURCE_ADDRESS)
                 .is_some(),
             spec.is_t13()
         );
@@ -4571,7 +4571,7 @@ fn funding_source_survives_inspector_and_storage_action_changes() {
     assert!(
         evm.inner
             .precompiles
-            .get(&tempo_contracts::precompiles::NATIVE_DEX_FUNDING_SOURCE_ADDRESS)
+            .get(&tempo_contracts::precompiles::DEX_FUNDING_SOURCE_ADDRESS)
             .is_some()
     );
 }
