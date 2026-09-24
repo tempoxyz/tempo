@@ -641,8 +641,7 @@ mod tests {
             let signature = self
                 .private_key
                 .sign(VALIDATOR_NS_ADD, message.as_slice())
-                .encode()
-                .to_vec();
+                .encode();
 
             IValidatorConfigV2::addValidatorCall {
                 validatorAddress: self.validator_address,
@@ -737,7 +736,7 @@ mod tests {
             dkg_outcome([peer(primary).public_key], [peer(primary).public_key]).unwrap();
         outcome.epoch = (boundary + 1) / 10;
         let mut boundary_header = execution_header(boundary);
-        boundary_header.inner.extra_data = outcome.encode().to_vec().into();
+        boundary_header.inner.extra_data = outcome.encode().into();
         let tip_header = if boundary == height {
             boundary_header.clone()
         } else {

@@ -1,6 +1,5 @@
-use alloc::vec::Vec;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Address, B256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
 
@@ -65,10 +64,7 @@ impl TempoSignedAuthorization {
     /// following EIP-7702 spec.
     #[inline]
     pub fn signature_hash(&self) -> B256 {
-        let mut buf = Vec::new();
-        buf.push(MAGIC);
-        self.inner.encode(&mut buf);
-        keccak256(buf)
+        self.inner.signature_hash()
     }
 
     /// Recover the authority for the authorization.
@@ -289,7 +285,8 @@ impl Deref for RecoveredTempoAuthorization {
 pub mod tests {
     use super::*;
     use crate::TempoSignature;
-    use alloy_primitives::{U256, address};
+    use alloc::vec::Vec;
+    use alloy_primitives::{U256, address, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 

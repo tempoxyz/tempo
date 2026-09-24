@@ -160,7 +160,7 @@ impl Builder {
             }
         }
 
-        genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
+        genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
@@ -201,7 +201,6 @@ impl Builder {
                                     fee_recipient,
                                 )
                                 .encode()
-                                .to_vec()
                                 .into(),
                             },
                         )
@@ -407,7 +406,6 @@ impl ExecutionRuntime {
                                         fee_recipient,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
@@ -495,7 +493,6 @@ impl ExecutionRuntime {
                                         egress,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
