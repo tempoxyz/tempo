@@ -4,16 +4,16 @@ crate::sol! {
     #[sol(abi)]
     interface IFundingSource {
         struct Candidate {
-            bytes requestData;
+            bytes executionData;
             uint256 availableAmount;
         }
 
         /// Whether a configured path supports the token, independent of balances and liquidity.
-        /// @param policyData Source-specific rules or owner-selected configuration; malformed data reverts.
-        function supportsToken(address token, bytes calldata policyData) external view returns (bool);
+        /// @param configData Source-specific rules or owner-selected configuration; malformed data reverts.
+        function supportsToken(address token, bytes calldata configData) external view returns (bool);
 
         /// Tests request permissions using only the supplied request and policy data.
-        function verify(bytes calldata requestData, bytes calldata policyData) external view returns (bool);
+        function verify(bytes calldata executionData, bytes calldata configData) external view returns (bool);
 
         /// Discovers independent funding candidates in configuration order without granting authority.
         function discover(
@@ -21,7 +21,7 @@ crate::sol! {
             address assetOut,
             uint256 amountOut,
             uint256 maxCost,
-            bytes calldata policyData
+            bytes calldata configData
         ) external view returns (Candidate[] memory candidates);
 
         struct Quote {
@@ -30,29 +30,29 @@ crate::sol! {
             uint256 rate;
             uint256 maxAmountIn;
             uint256 amountOut;
-            bytes requestData;
+            bytes executionData;
         }
 
         /// Estimates additional output without reserving liquidity or granting input authority.
         /// @param account Input owner and output recipient to simulate.
         /// @param amountOut Output ceiling; uint256.max requests maximum availability.
         /// @param maxCost Remaining aggregate cost budget in output base units.
-        /// @param ownerAuthorized Select owner rules with empty policyData; this flag grants no authority.
+        /// @param ownerAuthorized Select owner rules with empty configData; this flag grants no authority.
         /// @dev Public read-only estimate; grants no input authority.
         function quote(
             address account,
             address assetOut,
             uint256 amountOut,
             uint256 maxCost,
-            bytes calldata requestData,
-            bytes calldata policyData,
+            bytes calldata executionData,
+            bytes calldata configData,
             bool ownerAuthorized
         ) external view returns (Quote memory result);
 
         /// Delivers up to amountOut to the authenticated account within its quoted input cap.
-        /// @param requestData Unmodified execution payload returned by quote.
+        /// @param executionData Unmodified execution payload returned by quote.
         /// @dev Only TIP20Funder may call, within the quoted native input permission.
-        function fund(address account, address assetOut, uint256 amountOut, bytes calldata requestData) external;
+        function fund(address account, address assetOut, uint256 amountOut, bytes calldata executionData) external;
     }
 }
 
@@ -69,8 +69,8 @@ mod tests {
             amountOut: U256::from(50),
             assetOut: address!("0000000000000000000000000000000000000001"),
             maxCost: U256::from(100),
-            requestData: bytes!("1234"),
-            policyData: bytes!("ab"),
+            executionData: bytes!("1234"),
+            configData: bytes!("ab"),
             ownerAuthorized: true,
         };
         let encoded = hex!(
@@ -104,7 +104,7 @@ mod tests {
             account: address!("0000000000000000000000000000000000000001"),
             assetOut: address!("0000000000000000000000000000000000000002"),
             amountOut: U256::from(50),
-            requestData: bytes!("1234"),
+            executionData: bytes!("1234"),
         };
         let encoded = hex!(
             "0f9cd729"
@@ -129,7 +129,7 @@ mod tests {
             rate: U256::from(1_000_000_000_000_000_000u64),
             maxAmountIn: U256::from(30),
             amountOut: U256::from(29),
-            requestData: bytes!("1234"),
+            executionData: bytes!("1234"),
         };
         let encoded = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020"
@@ -155,11 +155,11 @@ mod tests {
     fn discovery_returns_ordered_reusable_requests() {
         let candidates = alloc::vec![
             IFundingSource::Candidate {
-                requestData: bytes!("1234"),
+                executionData: bytes!("1234"),
                 availableAmount: U256::from(30)
             },
             IFundingSource::Candidate {
-                requestData: bytes!("abcd"),
+                executionData: bytes!("abcd"),
                 availableAmount: U256::from(40)
             },
         ];
