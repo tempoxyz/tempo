@@ -1,4 +1,4 @@
-//! Signed transaction integration fixtures for the T12 account-leaf protocol.
+//! Signed transaction integration fixtures for the T14 account-leaf protocol.
 use alloy_evm::{Evm, EvmEnv};
 use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_signer::SignerSync;
@@ -64,8 +64,8 @@ impl Fixture {
         seed.mark_touch();
         db.commit([(account, seed)].into_iter().collect());
         let cfg = CfgEnv::new_with_spec_and_gas_params(
-            TempoHardfork::T12,
-            tempo_gas_params(TempoHardfork::T12),
+            TempoHardfork::T14,
+            tempo_gas_params(TempoHardfork::T14),
         );
         let mut evm = TempoEvm::new(
             db,

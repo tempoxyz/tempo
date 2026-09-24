@@ -301,7 +301,8 @@ async fn reject(
 async fn environment() -> eyre::Result<Localnet> {
     reth_tracing::init_test_tracing();
     let mut genesis: serde_json::Value =
-        serde_json::from_str(&make_genesis_at(TempoHardfork::T12))?;
+        serde_json::from_str(&make_genesis_at(TempoHardfork::T14))?;
+    genesis["config"]["t14Time"] = serde_json::json!(0);
     genesis["config"]["multisigRecoveryFactory"] = serde_json::json!(FACTORY);
     // Store the getter's result in slot zero, proving visibility inside the first signed call.
     let mut code = vec![0x63];

@@ -30,7 +30,7 @@ use tempo_revm::evm::TempoContext;
 /// Storage actions do not represent configurable account reads/writes or keychain
 /// parent or named grant-recipient eligibility. Such authorizations and direct calls to
 /// these precompiles must execute through the handler.
-/// These exclusions apply even before T12; this only disables the
+/// These exclusions apply even before T14; this only disables the
 /// replay optimization, not historical transaction execution.
 pub fn supports_storage_action_replay(tx: &TempoTxEnvelope) -> bool {
     tx.as_aa().is_none_or(|aa| {

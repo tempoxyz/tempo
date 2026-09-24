@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn warm_caller_metadata_is_free_and_checks_caller() {
-        let mut evm = TestEvm::new(TempoHardfork::T12);
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let caller = Address::repeat_byte(0x12);
         evm.0.ctx_mut().tx.caller = caller;
         let mut provider = evm.provider_max_gas();
