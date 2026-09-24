@@ -22,9 +22,9 @@ pub(super) fn prepare_native_multisig_simulation(
         return Ok(());
     }
     let invalid = |message: &str| EthApiError::InvalidParams(message.into());
-    if !hardfork.is_t12() {
+    if !hardfork.is_t14() {
         return Err(invalid(
-            "native multisig simulation requires T12 at the requested state",
+            "native multisig simulation requires T14 at the requested state",
         ));
     }
     let factory = block
@@ -120,7 +120,7 @@ fn validate_witness(
             "configurable account {account} has code at the requested state"
         )));
     }
-    let stored = decode_config_commitment(&info.extension, hardfork.is_t12())
+    let stored = decode_config_commitment(&info.extension, hardfork.is_t14())
         .map_err(|error| EthApiError::Internal(reth_errors::RethError::msg(error.to_string())))?;
     let supplied = signature.config_commitment();
     if supplied.is_zero() || (!stored.is_zero() && stored != supplied) {
