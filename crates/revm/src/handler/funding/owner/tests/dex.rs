@@ -1,7 +1,7 @@
 use super::*;
 use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 use tempo_precompiles::{
-    PrecompileEnv, stablecoin_dex::StablecoinDEX, tip20_funder::native_dex::NativeDexFundingSource,
+    PrecompileEnv, stablecoin_dex::StablecoinDEX, tip20_funder::native_dex::DexFundingSource,
 };
 
 const MAKER: Address = address!("0000000000000000000000000000000000005000");
@@ -55,7 +55,7 @@ fn install(evm: &mut TestEvm, assets: Vec<Address>) {
     );
     evm.inner.precompiles.extend_precompiles([(
         SOURCE,
-        NativeDexFundingSource::new(SOURCE, FUNDER, assets).create_precompile(&env),
+        DexFundingSource::new(SOURCE, FUNDER, assets).create_precompile(&env),
     )]);
 }
 

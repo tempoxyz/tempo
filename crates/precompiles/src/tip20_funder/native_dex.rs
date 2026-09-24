@@ -17,13 +17,13 @@ use tempo_contracts::precompiles::{IFundingSource, ITIP20, ITIP20Funder, TIP20Fu
 
 /// Explicitly configured parity assets, not inferred from token names or currency metadata.
 #[derive(Clone)]
-pub struct NativeDexFundingSource {
+pub struct DexFundingSource {
     address: Address,
     funder: Address,
     parity_assets: Vec<Address>,
 }
 
-impl NativeDexFundingSource {
+impl DexFundingSource {
     pub fn new(address: Address, funder: Address, parity_assets: Vec<Address>) -> Self {
         Self {
             address,
@@ -273,7 +273,7 @@ fn executable_output(
     Ok(low)
 }
 
-impl Precompile for NativeDexFundingSource {
+impl Precompile for DexFundingSource {
     fn call(&mut self, calldata: &[u8], caller: Address) -> PrecompileResult {
         if let Some(error) = charge_input_cost(&mut StorageCtx, calldata) {
             return error;
