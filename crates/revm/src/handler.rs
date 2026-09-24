@@ -408,7 +408,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             || {
                 let mut keychain = AccountKeychain::new();
                 keychain.set_tx_origin(ctx.tx.caller())?;
-                if ctx.cfg.spec.is_t12() {
+                if ctx.cfg.spec.is_t14() {
                     let direct = ctx
                         .tx
                         .tempo_tx_env
@@ -1910,7 +1910,7 @@ where
             }
 
             if let Some(key_auth) = &aa_env.key_authorization {
-                if key_auth.key_type == SignatureType::Multisig && !cfg.spec.is_t12() {
+                if key_auth.key_type == SignatureType::Multisig && !cfg.spec.is_t14() {
                     return Err(TempoInvalidTransaction::NativeMultisig(
                         NativeMultisigError::UnsupportedContext,
                     )
