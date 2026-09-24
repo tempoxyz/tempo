@@ -25,9 +25,11 @@
 //!    fields for new hardfork variants fail at compile time.
 //!
 //! ### In genesis files and generator
-//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`.
-//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`.
-//! 7. Add insertion of `"vivaceTime"` to `chain_config.extra_fields`.
+//! 5. Add `"vivaceTime": 0` to `genesis/dev.json` for local development and test fixtures only.
+//! 6. Add `vivace_time: Option<u64>` arg, without a default, to `xtask/src/genesis_args.rs`.
+//! 7. Insert `"vivaceTime"` into `chain_config.extra_fields` only when explicitly supplied.
+//!    Persistent networks must schedule activation after all validators support the fork;
+//!    do not enable new forks at genesis by default in generated network configurations.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
