@@ -173,6 +173,7 @@ pub enum ConsensusSubcommand {
     #[command(alias = "validators-info")]
     Info(Info),
     /// Claim accrued validator fees for a fee recipient and token.
+    #[command(name = "claim-fees")]
     ClaimValidatorFees(ClaimValidatorFees),
 }
 
@@ -2103,7 +2104,7 @@ mod tests {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
-            "claim-validator-fees",
+            "claim-fees",
             "--fee-recipient",
             TEST_FEE_RECIPIENT,
             "--token",
@@ -2137,9 +2138,7 @@ mod tests {
             vec!["--token", TEST_VALIDATOR_TOKEN],
         ] {
             let error = TempoCli::try_parse_from(
-                ["tempo", "consensus", "claim-validator-fees"]
-                    .into_iter()
-                    .chain(args),
+                ["tempo", "consensus", "claim-fees"].into_iter().chain(args),
             )
             .unwrap_err();
             assert_eq!(
@@ -2155,7 +2154,7 @@ mod tests {
             let cli = TempoCli::try_parse_from([
                 "tempo",
                 "consensus",
-                "claim-validator-fees",
+                "claim-fees",
                 id,
                 "--token",
                 TEST_VALIDATOR_TOKEN,
@@ -2187,7 +2186,7 @@ mod tests {
         let error = TempoCli::try_parse_from([
             "tempo",
             "consensus",
-            "claim-validator-fees",
+            "claim-fees",
             "1",
             "--fee-recipient",
             TEST_FEE_RECIPIENT,
