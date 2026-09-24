@@ -138,8 +138,7 @@ fn all_route_assets_require_explicit_parity_approval() {
         // Both endpoints are allowed, but the common quote token is not.
         let endpoints_only = DexFundingSource::new(SOURCE, FUNDER, vec![input, output]);
         assert!(endpoints_only.quote(call.clone()).is_err());
-        let all =
-            DexFundingSource::new(SOURCE, FUNDER, vec![input, output, PATH_USD_ADDRESS]);
+        let all = DexFundingSource::new(SOURCE, FUNDER, vec![input, output, PATH_USD_ADDRESS]);
         assert!(all.quote(call).is_ok());
     });
 }
