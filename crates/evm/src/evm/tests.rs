@@ -698,7 +698,7 @@ fn test_access_millis_timestamp(spec: TempoHardfork) -> eyre::Result<()> {
             U256::from(1000100)
         );
     } else {
-        assert_eq!(result.stop, InstrStop::InvalidOpcode);
+        assert_eq!(result.stop, InstrStop::OpcodeNotFound);
     }
 
     Ok(())

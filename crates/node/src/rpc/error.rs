@@ -2,9 +2,9 @@ use std::convert::Infallible;
 
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::error::EthRpcErrorCode;
-use evm2::interpreter::InstrStop;
+use evm2::{interpreter::InstrStop, registry::HandlerError};
 use jsonrpsee::types::error::ErrorObject;
-use reth_errors::ProviderError;
+use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
 use reth_node_core::rpc::result::rpc_err;
 use reth_rpc_eth_api::AsEthApiError;
 use reth_rpc_eth_types::{
@@ -66,6 +66,21 @@ impl From<ProviderError> for TempoEthApiError {
         EthApiError::from(error).into()
     }
 }
+
+impl From<BlockExecutionError> for TempoEthApiError {
+    fn from(error: BlockExecutionError) -> Self {
+        if let BlockExecutionError::Validation(BlockValidationError::Other(error)) = &error
+            && let Some(error) = error.downcast_ref::<HandlerError>()
+            && let Some(error) = error.external_ref::<TempoInvalidTransaction>()
+            && let Some(rpc_error) = fee_token_rpc_error(error)
+        {
+            return Self::EthApiError(EthApiError::Other(Box::new(rpc_error)));
+        }
+
+        EthApiError::from(error).into()
+    }
+}
+
 fn fee_token_rpc_error(err: &TempoInvalidTransaction) -> Option<ErrorObject<'static>> {
     let data = match err {
         TempoInvalidTransaction::FeeTokenNotTip20 { address } => serde_json::json!({
@@ -115,12 +130,14 @@ impl FromRevert for TempoEthApiError {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::Address;
-    use evm2::registry::HandlerError;
+    use reth_rpc_eth_api::FromEvmError;
+    use tempo_evm::TempoEvmConfig;
 
     use super::*;
 
     fn into_rpc_error(err: TempoInvalidTransaction) -> ErrorObject<'static> {
-        fee_token_rpc_error(&err).expect("fee token error")
+        let error = BlockValidationError::Other(Box::new(HandlerError::external(err))).into();
+        <TempoEthApiError as FromEvmError<TempoEvmConfig>>::from_evm_err(error).into()
     }
 
     fn rpc_error_data(error: &ErrorObject<'static>) -> serde_json::Value {

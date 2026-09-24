@@ -16,7 +16,7 @@ use crate::TempoEvmTypes;
 #[instruction(EvmTypes = TempoEvmTypes, dynamic_gas)]
 pub fn millis_timestamp(cx: _) -> Result<out> {
     if cx.state.host().config_spec_id().is_t1c() {
-        return Err(InstrStop::InvalidOpcode);
+        return Err(InstrStop::OpcodeNotFound);
     }
     cx.gas.spend(2)?;
     let block = cx.state.host().block_env();
