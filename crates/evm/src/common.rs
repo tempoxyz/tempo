@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
     bytecode::Bytecode,
-    evm::{AccountInfo, Database, StateCheckpoint},
+    evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -252,6 +252,16 @@ impl TempoStateAccess<((),)> for Evm<'_, TempoEvmTypes> {
                 slot.warm();
                 slot.current()
             })
+    }
+}
+
+impl TempoStateAccess<((), ())> for &mut dyn DynDatabase {
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
+        self.get_account(&address).map(Option::unwrap_or_default)
+    }
+
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, DatabaseError> {
+        self.get_storage(&address, &key)
     }
 }
 

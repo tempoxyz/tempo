@@ -12,6 +12,18 @@ pub enum TempoPoolValidationError {
     Invalid(HandlerError),
 }
 
+/// Context resolved by transaction-pool validation.
+#[derive(Debug, Clone)]
+pub struct ValidationContext {
+    /// The fee token used to pay for this transaction.
+    pub fee_token: Address,
+    /// Expiry of the access key used or authorized by this transaction.
+    pub key_expiry: Option<u64>,
+}
+
+/// Result of validating a transaction with Tempo transaction-pool semantics.
+pub type TempoPoolValidationResult = Result<ValidationContext, TempoPoolValidationError>;
+
 /// An EVM that can run Tempo's transaction-pool validation lifecycle.
 ///
 /// Implementations must run the full Tempo validation pipeline without executing the transaction
@@ -21,15 +33,20 @@ pub enum TempoPoolValidationError {
 /// - disable the block base-fee check, because pool admission enforces the T7 fee floor;
 /// - skip the EVM liquidity check, because the pool checks liquidity against its cached AMM view;
 /// - discard journaled writes (nonce updates, fee deduction, and key authorization).
-pub trait TempoPoolValidationEvm {
-    /// Configures this EVM for transaction-pool validation.
+///
+/// Each validation returns the transaction and clears transaction-local state on both success
+/// and error. Loaded database reads remain cached for subsequent transactions in the batch.
+pub trait TempoPoolValidationEvm: reth_evm::Evm<Transaction = TempoTxEnv> {
+    /// Configures Tempo's pool-only validation flags.
+    ///
+    /// The factory must also disable nonce and base-fee checks in the EVM environment.
     fn configure_for_pool(&mut self);
 
     /// Validates `tx` using transaction-pool semantics.
     fn validate_pool_transaction(
         &mut self,
-        tx: &Recovered<TempoTxEnv>,
-    ) -> Result<(Address, Option<u64>), TempoPoolValidationError>;
+        tx: TempoTxEnv,
+    ) -> (TempoPoolValidationResult, TempoTxEnv);
 }
 
 impl TempoPoolValidationEvm for Evm<'_, TempoEvmTypes> {
@@ -40,26 +57,29 @@ impl TempoPoolValidationEvm for Evm<'_, TempoEvmTypes> {
 
     fn validate_pool_transaction(
         &mut self,
-        tx: &Recovered<TempoTxEnv>,
-    ) -> Result<(Address, Option<u64>), TempoPoolValidationError> {
-        let result = crate::handler::validate_transaction(self, tx);
-        self.state_mut().clear_transaction_state();
-
-        if let Err(err) = result {
-            return match err {
-                HandlerError::Fatal(error) => Err(TempoPoolValidationError::Fatal(error)),
+        tx: TempoTxEnv,
+    ) -> (TempoPoolValidationResult, TempoTxEnv) {
+        let signer = tx.evm_tx().signer();
+        let tx = Recovered::new_unchecked(tx, signer);
+        let result = crate::handler::validate_transaction(self, &tx)
+            .map(|()| ValidationContext {
+                fee_token: self
+                    .ext()
+                    .resolved_fee_token
+                    .expect("successful Tempo handler resolves a fee token"),
+                key_expiry: self.ext().key_expiry,
+            })
+            .map_err(|err| match err {
+                HandlerError::Fatal(error) => TempoPoolValidationError::Fatal(error),
                 HandlerError::Database(error) if error.is_fatal() => {
-                    Err(TempoPoolValidationError::Fatal(AnyError::new(error)))
+                    TempoPoolValidationError::Fatal(AnyError::new(error))
                 }
-                err => Err(TempoPoolValidationError::Invalid(err)),
-            };
-        }
-
-        Ok((
-            self.ext()
-                .resolved_fee_token
-                .expect("successful Tempo handler resolves a fee token"),
-            self.ext().key_expiry,
-        ))
+                err => TempoPoolValidationError::Invalid(err),
+            });
+        self.state_mut().clear_transaction_state();
+        self.ext_mut().resolved_fee_token = None;
+        self.ext_mut().key_expiry = None;
+        self.ext().non_creditable_slots.borrow_mut().clear();
+        (result, tx.into_inner())
     }
 }

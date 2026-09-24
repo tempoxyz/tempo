@@ -2,7 +2,7 @@ use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use evm2::evm::InMemoryDB;
+use evm2::evm::{DbStats, DynDatabase, InMemoryDB};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
     TempoBlockEnv, TempoEvmExt, TempoEvmTypes, TempoPoolValidationEvm, TempoTxEnv, build_tempo_evm,
@@ -38,7 +38,7 @@ fn rejected_pool_transaction_does_not_leak_key_expiry() {
             timestamp: U256::from(BLOCK_TIMESTAMP),
             ..Default::default()
         },
-        InMemoryDB::default(),
+        DbStats::new(InMemoryDB::default()),
         precompiles,
         ext,
     );
@@ -64,11 +64,13 @@ fn rejected_pool_transaction_does_not_leak_key_expiry() {
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     ));
     let rejected: TempoTxEnv = Recovered::new_unchecked(rejected, root.address()).into();
-    let rejected = Recovered::new_unchecked(rejected, root.address());
     assert!(
-        evm.validate_pool_transaction(&rejected).is_err(),
+        evm.validate_pool_transaction(rejected).0.is_err(),
         "the first transaction must be rejected"
     );
+
+    assert_eq!(evm.ext().resolved_fee_token, None);
+    assert_eq!(evm.ext().key_expiry, None);
 
     let valid = TxLegacy {
         chain_id: Some(1),
@@ -78,9 +80,27 @@ fn rejected_pool_transaction_does_not_leak_key_expiry() {
     };
     let valid = TempoTxEnvelope::Legacy(Signed::new_unhashed(valid, Signature::test_signature()));
     let valid: TempoTxEnv = Recovered::new_unchecked(valid, root.address()).into();
-    let valid = Recovered::new_unchecked(valid, root.address());
-    let (_, key_expiry) = evm
-        .validate_pool_transaction(&valid)
-        .expect("the second non-AA transaction must be valid");
-    assert_eq!(key_expiry, None);
+    let (result, valid) = evm.validate_pool_transaction(valid);
+    let context = result.expect("the second non-AA transaction must be valid");
+    assert_eq!(context.key_expiry, None);
+    assert_eq!(evm.ext().resolved_fee_token, None);
+    assert_eq!(evm.ext().key_expiry, None);
+    assert_eq!(
+        evm.overlay_db_mut()
+            .get_account(&root.address())
+            .unwrap()
+            .unwrap_or_default()
+            .nonce,
+        0,
+        "pool validation must discard nonce writes",
+    );
+
+    let reads = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();
+    let (result, _) = evm.validate_pool_transaction(valid);
+    assert_eq!(result.unwrap().key_expiry, None);
+    assert_eq!(
+        evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts(),
+        reads,
+        "reusing the EVM must retain loaded reads without leaking transaction writes",
+    );
 }

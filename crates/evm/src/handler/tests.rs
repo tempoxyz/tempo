@@ -5211,9 +5211,7 @@ fn nonce_database_failures_reach_handler_and_pool() {
                 TempoEvmExt::default(),
             );
             evm.configure_for_pool();
-            let error = evm
-                .validate_pool_transaction(&Recovered::new_unchecked(tx, SIGNER))
-                .unwrap_err();
+            let error = evm.validate_pool_transaction(tx).0.unwrap_err();
             match error {
                 TempoPoolValidationError::Fatal(error) if fatal => {
                     assert_eq!(error.downcast_ref::<DatabaseError>(), Some(&expected));

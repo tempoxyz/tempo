@@ -5,14 +5,13 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::{Transaction, constants::KECCAK_EMPTY, transaction::Recovered};
+use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
 use alloy_primitives::{Address, B256, U256};
-use evm2::{EvmFeatures, registry::HandlerError};
+use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::{
-    BlockExecutorFactory, ConfigureEvm, Database, EvmEnv as _, EvmFor,
-    database::StateProviderDatabase,
+    BlockExecutorFactory, ConfigureEvm, EvmEnv as _, EvmFor, database::StateProviderDatabase,
 };
 use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
@@ -349,20 +348,20 @@ where
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let mut db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(&state_provider));
+        let db = StateCacheDb::new(
+            &cached_state,
+            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
+        );
         let evm_env = self.cached_evm_env.read().clone();
 
-        // Validate every transaction with the same tip-scoped database and read cache.
-        // - Skip `valid_after` check: the pool intentionally accepts transactions with a
-        //   future `valid_after` (queued until executable).
-        // - Disable nonce check: the pool accepts future-nonce transactions (queued)
-        //   and handles nonce ordering separately.
-        // - Skip liquidity check: the pool performs its own liquidity validation against a cached view of the AMM state.
+        // Create one throwaway EVM through the configured factory for the whole batch. The
+        // pool constructor and validation hook own configuration and cleanup while the
+        // EVM and tip-scoped state cache keep repeated reads warm.
+        let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
+
         transactions
             .into_iter()
-            .map(|(origin, transaction)| {
-                self.validate_one_with_db(origin, transaction, &mut db, evm_env.clone())
-            })
+            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
             .collect()
     }
 
@@ -388,16 +387,17 @@ where
         }
     }
 
-    /// Validates one transaction against the tip-scoped EVM2 database.
-    fn validate_one_with_db<DB>(
+    /// Validates one transaction with the given throwaway EVM.
+    ///
+    /// The EVM's pool-validation hook is responsible for discarding transaction-local writes.
+    fn validate_one_with_evm<EV>(
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
-        db: &mut DB,
-        evm_env: TempoEvmEnv,
+        evm: &mut EV,
     ) -> TransactionValidationOutcome<TempoPooledTransaction>
     where
-        DB: Database<Error = ProviderError>,
+        EV: TempoPoolValidationEvm,
     {
         // Get the hardfork active at the current tip
         let spec = self.active_hardfork();
@@ -471,23 +471,16 @@ where
             );
         }
 
-        let tx_env = if let Some(tx_env) = transaction.cached_tx_env() {
-            tx_env.clone()
+        // Run the unified EVM validation pipeline and retain the transaction environment.
+        let result = if let Some(tx_env) = transaction.cached_tx_env() {
+            let (result, _) = evm.validate_pool_transaction(tx_env.clone());
+            result
         } else {
-            let tx_env = transaction.tx_env_slow();
-            transaction.cache_tx_env(tx_env.clone());
-            tx_env
+            let (result, tx_env) = evm.validate_pool_transaction(transaction.tx_env_slow());
+            transaction.cache_tx_env(tx_env);
+            result
         };
-
-        // EVM2 owns transaction validation as part of the typed handler. Execute against a
-        // borrowed database and discard the transaction state so validation cannot mutate the
-        // pool's tip snapshot.
-        let tx_env = Recovered::new_unchecked(tx_env, transaction.sender());
-        let (fee_token, key_expiry) = match self
-            .inner
-            .evm_config()
-            .validate_pool_transaction(&mut *db, evm_env, &tx_env)
-        {
+        let validation_ctx = match result {
             Ok(context) => context,
             Err(TempoPoolValidationError::Fatal(err)) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -501,11 +494,11 @@ where
         };
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
-        transaction.set_resolved_fee_token(fee_token);
+        transaction.set_resolved_fee_token(validation_ctx.fee_token);
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
-        if let Some(key_expiry) = key_expiry {
+        if let Some(key_expiry) = validation_ctx.key_expiry {
             let min_allowed = self
                 .inner
                 .fork_tracker()
@@ -531,10 +524,11 @@ where
         // validator tokens, unless the node's fee mechanism does not use the FeeAMM.
         if !self.disable_fee_amm_check {
             let fee = transaction.fee_token_cost();
-            match self
-                .amm_liquidity_cache
-                .has_enough_liquidity(fee_token, fee, &mut *db)
-            {
+            match self.amm_liquidity_cache.has_enough_liquidity(
+                validation_ctx.fee_token,
+                fee,
+                evm.state_db_mut(),
+            ) {
                 Ok(true) => {}
                 Ok(false) => {
                     return TransactionValidationOutcome::Invalid(
@@ -542,7 +536,7 @@ where
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
                             HandlerError::external(TempoInvalidTransaction::CollectFeePreTx(
                                 FeePaymentError::InsufficientAmmLiquidity {
-                                    user_token: Some(fee_token),
+                                    user_token: Some(validation_ctx.fee_token),
                                     validator_token: None,
                                     fee,
                                 },
@@ -560,7 +554,7 @@ where
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
         let inner_validation = {
-            let cached_state_provider = CachedAccountInfoReader::new(&mut *db);
+            let cached_state_provider = CachedAccountInfoReader::new(evm.state_db_mut());
             self.inner
                 .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
         };
@@ -612,7 +606,7 @@ where
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
-                        state_nonce = match db.with_read_only_storage_ctx(
+                        state_nonce = match evm.state_db_mut().with_read_only_storage_ctx(
                             spec,
                             StorageActions::disabled(),
                             || {
@@ -776,13 +770,14 @@ impl<DB> CachedAccountInfoReader<DB> {
 
 impl<DB> AccountReader for CachedAccountInfoReader<DB>
 where
-    DB: Database<Error = ProviderError>,
+    DB: DynDatabase,
 {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
         Ok(self
             .db
             .borrow_mut()
-            .get_account(address)?
+            .get_account(address)
+            .map_err(ProviderError::other)?
             .map(|account| Account {
                 nonce: account.nonce,
                 balance: account.balance,
@@ -793,11 +788,15 @@ where
 
 impl<DB> BytecodeReader for CachedAccountInfoReader<DB>
 where
-    DB: Database<Error = ProviderError>,
+    DB: DynDatabase,
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
         Ok(Some(Bytecode(reth_execution_types::revm_bytecode(
-            &self.db.borrow_mut().get_code_by_hash(code_hash)?,
+            &self
+                .db
+                .borrow_mut()
+                .get_code_by_hash(code_hash)
+                .map_err(ProviderError::other)?,
         ))))
     }
 }
@@ -812,15 +811,12 @@ pub trait ConfigureTempoPoolEvm:
         BlockExecutorFactory: BlockExecutorFactory<EvmTypes = TempoEvmTypes, EvmEnv = TempoEvmEnv>,
     > + 'static
 {
-    /// Validates `tx` using the configured EVM and Tempo transaction-pool semantics.
-    fn validate_pool_transaction<DB>(
+    /// Creates an EVM configured for validating a batch of pool transactions.
+    fn pool_evm<'a>(
         &self,
-        db: &mut DB,
+        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
         evm_env: TempoEvmEnv,
-        tx: &Recovered<tempo_evm::TempoTxEnv>,
-    ) -> Result<(Address, Option<u64>), TempoPoolValidationError>
-    where
-        DB: Database;
+    ) -> impl TempoPoolValidationEvm + 'a;
 }
 
 impl<T> ConfigureTempoPoolEvm for T
@@ -834,20 +830,16 @@ where
         > + 'static,
     for<'a> EvmFor<'a, T>: TempoPoolValidationEvm,
 {
-    fn validate_pool_transaction<DB>(
+    fn pool_evm<'a>(
         &self,
-        db: &mut DB,
+        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
         evm_env: TempoEvmEnv,
-        tx: &Recovered<tempo_evm::TempoTxEnv>,
-    ) -> Result<(Address, Option<u64>), TempoPoolValidationError>
-    where
-        DB: Database,
-    {
+    ) -> impl TempoPoolValidationEvm + 'a {
         let mut evm_env = evm_env.with_nonce_check_disabled();
         evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
-        let mut evm = self.evm_with_env(&mut *db, evm_env);
+        let mut evm = self.evm_with_env(db, evm_env);
         evm.configure_for_pool();
-        TempoPoolValidationEvm::validate_pool_transaction(&mut evm, tx)
+        evm
     }
 }
 
@@ -858,7 +850,10 @@ mod tests {
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
-    use evm2::{bytecode::Bytecode as EvmBytecode, evm::AccountInfo};
+    use evm2::{
+        bytecode::Bytecode as EvmBytecode,
+        evm::{AccountInfo, Database, Db},
+    };
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
@@ -953,7 +948,7 @@ mod tests {
             bytecode_reads: bytecode_reads.clone(),
         };
         let cache = StateCache::default();
-        let cached = CachedAccountInfoReader::new(StateCacheDb::new(&cache, provider));
+        let cached = CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)));
 
         assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
         assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
@@ -3254,6 +3249,7 @@ mod tests {
         let outcomes = validator
             .validate_transactions([
                 (TransactionOrigin::External, rejected),
+                (TransactionOrigin::External, valid.clone()),
                 (TransactionOrigin::External, valid),
             ])
             .await;
@@ -3278,10 +3274,11 @@ mod tests {
             reason.contains("ExpiryInPast"),
             "unexpected keychain error: {reason}"
         );
-        assert!(
-            matches!(&outcomes[1], TransactionValidationOutcome::Valid { .. }),
-            "the valid root-signed AA transaction was rejected after the invalid transaction: {:?}",
-            outcomes[1]
-        );
+        for outcome in &outcomes[1..] {
+            let TransactionValidationOutcome::Valid { state_nonce, .. } = outcome else {
+                panic!("the valid transaction was rejected after reusing the EVM: {outcome:?}");
+            };
+            assert_eq!(*state_nonce, 0, "validation must discard nonce writes");
+        }
     }
 }

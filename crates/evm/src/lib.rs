@@ -38,7 +38,9 @@ pub use handler::{
     TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
     tempo_tx_registry,
 };
-pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
+pub use pool::{
+    TempoPoolValidationError, TempoPoolValidationEvm, TempoPoolValidationResult, ValidationContext,
+};
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
 
