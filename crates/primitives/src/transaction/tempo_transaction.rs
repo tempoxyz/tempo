@@ -40,7 +40,7 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
-    /// A configurable delegate authenticated by its primitive owner quorum (T12).
+    /// A configurable delegate authenticated by its primitive owner quorum (T14).
     Multisig = 3,
 }
 

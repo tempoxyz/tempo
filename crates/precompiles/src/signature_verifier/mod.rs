@@ -126,7 +126,7 @@ mod tests {
         )
         .unwrap();
         let signature = TempoSignature::Keychain(KeychainSignature::new(account, multisig));
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         StorageCtx::enter(&mut storage, || {
             let mut verifier = SignatureVerifier::new();
             for result in [
