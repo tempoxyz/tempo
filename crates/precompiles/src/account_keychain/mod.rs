@@ -242,7 +242,7 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidSignatureType` — unsupported type, including Multisig before T12
+    /// - `InvalidSignatureType` — unsupported type, including Multisig before T14
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -275,7 +275,7 @@ impl AccountKeychain {
         if is_admin && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
-        if signature_type == SignatureType::Multisig && self.storage.spec().is_t12() {
+        if signature_type == SignatureType::Multisig && self.storage.spec().is_t14() {
             if key_id == msg_sender {
                 return Err(AccountKeychainError::invalid_key_id().into());
             }
@@ -308,8 +308,8 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_already_revoked().into());
         }
 
-        // Before T12, value 3 followed the unsupported-type path after these reads.
-        if signature_type == SignatureType::Multisig && !self.storage.spec().is_t12() {
+        // Before T14, value 3 followed the unsupported-type path after these reads.
+        if signature_type == SignatureType::Multisig && !self.storage.spec().is_t14() {
             return Err(AccountKeychainError::invalid_signature_type().into());
         }
         let signature_type = StoredSignatureType::try_from(signature_type)?;
@@ -1224,7 +1224,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_expired().into());
         }
 
-        if key.signature_type == StoredSignatureType::Multisig && !self.storage.spec().is_t12() {
+        if key.signature_type == StoredSignatureType::Multisig && !self.storage.spec().is_t14() {
             return Err(AccountKeychainError::invalid_signature_type().into());
         }
 
@@ -1769,10 +1769,10 @@ mod tests {
     }
 
     #[test]
-    fn test_t12_delegate_types_and_rotation_preserve_grants() -> eyre::Result<()> {
+    fn test_t14_delegate_types_and_rotation_preserve_grants() -> eyre::Result<()> {
         for configurable_parent in [false, true] {
             for signature_type in [SignatureType::Secp256k1, SignatureType::Multisig] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
                 storage.set_timestamp(U256::from(1_000));
                 let parent = Address::repeat_byte(0x11);
                 let delegate = Address::repeat_byte(0x22);
@@ -1836,7 +1836,7 @@ mod tests {
                         keychain.spending_limits[limit_key][DEFAULT_FEE_TOKEN].read()?,
                         limits
                     );
-                    // T12 retains primitive delegate authority even with a commitment.
+                    // T14 retains primitive delegate authority even with a commitment.
                     keychain.verify_and_update_spending(
                         parent,
                         delegate,
@@ -1875,7 +1875,12 @@ mod tests {
             Bytecode,
             Delegation,
         }
-        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+        for spec in [
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+        ] {
             for selector in [Selector::Authorize, Selector::WithWitness, Selector::Admin] {
                 for delegate_case in [
                     Delegate::CodeFree,
@@ -1926,7 +1931,7 @@ mod tests {
                         let result = keychain.call(&calldata, parent)?;
                         assert_eq!(
                             !result.is_revert(),
-                            spec.is_t12() && delegate_case == Delegate::CodeFree,
+                            spec.is_t14() && delegate_case == Delegate::CodeFree,
                             "{spec:?}, {selector:?}, {delegate_case:?}: {result:?}"
                         );
                         if result.is_revert() {
@@ -1946,7 +1951,12 @@ mod tests {
 
     #[test]
     fn test_multisig_delegate_use_checks_type_and_fork() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+        for spec in [
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut keychain = AccountKeychain::new();
@@ -1962,7 +1972,7 @@ mod tests {
                         keychain
                             .validate_keychain_authorization(parent, delegate, 0, expected)
                             .is_ok(),
-                        spec.is_t12() && expected != Some(0),
+                        spec.is_t14() && expected != Some(0),
                     );
                 }
                 Ok(())

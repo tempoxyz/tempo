@@ -158,9 +158,9 @@ fn native_authorization_roles_preserve_order_and_duplicate_accounts() {
 fn native_state_registration_gas_and_registered_v0() {
     let (tx, block) = fixture();
     let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(CacheDB::new(EmptyDB::default()));
-    let gas = tempo_gas_params(TempoHardfork::T12);
+    let gas = tempo_gas_params(TempoHardfork::T14);
     assert_eq!(
-        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas).unwrap(),
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas).unwrap(),
         20_000 + keccak_cost(77) + keccak_cost(85)
     );
     verify(&tx).unwrap();
@@ -172,13 +172,13 @@ fn native_state_registration_gas_and_registered_v0() {
     journal.state.get_mut(&tx.caller).unwrap().info.extension =
         encode_config_commitment(hash).into();
     assert_eq!(
-        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas).unwrap(),
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas).unwrap(),
         0
     );
     journal.state.get_mut(&tx.caller).unwrap().info.extension =
         encode_config_commitment(B256::repeat_byte(0x99)).into();
     assert!(matches!(
-        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas),
         Err(EVMError::Transaction(
             TempoInvalidTransaction::NativeMultisig(
                 NativeMultisigError::ConfigurationCommitmentMismatch { .. }
@@ -191,27 +191,29 @@ fn native_state_registration_gas_and_registered_v0() {
 fn native_contexts_fail_closed_and_simulation_is_explicit() {
     let (mut tx, mut block) = fixture();
     let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(CacheDB::new(EmptyDB::default()));
-    let gas = tempo_gas_params(TempoHardfork::T12);
-    assert!(validate_state(&mut journal, &tx, &block, TempoHardfork::T11, &gas).is_err());
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        assert!(validate_state(&mut journal, &tx, &block, spec, &gas).is_err());
+    }
     block.multisig_recovery_factory = None;
     let caller = tx.caller;
     tx.caller = Address::repeat_byte(0x99);
     assert!(matches!(
-        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas),
         Err(EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(
             NativeMultisigError::AccountMismatch { expected, actual }
         ))) if expected == tx.caller && actual == caller
     ));
     tx.caller = caller;
     assert!(matches!(
-        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas),
         Err(EVMError::Transaction(
             TempoInvalidTransaction::NativeMultisig(NativeMultisigError::FactoryNotConfigured)
         ))
     ));
     tx.execution_context = ExecutionContext::Unspecified;
     assert!(matches!(
-        validate_state(&mut journal, &tx, &block, TempoHardfork::T12, &gas),
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas),
         Err(EVMError::Transaction(
             TempoInvalidTransaction::NativeMultisig(NativeMultisigError::UnsupportedContext)
         ))

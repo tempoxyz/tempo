@@ -13,12 +13,12 @@ use tempo_primitives::TempoAddressExt;
 
 #[test]
 fn account_namespace_excludes_reserved_addresses() {
-    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+    for spec in [TempoHardfork::T12, TempoHardfork::T13, TempoHardfork::T14] {
         for (account, expected) in [
             (Address::ZERO, false),
             (address!("0000000000000000000000000000000000000001"), false),
             (address!("0000000000000000000000000000000000000100"), false),
-            (NATIVE_MULTISIG_ADDRESS, false),
+            (NATIVE_MULTISIG_ADDRESS, !spec.is_t14()),
             (address!("20c0000000000000000000000000000000000001"), false),
             (
                 Address::new_virtual(Default::default(), Default::default()),
@@ -38,7 +38,7 @@ fn account_namespace_excludes_reserved_addresses() {
 
 #[test]
 fn native_rotation_requires_registered_current_leaf_and_direct_authority() {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12)
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
         .with_multisig_recovery_factory(Address::repeat_byte(0x71));
     StorageCtx::enter(&mut storage, || {
         let owners = vec![INativeMultisig::MultisigOwner {
@@ -91,7 +91,7 @@ fn native_rotation_requires_registered_current_leaf_and_direct_authority() {
 
 #[test]
 fn native_config_error_precedence_through_abi() {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12)
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
         .with_multisig_recovery_factory(Address::repeat_byte(0x71));
     StorageCtx::enter(&mut storage, || {
         for (case, threshold, owners, expected) in [
@@ -160,7 +160,7 @@ fn native_config_error_precedence_through_abi() {
 
 #[test]
 fn native_factory_is_required_but_getter_remains_available() {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
     StorageCtx::enter(&mut storage, || {
         let mut native = NativeMultisig::new();
         assert_eq!(
