@@ -270,7 +270,7 @@ jobs:
       packages: read
     name: bench-e2e-multi-region
     runs-on: depot-ubuntu-latest-8
-    timeout-minutes: 720
+    timeout-minutes: 360
 
     env:
       TF_IN_AUTOMATION: "1"
