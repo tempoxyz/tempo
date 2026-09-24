@@ -121,7 +121,7 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
-    /// A commitment write is zero, predates T12, or occurs in a read-only context.
+    /// A commitment write is zero, predates T14, or occurs in a read-only context.
     #[error("invalid account commitment write")]
     InvalidConfigCommitmentWrite,
 
