@@ -1,0 +1,70 @@
+name: Nightly benchmark failure alert
+
+# Runs only trusted inline code; never checks out the failed run or its artifacts.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows:
+      - bench-e2e-scheduled
+      - bench-e2e-multi-region-scheduled
+      - bench-replay-scheduled
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: >-
+      github.repository == 'tempoxyz/tempo' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.event == 'schedule' &&
+      contains(fromJSON('["failure", "timed_out"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
+      - name: Alert reth on-call
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+        with:
+          retries: 0
+          script: |
+            const run = context.payload.workflow_run;
+            const workflows = new Set([
+              'bench-e2e-scheduled',
+              'bench-e2e-multi-region-scheduled',
+              'bench-replay-scheduled',
+            ]);
+            if (`${context.repo.owner}/${context.repo.repo}` !== 'tempoxyz/tempo' ||
+                run?.head_repository?.full_name !== 'tempoxyz/tempo' ||
+                run.event !== 'schedule' || !workflows.has(run.name) ||
+                !['failure', 'timed_out'].includes(run.conclusion)) return;
+
+            const token = process.env.SLACK_BENCH_BOT_TOKEN;
+            if (!token) throw new Error('SLACK_BENCH_BOT_TOKEN is required for nightly failure alerts');
+            const url = `https://github.com/tempoxyz/tempo/actions/runs/${run.id}/attempts/${run.run_attempt}`;
+            const text = [
+              ':x: *Nightly benchmark failed* <!subteam^S0C0784UDQF|oncall-reth>',
+              `*Workflow:* ${run.name} · *Result:* ${run.conclusion} · *Attempt:* ${run.run_attempt}`,
+              `<${url}|View failed benchmark run>`,
+            ].join('\n');
+            // Do not automatically retry an ambiguous POST: it may already have delivered.
+            const response = await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                channel: 'C09KA1JNJ02',
+                text,
+                unfurl_links: false,
+                unfurl_media: false,
+              }),
+              signal: AbortSignal.timeout(15000),
+            });
+            if (!response.ok) throw new Error(`Slack alert failed: HTTP ${response.status}`);
+            const result = await response.json();
+            if (!result.ok) throw new Error(`Slack alert failed: ${result.error || 'unknown error'}`);
+            core.info(`Nightly failure alert posted to ${result.channel} at ${result.ts}`);

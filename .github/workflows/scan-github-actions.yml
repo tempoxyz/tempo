@@ -34,6 +34,7 @@ jobs:
           bash .github/scripts/bench-upload-charts-test.sh
           node --test .github/scripts/docker-pr.test.js
           node --test .github/scripts/docker-pr-status.test.js
+          node --test .github/scripts/bench-nightly-failure.test.js
 
   scan:
     name: Scan GitHub Actions
