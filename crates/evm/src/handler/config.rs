@@ -1,8 +1,8 @@
 //! EVM2 transaction handler plumbing.
 
 use crate::{
-    FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, TempoEvmTx, TempoFeeManager,
-    TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
+    FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, SYSTEM_CALL_GAS_LIMIT, TempoEvmTx,
+    TempoFeeManager, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -484,7 +484,9 @@ fn execute_legacy(
                 unreachable!("system transaction kind was validated during preparation");
             };
             let mut result = request.host.execute_system_call(
-                SystemTx::new(to, tx.input.clone()).with_caller(request.tx.signer()),
+                SystemTx::new(to, tx.input.clone())
+                    .with_caller(request.tx.signer())
+                    .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
             )?;
             if !result.status {
                 return Err(invalid(TempoInvalidTransaction::SystemTransactionFailed(

@@ -4,6 +4,9 @@ use std::sync::Arc;
 /// Tempo's EVM is EVM2 with the Tempo type family.
 pub type TempoEvm<'a> = evm2::Evm<'a, TempoEvmTypes>;
 
+/// Total gas Tempo system calls are allowed to use.
+pub const SYSTEM_CALL_GAS_LIMIT: u64 = 250_000_000;
+
 /// Configuration copied into each Tempo EVM instance.
 #[derive(Clone, Debug)]
 pub struct TempoEvmFactory {

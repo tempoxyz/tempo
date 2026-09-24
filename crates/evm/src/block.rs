@@ -1,6 +1,6 @@
 use crate::{
-    StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm, TempoEvmTypes,
-    transaction::ExecutionContext,
+    SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
+    TempoEvmTypes, transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -353,7 +353,9 @@ impl<'a> TempoBlockExecutor<'a> {
         let result = self
             .evm_mut()
             .system_call(
-                SystemTx::new(CURRENT_COMMITTEE_ADDRESS, calldata).with_caller(Address::ZERO),
+                SystemTx::new(CURRENT_COMMITTEE_ADDRESS, calldata)
+                    .with_caller(Address::ZERO)
+                    .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
             )
             .map_err(map_handler_error)?
             .detach();

@@ -45,7 +45,7 @@ use tempo_contracts::{
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::{TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
+use tempo_evm::{SYSTEM_CALL_GAS_LIMIT, TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
@@ -778,7 +778,9 @@ fn deploy_permit2(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
     println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
 
     let result = evm.system_call(
-        SystemTx::new(ARACHNID_CREATE2_FACTORY_ADDRESS, calldata).with_caller(Address::ZERO),
+        SystemTx::new(ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)
+            .with_caller(Address::ZERO)
+            .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
     )?;
 
     if !result.result().status {
