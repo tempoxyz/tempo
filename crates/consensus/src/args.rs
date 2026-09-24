@@ -357,6 +357,8 @@ pub struct Args {
     /// Number of recently finalized blocks the marshal actor keeps in its
     /// prunable archive. Anything older is served from reth's database
     /// through the hybrid finalized blocks store.
+    ///
+    /// Defaults to about three epochs worth of blocks
     #[arg(
         long = "consensus.finalized-blocks-retention",
         default_value_t = crate::storage::DEFAULT_FINALIZED_BLOCKS_RETENTION,
