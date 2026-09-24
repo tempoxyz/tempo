@@ -133,7 +133,7 @@ impl NativeAccessFixture {
         };
         let signed = tx.into_signed(signature);
         let env = TempoTxEnv::from_recovered_tx(&signed, parent);
-        let mut test = TestHandlerEvm::new(TempoHardfork::T12, env);
+        let mut test = TestHandlerEvm::new(TempoHardfork::T14, env);
         test.evm.ctx.block.multisig_recovery_factory = Some(Self::FACTORY);
         test.evm.ctx.journaled_state.database.insert_account_info(
             parent,
@@ -189,15 +189,16 @@ enum GrantBindingCase {
     UnrelatedSigner,
 }
 
-#[test_case::test_case(TempoHardfork::T11; "primitive_grant_before_t12")]
-#[test_case::test_case(TempoHardfork::T12; "primitive_grant_at_t12")]
+#[test_case::test_case(TempoHardfork::T12; "primitive_grant_before_t14_at_t12")]
+#[test_case::test_case(TempoHardfork::T13; "primitive_grant_before_t14_at_t13")]
+#[test_case::test_case(TempoHardfork::T14; "primitive_grant_at_t14")]
 fn native_grant_type_is_gated_in_handler(spec: TempoHardfork) {
     let fixture = NativeAccessFixture::new();
     let mut test = fixture.evm(GrantCase::PrimitiveGrant, Warmth::Cold, 1_000_000);
     test.evm.ctx.cfg.spec = spec;
     test.evm.ctx.cfg.gas_params = tempo_gas_params(spec);
     let result = test.handler.validate_env(&mut test.evm);
-    if spec.is_t12() {
+    if spec.is_t14() {
         result.unwrap();
         assert!(test.handler.run(&mut test.evm).unwrap().is_success());
     } else {
@@ -219,7 +220,7 @@ fn native_grant_type_is_gated_in_handler(spec: TempoHardfork) {
 #[test_case::test_case(GrantCase::PrimitiveGrantAndUse; "committed_keychain_parent")]
 fn native_handler_rejects_account_code(case: GrantCase) {
     let fixture = NativeAccessFixture::new();
-    // The positive committed-parent control also proves T12 retains primitive
+    // The positive committed-parent control also proves T14 retains primitive
     // root authority; only adding account code changes the expected outcome.
     for code in [
         None,
@@ -345,7 +346,7 @@ fn native_delegate_access_is_intrinsic_once(case: GrantCase) {
     ] {
         let mut test = fixture.evm(case, warmth, 1_000_000);
         let base = validate_aa_initial_tx_gas(&test.evm).unwrap();
-        let gas_params = tempo_gas_params(TempoHardfork::T12);
+        let gas_params = tempo_gas_params(TempoHardfork::T14);
         let access = gas_params.warm_storage_read_cost()
             + if matches!(warmth, Warmth::Cold) {
                 gas_params.cold_account_additional_cost()

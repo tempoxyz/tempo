@@ -145,7 +145,7 @@ fn grant_delegate_access_gas<J: JournalTr>(
     gas: &GasParams,
     signers: &[Address],
 ) -> Result<u64, EVMError<<J::Database as revm::Database>::Error, TempoInvalidTransaction>> {
-    if spec.is_t12()
+    if spec.is_t14()
         && let Some(delegate) = grant_delegate(tx)
         && delegate != tx.caller
         && !signers.contains(&delegate)
@@ -179,11 +179,11 @@ pub fn validate_state<J: JournalTr>(
         {
             return Err(invalid(NativeMultisigError::InvalidSignatureContext));
         }
-        if !spec.is_t12() || matches!(tx.execution_context, ExecutionContext::Unspecified) {
+        if !spec.is_t14() || matches!(tx.execution_context, ExecutionContext::Unspecified) {
             return Err(invalid(NativeMultisigError::UnsupportedContext));
         }
     }
-    if spec.is_t12()
+    if spec.is_t14()
         && tx
             .tempo_tx_env
             .as_ref()

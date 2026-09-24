@@ -68,7 +68,7 @@ pub const NATIVE_MULTISIG_ADDRESS: Address = address!("AACC000000000000000000000
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
-    (NATIVE_MULTISIG_ADDRESS, TempoHardfork::T12),
+    (NATIVE_MULTISIG_ADDRESS, TempoHardfork::T14),
     (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
     (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
     (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),
