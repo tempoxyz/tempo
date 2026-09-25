@@ -12,7 +12,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{Address, B256, Bytes, Keccak256, TxKind, U256};
-use alloy_rlp::{BufMut, Decodable, Encodable};
+use alloy_rlp::{BufMut, Encodable};
 use core::{
     fmt::Debug,
     hash::{Hash, Hasher},
@@ -100,9 +100,7 @@ impl AASigned {
 
     /// Calculate the transaction hash
     fn compute_hash(&self) -> B256 {
-        let mut buf = Vec::with_capacity(self.eip2718_encoded_length());
-        self.eip2718_encode(&mut buf);
-        alloy_primitives::keccak256(&buf)
+        alloy_primitives::keccak256(self.encoded_2718())
     }
 
     /// Calculate the signing hash for the transaction.
@@ -254,7 +252,7 @@ impl AASigned {
         let tx = TempoTransaction::rlp_decode_fields(buf)?;
 
         // Decode signature bytes
-        let sig_bytes: Bytes = Decodable::decode(buf)?;
+        let sig_bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
 
         // Check that we consumed the expected amount
         let consumed = remaining - buf.len();
@@ -263,7 +261,7 @@ impl AASigned {
         }
 
         // Parse signature
-        let signature = TempoSignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
+        let signature = TempoSignature::from_bytes(sig_bytes).map_err(alloy_rlp::Error::Custom)?;
 
         Ok(Self::new_unhashed(tx, signature))
     }
@@ -806,6 +804,37 @@ pub(crate) mod tests {
             "expiring_nonce_hash must be invariant to fee payer signature changes"
         );
         assert_ne!(hash1, B256::ZERO);
+    }
+
+    #[test]
+    fn test_expiring_nonce_discriminator_separates_hashes() {
+        let sender = Address::repeat_byte(0x01);
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            nonce_key: U256::MAX,
+            nonce: 0,
+            valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut discriminated_tx = tx.clone();
+        discriminated_tx.nonce = 1;
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig.clone());
+        let discriminated = AASigned::new_unhashed(discriminated_tx, sig);
+
+        assert_ne!(signed.signature_hash(), discriminated.signature_hash());
+        assert_ne!(signed.hash(), discriminated.hash());
+        assert_ne!(
+            signed.expiring_nonce_hash(sender),
+            discriminated.expiring_nonce_hash(sender)
+        );
     }
 
     #[test]

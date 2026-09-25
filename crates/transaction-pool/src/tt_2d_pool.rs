@@ -88,22 +88,20 @@ pub struct AA2dPool {
     /// the expiring nonce transaction that should be evicted next:
     /// lowest priority first, then newest submission first when priorities tie.
     expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
-    /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
-    ///
-    /// Used to track inclusion of expiring nonce transactions.
-    slot_to_expiring_nonce_hash: U256Map<B256>,
     /// Scratch buffer reused while processing nonce state updates.
     state_update_nonce_changes: HashMap<AASequenceId, u64>,
     /// Scratch buffer reused while processing included expiring nonce transactions.
     state_update_included_expiring_nonce_hashes: Vec<B256>,
-    /// Reverse index for the storage slot of an account's nonce
+    /// Reverse index for the `NonceManager` storage slots this pool tracks.
     ///
     /// ```solidity
     ///  mapping(address => mapping(uint256 => uint64)) public nonces
+    ///  mapping(bytes32 => bool) public expiring_nonce_seen
     /// ```
     ///
-    /// This identifies the account and nonce key based on the slot in the `NonceManager`.
-    slot_to_seq_id: U256Map<AASequenceId>,
+    /// Both mappings share one index so the state-update scan needs a single lookup per changed
+    /// slot; see [`NonceSlotEntry`].
+    slot_to_nonce_entry: U256Map<NonceSlotEntry>,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -119,6 +117,8 @@ pub struct AA2dPool {
     /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
     /// Entries are removed when count reaches 0 via `decrement_sender_count`.
     txs_by_sender: AddressMap<usize>,
+    /// Pending and queued regular transactions per `(sender, nonce_key)` lane.
+    txs_by_lane: HashMap<AASequenceId, usize>,
     /// Number of pending transactions, including expiring nonce transactions.
     pending_count: usize,
     /// Number of queued regular 2D nonce transactions.
@@ -148,16 +148,16 @@ impl AA2dPool {
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
-            slot_to_expiring_nonce_hash: Default::default(),
             state_update_nonce_changes: Default::default(),
             state_update_included_expiring_nonce_hashes: Default::default(),
-            slot_to_seq_id: Default::default(),
+            slot_to_nonce_entry: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
             pending_eviction_order: Default::default(),
             queued_eviction_order: Default::default(),
             base_fee: 0,
             txs_by_sender: Default::default(),
+            txs_by_lane: Default::default(),
             pending_count: 0,
             queued_count: 0,
             pending_size: Default::default(),
@@ -263,6 +263,18 @@ impl AA2dPool {
             ));
         }
 
+        let lane_count = self
+            .txs_by_lane
+            .get(&tx_id.seq_id)
+            .copied()
+            .unwrap_or_default();
+        if lane_count >= self.config.max_txs_per_lane && tx_id.nonce > on_chain_nonce {
+            return Err(PoolError::new(
+                *transaction.hash(),
+                PoolErrorKind::SpammerExceededCapacity(transaction.sender()),
+            ));
+        }
+
         // assume the transaction is not pending, will get updated later
         let tx = Arc::new(AA2dInternalTransaction {
             inner: AA2dStoredTransaction::new(self.next_id(), transaction.clone()),
@@ -315,6 +327,7 @@ impl AA2dPool {
                 }
 
                 entry.insert(Arc::clone(&tx));
+                *self.txs_by_lane.entry(tx_id.seq_id).or_default() += 1;
                 self.queued_count += 1;
                 None
             }
@@ -445,6 +458,7 @@ impl AA2dPool {
             replaced: replaced.map(|tx| tx.inner.transaction.clone()),
             subpool: SubPool::Queued,
             queued_reason: Some(QueuedReason::NonceGap),
+            promoted: Vec::new(),
         })
     }
 
@@ -511,8 +525,14 @@ impl AA2dPool {
         expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash
-                .insert(slot, expiring_nonce_hash);
+            let previous = self
+                .slot_to_nonce_entry
+                .insert(slot, NonceSlotEntry::ExpiringNonce(expiring_nonce_hash));
+            debug_assert!(
+                previous
+                    .is_none_or(|previous| matches!(previous, NonceSlotEntry::ExpiringNonce(_))),
+                "expiring nonce slot is also tracked as a 2D nonce lane slot"
+            );
         }
         self.by_hash.insert(tx_hash, transaction.clone());
 
@@ -635,6 +655,18 @@ impl AA2dPool {
             .filter(move |tx| tx.transaction.sender() == sender)
             .map(|tx| tx.transaction.clone());
         regular.chain(expiring)
+    }
+
+    /// Returns pending transactions in the address's sequential 2D nonce lane.
+    pub(crate) fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
+        self.by_id
+            .range(AASequenceId::new(address, nonce_key).range())
+            .filter(|(_, tx)| tx.is_pending())
+            .map(|(_, tx)| tx.inner.transaction.clone())
     }
 
     /// Returns an iterator over all transaction hashes in this pool
@@ -849,6 +881,12 @@ impl AA2dPool {
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
+        if let hash_map::Entry::Occupied(mut entry) = self.txs_by_lane.entry(id.seq_id) {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
 
         // Remove from eviction set
         self.remove_eviction_key(&tx);
@@ -857,7 +895,7 @@ impl AA2dPool {
         if self.by_id.range(id.seq_id.range()).next().is_none()
             && let Some(slot) = tx.inner.transaction.transaction.nonce_key_slot()
         {
-            self.slot_to_seq_id.remove(&slot);
+            self.remove_nonce_slot_entry(slot, NonceSlotEntry::Sequence(id.seq_id));
         }
 
         self.independent_transactions
@@ -1367,7 +1405,11 @@ impl AA2dPool {
     ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         self.by_hash.remove(pending_tx.transaction.hash());
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash.remove(&slot);
+            let expiring_hash = pending_tx
+                .transaction
+                .transaction
+                .precomputed_expiring_nonce_hash();
+            self.remove_nonce_slot_entry(slot, NonceSlotEntry::ExpiringNonce(expiring_hash));
         }
         self.decrement_sender_count(pending_tx.transaction.sender());
         self.remove_from_subpool(true, pending_tx.size());
@@ -1427,8 +1469,30 @@ impl AA2dPool {
         trace!(target: "txpool::2d", ?address, ?nonce_key, "recording 2d nonce slot");
         let seq_id = AASequenceId::new(address, nonce_key);
 
-        if self.slot_to_seq_id.insert(slot, seq_id).is_none() {
-            self.metrics.inc_nonce_key_count(1);
+        match self
+            .slot_to_nonce_entry
+            .insert(slot, NonceSlotEntry::Sequence(seq_id))
+        {
+            Some(previous) => debug_assert!(
+                matches!(previous, NonceSlotEntry::Sequence(_)),
+                "2D nonce lane slot is also tracked as an expiring nonce slot"
+            ),
+            None => self.metrics.inc_nonce_key_count(1),
+        }
+    }
+
+    /// Removes a tracked nonce slot, keeping it if it no longer tracks `expected`.
+    fn remove_nonce_slot_entry(&mut self, slot: U256, expected: NonceSlotEntry) {
+        let hash_map::Entry::Occupied(entry) = self.slot_to_nonce_entry.entry(slot) else {
+            return;
+        };
+        debug_assert_eq!(
+            entry.get(),
+            &expected,
+            "nonce slot tracks a different entry than the transaction it is removed for"
+        );
+        if entry.get() == &expected {
+            entry.remove();
         }
     }
 
@@ -1448,17 +1512,21 @@ impl AA2dPool {
         let mut included_expiring_nonce_hashes =
             std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
 
-        // Process known 2D nonce slot changes.
+        // Process known nonce slot changes. A slot tracks either a 2D nonce lane or an expiring
+        // nonce transaction, so one lookup per changed slot is enough.
         for (slot, value) in nonce_state.storage.iter() {
-            if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
-                changes.insert(*seq_id, value.present_value.saturating_to());
-            }
-            // Detect included expiring nonce transactions via their
-            // `expiring_nonce_seen` slot being set to a non-zero value.
-            if !value.present_value.is_zero()
-                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
-            {
-                included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+            match self.slot_to_nonce_entry.get(slot) {
+                Some(NonceSlotEntry::Sequence(seq_id)) => {
+                    changes.insert(*seq_id, value.present_value.saturating_to());
+                }
+                // Detect included expiring nonce transactions via their
+                // `expiring_nonce_seen` slot being set to a non-zero value.
+                Some(NonceSlotEntry::ExpiringNonce(expiring_nonce_hash))
+                    if !value.present_value.is_zero() =>
+                {
+                    included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+                }
+                _ => {}
             }
         }
 
@@ -1490,6 +1558,12 @@ impl AA2dPool {
     /// Asserts that all assumptions are valid.
     #[cfg(test)]
     pub(crate) fn assert_invariants(&self) {
+        let mut lane_counts = HashMap::default();
+        for id in self.by_id.keys() {
+            *lane_counts.entry(id.seq_id).or_insert(0usize) += 1;
+        }
+        assert_eq!(self.txs_by_lane, lane_counts);
+
         // Basic size constraints
         assert!(
             self.independent_transactions.len() <= self.by_id.len(),
@@ -1906,10 +1980,26 @@ impl IndependentTransactions {
     }
 }
 
+/// What a tracked `NonceManager` storage slot belongs to.
+///
+/// A slot is either the `nonces` entry of a regular 2D nonce lane or the `expiring_nonce_seen`
+/// entry of an expiring nonce transaction. The two mappings live at different storage roots, so a
+/// slot can never be both; insertion asserts this in debug builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonceSlotEntry {
+    /// `nonces[account][nonce_key]`, identifying the lane the slot tracks.
+    Sequence(AASequenceId),
+    /// `expiring_nonce_seen[hash]`, identifying the expiring nonce transaction it tracks.
+    ExpiringNonce(B256),
+}
+
 /// Default maximum number of transactions per sender in the AA 2D pool.
 ///
 /// This limit prevents a single sender from monopolizing pool capacity.
 pub const DEFAULT_MAX_TXS_PER_SENDER: usize = 16;
+
+/// Default maximum number of pending and queued transactions in one regular 2D nonce lane.
+pub const DEFAULT_MAX_TXS_PER_LANE: usize = 1024;
 
 /// Settings for the [`AA2dPoolConfig`]
 #[derive(Debug, Clone)]
@@ -1924,6 +2014,10 @@ pub struct AA2dPoolConfig {
     ///
     /// Prevents a single sender from monopolizing pool capacity (DoS protection).
     pub max_txs_per_sender: usize,
+    /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
+    /// The current on-chain nonce is admitted even at capacity to allow gap filling.
+    /// Expiring nonce transactions are independent and do not use this limit.
+    pub max_txs_per_lane: usize,
 }
 
 impl Default for AA2dPoolConfig {
@@ -1933,6 +2027,7 @@ impl Default for AA2dPoolConfig {
             pending_limit: SubPoolLimit::default(),
             queued_limit: SubPoolLimit::default(),
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         }
     }
 }
@@ -4941,6 +5036,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5148,6 +5244,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5216,6 +5313,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5258,6 +5356,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5295,6 +5394,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5330,6 +5430,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let max_fee = 30_000_000_000u128;
@@ -5421,6 +5522,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5481,6 +5583,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5584,6 +5687,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 3,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5644,6 +5748,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 2,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5696,6 +5801,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 2,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5741,6 +5847,117 @@ mod tests {
         pool.assert_invariants();
     }
 
+    #[test]
+    fn lane_limit_allows_on_chain_nonce_without_eviction() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_lane: 3,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let make_tx = |nonce, fee| {
+            Arc::new(wrap_valid_tx(
+                TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .nonce(nonce)
+                    .max_priority_fee(fee)
+                    .max_fee(fee * 2)
+                    .build(),
+                TransactionOrigin::External,
+            ))
+        };
+        let mut hashes = Vec::new();
+        for nonce in 1..=3 {
+            let tx = make_tx(nonce, 1_000_000_000);
+            hashes.push(*tx.hash());
+            pool.add_transaction(tx, 0, TempoHardfork::T1).unwrap();
+        }
+
+        // Both new future nonces and future-nonce replacements are rejected at capacity.
+        for nonce in [1, 4] {
+            assert!(
+                pool.add_transaction(make_tx(nonce, 2_000_000_000), 0, TempoHardfork::T1)
+                    .is_err()
+            );
+        }
+        let added = pool
+            .add_transaction(make_tx(0, 1_000_000_000), 0, TempoHardfork::T1)
+            .unwrap();
+        let pending = added.as_pending().unwrap();
+        assert_eq!(pending.promoted.len(), 3);
+        assert!(pending.discarded.is_empty());
+        assert!(hashes.iter().all(|hash| pool.contains(hash)));
+        assert_eq!(pool.txs_by_lane[&seq_id], 4);
+        pool.assert_invariants();
+
+        // The on-chain nonce remains replaceable, subject to the usual price bump.
+        assert!(
+            pool.add_transaction(make_tx(0, 900_000_000), 0, TempoHardfork::T1)
+                .is_err()
+        );
+        let replacement = pool
+            .add_transaction(make_tx(0, 2_000_000_000), 0, TempoHardfork::T1)
+            .unwrap();
+        assert_eq!(pool.txs_by_lane[&seq_id], 4);
+        pool.remove_transactions(std::iter::once(&hashes[2]));
+        assert!(
+            pool.add_transaction(make_tx(4, 1_000_000_000), 0, TempoHardfork::T1)
+                .is_err()
+        );
+        pool.remove_transactions(std::iter::once(replacement.hash()));
+        pool.add_transaction(make_tx(4, 1_000_000_000), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.assert_invariants();
+
+        pool.on_nonce_changes(HashMap::from_iter([(seq_id, 5)]));
+        assert!(!pool.txs_by_lane.contains_key(&seq_id));
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn lane_limit_is_scoped_to_sender_and_nonce_key() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_lane: 1,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        for (sender, key) in [(sender, 1), (sender, 2), (Address::random(), 1)] {
+            let tx = TxBuilder::aa(sender).nonce_key(U256::from(key)).build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        assert_eq!(pool.txs_by_lane.len(), 3);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn zero_lane_limit_does_not_limit_expiring_nonces() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_lane: 0,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        for key in [U256::from(1), U256::MAX] {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(key)
+                .nonce(u64::from(key != U256::MAX))
+                .build();
+            let result = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)),
+                0,
+                TempoHardfork::T1,
+            );
+            assert_eq!(result.is_ok(), key == U256::MAX);
+        }
+        assert!(pool.txs_by_lane.is_empty());
+        pool.assert_invariants();
+    }
+
     /// Tests that expiring nonce transactions also respect per-sender limits.
     #[test]
     fn test_per_sender_limit_includes_expiring_nonce_txs() {
@@ -5755,6 +5972,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 2,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -7072,7 +7290,7 @@ mod tests {
         assert_eq!(mined[0].hash(), &tx_hash);
         assert!(!pool.contains(&tx_hash));
         assert!(pool.expiring_nonce_txs.is_empty());
-        assert!(pool.slot_to_expiring_nonce_hash.is_empty());
+        assert!(pool.slot_to_nonce_entry.is_empty());
         assert_expiring_eviction_index_len(&pool, 0);
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
@@ -7623,6 +7841,7 @@ mod tests {
                 max_size: usize::MAX,
             },
             max_txs_per_sender: 1,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -7638,7 +7857,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(pool.slot_to_seq_id.len(), 1);
+        assert_eq!(pool.slot_to_nonce_entry.len(), 1);
 
         for i in 2..12u64 {
             let tx = TxBuilder::aa(sender)
@@ -7657,9 +7876,9 @@ mod tests {
         }
 
         assert_eq!(
-            pool.slot_to_seq_id.len(),
+            pool.slot_to_nonce_entry.len(),
             1,
-            "rejected txs with new nonce keys should not grow slot_to_seq_id"
+            "rejected txs with new nonce keys should not grow slot_to_nonce_entry"
         );
         pool.assert_invariants();
     }

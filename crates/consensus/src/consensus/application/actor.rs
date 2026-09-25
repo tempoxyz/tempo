@@ -615,12 +615,11 @@ impl Inner<Init> {
         let block_access_list_size_bytes = block_access_list
             .as_ref()
             .map_or(0, |block_access_list| block_access_list.encode_size());
-        let proposal = Block::try_from_execution_block_with_encoded_cache(
+        let proposal = Block::from_execution_block_unchecked_with_encoded_cache(
             block,
             block_access_list,
             execution_block_encoded,
-        )
-        .wrap_err("payload builder produced an invalid block")?;
+        );
         let block_size_estimate_bytes =
             execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
         let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
@@ -930,7 +929,7 @@ async fn verify_header(
             ));
         }
     } else if !block.header().extra_data().is_empty() {
-        let bytes = block.header().extra_data().to_vec();
+        let bytes = block.header().extra_data().clone();
         let dealer = dkg_manager
             .verify_dealer_log(round.epoch(), bytes)
             .await
