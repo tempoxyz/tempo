@@ -19,18 +19,18 @@ const MAX_CALLDATA_LEN: usize =
 // Upper bound for 0x05 || rlp([account, config, approvals]) with 48 owners and 8 approvals.
 const MAX_OWNERS_RLP_PAYLOAD: usize = MAX_MULTISIG_OWNERS * (1 + 21 + 2);
 const MAX_CONFIG_RLP_PAYLOAD: usize =
-    33 + 9 + 2 + alloy_rlp::length_of_length(MAX_OWNERS_RLP_PAYLOAD) + MAX_OWNERS_RLP_PAYLOAD;
+    33 + 9 + 2 + alloy::rlp::length_of_length(MAX_OWNERS_RLP_PAYLOAD) + MAX_OWNERS_RLP_PAYLOAD;
 const MAX_APPROVALS_RLP_PAYLOAD: usize = MAX_MULTISIG_SIGNATURES
-    * (alloy_rlp::length_of_length(MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
+    * (alloy::rlp::length_of_length(MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
         + MAX_MULTISIG_OWNER_SIGNATURE_BYTES);
 const MAX_MULTISIG_RLP_PAYLOAD: usize = 21
-    + alloy_rlp::length_of_length(MAX_CONFIG_RLP_PAYLOAD)
+    + alloy::rlp::length_of_length(MAX_CONFIG_RLP_PAYLOAD)
     + MAX_CONFIG_RLP_PAYLOAD
-    + alloy_rlp::length_of_length(MAX_APPROVALS_RLP_PAYLOAD)
+    + alloy::rlp::length_of_length(MAX_APPROVALS_RLP_PAYLOAD)
     + MAX_APPROVALS_RLP_PAYLOAD;
 const MAX_MULTISIG_CALLDATA_LEN: usize = 4
     + 32 * 4
-    + (1 + alloy_rlp::length_of_length(MAX_MULTISIG_RLP_PAYLOAD) + MAX_MULTISIG_RLP_PAYLOAD)
+    + (1 + alloy::rlp::length_of_length(MAX_MULTISIG_RLP_PAYLOAD) + MAX_MULTISIG_RLP_PAYLOAD)
         .next_multiple_of(32);
 
 impl Precompile for SignatureVerifier {

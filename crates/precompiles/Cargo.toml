@@ -22,7 +22,6 @@ tempo-chainspec = { workspace = true, features = ["evm"] }
 tempo-primitives = { workspace = true, features = ["evm"] }
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
-alloy-rlp.workspace = true
 alloy-json-abi = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 alloy-evm = { workspace = true, features = ["std"] }

@@ -205,13 +205,13 @@ pub fn validate_state<J: JournalTr>(
     }
     let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
     // Grant signers may be admin access keys; later checks bind them to the caller.
-    if let Some(signature) = aa.signature.as_multisig() {
-        if signature.account() != tx.caller {
-            return Err(invalid(NativeMultisigError::AccountMismatch {
-                expected: tx.caller,
-                actual: signature.account(),
-            }));
-        }
+    if let Some(signature) = aa.signature.as_multisig()
+        && signature.account() != tx.caller
+    {
+        return Err(invalid(NativeMultisigError::AccountMismatch {
+            expected: tx.caller,
+            actual: signature.account(),
+        }));
     }
     let factory = block
         .multisig_recovery_factory
