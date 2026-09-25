@@ -65,7 +65,10 @@ use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
-use tempo_chainspec::spec::{DEV, TempoChainSpec};
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{DEV, TempoChainSpec},
+};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
@@ -586,7 +589,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .await
             .wrap_err("failed launching execution node")?;
 
-        if let Some(hardfork) = args.node_args.shadow_replay_hardfork {
+        if let Some(hardfork) = args.node_args.shadow_replay {
+            let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());
             ShadowReplayer::new(node.provider.clone(), hardfork).spawn(node.tasks().clone());
         }
 
@@ -691,7 +695,7 @@ mod tests {
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        TempoArgs, TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults,
+        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
         follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
@@ -708,13 +712,15 @@ mod tests {
     #[test]
     fn shadow_replay_is_opt_in_and_parses_candidate_hardfork() {
         let args = parse_node_args(&["tempo", "node", "--dev"]);
-        assert!(args.node_args.shadow_replay_hardfork.is_none());
+        assert_eq!(args.node_args.shadow_replay, None);
 
-        let args = parse_node_args(&["tempo", "node", "--dev", "--shadow-replay.hardfork", "T13"]);
-        assert_eq!(
-            args.node_args.shadow_replay_hardfork,
-            Some(tempo_chainspec::hardfork::TempoHardfork::T13)
-        );
+        let args = parse_node_args(&["tempo", "node", "--dev", "--shadow-replay"]);
+        assert_eq!(args.node_args.shadow_replay, Some(None));
+
+        for flag in ["--shadow-replay", "--shadow-replay.hardfork"] {
+            let args = parse_node_args(&["tempo", "node", "--dev", flag, "T12"]);
+            assert_eq!(args.node_args.shadow_replay, Some(Some(TempoHardfork::T12)));
+        }
     }
 
     #[test]

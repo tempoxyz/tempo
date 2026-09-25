@@ -123,10 +123,14 @@ pub struct TempoNodeArgs {
     )]
     pub builder_build_time_multiplier: f64,
 
-    /// Candidate hardfork to evaluate against received canonical blocks without persisting state
-    /// changes.
-    #[arg(long = "shadow-replay.hardfork", value_name = "HARDFORK")]
-    pub shadow_replay_hardfork: Option<TempoHardfork>,
+    /// Replay canonical blocks under the latest compiled hardfork, or an explicit HARDFORK.
+    #[arg(
+        long = "shadow-replay",
+        visible_alias = "shadow-replay.hardfork",
+        value_name = "HARDFORK",
+        num_args = 0..=1
+    )]
+    pub shadow_replay: Option<Option<TempoHardfork>>,
 }
 
 impl Default for TempoNodeArgs {
@@ -142,7 +146,7 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
-            shadow_replay_hardfork: None,
+            shadow_replay: None,
         }
     }
 }

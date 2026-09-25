@@ -32,6 +32,7 @@ use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
 use fees::{FeeWrites, RecordingFeeManager};
+use metrics::{Counter, Gauge, Histogram};
 use reth_chainspec::ForkCondition;
 use reth_ethereum::tasks::TaskExecutor;
 use reth_evm::ConfigureEvm as _;
@@ -67,6 +68,62 @@ pub enum ReplayOutcome {
     Findings,
 }
 
+/// Keeps replay metrics and their existing names/labels in one place.
+#[derive(Debug)]
+struct ShadowReplayMetrics {
+    notifications_lagged: Counter,
+    blocks: Counter,
+    execution_duration: Histogram,
+    latest_completed_block: Gauge,
+    boundaries_compared: Counter,
+    boundaries_inconclusive: Counter,
+    unexplained_differences: Counter,
+    findings_unexplained: Counter,
+    findings_inconclusive: Counter,
+}
+
+impl Default for ShadowReplayMetrics {
+    fn default() -> Self {
+        Self {
+            notifications_lagged: metrics::counter!(
+                "tempo_shadow_replay_notifications_lagged_total"
+            ),
+            blocks: metrics::counter!("tempo_shadow_replay_blocks_total"),
+            execution_duration: metrics::histogram!(
+                "tempo_shadow_replay_execution_duration_seconds"
+            ),
+            latest_completed_block: metrics::gauge!("tempo_shadow_replay_latest_completed_block"),
+            boundaries_compared: metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared"),
+            boundaries_inconclusive: metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "inconclusive"),
+            unexplained_differences: metrics::counter!(
+                "tempo_shadow_replay_unexplained_differences_total"
+            ),
+            findings_unexplained: metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "unexplained"),
+            findings_inconclusive: metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "inconclusive"),
+        }
+    }
+}
+
+impl ShadowReplayMetrics {
+    fn record_report(&self, report: &Report, outcome: ReplayOutcome) {
+        self.boundaries_compared
+            .increment(report.boundaries_evaluated as u64);
+        self.boundaries_inconclusive
+            .increment(report.boundaries_not_evaluated as u64);
+        for (&rule, &count) in &report.expected {
+            metrics::counter!("tempo_shadow_replay_expected_differences_total", "rule" => rule)
+                .increment(count as u64);
+        }
+        self.unexplained_differences
+            .increment(report.unexplained as u64);
+        match outcome {
+            ReplayOutcome::Findings => self.findings_unexplained.increment(1),
+            ReplayOutcome::Inconclusive => self.findings_inconclusive.increment(1),
+            _ => {}
+        }
+    }
+}
+
 /// Replays canonical blocks under candidate rules without changing canonical state.
 #[derive(Debug)]
 pub struct ShadowReplayer<P> {
@@ -74,6 +131,7 @@ pub struct ShadowReplayer<P> {
     real_config: TempoEvmConfig,
     shadow_config: TempoEvmConfig,
     shadow_hardfork: TempoHardfork,
+    metrics: ShadowReplayMetrics,
 }
 
 impl<P: ChainSpecProvider<ChainSpec = TempoChainSpec>> ShadowReplayer<P> {
@@ -85,6 +143,7 @@ impl<P: ChainSpecProvider<ChainSpec = TempoChainSpec>> ShadowReplayer<P> {
             shadow_config: TempoEvmConfig::new(shadow_spec),
             provider,
             shadow_hardfork,
+            metrics: ShadowReplayMetrics::default(),
         }
     }
 }
@@ -104,16 +163,14 @@ where
     pub fn spawn(self, executor: TaskExecutor) {
         let mut notifs = self.provider.subscribe_to_canonical_state();
         let hardfork = self.shadow_hardfork;
-        let replayer = Arc::new(self);
-        let worker = executor.clone();
-        executor.spawn_critical_task("shadow replay", async move {
+        let replayer = self;
+        executor.spawn_critical_blocking_task("shadow replay", async move {
             info!(target: "shadow_replay", %hardfork, "Started counterfactual shadow replay");
             loop {
                 let notif = match notifs.recv().await {
                     Ok(notif) => notif,
                     Err(RecvError::Lagged(skipped)) => {
-                        metrics::counter!("tempo_shadow_replay_notifications_lagged_total")
-                            .increment(skipped);
+                        replayer.metrics.notifications_lagged.increment(skipped);
                         error!(target: "shadow_replay", skipped, "Shadow replay missed canonical blocks");
                         continue;
                     }
@@ -151,31 +208,22 @@ where
                     }
 
                     let number = block.number();
-                    let chain = Arc::clone(&committed);
-                    let replay = Arc::clone(&replayer);
                     let started_at = Instant::now();
-                    let result = worker
-                        .spawn_blocking(move || {
-                            let block = &chain.blocks()[&number];
-                            replay.replay(
-                                block,
-                                chain.execution_outcome().receipts_by_block(number),
-                            )
-                        })
-                        .await;
-                    metrics::histogram!("tempo_shadow_replay_execution_duration_seconds")
-                        .record(started_at.elapsed().as_secs_f64());
+                    let result = replayer.replay(
+                        block,
+                        committed.execution_outcome().receipts_by_block(number),
+                    );
+                    replayer.metrics.execution_duration.record(started_at.elapsed().as_secs_f64());
 
-                    // Entered only after the await so the span never leaks across a yield point.
+                    // Dropped before the next notification await.
                     let _guard = span.enter();
                     let err = match result {
-                        Ok(Ok(_)) => {
-                            metrics::gauge!("tempo_shadow_replay_latest_completed_block").set(number as f64);
-                            metrics::counter!("tempo_shadow_replay_blocks_total").increment(1);
+                        Ok(_) => {
+                            replayer.metrics.latest_completed_block.set(number as f64);
+                            replayer.metrics.blocks.increment(1);
                             continue;
                         }
-                        Ok(Err(err)) => err,
-                        Err(err) => format!("shadow replay worker panicked: {err}"),
+                        Err(err) => err,
                     };
                     error!(target: "shadow_replay", %err, "Control re-execution diverged from canonical chain");
                     panic!("shadow replay control failure at block {number}: {err}");
@@ -211,27 +259,12 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         let rules = expectations::between(canonical, self.shadow_hardfork);
         let report = Report::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
-        metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared")
-            .increment(report.boundaries_evaluated as u64);
-        metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "inconclusive")
-            .increment(report.boundaries_not_evaluated as u64);
-        for (&rule, &count) in &report.expected {
-            metrics::counter!("tempo_shadow_replay_expected_differences_total", "rule" => rule)
-                .increment(count as u64);
-        }
-        metrics::counter!("tempo_shadow_replay_unexplained_differences_total")
-            .increment(report.unexplained as u64);
+        self.metrics.record_report(&report, outcome);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
             return Ok(outcome);
         }
 
-        let kind = if outcome == ReplayOutcome::Inconclusive {
-            "inconclusive"
-        } else {
-            "unexplained"
-        };
-        metrics::counter!("tempo_shadow_replay_findings_total", "kind" => kind).increment(1);
         let failure = shadow.failure.as_ref();
         warn!(
             target: "shadow_replay",

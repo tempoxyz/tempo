@@ -6,10 +6,12 @@ historical or newly canonical traffic behaves under future rules before those ru
 consensus-critical. It reports expected fork changes, unexplained differences, and incomplete
 execution coverage. It does not decide consensus validity or modify the canonical chain.
 
-The live replayer subscribes to canonical-state notifications and processes newly committed blocks.
-It reports notification gaps rather than backfilling them; the `shadow-replay` command can instead
-scan an explicit historical block range. Blocks where the candidate hardfork is already canonical
-are skipped.
+Enable live replay with `--shadow-replay` (latest compiled hardfork) or
+`--shadow-replay HARDFORK` (explicit candidate). The existing `--shadow-replay.hardfork HARDFORK`
+form is also accepted. The live replayer subscribes to canonical-state notifications and processes
+newly committed blocks. It reports notification gaps rather than backfilling them; the
+`shadow-replay` command can instead scan an explicit historical block range. Blocks where the
+candidate hardfork is already canonical are skipped.
 
 ## Execution model
 
@@ -19,8 +21,9 @@ executors:
 - the **control** uses the hardfork active for the canonical block.
 - the **shadow** uses the selected candidate hardfork and its hardfork schedule.
 
-Transactions execute in canonical order under both rule sets. A control thread and persistent
-shadow worker are pipelined through a one-entry result queue: replay records both results but commits
+Transactions execute in canonical order under both rule sets. A blocking replay task runs each
+block inline; within a block, a control thread and shadow worker pipeline results through a
+one-entry queue. Replay records both results but commits
 the control result into both executors. Every shadow transaction receives the canonical prefix
 plus candidate pre-block setup, without inheriting earlier candidate transaction results; an early
 candidate transaction difference cannot cause derivative mismatches later. Pre-block changes are
