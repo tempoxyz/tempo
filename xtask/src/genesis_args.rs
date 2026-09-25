@@ -33,7 +33,7 @@ use reth_evm::{
 };
 use std::{
     collections::BTreeMap,
-    iter::repeat_with,
+    iter::{once, repeat_with},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -142,7 +142,8 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     no_extra_tokens: bool,
 
-    /// Enable creating deployment gas token.
+    /// A temporary gas token: the generated accounts and validators pay fees in it, the coinbase
+    /// and validators take it.
     #[arg(long)]
     deployment_gas_token: bool,
 
@@ -385,6 +386,23 @@ impl GenesisArgs {
             );
         }
 
+        let validator_onchain_addresses = self.validator_onchain_addresses()?;
+        let fee_recipients: Vec<Address> = once(self.coinbase)
+            .chain(validator_onchain_addresses.iter().copied())
+            .collect();
+        // Validators outside the generated accounts get the token too, or they could not pay for
+        // their own move off it.
+        let fee_payers: Vec<Address> = if self.deployment_gas_token {
+            addresses
+                .iter()
+                .chain(&validator_onchain_addresses)
+                .copied()
+                .unique()
+                .collect()
+        } else {
+            addresses.clone()
+        };
+
         let deployment_gas_token = {
             if self.deployment_gas_token {
                 let mut rng = rand_08::rngs::StdRng::seed_from_u64(
@@ -402,7 +420,7 @@ impl GenesisArgs {
                     self.deployment_gas_token_admin.expect(
                         "Deployment gas token admin is required if you want to deploy the token",
                     ),
-                    &addresses,
+                    &fee_payers,
                     U256::from(u64::MAX),
                     SaltOrAddress::Salt(B256::from(salt_bytes)),
                     &mut evm,
@@ -422,26 +440,12 @@ impl GenesisArgs {
         let consensus_config =
             generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
-        let validator_onchain_addresses = if self.validator_addresses.is_empty() {
-            if addresses.len() < self.validators.len() + 1 {
-                return Err(eyre!("not enough accounts created for validators"));
-            }
-
-            &addresses[1..self.validators.len() + 1]
-        } else {
-            if self.validator_addresses.len() < self.validators.len() {
-                return Err(eyre!("not enough addresses provided for validators"));
-            }
-
-            &self.validator_addresses[0..self.validators.len()]
-        };
-
         println!("Initializing validator config v2");
         initialize_validator_config_v2(
             validator_admin,
             &mut evm,
             &consensus_config,
-            validator_onchain_addresses,
+            &validator_onchain_addresses,
             self.no_dkg_in_genesis,
             self.chain_id,
         )?;
@@ -462,9 +466,8 @@ impl GenesisArgs {
         initialize_fee_manager(
             default_validator_fee_token,
             default_user_fee_token,
-            addresses.clone(),
-            // TODO: also populate validators here, once the logic is back.
-            vec![self.coinbase],
+            fee_payers,
+            fee_recipients,
             &mut evm,
         );
 
@@ -937,7 +940,7 @@ fn initialize_fee_manager(
     validator_fee_token_address: Address,
     user_fee_token_address: Address,
     initial_accounts: Vec<Address>,
-    validators: Vec<Address>,
+    fee_recipients: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
     // Update the beneficiary since the validator can't set the validator fee token for themselves
@@ -968,12 +971,12 @@ fn initialize_fee_manager(
                     .expect("Could not set fee token");
             }
 
-            // Set validator fee tokens to pathUSD
-            for validator in validators {
-                println!("Setting user token for {validator} {validator_fee_token_address}");
+            // Every fee recipient takes the validator fee token
+            for recipient in fee_recipients {
+                println!("Setting validator token for {recipient} {validator_fee_token_address}");
                 fee_manager
                     .set_validator_token(
-                        validator,
+                        recipient,
                         IFeeManager::setValidatorTokenCall {
                             token: validator_fee_token_address,
                         },
