@@ -89,15 +89,9 @@ fn joins_from_snapshot() {
             "validatorConfigV2.rotateValidator executed",
         );
 
-        // Wait for the next DKG outcome - unless rotate_height is on a boundary.
-        // Then wait one more epoch.
+        // TIP-1123 includes rotations in the boundary's own post-state.
         let epoch_strat = FixedEpocher::new(NZU64!(epoch_length));
-        let info = epoch_strat.containing(rotate_height).unwrap();
-        let target_epoch = if info.last() == rotate_height {
-            info.epoch().next()
-        } else {
-            info.epoch()
-        };
+        let target_epoch = epoch_strat.containing(rotate_height).unwrap().epoch();
 
         let outcome_start_rotation =
             wait_for_outcome(&context, &validators, target_epoch.get(), epoch_length).await;
@@ -109,10 +103,13 @@ fn joins_from_snapshot() {
                 .is_some()
         );
         assert!(
-            outcome_start_rotation
-                .next_players()
-                .position(&donor.public_key())
-                .is_none()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_start_rotation
+            )
+            .next_players
+            .position(&donor.public_key())
+            .is_none()
         );
         assert!(
             outcome_start_rotation
@@ -121,10 +118,13 @@ fn joins_from_snapshot() {
                 .is_none()
         );
         assert!(
-            outcome_start_rotation
-                .next_players()
-                .position(&replacement.public_key())
-                .is_some()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_start_rotation
+            )
+            .next_players
+            .position(&replacement.public_key())
+            .is_some()
         );
 
         let outcome_finish_rotation = wait_for_outcome(
@@ -142,10 +142,13 @@ fn joins_from_snapshot() {
                 .is_none()
         );
         assert!(
-            outcome_finish_rotation
-                .next_players()
-                .position(&donor.public_key())
-                .is_none()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_finish_rotation
+            )
+            .next_players
+            .position(&donor.public_key())
+            .is_none()
         );
         assert!(
             outcome_finish_rotation
@@ -154,10 +157,13 @@ fn joins_from_snapshot() {
                 .is_some()
         );
         assert!(
-            outcome_finish_rotation
-                .next_players()
-                .position(&replacement.public_key())
-                .is_some()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_finish_rotation
+            )
+            .next_players
+            .position(&replacement.public_key())
+            .is_some()
         );
 
         info!("new validator was added to the committee, but not started");
@@ -276,15 +282,9 @@ fn can_restart_after_joining_from_snapshot() {
             "validatorConfigV2.rotateValidator executed",
         );
 
-        // Wait for the next DKG outcome - unless rotate_height is on a boundary.
-        // Then wait one more epoch.
+        // TIP-1123 includes rotations in the boundary's own post-state.
         let epoch_strat = FixedEpocher::new(NZU64!(epoch_length));
-        let info = epoch_strat.containing(rotate_height).unwrap();
-        let target_epoch = if info.last() == rotate_height {
-            info.epoch().next()
-        } else {
-            info.epoch()
-        };
+        let target_epoch = epoch_strat.containing(rotate_height).unwrap().epoch();
 
         let outcome_start_rotation =
             wait_for_outcome(&context, &validators, target_epoch.get(), epoch_length).await;
@@ -296,10 +296,13 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_some()
         );
         assert!(
-            outcome_start_rotation
-                .next_players()
-                .position(&donor.public_key())
-                .is_none()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_start_rotation
+            )
+            .next_players
+            .position(&donor.public_key())
+            .is_none()
         );
         assert!(
             outcome_start_rotation
@@ -308,10 +311,13 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_none()
         );
         assert!(
-            outcome_start_rotation
-                .next_players()
-                .position(&replacement.public_key())
-                .is_some()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_start_rotation
+            )
+            .next_players
+            .position(&replacement.public_key())
+            .is_some()
         );
 
         let outcome_finish_rotation = wait_for_outcome(
@@ -329,10 +335,13 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_none()
         );
         assert!(
-            outcome_finish_rotation
-                .next_players()
-                .position(&donor.public_key())
-                .is_none()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_finish_rotation
+            )
+            .next_players
+            .position(&donor.public_key())
+            .is_none()
         );
         assert!(
             outcome_finish_rotation
@@ -341,10 +350,13 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_some()
         );
         assert!(
-            outcome_finish_rotation
-                .next_players()
-                .position(&replacement.public_key())
-                .is_some()
+            crate::tests::dkg::common::read_ceremony_configuration(
+                &validators[0],
+                &outcome_finish_rotation
+            )
+            .next_players
+            .position(&replacement.public_key())
+            .is_some()
         );
 
         info!("new validator was added to the committee, but not started");

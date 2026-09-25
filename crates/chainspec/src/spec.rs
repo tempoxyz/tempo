@@ -89,6 +89,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T13 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t13_time: Option<u64>,
+    /// Activation timestamp for TIP-1123; absent until explicitly scheduled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tip1123_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -266,8 +269,20 @@ impl TempoChainSpec {
 
         // TODO(hamdi): Dev networks are allowed to have a non-dkg outcome in extra data. Update such
         // that we always require a valid dkg outcome, thus network identity for all networks
-        let network_identity =
-            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
+        let fork = TempoHardfork::VARIANTS
+            .iter()
+            .rev()
+            .copied()
+            .find(|fork| {
+                info.fork_time(*fork)
+                    .is_some_and(|time| time <= inner.genesis_header().inner.timestamp)
+            })
+            .unwrap_or(TempoHardfork::Genesis);
+        let network_identity = NetworkIdentity::from_extra_data(
+            inner.genesis_header().inner.extra_data.as_ref(),
+            fork,
+        )
+        .ok();
 
         Self {
             inner,
@@ -312,8 +327,21 @@ impl From<ChainSpec> for TempoChainSpec {
             inner,
         });
 
-        let network_identity =
-            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
+        let fork = TempoHardfork::VARIANTS
+            .iter()
+            .rev()
+            .copied()
+            .find(|fork| {
+                inner
+                    .fork(*fork)
+                    .active_at_timestamp(inner.genesis_header().inner.timestamp)
+            })
+            .unwrap_or(TempoHardfork::Genesis);
+        let network_identity = NetworkIdentity::from_extra_data(
+            inner.genesis_header().inner.extra_data.as_ref(),
+            fork,
+        )
+        .ok();
 
         Self {
             inner,
@@ -519,6 +547,8 @@ mod tests {
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
     use tempo_primitives::Header;
+
+    use super::*;
 
     #[test]
     #[cfg(feature = "cli")]
@@ -800,6 +830,41 @@ mod tests {
             chainspec.next_block_base_fee(&parent, 11),
             Some(750_000_000)
         );
+    }
+
+    #[test]
+    fn genesis_identity_uses_genesis_timestamp_for_tip1123() {
+        for (timestamp, activation) in [(0, 0), (0, 50), (50, 50), (100, 50)] {
+            let mut genesis: alloy_genesis::Genesis =
+                serde_json::from_str(include_str!("./genesis/presto.json")).unwrap();
+            let mut outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode_boundary(
+                genesis.extra_data.as_ref(),
+                &TempoHardfork::T13,
+            )
+            .unwrap();
+            genesis.timestamp = timestamp;
+            genesis
+                .config
+                .extra_fields
+                .insert_value("tip1123Time".to_owned(), activation)
+                .unwrap();
+            if timestamp >= activation {
+                outcome.legacy_config = None;
+            }
+            genesis.extra_data = outcome.encode().into();
+            let chain = TempoChainSpec::from_genesis(genesis);
+            assert_eq!(
+                chain.tempo_hardfork_at(timestamp).is_tip1123(),
+                timestamp >= activation
+            );
+            assert_eq!(
+                chain.network_identity.as_ref().unwrap().identity,
+                *outcome.network_identity(),
+            );
+            let rebuilt =
+                TempoChainSpec::from(chain.inner.clone().map_header(|header| header.inner));
+            assert_eq!(rebuilt.network_identity, chain.network_identity);
+        }
     }
 
     #[cfg(feature = "cli")]

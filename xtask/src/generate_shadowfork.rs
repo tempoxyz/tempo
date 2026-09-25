@@ -20,6 +20,7 @@ use reth_provider::{
 };
 use secp256k1::SECP256K1;
 use serde::Serialize;
+use tempo_chainspec::TempoHardforks as _;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD;
 use tempo_primitives::TempoPrimitives;
@@ -191,6 +192,14 @@ impl GenerateShadowfork {
         let shadow_chainspec_path =
             write_shadow_chainspec(&output, &source_chain, source_chain_id, shadow_epoch_length)?;
         let mut shadow_dkg_outcome = consensus_config.to_genesis_dkg_outcome();
+        let shadow_chain =
+            tempo_chainspec::spec::chain_value_parser(&shadow_chainspec_path.to_string_lossy())?;
+        if shadow_chain
+            .tempo_hardfork_at(source_block.timestamp)
+            .is_tip1123()
+        {
+            shadow_dkg_outcome.legacy_config = None;
+        }
         shadow_dkg_outcome.epoch = SHADOW_EPOCH;
         let shadow_dkg_outcome = const_hex::encode_prefixed(shadow_dkg_outcome.encode());
 

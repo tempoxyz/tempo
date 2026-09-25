@@ -130,6 +130,10 @@ impl StubExecutionProvider {
 }
 
 impl ExecutionProvider for StubExecutionProvider {
+    fn hardfork_at(&self, _timestamp: u64) -> tempo_chainspec::TempoHardfork {
+        tempo_chainspec::TempoHardfork::T12
+    }
+
     fn finalized_block_number(&self) -> eyre::Result<u64> {
         if self.inner.fail_finalized_read.load(Ordering::SeqCst) {
             eyre::bail!("finalized block read failed");

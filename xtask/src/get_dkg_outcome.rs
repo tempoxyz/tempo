@@ -6,12 +6,12 @@ use alloy::{
     primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder},
 };
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use serde::Serialize;
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 #[derive(Debug, clap::Args)]
@@ -42,9 +42,11 @@ struct DkgOutcomeInfo {
     /// Players that received a share from this DKG ceremony (ed25519 public keys)
     players: Vec<String>,
     /// Players for the next DKG ceremony (ed25519 public keys)
-    next_players: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_players: Option<Vec<String>>,
     /// Whether the next DKG should be a full ceremony (new polynomial)
-    is_next_full_dkg: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_next_full_dkg: Option<bool>,
     /// The network identity (group public key)
     network_identity: Bytes,
     /// Threshold required for signing
@@ -129,8 +131,11 @@ impl GetDkgOutcome {
             block_number
         );
 
-        let outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to parse DKG outcome from extra_data")?;
+        let outcome = OnchainDkgOutcome::decode_boundary(
+            extra_data.as_ref(),
+            &chain.tempo_hardfork_at(block.header.timestamp),
+        )
+        .wrap_err("failed to parse DKG outcome from extra_data")?;
 
         let sharing = outcome.sharing();
         let info = DkgOutcomeInfo {
@@ -139,8 +144,14 @@ impl GetDkgOutcome {
             block_hash,
             dealers: outcome.dealers().iter().map(pubkey_to_hex).collect(),
             players: outcome.players().iter().map(pubkey_to_hex).collect(),
-            next_players: outcome.next_players().iter().map(pubkey_to_hex).collect(),
-            is_next_full_dkg: outcome.is_next_full_dkg,
+            next_players: outcome
+                .legacy_config
+                .as_ref()
+                .map(|config| config.next_players.iter().map(pubkey_to_hex).collect()),
+            is_next_full_dkg: outcome
+                .legacy_config
+                .as_ref()
+                .map(|config| config.is_next_full_dkg),
             network_identity: sharing.public().encode().into(),
             threshold: sharing.required(),
             total_participants: sharing.total().get(),

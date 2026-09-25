@@ -17,6 +17,7 @@ const SNAPSHOT_PARTITION_SUFFIXES: &[&str] = &[
     "finalizations-by-height-freezer-key",
     "finalizations-by-height-freezer-value",
     "finalizations-by-height-ordinal",
+    "finalized-blocks-prunable-metadata",
     "finalized-blocks-prunable-key",
     "finalized-blocks-prunable-value",
 ];

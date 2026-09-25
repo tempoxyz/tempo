@@ -42,7 +42,7 @@ pub mod metrics;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{LegacyDkgConfig, OnchainDkgOutcome};
 pub use testing_node::TestingNode;
 
 #[cfg(test)]
@@ -76,8 +76,10 @@ fn generate_consensus_node_config(
     let onchain_dkg_outcome = OnchainDkgOutcome {
         epoch: 0,
         output: initial_dkg_outcome,
-        next_players: shares.keys().clone(),
-        is_next_full_dkg: false,
+        legacy_config: Some(LegacyDkgConfig {
+            next_players: shares.keys().clone(),
+            is_next_full_dkg: false,
+        }),
     };
 
     let verifier_keys = repeat_with(|| PrivateKey::random(&mut *rng))

@@ -5,7 +5,6 @@ pub(crate) mod marshal {
     use std::{num::NonZeroUsize, sync::Arc};
 
     use alloy_consensus::{BlockHeader as _, Sealable as _};
-    use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
         marshal::{self, core, standard::Standard},
@@ -24,6 +23,7 @@ pub(crate) mod marshal {
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
     use reth_provider::{BlockReader as _, providers::BlockchainProvider};
+    use tempo_chainspec::TempoHardforks as _;
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
     use tempo_primitives::TempoHeader;
@@ -183,6 +183,7 @@ pub(crate) mod marshal {
                 &mut context,
                 &config.epoch_strategy,
                 &config.scheme_provider,
+                &execution_node.chain_spec(),
                 &finalized_blocks,
                 finalization,
             )
@@ -368,6 +369,7 @@ pub(crate) mod marshal {
         context: &mut TContext,
         epoch_strategy: &FixedEpocher,
         scheme_provider: &SchemeProvider,
+        chain_spec: &tempo_chainspec::TempoChainSpec,
         finalized_blocks: &Hybrid<
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
@@ -387,8 +389,11 @@ pub(crate) mod marshal {
                 eyre!("missing boundary header at height `{boundary}` in hybrid store")
             })?;
 
-        let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-            .wrap_err("failed to read DKG outcome from boundary header")?;
+        let onchain_outcome = OnchainDkgOutcome::decode_boundary(
+            header.extra_data().as_ref(),
+            &chain_spec.tempo_hardfork_at(header.timestamp()),
+        )
+        .wrap_err("failed to read DKG outcome from boundary header")?;
         ensure!(
             onchain_outcome.epoch() == epoch,
             "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",

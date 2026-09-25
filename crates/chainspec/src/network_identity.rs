@@ -5,6 +5,7 @@ use commonware_codec::ReadExt as _;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::Context;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_hardfork::TempoHardfork;
 
 const TESTNET_NETWORK_IDENTITY_EPOCH: u64 = 51;
 const TESTNET_NETWORK_IDENTITY: [u8; 96] = hex!(
@@ -51,10 +52,9 @@ impl NetworkIdentity {
         }
     }
 
-    pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
-        let mut extra_data = extra_data;
-        let outcome =
-            OnchainDkgOutcome::read(&mut extra_data).wrap_err("unable to parse dkg outcome")?;
+    pub(crate) fn from_extra_data(extra_data: &[u8], fork: TempoHardfork) -> eyre::Result<Self> {
+        let outcome = OnchainDkgOutcome::decode_boundary(extra_data, &fork)
+            .wrap_err("unable to parse dkg outcome")?;
 
         Ok(Self {
             from_epoch: outcome.epoch,

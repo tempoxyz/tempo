@@ -25,8 +25,6 @@ tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-revm.workspace = true
 
-commonware-codec.workspace = true
-
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-chainspec.workspace = true
@@ -56,6 +54,7 @@ alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-g
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
+commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-utils.workspace = true

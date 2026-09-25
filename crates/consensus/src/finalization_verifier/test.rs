@@ -1,12 +1,12 @@
-use alloy_consensus::{BlockHeader as _, Header};
+use alloy_consensus::Header;
 use commonware_consensus::types::{Epoch, FixedEpocher};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use reth_node_core::primitives::SealedBlock;
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoHardfork};
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::{Error, FinalizationVerifier};
+use super::*;
 use crate::follow::test_utils::{
     EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
 };
@@ -32,7 +32,10 @@ fn tracks_boundary_identity() {
             .expect("current identity should verify the boundary");
 
         verifier
-            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+            .decode_dkg_outcome_and_register_boundary(
+                boundary.header().extra_data().as_ref(),
+                TempoHardfork::T12,
+            )
             .expect("boundary should install the next identity");
 
         let block = make_block(EPOCH_LENGTH.get(), None);
