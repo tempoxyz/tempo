@@ -94,7 +94,8 @@ pub struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = TempoCha
     /// Leave the loaded slots out of the storage change sets and the history index.
     ///
     /// They are the bulk of what this command writes and record only that every slot was
-    /// empty before block 0. Skipping them costs no read: see `genesis_history_pruned`.
+    /// empty before block 0. A prune checkpoint at block 0 stands in for them, so block 0's
+    /// change set reads as pruned.
     #[arg(long)]
     skip_genesis_history: bool,
 }
@@ -694,9 +695,8 @@ impl GenesisHistory {
     }
 }
 
-/// What `--skip-genesis-history` leaves instead. A historical read asks for the state at the
-/// start of the block after the one requested, so block 1 is the earliest it ever asks for and
-/// this turns no read away; it only says a missing slot's value lives elsewhere.
+/// What `--skip-genesis-history` leaves instead: a slot with no history reads from the plain
+/// state. State reads at every block still resolve; only block 0's change set reads as pruned.
 fn genesis_history_pruned() -> PruneCheckpoint {
     PruneCheckpoint {
         block_number: Some(0),
@@ -1018,10 +1018,10 @@ mod tests {
         assert_eq!(gets.0.load(Ordering::Relaxed), 3);
     }
 
-    /// The marker is all that makes the skipped entries safe to read over: without it the
-    /// same lookup says never written, and a read of migrated state comes back empty.
+    /// The marker is all that makes the skipped entries safe to read over: without it a read of
+    /// migrated state comes back empty, whether a later change set holds the slot or none does.
     #[test]
-    fn the_pruned_marker_sends_a_read_on_to_the_next_change_set() {
+    fn the_pruned_marker_sends_a_read_past_the_skipped_history() {
         let lowest = genesis_history_pruned().block_number.map(|block| block + 1);
         assert_eq!(
             lowest,
@@ -1036,6 +1036,23 @@ mod tests {
         );
         assert_eq!(
             HistoryInfo::from_lookup(Some(9), before_the_first_write, None),
+            HistoryInfo::NotYetWritten,
+        );
+
+        // Most skipped slots have no history at all.
+        let (_dir, rocksdb, _) = history_db();
+        let snapshot = rocksdb.snapshot();
+        let (address, slot) = (Address::repeat_byte(0x11), B256::repeat_byte(1));
+        assert_eq!(
+            snapshot
+                .storage_history_info(address, slot, 1, lowest, 1)
+                .unwrap(),
+            HistoryInfo::MaybeInPlainState,
+        );
+        assert_eq!(
+            snapshot
+                .storage_history_info(address, slot, 1, None, 1)
+                .unwrap(),
             HistoryInfo::NotYetWritten,
         );
     }
