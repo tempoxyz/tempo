@@ -206,6 +206,7 @@ reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
 reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
 reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
+reth-storage-overlay = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "fe01db1" }
@@ -405,6 +406,7 @@ vergen-git2 = "10.0.1"
 # reth-static-file = { path = "../reth/crates/static-file/static-file" }
 # reth-static-file-types = { path = "../reth/crates/static-file/types" }
 # reth-storage-api = { path = "../reth/crates/storage/storage-api" }
+# reth-storage-overlay = { path = "../reth/crates/storage/storage-overlay" }
 # reth-storage-errors = { path = "../reth/crates/storage/errors" }
 # reth-tasks = { path = "../reth/crates/tasks" }
 # reth-tokio-util = { path = "../reth/crates/tokio-util" }

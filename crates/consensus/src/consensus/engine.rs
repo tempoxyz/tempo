@@ -16,17 +16,17 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::NZUsize;
-use eyre::{OptionExt as _, WrapErr as _};
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    alias, config,
+    VerificationMode, alias, config,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
@@ -51,6 +51,11 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
 
+    /// Reads the state of blocks that the execution node's engine has
+    /// executed, including blocks on forks. Get it from the
+    /// [`tempo_node::TempoNode`] that launched `execution_node`.
+    pub executed_state: tempo_node::ExecutedState,
+
     /// Trusted network identity to register before initializing consensus actors.
     pub network_identity: tempo_chainspec::NetworkIdentity,
 
@@ -64,6 +69,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub mailbox_size: NonZeroUsize,
     pub deque_size: usize,
     pub max_message_size: u32,
+    pub verification_mode: VerificationMode,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
     ///
@@ -78,8 +84,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub inactive_time_before_leader_skip: Duration,
     /// Local proposal return budget after reserving network propagation time.
     ///
-    /// The leader uses this window for payload building, local marshal
-    /// persistence, and any final wait before returning the proposal.
+    /// The leader uses this window for proposal preparation, payload building,
+    /// and pacing after commonware has fetched the parent.
     pub proposal_return_budget: Duration,
     pub fcu_heartbeat_interval: Duration,
 
@@ -111,7 +117,6 @@ where
             + governor::clock::Clock
             + Rng
             + CryptoRng
-            + Pacer
             + Spawner
             + Storage
             + Metrics
@@ -122,6 +127,11 @@ where
             .execution_node
             .clone()
             .ok_or_eyre("execution_node must be set using with_execution_node()")?;
+        ensure!(
+            self.executed_state.is_launched(),
+            "the engine of the execution node is not launched; `executed_state` \
+            must come from the `TempoNode` that launched `execution_node`",
+        );
 
         let epoch_length = execution_node
             .chain_spec()
@@ -246,54 +256,21 @@ where
             })
             .unzip();
 
-        let (application, application_mailbox) = application::init(super::application::Config {
-            context: context.child("application"),
-            public_key: self.signer.public_key(),
-            mailbox_size: self.mailbox_size,
-            marshal: marshal_mailbox.clone(),
-            execution_node: execution_node.clone(),
-            executor: executor_mailbox.clone(),
-            proposal_return_budget: self.proposal_return_budget,
-            epoch_strategy: epoch_strategy.clone(),
-        })
-        .await
-        .wrap_err("failed initializing application actor")?;
-
-        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
-            context.child("epoch_manager"),
-            epoch::manager::Config {
-                application: application_mailbox.clone(),
-                execution_node: execution_node.clone(),
-                blocker: self.blocker.clone(),
-                page_cache: page_cache_ref,
-                epoch_strategy: epoch_strategy.clone(),
-                time_for_peer_response: self.time_for_peer_response,
-                time_to_propose: self.time_to_propose,
-                mailbox_size: self.mailbox_size,
-                marshal: marshal_mailbox.clone(),
-                scheme_provider: scheme_provider.clone(),
-                time_to_collect_notarizations: self.time_to_collect_notarizations,
-                time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
-                partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
-                views_to_track: ViewDelta::new(self.views_to_track),
-                inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
-            },
-        );
-
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
             context.child("dkg_manager"),
             dkg::manager::Config {
-                epoch_manager: epoch_manager_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
-                execution_node,
+                execution_node: dkg::manager::TempoExecutionLayer {
+                    node: execution_node.clone(),
+                },
                 initial_share: self.share.clone(),
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),
                 network_identity: self.network_identity,
-                scheme_provider,
+                scheme_provider: scheme_provider.clone(),
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
-                marshal: marshal_mailbox,
+                marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
@@ -301,6 +278,45 @@ where
         )
         .await
         .wrap_err("failed initializing dkg manager")?;
+
+        let application = application::Inner::new(application::Config {
+            context: context.child("application"),
+            public_key: self.signer.public_key(),
+            executor: executor_mailbox.clone(),
+            dkg_manager: dkg_manager_mailbox.clone(),
+            parent_state: application::TempoParentState {
+                node: execution_node.clone(),
+                executed_state: self.executed_state.clone(),
+            },
+            proposal_return_budget: self.proposal_return_budget,
+            epoch_strategy: epoch_strategy.clone(),
+        });
+        let application = application::Marshaled::new(
+            context.child("application"),
+            application,
+            marshal_mailbox.clone(),
+            epoch_strategy.clone(),
+            self.verification_mode,
+        );
+
+        let epoch_manager_config = epoch::manager::Config {
+            application,
+            verification_mode: self.verification_mode,
+            execution_node: execution_node.clone(),
+            blocker: self.blocker.clone(),
+            page_cache: page_cache_ref,
+            epoch_strategy,
+            time_for_peer_response: self.time_for_peer_response,
+            time_to_propose: self.time_to_propose,
+            mailbox_size: self.mailbox_size,
+            marshal: marshal_mailbox,
+            scheme_provider,
+            time_to_collect_notarizations: self.time_to_collect_notarizations,
+            time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
+            partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
+            views_to_track: ViewDelta::new(self.views_to_track),
+            inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
+        };
 
         Ok(Engine {
             context: ContextCell::new(context),
@@ -312,15 +328,13 @@ where
             dkg_manager,
             dkg_manager_mailbox,
 
-            application,
-
             executor,
             executor_mailbox,
 
             resolver_config,
             marshal,
 
-            epoch_manager,
+            epoch_manager_config,
 
             peer_manager,
             peer_manager_mailbox,
@@ -342,7 +356,6 @@ where
         + CryptoRng
         + Metrics
         + Network
-        + Pacer
         + Spawner
         + Storage,
     TBlocker: Blocker<PublicKey = PublicKey>,
@@ -359,10 +372,6 @@ where
     dkg_manager: dkg::manager::Actor<TContext>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
-    /// Acts as the glue between the consensus and execution layers implementing
-    /// the `[commonware_consensus::Automaton]` trait.
-    application: application::Actor<TContext>,
-
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
     /// forkchoice-updates.
@@ -376,7 +385,7 @@ where
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
 
-    epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
+    epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
     peer_manager_mailbox: peer_manager::Mailbox,
@@ -403,7 +412,6 @@ where
         + CryptoRng
         + Metrics
         + Network
-        + Pacer
         + Spawner
         + Storage,
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
@@ -522,38 +530,40 @@ where
             marshal_channel,
         );
 
-        let application = self.application.start(self.dkg_manager_mailbox.clone());
         let executor = self.executor.start();
 
-        let marshal = self.marshal.start(
+        let reporters = Reporters::from((
+            self.executor_mailbox,
             Reporters::from((
-                self.executor_mailbox,
+                self.dkg_manager_mailbox,
                 Reporters::from((
-                    self.dkg_manager_mailbox.clone(),
-                    Reporters::from((
-                        self.peer_manager_mailbox,
-                        Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
-                            self.feed_mailbox,
-                            self.gossip_mailbox,
-                        )),
+                    self.peer_manager_mailbox,
+                    Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                        self.feed_mailbox,
+                        self.gossip_mailbox,
                     )),
                 )),
             )),
+        ));
+
+        let marshal = self.marshal.start(
+            Reporters::from((self.epoch_manager_config.application.clone(), reporters)),
             self.broadcast_mailbox,
             resolver,
         );
-
+        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+            self.context.child("epoch_manager"),
+            self.epoch_manager_config,
+        );
         let epoch_manager =
-            self.epoch_manager
-                .start(votes_channel, certificates_channel, resolver_channel);
+            epoch_manager.start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
         let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
 
-        let dkg_manager = self.dkg_manager.start(dkg_channel);
+        let dkg_manager = self.dkg_manager.start(epoch_manager_mailbox, dkg_channel);
 
         let mut tasks = vec![
-            application,
             broadcast,
             epoch_manager,
             executor,

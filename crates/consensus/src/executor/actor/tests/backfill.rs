@@ -81,38 +81,34 @@ fn backfill_then_converges_onto_a_notarized_extension() {
             .start(&context);
 
         // Startup first moves the local head and finality to the floor. The
-        // tree's pending head remains anchored at the network finalized tip,
+        // pending head remains anchored at the network finalized tip,
         // so normal notarized convergence can extend from that boundary.
         h.wait_until(|| h.execution.finalized() == Some((2, d2)))
             .await;
         assert_eq!(h.execution.head(), d2);
 
-        // Report a pending head two blocks above the backfilled boundary.
+        // Select a pending head two blocks above the backfilled boundary.
         // Supplying only that block first makes the actor discover and fetch
-        // the missing ancestor before forwarding both blocks bottom-up.
-        h.report_pending_head(5, 4, d4);
+        // the missing ancestor in response to SYNCING.
+        drop(h.build(round(5), d4));
         h.wait_until(|| h.marshal.fulfill_subscription(d4, b4.clone()))
             .await;
         h.wait_until(|| h.marshal.fulfill_subscription(d3, b3.clone()))
             .await;
         h.wait_until(|| h.execution.head() == d4).await;
+        assert_eq!(h.execution.head(), d4);
 
         assert_eq!(h.marshal.get_block_log(), vec![1, 2]);
         assert_eq!(
             h.marshal.subscribe_log(),
             vec![(d4, round(4)), (d3, round(3))],
         );
-        assert_eq!(h.execution.new_payloads(), vec![d1, d2, d3, d4]);
+        assert_eq!(h.execution.new_payloads(), vec![d1, d2, d4, d3, d4]);
         assert_eq!(
             h.execution.fcus(),
-            vec![
-                STARTUP_FCU,
-                (d1, d1, false),
-                (d2, d2, false),
-                (d3, d2, false),
-                (d4, d2, false),
-            ],
-            "notarized convergence must preserve the backfilled finalized boundary",
+            vec![STARTUP_FCU, (d2, d2, false), (d4, d2, false),],
+            "the backfill finalizes the floor with one update, and notarized \
+            convergence must preserve that boundary",
         );
         assert_eq!(h.execution.finalized(), Some((2, d2)));
     });
@@ -316,8 +312,9 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
             })
             .start(&context);
 
-        // Re-delivery of the block at the floor: acknowledged, but no
-        // forkchoice update is submitted for the stale state.
+        // Re-delivery of the block at the floor: delivered (the execution
+        // layer answers from its caches) and acknowledged on that answer;
+        // no forkchoice update is submitted for the stale state.
         h.deliver_finalized(b1)
             .await
             .expect("the re-delivered block should be acknowledged");
@@ -449,6 +446,42 @@ fn startup_waits_for_valid_fcu_before_backfill() {
             ],
             "startup must use ordinary FCUs before backfill begins",
         );
+    });
+}
+
+#[test_traced]
+fn verification_waits_for_execution_readiness_and_missing_ancestry() {
+    deterministic::Runner::default().start(|context| async move {
+        let parent = make_block(1, 1, GENESIS);
+        let candidate = make_block(2, 2, parent.digest());
+        let (p, c) = (parent.digest(), candidate.digest());
+        let execution = FakeExecution::new();
+        execution.set_finalized(0, GENESIS);
+        let startup_fcu = ForkchoiceState::from_finalized_head(GENESIS, GENESIS);
+        execution.script_fcu(startup_fcu, Ok(PayloadStatusEnum::Syncing));
+        let ready = execution.script_delayed_fcu(startup_fcu, Ok(PayloadStatusEnum::Valid));
+        let h = Harness::builder().execution(execution).start(&context);
+
+        // Keep the original request queued while the execution layer recovers.
+        let mut verify = Box::pin(h.verify(round(2), candidate));
+        assert!(futures::poll!(&mut verify).is_pending());
+        h.wait_until(|| h.execution.fcus().len() == 2).await;
+        assert!(futures::poll!(&mut verify).is_pending());
+        assert!(h.execution.new_payloads().is_empty());
+        assert!(h.marshal.subscribe_log().is_empty());
+        ready.send(()).unwrap();
+
+        // Once ready, SYNCING for the candidate waits for its missing parent
+        // instead of completing verification with an invalid verdict.
+        h.wait_until(|| h.marshal.open_subscriptions() == vec![(p, round(1))])
+            .await;
+        assert!(futures::poll!(&mut verify).is_pending());
+        assert_eq!(h.execution.new_payloads(), vec![c]);
+        assert!(h.marshal.fulfill_subscription(p, parent));
+
+        assert!(verify.await.unwrap().is_some());
+        // Parent convergence can probe the parent again after verification.
+        assert!(h.execution.new_payloads().starts_with(&[c, p, c]));
     });
 }
 

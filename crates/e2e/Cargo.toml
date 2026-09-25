@@ -11,6 +11,9 @@ categories.workspace = true
 keywords.workspace = true
 publish.workspace = true
 
+[lib]
+test = false
+
 [dependencies]
 alloy = { workspace = true, features = [
   "genesis",

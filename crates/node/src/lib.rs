@@ -7,8 +7,11 @@ pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 pub use version::{init_version_metadata, version_metadata};
 
 use crate::node::TempoAddOns;
-pub use crate::node::{
-    TempoNetworkBuilder, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
+pub use crate::{
+    executed_state::ExecutedState,
+    node::{
+        TempoNetworkBuilder, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
+    },
 };
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
@@ -27,6 +30,7 @@ pub use tempo_transaction_pool::{
 use reth_node_ethereum as _;
 
 pub mod engine;
+pub mod executed_state;
 pub mod gossip;
 pub mod node;
 pub mod rpc;

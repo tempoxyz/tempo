@@ -27,6 +27,38 @@ const GOSSIP_FRAME_QUEUE: usize = 256;
 /// Capacity of the queue carrying outbound frames to the transport coordinator.
 const GOSSIP_ROUTE_QUEUE: usize = 256;
 
+/// When consensus waits for application verification of a block.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VerificationMode {
+    /// Complete application verification before voting to notarize.
+    #[default]
+    Immediate,
+    /// Defer completion of application verification until voting to finalize.
+    Deferred,
+}
+
+impl std::fmt::Display for VerificationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Immediate => "immediate",
+            Self::Deferred => "deferred",
+        })
+    }
+}
+
+impl clap::ValueEnum for VerificationMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Immediate, Self::Deferred]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(clap::builder::PossibleValue::new(match self {
+            Self::Immediate => "immediate",
+            Self::Deferred => "deferred",
+        }))
+    }
+}
+
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Args {
@@ -92,6 +124,10 @@ pub struct Args {
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
     pub worker_threads: usize,
 
+    /// When to complete application verification of proposed blocks.
+    #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
+    pub verification_mode: VerificationMode,
+
     /// Deprecated compatibility flag. P2P queue capacities are derived from
     /// peer-set limits and channel quotas, so this value is ignored.
     #[arg(
@@ -123,7 +159,8 @@ pub struct Args {
     /// Target wall-clock time between blocks in healthy network conditions.
     ///
     /// Local proposal work is paced against this value minus
-    /// `--consensus.network-budget`.
+    /// `--consensus.network-budget`. Time spent fetching the parent in
+    /// commonware is not deducted from this budget.
     #[arg(long = "consensus.target-block-time", default_value = "550ms")]
     pub target_block_time: PositiveDuration,
 
@@ -572,7 +609,7 @@ mod tests {
     use clap::Parser as _;
     use commonware_codec::Encode as _;
 
-    use super::Args;
+    use super::{Args, VerificationMode};
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -608,6 +645,33 @@ mod tests {
 
     fn parse(args: &[&str]) -> TestCli {
         TestCli::try_parse_from(std::iter::once("test").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn verification_mode_defaults_to_immediate() {
+        assert_eq!(
+            parse(&["--dev"]).consensus.verification_mode,
+            VerificationMode::Immediate,
+        );
+    }
+
+    #[test]
+    fn verification_mode_parses() {
+        for (value, expected) in [
+            ("immediate", VerificationMode::Immediate),
+            ("deferred", VerificationMode::Deferred),
+        ] {
+            assert_eq!(
+                parse(&["--dev", "--consensus.verification-mode", value])
+                    .consensus
+                    .verification_mode,
+                expected,
+            );
+        }
+        assert!(
+            TestCli::try_parse_from(["test", "--dev", "--consensus.verification-mode", "invalid",])
+                .is_err()
+        );
     }
 
     #[test]
