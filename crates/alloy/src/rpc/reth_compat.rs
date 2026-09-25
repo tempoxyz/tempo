@@ -251,7 +251,7 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
 }
 
 impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
-    fn from_consensus_header(header: SealedHeader<TempoHeader>, block_size: usize) -> Self {
+    fn from_consensus_header(header: SealedHeader<TempoHeader>, block_size: Option<usize>) -> Self {
         Self {
             timestamp_millis: header.timestamp_millis(),
             inner: FromConsensusHeader::from_consensus_header(header, block_size),

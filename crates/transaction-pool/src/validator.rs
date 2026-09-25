@@ -360,7 +360,9 @@ where
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
             &cached_state,
-            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
+            StateProviderDatabase::new(
+                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+            ),
         );
         let mut evm_env = self
             .cached_evm_env
