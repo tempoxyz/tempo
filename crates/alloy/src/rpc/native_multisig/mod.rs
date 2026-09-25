@@ -20,6 +20,9 @@ use tempo_primitives::{
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MultisigSimulationSpec {
+    /// Signing account for a grant; omitted for a direct parent signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<Address>,
     /// Full configuration at the requested state, encoded as RLP bytes.
     #[serde(with = "serde_multisig_config")]
     pub config: MultisigConfig,
@@ -30,6 +33,9 @@ pub struct MultisigSimulationSpec {
 impl MultisigSimulationSpec {
     /// Checks the claimed primitive quorum before constructing simulation signatures.
     pub fn validate_owners(&self, account: Address) -> Result<(), String> {
+        if self.signer.is_some_and(|signer| signer != account) {
+            return Err("multisig simulation signer does not match the role account".into());
+        }
         if self.approvals.len() > MAX_MULTISIG_SIGNATURES {
             return Err(MultisigQuorumError::TooManySignatures.to_string());
         }

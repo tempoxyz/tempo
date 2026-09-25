@@ -2384,7 +2384,7 @@ fn validate_stored_authorization(
         .map_err(TempoAccountsError::AuthorizationAccount)
 }
 
-/// Checks explicit parent metadata and the named multisig account.
+/// Checks parent metadata; an unnamed multisig grant must be parent-signed.
 /// Does not verify signatures or on-chain authority.
 fn validate_authorization_for_account(
     account: Address,
@@ -2400,7 +2400,11 @@ fn validate_authorization_for_account(
     }
     match &authorization.signature {
         AccountSignature::Primitive(_) => Ok(()),
-        AccountSignature::Multisig(signature) if signature.account() == account => Ok(()),
+        AccountSignature::Multisig(signature)
+            if signature.account() == account || authorization.account == Some(account) =>
+        {
+            Ok(())
+        }
         AccountSignature::Multisig(signature) => {
             Err(TempoAuthorizationAccountError::MultisigAccountMismatch {
                 expected: account,
@@ -5024,12 +5028,21 @@ mod tests {
             )
     }
 
-    #[test_case::test_case(false; "unscoped")]
-    #[test_case::test_case(true; "scoped_without_limits")]
-    fn configurable_parent_authorization_persists_complete_signature(scoped: bool) {
+    #[test_case::test_case(false, false; "unscoped_parent")]
+    #[test_case::test_case(true, false; "scoped_parent")]
+    #[test_case::test_case(false, true; "admin_signer")]
+    fn configurable_authorization_persists_complete_signature(scoped: bool, admin: bool) {
         let account = Address::repeat_byte(2);
         let signer = PrivateKeySigner::random();
-        let mut authorization = configurable_authorization(account, &signer);
+        let signing_account = if admin {
+            Address::repeat_byte(3)
+        } else {
+            account
+        };
+        let mut authorization = configurable_authorization(signing_account, &signer);
+        if admin {
+            authorization.authorization.account = Some(account);
+        }
         if scoped {
             authorization.authorization.allowed_calls = Some(vec![CallScope {
                 target: Address::repeat_byte(3),

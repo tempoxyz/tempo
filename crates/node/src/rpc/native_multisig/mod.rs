@@ -69,7 +69,15 @@ pub(super) fn prepare_native_multisig_simulation(
                 authorization.account.unwrap()
             )));
         }
-        let signature = create_mock_native_multisig_signature(parent, spec)
+        let signer = spec.signer.unwrap_or(parent);
+        if signer != parent
+            && (authorization.account != Some(parent) || request.key_id != Some(signer))
+        {
+            return Err(invalid(
+                "admin-signed grant simulation requires its signer as keyId and the parent as account",
+            ));
+        }
+        let signature = create_mock_native_multisig_signature(signer, spec)
             .map_err(EthApiError::InvalidParams)?;
         validate_witness(&signature, factory, hardfork, db)?;
         request.key_authorization =
@@ -84,11 +92,13 @@ pub(super) fn prepare_native_multisig_simulation(
                 "key authorization account mismatch: expected {parent}, actual {actual}"
             )));
         }
-        if signature.account() != parent {
-            return Err(EthApiError::InvalidParams(format!(
-                "multisig signature account mismatch: expected {parent}, actual {}",
-                signature.account()
-            )));
+        if signature.account() != parent
+            && (authorization.account != Some(parent)
+                || request.key_id != Some(signature.account()))
+        {
+            return Err(invalid(
+                "admin-signed grant requires its signer as keyId and the parent as account",
+            ));
         }
         validate_witness(signature, factory, hardfork, db)?;
         NativeAuthorization {

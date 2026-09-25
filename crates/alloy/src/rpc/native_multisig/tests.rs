@@ -31,6 +31,7 @@ use tempo_revm::{
 
 fn spec() -> MultisigSimulationSpec {
     MultisigSimulationSpec {
+        signer: None,
         config: MultisigConfig {
             salt: B256::ZERO,
             version: 1,

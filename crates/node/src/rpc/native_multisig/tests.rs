@@ -49,6 +49,7 @@ fn spec(salt: u8, version: u64) -> (Address, MultisigSimulationSpec) {
     (
         account,
         MultisigSimulationSpec {
+            signer: None,
             config,
             approvals: vec![MultisigSimulationApproval {
                 owner,
@@ -65,20 +66,33 @@ fn block() -> TempoBlockEnv {
     }
 }
 
-#[test]
-fn real_grant_checks_state_before_cryptography() {
+#[test_case::test_case(false; "parent signer")]
+#[test_case::test_case(true; "admin signer")]
+fn real_grant_checks_state_before_cryptography(admin: bool) {
     let signer = PrivateKeySigner::from_slice(&[1; 32]).unwrap();
-    let (parent, mut spec) = spec(1, 1);
+    let (signing_account, mut spec) = spec(1, 1);
+    let parent = if admin {
+        Address::repeat_byte(0x77)
+    } else {
+        signing_account
+    };
     spec.config.owners[0].owner = signer.address();
-    let authorization =
+    let mut authorization =
         KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, Address::repeat_byte(8));
-    let digest = multisig_digest(authorization.signature_hash(), parent, spec.config.version);
+    if admin {
+        authorization.account = Some(parent);
+    }
+    let digest = multisig_digest(
+        authorization.signature_hash(),
+        signing_account,
+        spec.config.version,
+    );
     let valid = signer.sign_hash_sync(&digest).unwrap();
     let invalid = Signature::new(U256::ZERO, U256::ZERO, false);
     let commitment = spec.config.commitment().unwrap();
     let stale = B256::repeat_byte(7);
     let state_error = format!(
-        "{} for {parent} at the requested state",
+        "{} for {signing_account} at the requested state",
         NativeMultisigError::ConfigurationCommitmentMismatch {
             expected: stale,
             actual: commitment,
@@ -93,9 +107,9 @@ fn real_grant_checks_state_before_cryptography() {
         (commitment, valid, None),
     ] {
         let mut db = AccountDb::default();
-        db.insert_commitment(parent, stored);
+        db.insert_commitment(signing_account, stored);
         let signature = MultisigSignature::try_new(
-            parent,
+            signing_account,
             spec.config.clone(),
             vec![PrimitiveSignature::Secp256k1(approval)],
         )
@@ -105,6 +119,7 @@ fn real_grant_checks_state_before_cryptography() {
                 from: Some(parent),
                 ..Default::default()
             },
+            key_id: admin.then_some(signing_account),
             key_authorization: Some(authorization.clone().into_signed(signature)),
             ..Default::default()
         };
@@ -140,9 +155,10 @@ fn real_grant_checks_state_before_cryptography() {
     }
 }
 
-#[test_case::test_case(0; "initial")]
-#[test_case::test_case(1; "registered")]
-fn prepares_independent_delegate_and_parent_roles(version: u64) {
+#[test_case::test_case(0, false; "initial_parent")]
+#[test_case::test_case(1, false; "registered_parent")]
+#[test_case::test_case(1, true; "registered_admin")]
+fn prepares_independent_delegate_and_parent_roles(version: u64, admin: bool) {
     let (parent, parent_spec) = spec(1, version);
     let (delegate, delegate_spec) = spec(2, version);
     let mut db = AccountDb::default();
@@ -150,6 +166,18 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         db.insert_commitment(parent, parent_spec.config.commitment().unwrap());
         db.insert_commitment(delegate, delegate_spec.config.commitment().unwrap());
     }
+    let mut authorization = KeyAuthorization::unrestricted(4217, SignatureType::Multisig, delegate);
+    if admin {
+        authorization.account = Some(parent);
+    }
+    let grant_spec = if admin {
+        MultisigSimulationSpec {
+            signer: Some(delegate),
+            ..delegate_spec.clone()
+        }
+    } else {
+        parent_spec
+    };
     let mut request = TempoTransactionRequest {
         inner: TransactionRequest {
             from: Some(parent),
@@ -159,11 +187,8 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         key_id: Some(delegate),
         key_type: Some(SignatureType::Multisig),
         multisig_simulation: Some(delegate_spec),
-        key_authorization_simulation: Some(parent_spec),
-        key_authorization: Some(
-            KeyAuthorization::unrestricted(4217, SignatureType::Multisig, delegate)
-                .into_signed(PrimitiveSignature::default()),
-        ),
+        key_authorization_simulation: Some(grant_spec),
+        key_authorization: Some(authorization.into_signed(PrimitiveSignature::default())),
         ..Default::default()
     };
     let wrong = Address::repeat_byte(9);
@@ -207,14 +232,10 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
     wrong_delegate.key_id = Some(parent);
     let mut missing_witness = request.clone();
     missing_witness.multisig_simulation = None;
-    for (mut invalid, expected) in [
+    let mut invalid_cases = vec![
         (
             wrong_metadata,
             format!("key authorization account mismatch: expected {parent}, actual {wrong}"),
-        ),
-        (
-            wrong_signer,
-            format!("multisig signature account mismatch: expected {parent}, actual {delegate}"),
         ),
         (
             wrong_delegate,
@@ -224,7 +245,14 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
             missing_witness,
             "multisig simulation signature requires its source witness".into(),
         ),
-    ] {
+    ];
+    if !admin {
+        invalid_cases.push((
+            wrong_signer,
+            "admin-signed grant requires its signer as keyId and the parent as account".into(),
+        ));
+    }
+    for (mut invalid, expected) in invalid_cases {
         let Err(EthApiError::InvalidParams(message)) =
             prepare_native_multisig_simulation(&mut invalid, TempoHardfork::T14, &block(), &mut db)
         else {
@@ -245,7 +273,10 @@ fn prepares_independent_delegate_and_parent_roles(version: u64) {
         .collect::<Vec<_>>();
     assert_eq!(roles.len(), 2);
     assert_eq!(roles[0].signature.account(), delegate);
-    assert_eq!(roles[1].signature.account(), parent);
+    assert_eq!(
+        roles[1].signature.account(),
+        if admin { delegate } else { parent }
+    );
     assert_eq!(tx.execution_context, ExecutionContext::Simulation);
 }
 
