@@ -22,15 +22,6 @@ use tempo_primitives::{
     },
 };
 
-/// Gas cost for secp256k1 signature verification.
-const SECP256K1_VERIFY_GAS: u64 = 3_000;
-
-/// Gas cost for P256 signature verification.
-const P256_VERIFY_GAS: u64 = 8_000;
-
-/// Gas cost for WebAuthn signature verification.
-const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
-
 #[contract(addr = SIGNATURE_VERIFIER_ADDRESS)]
 pub struct SignatureVerifier {}
 
@@ -45,7 +36,7 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        self.storage.deduct_gas(primitive_verification_gas(&sig))?;
+        self.storage.deduct_gas(sig.base_verification_gas())?;
 
         // Verify and recover signer.
         sig.recover_signer(&hash)
@@ -186,14 +177,6 @@ impl SignatureVerifier {
     }
 }
 
-fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature {
-        PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
-        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-        PrimitiveSignature::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
-    }
-}
-
 /// Full multisig verification cost for a registered account, before account access.
 /// Initial address derivation is charged separately when the stored commitment is zero.
 pub fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
@@ -213,7 +196,7 @@ pub fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
                     }
                     _ => 0,
                 };
-                primitive_verification_gas(approval) + webauthn_data_gas
+                approval.base_verification_gas() + webauthn_data_gas
             })
             .sum::<u64>()
 }
