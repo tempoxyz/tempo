@@ -1,6 +1,7 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Keccak256, b256, keccak256};
+use alloy_rlp::BufMut;
 use core::mem::size_of;
 use tempo_contracts::SAFE_DEPLOYER_ADDRESS;
 
@@ -126,31 +127,53 @@ impl MultisigConfig {
         MULTISIG_CONFIG_DOMAIN.len() + 32 + 8 + 2 + self.owners.len() * 21
     }
 
-    /// Encodes the canonical account-salt preimage.
+    /// Appends the canonical account-salt preimage to `out`.
     ///
-    /// This checks that the owner count is encodable; callers must separately validate the config
-    /// before relying on the resulting hash.
-    pub fn account_salt_preimage(&self) -> Result<Vec<u8>, MultisigConfigError> {
+    /// This checks that the owner count is encodable before writing anything; callers must
+    /// separately validate the config before relying on the resulting hash.
+    pub fn encode_account_salt_preimage(
+        &self,
+        out: &mut dyn BufMut,
+    ) -> Result<(), MultisigConfigError> {
         let owner_count = self.encoded_owner_count()?;
-        let mut input = Vec::with_capacity(self.account_salt_preimage_len());
-        input.extend_from_slice(MULTISIG_ACCOUNT_DOMAIN);
-        input.extend_from_slice(self.salt.as_slice());
-        self.append_owner_set(&mut input, owner_count);
-        Ok(input)
+        out.put_slice(MULTISIG_ACCOUNT_DOMAIN);
+        out.put_slice(self.salt.as_slice());
+        self.encode_owner_set(out, owner_count);
+        Ok(())
     }
 
-    /// Encodes the canonical configuration-commitment preimage.
+    /// Returns the canonical account-salt preimage.
     ///
-    /// This checks that the owner count is encodable; callers must separately validate the config
-    /// before relying on the resulting hash.
-    pub fn commitment_preimage(&self) -> Result<Vec<u8>, MultisigConfigError> {
+    /// See [`Self::encode_account_salt_preimage`].
+    pub fn account_salt_preimage(&self) -> Result<Vec<u8>, MultisigConfigError> {
+        let mut out = Vec::with_capacity(self.account_salt_preimage_len());
+        self.encode_account_salt_preimage(&mut out)?;
+        Ok(out)
+    }
+
+    /// Appends the canonical configuration-commitment preimage to `out`.
+    ///
+    /// This checks that the owner count is encodable before writing anything; callers must
+    /// separately validate the config before relying on the resulting hash.
+    pub fn encode_commitment_preimage(
+        &self,
+        out: &mut dyn BufMut,
+    ) -> Result<(), MultisigConfigError> {
         let owner_count = self.encoded_owner_count()?;
-        let mut input = Vec::with_capacity(self.commitment_preimage_len());
-        input.extend_from_slice(MULTISIG_CONFIG_DOMAIN);
-        input.extend_from_slice(self.salt.as_slice());
-        input.extend_from_slice(&self.version.to_be_bytes());
-        self.append_owner_set(&mut input, owner_count);
-        Ok(input)
+        out.put_slice(MULTISIG_CONFIG_DOMAIN);
+        out.put_slice(self.salt.as_slice());
+        out.put_slice(&self.version.to_be_bytes());
+        self.encode_owner_set(out, owner_count);
+        Ok(())
+    }
+
+    /// Returns the canonical configuration-commitment preimage.
+    ///
+    /// See [`Self::encode_commitment_preimage`].
+    pub fn commitment_preimage(&self) -> Result<Vec<u8>, MultisigConfigError> {
+        let mut out = Vec::with_capacity(self.commitment_preimage_len());
+        self.encode_commitment_preimage(&mut out)?;
+        Ok(out)
     }
 
     /// Returns a heuristic for the in-memory size of the config.
@@ -251,12 +274,12 @@ impl MultisigConfig {
         Ok(self.owners.len() as u8)
     }
 
-    fn append_owner_set(&self, input: &mut Vec<u8>, owner_count: u8) {
-        input.push(self.threshold);
-        input.push(owner_count);
+    fn encode_owner_set(&self, out: &mut dyn BufMut, owner_count: u8) {
+        out.put_u8(self.threshold);
+        out.put_u8(owner_count);
         for owner in &self.owners {
-            input.extend_from_slice(owner.owner.as_slice());
-            input.push(owner.weight);
+            out.put_slice(owner.owner.as_slice());
+            out.put_u8(owner.weight);
         }
     }
 }

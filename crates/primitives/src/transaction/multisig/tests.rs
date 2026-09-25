@@ -404,6 +404,56 @@ fn config_rejects_own_account_as_owner() {
     );
 }
 
+/// Builds a configuration that keeps the given owner order, unlike [`sorted_secp_config`].
+fn raw_config(owners: &[(u16, u8)], threshold: u8) -> MultisigConfig {
+    MultisigConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold,
+        owners: owners
+            .iter()
+            .map(|&(index, weight)| MultisigOwner {
+                owner: indexed_owner(index),
+                weight,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn preimage_encoders_append_to_existing_output() {
+    let config = raw_config(&[(1, 1), (2, 2)], 2);
+    let prefix = [0xaa; 3];
+
+    let mut out = prefix.to_vec();
+    config.encode_account_salt_preimage(&mut out).unwrap();
+    assert_eq!(out[..prefix.len()], prefix);
+    assert_eq!(out[prefix.len()..], config.account_salt_preimage().unwrap());
+    assert_eq!(out.len() - prefix.len(), config.account_salt_preimage_len());
+
+    let mut out = prefix.to_vec();
+    config.encode_commitment_preimage(&mut out).unwrap();
+    assert_eq!(out[..prefix.len()], prefix);
+    assert_eq!(out[prefix.len()..], config.commitment_preimage().unwrap());
+    assert_eq!(out.len() - prefix.len(), config.commitment_preimage_len());
+
+    // An unencodable owner count fails before anything is written.
+    let owners = (1..=MAX_MULTISIG_OWNERS as u16 + 1)
+        .map(|index| (index, 1))
+        .collect::<Vec<_>>();
+    let config = raw_config(&owners, 1);
+    let mut out = prefix.to_vec();
+    assert_eq!(
+        config.encode_account_salt_preimage(&mut out),
+        Err(MultisigConfigError::TooManyOwners)
+    );
+    assert_eq!(
+        config.encode_commitment_preimage(&mut out),
+        Err(MultisigConfigError::TooManyOwners)
+    );
+    assert_eq!(out, prefix);
+}
+
 #[test]
 fn shared_quorum_helpers_verify_order_and_threshold() {
     let owner_a = indexed_owner(1);
