@@ -1,8 +1,7 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering,
-    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
@@ -92,27 +91,19 @@ impl Iterator for MergeBestTransactions {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((tx, _)) = self.next_best() {
-            if !tx.transaction.is_quarantined() {
-                return Some(tx);
-            }
-            // Skip dependent nonces in this iterator, without removing their pool entries.
-            self.mark_invalid(
-                &tx,
-                InvalidPoolTransactionError::other(TempoPoolTransactionError::RevalidationPending),
-            );
-        }
-        None
+        self.next_best().map(|(tx, _)| tx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         let buffered = usize::from(self.next_protocol_pool.is_some())
             + usize::from(self.next_aa_2d_pool.is_some());
-        let (_, protocol_upper) = self.protocol_pool.size_hint();
-        let (_, aa_2d_upper) = self.aa_2d_pool.size_hint();
+        let (protocol_lower, protocol_upper) = self.protocol_pool.size_hint();
+        let (aa_2d_lower, aa_2d_upper) = self.aa_2d_pool.size_hint();
 
         (
-            0,
+            buffered
+                .saturating_add(protocol_lower)
+                .saturating_add(aa_2d_lower),
             protocol_upper
                 .zip(aa_2d_upper)
                 .and_then(|(protocol_upper, aa_2d_upper)| protocol_upper.checked_add(aa_2d_upper))
@@ -384,32 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn quarantined_entries_block_live_iterators_and_dependent_nonces() {
-        for nonce_key in [U256::ZERO, U256::ONE] {
-            let sender = Address::random();
-            let root = tx_with_nonce_key(nonce_key, sender, 0, 10);
-            let child = tx_with_nonce_key(nonce_key, sender, 1, 9);
-            let transactions = vec![root.clone(), child];
-            let new_iterator = || {
-                if nonce_key.is_zero() {
-                    merged_best_transactions(transactions.clone(), vec![])
-                } else {
-                    merged_best_transactions(vec![], transactions.clone())
-                }
-            };
-            let mut live = new_iterator();
-            root.transaction.quarantine();
-            assert!(live.next().is_none());
-            assert!(new_iterator().next().is_none());
-            assert!(
-                root.transaction
-                    .refresh_validation_metadata(&root.transaction.with_discarded_caches())
-            );
-            assert_eq!(new_iterator().count(), 2);
-        }
-    }
-
-    #[test]
     fn test_merge_best_transactions_size_hint() {
         let protocol_sender = Address::random();
         let protocol_tx_0 = protocol_tx_for_sender(protocol_sender, 0, 10);
@@ -427,13 +392,13 @@ mod tests {
             merged.next().map(|tx| *tx.hash()),
             Some(*protocol_tx_0.hash())
         );
-        assert_eq!(merged.size_hint(), (0, Some(2)));
+        assert_eq!(merged.size_hint(), (1, Some(2)));
 
         assert_eq!(
             merged.next().map(|tx| *tx.hash()),
             Some(*protocol_tx_1.hash())
         );
-        assert_eq!(merged.size_hint(), (0, Some(1)));
+        assert_eq!(merged.size_hint(), (1, Some(1)));
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*aa_2d_tx.hash()));
         assert_eq!(merged.size_hint(), (0, Some(0)));

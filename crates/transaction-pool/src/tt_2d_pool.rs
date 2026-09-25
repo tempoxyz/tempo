@@ -1239,65 +1239,6 @@ impl AA2dPool {
         (promoted, mined)
     }
 
-    /// Reconciles a freshly validated nonce after a missed canonical update, retaining entries.
-    pub(crate) fn reconcile_nonce(
-        &mut self,
-        sequence: AASequenceId,
-        nonce: u64,
-    ) -> NonceRevalidation {
-        let mut pending: Vec<_> = self
-            .by_id
-            .range((sequence.start_bound(), Unbounded))
-            .take_while(|(id, _)| id.seq_id == sequence)
-            .filter(|(_, tx)| tx.is_pending())
-            .map(|(_, tx)| Arc::clone(tx))
-            .collect();
-        let (promoted, _mined) = self.on_nonce_changes_iter([(sequence, nonce)]);
-        // Only capacity eviction can demote other sequences. Avoid a full scan otherwise.
-        if self
-            .config
-            .pending_limit
-            .is_exceeded(self.pending_count, self.pending_size.into())
-        {
-            pending.extend(
-                self.by_id
-                    .iter()
-                    .filter(|(id, tx)| id.seq_id != sequence && tx.is_pending())
-                    .map(|(_, tx)| Arc::clone(tx)),
-            );
-        }
-        // Consumed nonces belong to canonical mined notifications, never terminal Discarded events.
-        let discarded = self.discard();
-        let demoted = pending
-            .into_iter()
-            .filter(|tx| !tx.is_pending() && self.by_hash.contains_key(tx.inner.transaction.hash()))
-            .map(|tx| tx.inner.transaction.clone())
-            .collect();
-        let promoted: Vec<_> = promoted
-            .into_iter()
-            .filter(|tx| {
-                let id = tx
-                    .transaction
-                    .aa_transaction_id()
-                    .expect("regular AA-2D transaction");
-                if let Some(retained) = self.by_id.get(&id).filter(|tx| tx.is_pending()) {
-                    self.notify_new_pending(&retained.inner);
-                    true
-                } else {
-                    false
-                }
-            })
-            .collect();
-        self.metrics.inc_promoted(promoted.len());
-        self.metrics.inc_removed(discarded.len());
-        self.update_metrics();
-        NonceRevalidation {
-            promoted,
-            demoted,
-            discarded,
-        }
-    }
-
     /// Removes lowest-priority transactions if the pool is above capacity.
     ///
     /// This evicts transactions with the lowest priority (based on [`TempoTipOrdering`])
@@ -1959,14 +1900,6 @@ impl AA2dPool {
             );
         }
     }
-}
-
-/// Listener updates produced by reconciling a validated sequence nonce.
-#[derive(Debug)]
-pub(crate) struct NonceRevalidation {
-    pub(crate) promoted: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    pub(crate) demoted: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    pub(crate) discarded: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 }
 
 #[derive(Debug, Default, derive_more::Deref)]
@@ -6701,69 +6634,6 @@ mod tests {
         assert!(pool.contains(&tx3_hash));
         assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
         pool.assert_invariants();
-    }
-
-    #[test]
-    fn reconciliation_notifies_only_final_promotions_and_capacity_discards() {
-        for priority in [1, 10] {
-            let mut pool = AA2dPool::new(AA2dPoolConfig {
-                pending_limit: SubPoolLimit {
-                    max_txs: 2,
-                    max_size: usize::MAX,
-                },
-                ..Default::default()
-            });
-            let sender = Address::random();
-            let other = Address::random();
-            let mut hashes = Vec::new();
-            for (account, nonces, fee) in [(other, [0, 1], 5), (sender, [1, 2], priority)] {
-                for nonce in nonces {
-                    let tx = TxBuilder::aa(account)
-                        .nonce_key(U256::ONE)
-                        .nonce(nonce)
-                        .max_fee(30_000_000_000)
-                        .max_priority_fee(fee + u128::from(nonce))
-                        .build();
-                    hashes.push(*tx.hash());
-                    pool.add_transaction(
-                        Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
-                        0,
-                        TempoHardfork::T1,
-                    )
-                    .unwrap();
-                }
-            }
-            let mut live = pool.best_transactions();
-            // Drain the existing lane so subsequent items can only come from promotion notices.
-            assert_eq!(live.by_ref().count(), 2);
-            let sequence = AASequenceId::new(sender, U256::ONE);
-            let updates = pool.reconcile_nonce(sequence, 1);
-            assert_eq!(updates.discarded.len(), 1);
-            if priority == 1 {
-                assert_eq!(*updates.discarded[0].hash(), hashes[2]);
-                assert!(updates.promoted.is_empty());
-                assert!(updates.demoted.is_empty());
-                assert!(
-                    live.next().is_none(),
-                    "demoted survivors must not be announced pending"
-                );
-            } else {
-                assert_eq!(*updates.discarded[0].hash(), hashes[0]);
-                assert_eq!(updates.promoted.len(), 2);
-                assert_eq!(updates.demoted.len(), 1);
-                assert_eq!(*updates.demoted[0].hash(), hashes[1]);
-                assert_eq!(pool.best_transactions().count(), 2);
-            }
-            pool.assert_invariants();
-            let updates = pool.reconcile_nonce(sequence, 3);
-            assert!(
-                updates.discarded.is_empty(),
-                "consumed nonces are not capacity discards"
-            );
-            assert!(!pool.contains(&hashes[2]));
-            assert!(!pool.contains(&hashes[3]));
-            pool.assert_invariants();
-        }
     }
 
     #[test]

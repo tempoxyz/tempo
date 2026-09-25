@@ -17,31 +17,12 @@ use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::{
     TempoPrimitives, TempoTxEnvelope,
     transaction::{
-        MultisigConfig, MultisigOwner, MultisigSignature, SignedKeyAuthorization,
-        TempoSignedAuthorization, TempoTransaction,
+        SignedKeyAuthorization, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{KeychainVersion, PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     },
 };
-
-/// Shape-valid witness for dependency tests; approvals are not cryptographically valid.
-pub(crate) fn configurable_signature(account: Address) -> MultisigSignature {
-    MultisigSignature::try_new(
-        account,
-        MultisigConfig {
-            salt: B256::ZERO,
-            version: 1,
-            threshold: 1,
-            owners: vec![MultisigOwner {
-                owner: Address::repeat_byte(0x11),
-                weight: 1,
-            }],
-        },
-        vec![PrimitiveSignature::Secp256k1(Signature::test_signature())],
-    )
-    .unwrap()
-}
 
 /// Builder for creating test transactions.
 ///
