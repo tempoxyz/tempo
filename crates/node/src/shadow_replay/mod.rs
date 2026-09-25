@@ -2,11 +2,13 @@
 //!
 //! The node follows and persists the canonical chain. For each newly canonical block, it executes
 //! every transaction under both the canonical (control) and candidate rules from the same canonical
-//! prefix. The candidate result is observed, then discarded; the control result advances both
-//! executors before the next transaction. This isolates differences to the transaction that caused
+//! prefix, with candidate pre-block setup retained in the shadow arm. The candidate transaction
+//! result is observed, then discarded; the control result advances both executors before the next
+//! transaction. This isolates differences to the transaction that caused
 //! them instead of cascading candidate state through the rest of the block.
 //!
-//! Execution uses private in-memory overlays. Candidate writes are never persisted, submitted to
+//! Execution uses private in-memory overlays. Candidate pre-block changes remain in the prestate
+//! of every shadow transaction; candidate transaction writes are never persisted, submitted to
 //! forkchoice, or used as prestate for another transaction or block.
 //!
 //! Control re-execution must reproduce canonical receipts. Failure or divergence indicates a
@@ -26,7 +28,7 @@ use alloy_evm::{
     Evm as _,
     block::{BlockExecutor as _, TxResult as _},
 };
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
 use fees::{FeeWrites, RecordingFeeManager};
@@ -38,8 +40,8 @@ use reth_provider::{CanonStateSubscriptions, ChainSpecProvider, StateProviderFac
 use reth_revm::{
     database::StateProviderDatabase,
     database_interface::bal::BalState,
-    db::{CacheState, State, TransitionState},
-    state::EvmState,
+    db::{CacheState, State, TransitionState, states::CacheAccount},
+    state::{AccountInfo, EvmState},
 };
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
@@ -249,8 +251,8 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
     /// Executes each transaction under both rule sets from the same canonical prefix.
     ///
     /// The candidate result is observed but never committed. Committing the control result into
-    /// both executors gives the next candidate transaction the exact same prestate and block
-    /// execution context as the control, so one difference cannot cascade through the block.
+    /// both executors advances the canonical prefix without cascading candidate transaction
+    /// effects; candidate pre-block changes are preserved across control commits.
     fn execute(&self, block: &RecoveredBlock<Block>) -> Result<(Evidence, Evidence), String> {
         let provider = self
             .provider
@@ -283,12 +285,10 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
         // control results when one arm runs ahead.
         let (results, canonical_results) = std::sync::mpsc::sync_channel(1);
-        let canonical_cache = executor.evm().db().cache.clone();
         let canonical_bal = executor.evm().db().bal_state.clone();
         std::thread::scope(|scope| {
-            let worker = scope.spawn(|| {
-                self.execute_shadow(block, canonical_cache, canonical_bal, canonical_results)
-            });
+            let worker =
+                scope.spawn(|| self.execute_shadow(block, canonical_bal, canonical_results));
             let mut results = Some(results);
             for (index, tx) in block.transactions_recovered().enumerate() {
                 let result = match executor.execute_transaction_without_commit(tx) {
@@ -327,7 +327,6 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
     fn execute_shadow(
         &self,
         block: &RecoveredBlock<Block>,
-        canonical_cache: CacheState,
         canonical_bal: BalState,
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
@@ -360,9 +359,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
         }
         shadow.pre_block = Some(drain(executor.evm_mut().db_mut()));
-
-        // Candidate pre-block changes are evidence, not input to shadow transactions.
-        executor.evm_mut().db_mut().cache = canonical_cache;
+        // Keep candidate pre-block changes in the cache; only transaction results are discarded.
         executor.evm_mut().db_mut().bal_state = canonical_bal;
 
         for tx in block.transactions_recovered() {
@@ -382,9 +379,18 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             let Ok(canonical) = canonical_results.recv() else {
                 return Ok(shadow);
             };
+            // revm's commit merges changed storage slots, but replaces the entire AccountInfo.
+            // Preserve candidate setup for fields the control transaction did not change.
+            let saved = save_pre_block_info(
+                &executor.evm().db().cache,
+                shadow.pre_block.as_ref().unwrap(),
+                &canonical.result().state,
+            );
             executor.commit_transaction(canonical);
-            // The canonical commit is prestate for the next transaction, not shadow evidence.
-            let _ = drain(executor.evm_mut().db_mut());
+            let db = executor.evm_mut().db_mut();
+            restore_pre_block_info(&mut db.cache, saved);
+            // The control commit advances the prefix, not shadow transaction evidence.
+            let _ = drain(db);
         }
 
         match executor.finish() {
@@ -392,6 +398,77 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             Err(e) => shadow = shadow.fail(Boundary::PostBlock, e.to_string()),
         }
         Ok(shadow)
+    }
+}
+
+struct SavedPreBlockInfo {
+    address: Address,
+    candidate: CacheAccount,
+    control_before: AccountInfo,
+    control_after: AccountInfo,
+}
+
+/// Before a control commit, snapshot candidate pre-block accounts it touches.
+fn save_pre_block_info(
+    cache: &CacheState,
+    pre_block: &TransitionState,
+    state: &EvmState,
+) -> Vec<SavedPreBlockInfo> {
+    state
+        .iter()
+        .filter(|(address, account)| {
+            account.is_touched()
+                && !account.is_created()
+                && !account.is_selfdestructed()
+                && pre_block.transitions.contains_key(*address)
+        })
+        .filter_map(|(&address, account)| {
+            cache
+                .accounts
+                .get(&address)
+                .map(|candidate| SavedPreBlockInfo {
+                    address,
+                    candidate: candidate.clone(),
+                    control_before: account.original_info(),
+                    control_after: account.info.clone(),
+                })
+        })
+        .collect()
+}
+
+/// After the control commit, retain candidate account-info fields the control left unchanged.
+/// Control changes take precedence. Restore the saved account if revm cleared it as empty.
+fn restore_pre_block_info(cache: &mut CacheState, saved: Vec<SavedPreBlockInfo>) {
+    for SavedPreBlockInfo {
+        address,
+        mut candidate,
+        control_before,
+        control_after,
+    } in saved
+    {
+        let Some(previous) = candidate.account.as_mut() else {
+            continue;
+        };
+        if control_before.balance != control_after.balance {
+            previous.info.balance = control_after.balance;
+        }
+        if control_before.nonce != control_after.nonce {
+            previous.info.nonce = control_after.nonce;
+        }
+        if control_before.code_hash != control_after.code_hash {
+            previous.info.code_hash = control_after.code_hash;
+            previous.info.code = control_after.code;
+        }
+
+        let current = cache
+            .accounts
+            .get_mut(&address)
+            .expect("committed account cached");
+        if let Some(account) = current.account.as_mut() {
+            account.info = previous.info.clone();
+        } else {
+            *current = candidate;
+        }
     }
 }
 
@@ -565,9 +642,14 @@ fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
 
 fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChainSpec {
     let mut spec = canonical.clone();
-    spec.inner
-        .hardforks
-        .insert(hardfork, ForkCondition::Timestamp(0));
+    for &fork in TempoHardfork::VARIANTS
+        .iter()
+        .filter(|&&fork| fork != TempoHardfork::Genesis && fork <= hardfork)
+    {
+        spec.inner
+            .hardforks
+            .insert(fork, ForkCondition::Timestamp(0));
+    }
     spec
 }
 
@@ -578,6 +660,13 @@ mod tests {
     use reth_revm::{
         DatabaseCommit,
         state::{Account, AccountInfo, EvmStorageSlot, TransactionId},
+    };
+    use tempo_contracts::{
+        precompiles::{
+            ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+            zone_factory::{INITIAL_FACTORY_OWNER, initial_zone_factory_config},
+        },
+        zones::{T13_ZONE_PORTAL_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
 
     #[test]
@@ -620,14 +709,83 @@ mod tests {
     }
 
     #[test]
-    fn shadow_schedule_only_overrides_candidate() {
+    fn shadow_schedule_activates_candidate_and_predecessors() {
         let canonical = TempoChainSpec::mainnet();
-        let t11 = canonical.tempo_fork_activation(TempoHardfork::T11);
-        let t13 = canonical.tempo_fork_activation(TempoHardfork::T13);
         let shadow = shadow_spec(&canonical, TempoHardfork::T12);
         assert_eq!(shadow.tempo_hardfork_at(0), TempoHardfork::T12);
-        assert_eq!(shadow.tempo_fork_activation(TempoHardfork::T11), t11);
-        assert_eq!(canonical.tempo_fork_activation(TempoHardfork::T13), t13);
+        for &fork in TempoHardfork::VARIANTS {
+            if fork != TempoHardfork::Genesis && fork <= TempoHardfork::T12 {
+                assert_eq!(
+                    shadow.tempo_fork_activation(fork),
+                    ForkCondition::Timestamp(0)
+                );
+            } else {
+                assert_eq!(
+                    shadow.tempo_fork_activation(fork),
+                    canonical.tempo_fork_activation(fork)
+                );
+            }
+        }
+        assert!(shadow.is_t5_active_at_timestamp(0));
+        assert!(shadow.is_t8_active_at_timestamp(0));
+        assert!(shadow.is_t10_active_at_timestamp(0));
+        assert!(!shadow.is_t13_active_at_timestamp(0));
+    }
+
+    #[test]
+    fn candidate_pre_block_setup_is_transaction_prestate() {
+        let canonical = TempoChainSpec::mainnet();
+        let candidate = Arc::new(shadow_spec(&canonical, TempoHardfork::T13));
+        let mut block = Block::default();
+        let ForkCondition::Timestamp(timestamp) =
+            canonical.tempo_fork_activation(TempoHardfork::T4)
+        else {
+            panic!("T4 must activate at a timestamp");
+        };
+        block.header.inner.timestamp = timestamp;
+        block.header.inner.parent_beacon_block_root = Some(B256::ZERO);
+        block.header.inner.base_fee_per_gas = Some(0);
+        let block = RecoveredBlock::new_unhashed(block, vec![]);
+        let config = TempoEvmConfig::new(candidate);
+        let mut db = State::builder().with_bundle_update().build();
+        let evm = config.evm_for_block(&mut db, block.header()).unwrap();
+        let context = config.context_for_block(block.sealed_block()).unwrap();
+        let mut executor = config.create_executor(evm, context);
+        executor.apply_pre_execution_changes().unwrap();
+        let pre_block = drain(executor.evm_mut().db_mut());
+        // Commit a control result that touches the Zone account but carries canonical (old)
+        // code. Only its changed storage slot should replace the candidate pre-block setup.
+        let mut control = Account::from(AccountInfo {
+            code_hash: keccak256(ZONE_PORTAL_RUNTIME),
+            ..Default::default()
+        });
+        control.info.balance = U256::from(9);
+        control.storage.insert(
+            U256::ZERO,
+            EvmStorageSlot::new_changed(U256::ZERO, U256::from(42), TransactionId::ZERO),
+        );
+        control.mark_touch();
+        let state = EvmState::from_iter([(ZONE_PORTAL_IMPL_ADDRESS, control)]);
+        let db = executor.evm_mut().db_mut();
+        let saved = save_pre_block_info(&db.cache, &pre_block, &state);
+        db.commit(state);
+        restore_pre_block_info(&mut db.cache, saved);
+        let portal = &db.cache.accounts[&ZONE_PORTAL_IMPL_ADDRESS];
+        assert_eq!(
+            portal
+                .account_info()
+                .unwrap()
+                .code
+                .unwrap()
+                .original_bytes(),
+            T13_ZONE_PORTAL_RUNTIME
+        );
+        assert_eq!(portal.account_info().unwrap().balance, U256::from(9));
+        assert_eq!(portal.storage_slot(U256::ZERO), Some(U256::from(42)));
+        assert_eq!(
+            db.cache.accounts[&ZONE_FACTORY_ADDRESS].storage_slot(U256::ZERO),
+            Some(initial_zone_factory_config(INITIAL_FACTORY_OWNER))
+        );
     }
 
     #[test]

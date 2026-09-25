@@ -21,11 +21,13 @@ executors:
 
 Transactions execute in canonical order under both rule sets. A control thread and persistent
 shadow worker are pipelined through a one-entry result queue: replay records both results but commits
-the control result into both executors. Every shadow transaction therefore receives the same
-canonical prestate and accumulated block context as its control, so an early candidate difference
-cannot cause derivative mismatches in later transactions. Candidate pre-block and post-block
-behavior is still observed, with shadow transactions and candidate post-block execution based on
-canonical state.
+the control result into both executors. Every shadow transaction receives the canonical prefix
+plus candidate pre-block setup, without inheriting earlier candidate transaction results; an early
+candidate transaction difference cannot cause derivative mismatches later. Pre-block changes are
+preserved across control commits, but canonical transaction writes to the same fields take precedence.
+Candidate post-block behavior runs against this isolated prefix, not a fully committed candidate
+block. The candidate schedule activates all predecessor forks so their required pre-block setup
+is included.
 
 All execution uses isolated in-memory overlays. State is never persisted, shared with block
 production, submitted to fork choice, or carried into the next block. Every block starts
