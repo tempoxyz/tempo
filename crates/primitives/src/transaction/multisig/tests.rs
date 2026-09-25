@@ -421,6 +421,165 @@ fn raw_config(owners: &[(u16, u8)], threshold: u8) -> MultisigConfig {
 }
 
 #[test]
+fn owner_count_check() {
+    assert_eq!(
+        raw_config(&[], 1).validate_owner_count(),
+        Err(MultisigConfigError::EmptyOwners)
+    );
+    let owners = (1..=MAX_MULTISIG_OWNERS as u16 + 1)
+        .map(|index| (index, 1))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        raw_config(&owners[..MAX_MULTISIG_OWNERS], 1).validate_owner_count(),
+        Ok(())
+    );
+    assert_eq!(
+        raw_config(&owners, 1).validate_owner_count(),
+        Err(MultisigConfigError::TooManyOwners)
+    );
+}
+
+#[test]
+fn threshold_check() {
+    assert_eq!(
+        raw_config(&[(1, 1)], 0).validate_threshold(),
+        Err(MultisigConfigError::ZeroThreshold)
+    );
+    assert_eq!(raw_config(&[(1, 1)], 1).validate_threshold(), Ok(()));
+}
+
+#[test]
+fn owner_address_check() {
+    let account = indexed_owner(2);
+    let mut config = raw_config(&[(1, 1), (2, 1)], 1);
+    assert_eq!(config.validate_owner_addresses(None), Ok(()));
+    assert_eq!(
+        config.validate_owner_addresses(Some(account)),
+        Err(MultisigConfigError::AccountIsOwner)
+    );
+    // Only the initial configuration is bound to the account it derives.
+    config.version = 1;
+    assert_eq!(config.validate_owner_addresses(Some(account)), Ok(()));
+
+    // The first invalid owner decides the error.
+    assert_eq!(
+        raw_config(&[(0, 1), (2, 1)], 1).validate_owner_addresses(Some(account)),
+        Err(MultisigConfigError::ZeroOwner)
+    );
+    assert_eq!(
+        raw_config(&[(2, 1), (0, 1)], 1).validate_owner_addresses(Some(account)),
+        Err(MultisigConfigError::AccountIsOwner)
+    );
+}
+
+#[test]
+fn owner_weight_check() {
+    assert_eq!(
+        raw_config(&[(1, 1), (2, 0)], 1).validate_owner_weights(),
+        Err(MultisigConfigError::ZeroWeight)
+    );
+    assert_eq!(
+        raw_config(&[(1, 1), (2, u8::MAX)], 1).validate_owner_weights(),
+        Ok(())
+    );
+}
+
+#[test]
+fn owner_order_check() {
+    assert_eq!(
+        raw_config(&[(1, 1), (2, 1), (3, 1)], 1).validate_owner_order(),
+        Ok(())
+    );
+    assert_eq!(
+        raw_config(&[(2, 1), (1, 1)], 1).validate_owner_order(),
+        Err(MultisigConfigError::OwnersNotAscending)
+    );
+    assert_eq!(
+        raw_config(&[(1, 1), (1, 1)], 1).validate_owner_order(),
+        Err(MultisigConfigError::DuplicateOwner)
+    );
+    // A duplicate is reported even when it is not adjacent to its twin.
+    assert_eq!(
+        raw_config(&[(1, 1), (3, 1), (2, 1), (1, 1)], 1).validate_owner_order(),
+        Err(MultisigConfigError::DuplicateOwner)
+    );
+}
+
+#[test]
+fn total_weight_check() {
+    assert_eq!(
+        raw_config(&[(1, 200), (2, 55)], 1).total_weight(),
+        Ok(u8::MAX)
+    );
+    assert_eq!(
+        raw_config(&[(1, 200), (2, 56)], 1).total_weight(),
+        Err(MultisigConfigError::TotalWeightExceedsMax)
+    );
+    // The check stands on its own: owner lists past the count limit cannot overflow it.
+    let owners = (1..=300).map(|index| (index, u8::MAX)).collect::<Vec<_>>();
+    assert_eq!(
+        raw_config(&owners, 1).total_weight(),
+        Err(MultisigConfigError::TotalWeightExceedsMax)
+    );
+}
+
+#[test]
+fn reachable_weight_counts_only_the_heaviest_owners() {
+    assert_eq!(raw_config(&[(1, 5), (2, 7)], 1).reachable_weight(), 12);
+
+    // One signature carries at most MAX_MULTISIG_SIGNATURES approvals, so the two lightest of
+    // these owners cannot add to it.
+    let owners = (1..=MAX_MULTISIG_SIGNATURES as u16 + 2)
+        .map(|index| (index, index as u8))
+        .collect::<Vec<_>>();
+    let heaviest: u16 = (3..=MAX_MULTISIG_SIGNATURES as u16 + 2).sum();
+    let mut config = raw_config(&owners, heaviest as u8);
+    assert_eq!(config.reachable_weight(), heaviest);
+    assert_eq!(config.validate_threshold_reachable(), Ok(()));
+
+    config.threshold += 1;
+    assert_eq!(
+        config.validate_threshold_reachable(),
+        Err(MultisigConfigError::ThresholdExceedsWeight)
+    );
+}
+
+#[test]
+fn validation_reports_the_earliest_failing_check() {
+    use MultisigConfigError::*;
+
+    // Each configuration also fails later checks, so the reported errors pin the TIP-1109 order.
+    let zero_owners = vec![(0, 0); MAX_MULTISIG_OWNERS + 1];
+    let light_owners = (1..=20).map(|index| (index, 20)).collect::<Vec<_>>();
+    let unit_owners = (1..=MAX_MULTISIG_SIGNATURES as u16 + 1)
+        .map(|index| (index, 1))
+        .collect::<Vec<_>>();
+    let cases = [
+        (raw_config(&[], 0), EmptyOwners),
+        (raw_config(&zero_owners, 0), TooManyOwners),
+        (raw_config(&[(0, 0), (0, 0)], 0), ZeroThreshold),
+        (raw_config(&[(0, 0), (0, 0)], 1), ZeroOwner),
+        (raw_config(&[(2, 0), (2, 0)], 1), ZeroWeight),
+        (
+            raw_config(&[(2, 200), (1, 200), (2, 200)], u8::MAX),
+            DuplicateOwner,
+        ),
+        (
+            raw_config(&[(2, 200), (1, 200)], u8::MAX),
+            OwnersNotAscending,
+        ),
+        (raw_config(&light_owners, u8::MAX), TotalWeightExceedsMax),
+        (
+            raw_config(&unit_owners, MAX_MULTISIG_SIGNATURES as u8 + 1),
+            ThresholdExceedsWeight,
+        ),
+    ];
+    for (config, expected) in cases {
+        assert_eq!(config.validate(), Err(expected), "{config:?}");
+    }
+}
+
+#[test]
 fn preimage_encoders_append_to_existing_output() {
     let config = raw_config(&[(1, 1), (2, 2)], 2);
     let prefix = [0xaa; 3];

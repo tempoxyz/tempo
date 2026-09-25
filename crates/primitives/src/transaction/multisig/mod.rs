@@ -181,17 +181,46 @@ impl MultisigConfig {
         size_of::<Self>() + self.owners.capacity() * size_of::<MultisigOwner>()
     }
 
+    /// Runs every configuration check in TIP-1109 order, returning the total owner weight.
+    ///
+    /// Each check covers the whole owner list before the next one starts, so the earliest failing
+    /// check decides the error for a configuration with several defects.
     fn validate_inner(&self, account: Option<Address>) -> Result<u8, MultisigConfigError> {
+        self.validate_owner_count()?;
+        self.validate_threshold()?;
+        self.validate_owner_addresses(account)?;
+        self.validate_owner_weights()?;
+        self.validate_owner_order()?;
+        let total_weight = self.total_weight()?;
+        self.validate_threshold_reachable()?;
+        Ok(total_weight)
+    }
+
+    /// Rejects an empty owner list or more than [`MAX_MULTISIG_OWNERS`] owners.
+    fn validate_owner_count(&self) -> Result<(), MultisigConfigError> {
         if self.owners.is_empty() {
             return Err(MultisigConfigError::EmptyOwners);
         }
         if self.owners.len() > MAX_MULTISIG_OWNERS {
             return Err(MultisigConfigError::TooManyOwners);
         }
+        Ok(())
+    }
+
+    /// Rejects a zero threshold.
+    fn validate_threshold(&self) -> Result<(), MultisigConfigError> {
         if self.threshold == 0 {
             return Err(MultisigConfigError::ZeroThreshold);
         }
-        // TIP-1109 orders errors across the entire owner list, not within each owner.
+        Ok(())
+    }
+
+    /// Rejects zero owner addresses and, in an initial configuration, the account as its own
+    /// owner. The first invalid owner decides the error.
+    fn validate_owner_addresses(
+        &self,
+        account: Option<Address>,
+    ) -> Result<(), MultisigConfigError> {
         for owner in &self.owners {
             if owner.owner.is_zero() {
                 return Err(MultisigConfigError::ZeroOwner);
@@ -200,33 +229,50 @@ impl MultisigConfig {
                 return Err(MultisigConfigError::AccountIsOwner);
             }
         }
+        Ok(())
+    }
+
+    /// Rejects zero owner weights.
+    fn validate_owner_weights(&self) -> Result<(), MultisigConfigError> {
         if self.owners.iter().any(|owner| owner.weight == 0) {
             return Err(MultisigConfigError::ZeroWeight);
         }
+        Ok(())
+    }
+
+    /// Requires strictly ascending owner addresses, reporting a duplicate owner anywhere in the
+    /// list before an ordering error.
+    fn validate_owner_order(&self) -> Result<(), MultisigConfigError> {
         if self
             .owners
             .windows(2)
-            .any(|pair| pair[0].owner >= pair[1].owner)
+            .all(|pair| pair[0].owner < pair[1].owner)
         {
-            // Only invalid ordering needs this bounded scan for nonadjacent duplicates.
-            // Valid sorted configurations retain linear, allocation-free validation.
-            if self.owners.iter().enumerate().any(|(index, owner)| {
-                self.owners[..index]
-                    .iter()
-                    .any(|previous| previous.owner == owner.owner)
-            }) {
-                return Err(MultisigConfigError::DuplicateOwner);
-            }
-            return Err(MultisigConfigError::OwnersNotAscending);
+            return Ok(());
         }
-        let total_weight: u16 = self
-            .owners
+        // Only invalid ordering needs this bounded scan for nonadjacent duplicates.
+        // Valid sorted configurations retain linear, allocation-free validation.
+        if self.owners.iter().enumerate().any(|(index, owner)| {
+            self.owners[..index]
+                .iter()
+                .any(|previous| previous.owner == owner.owner)
+        }) {
+            return Err(MultisigConfigError::DuplicateOwner);
+        }
+        Err(MultisigConfigError::OwnersNotAscending)
+    }
+
+    /// Returns the total owner weight, rejecting a total above `u8::MAX`.
+    fn total_weight(&self) -> Result<u8, MultisigConfigError> {
+        self.owners
             .iter()
-            .map(|owner| u16::from(owner.weight))
-            .sum();
-        if total_weight > u16::from(u8::MAX) {
-            return Err(MultisigConfigError::TotalWeightExceedsMax);
-        }
+            .try_fold(0u8, |total, owner| total.checked_add(owner.weight))
+            .ok_or(MultisigConfigError::TotalWeightExceedsMax)
+    }
+
+    /// Returns the combined weight of the [`MAX_MULTISIG_SIGNATURES`] heaviest owners, the most
+    /// that one signature can approve.
+    fn reachable_weight(&self) -> u16 {
         let mut largest_weights = [0u8; MAX_MULTISIG_SIGNATURES];
         for owner in &self.owners {
             if owner.weight > largest_weights[0] {
@@ -234,12 +280,15 @@ impl MultisigConfig {
                 largest_weights.sort_unstable();
             }
         }
-        let reachable_weight: u16 = largest_weights.into_iter().map(u16::from).sum();
-        if u16::from(self.threshold) > reachable_weight {
+        largest_weights.into_iter().map(u16::from).sum()
+    }
+
+    /// Rejects a threshold above [`Self::reachable_weight`].
+    fn validate_threshold_reachable(&self) -> Result<(), MultisigConfigError> {
+        if u16::from(self.threshold) > self.reachable_weight() {
             return Err(MultisigConfigError::ThresholdExceedsWeight);
         }
-
-        Ok(total_weight as u8)
+        Ok(())
     }
 
     fn account_salt_validated(&self) -> B256 {
