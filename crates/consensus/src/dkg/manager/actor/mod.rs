@@ -360,6 +360,9 @@ where
             )
         });
 
+        // After a restart, storage can already hold the logs of all dealers.
+        self.maybe_conclude_ceremony_for_epoch(storage, &round, &state, player_state.is_some());
+
         loop {
             self.serve_dkg_outcomes(
                 storage,
@@ -818,6 +821,7 @@ where
         if height != epoch_info.last() {
             self.record_finalized_header(storage, round, header, dealer_state.as_mut())
                 .await;
+            self.maybe_conclude_ceremony_for_epoch(storage, round, state, player_state.is_some());
 
             return Ok(None);
         }
@@ -1084,11 +1088,11 @@ where
 
     /// Attempts to serve a `SubscribeDkgCeremony` request by concluding the DKG ceremony.
     ///
-    /// A DKG ceremony can be concluded in one of the following cases:
-    ///
-    /// 1. if the DKG actor has observed as many dealer logs as there are dealers.
-    /// 2. if all blocks in an epoch were observed (finalized + notarized leading
-    /// up to `request.parent`).
+    /// The ceremony uses the finalized dealer logs. For dealers without a
+    /// finalized log, it adds the logs from the notarized blocks between the
+    /// finalized tip and `request.parent`. Once the logs of all dealers are
+    /// finalized, [`Self::maybe_conclude_ceremony_for_epoch`] has cached the
+    /// output for every parent, and the request does not walk the blocks.
     ///
     /// Returns the ceremony output, or identifies the next missing ancestor.
     #[instrument(
@@ -1136,53 +1140,44 @@ where
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
 
-            'ensure_enough_logs: {
-                if finalized_logs.len() == round.dealers().len() {
-                    info!("collected as many logs as there are dealers; concluding DKG");
-                    break 'ensure_enough_logs;
-                }
-
-                info!(
-                    "did not have all dealer logs yet; will try to extend with \
-                    logs read from notarized blocks and concluding DKG that way",
-                );
-                let mut notarized_logs = BTreeMap::new();
-                let (mut height, mut digest) = (request.parent.height(), request.parent.digest());
-                let mut ancestor_round = request.parent.context().round;
-                while height >= epoch_info.first()
-                    && Some(height)
-                        >= storage
-                            .get_latest_finalized_block_for_epoch(&round.epoch())
-                            .map(|(_, info)| info.height)
-                {
-                    if let Some(block) =
-                        storage.get_notarized_reduced_block(&round.epoch(), &digest)
+            info!(
+                "did not have all dealer logs yet; will try to extend with \
+                logs read from notarized blocks and concluding DKG that way",
+            );
+            let mut notarized_logs = BTreeMap::new();
+            let (mut height, mut digest) = (request.parent.height(), request.parent.digest());
+            let mut ancestor_round = request.parent.context().round;
+            while height >= epoch_info.first()
+                && Some(height)
+                    >= storage
+                        .get_latest_finalized_block_for_epoch(&round.epoch())
+                        .map(|(_, info)| info.height)
+            {
+                if let Some(block) = storage.get_notarized_reduced_block(&round.epoch(), &digest) {
+                    if let Some((dealer, log)) = block.log.clone()
+                        && !finalized_logs.contains_key(&dealer)
                     {
-                        if let Some((dealer, log)) = block.log.clone()
-                            && !finalized_logs.contains_key(&dealer)
-                        {
-                            // The ancestry walk is newest-to-oldest, so older logs replace
-                            // newer ancestry duplicates while finalized logs stay authoritative.
-                            notarized_logs.insert(dealer, log);
-                        }
-                        height = if let Some(height) = block.height.previous() {
-                            height
-                        } else {
-                            break;
-                        };
-                        digest = block.parent;
-                        ancestor_round = block.parent_round;
-                    } else {
-                        debug!(
-                            missing = %digest,
-                            "cannot yet finalize the DKG because a block is missing"
-                        );
-                        return Ok(Outcome::NeedsAncestor(height, digest, ancestor_round));
+                        // The ancestry walk is newest-to-oldest, so older logs replace
+                        // newer ancestry duplicates while finalized logs stay authoritative.
+                        notarized_logs.insert(dealer, log);
                     }
+                    height = if let Some(height) = block.height.previous() {
+                        height
+                    } else {
+                        break;
+                    };
+                    digest = block.parent;
+                    ancestor_round = block.parent_round;
+                } else {
+                    debug!(
+                        missing = %digest,
+                        "cannot yet finalize the DKG because a block is missing"
+                    );
+                    return Ok(Outcome::NeedsAncestor(height, digest, ancestor_round));
                 }
-                for (dealer, log) in notarized_logs {
-                    finalized_logs.entry(dealer).or_insert(log);
-                }
+            }
+            for (dealer, log) in notarized_logs {
+                finalized_logs.entry(dealer).or_insert(log);
             }
 
             let player = self.ad_hoc_player(storage, round, player_state.is_some());
@@ -1192,6 +1187,38 @@ where
         };
 
         Ok(Outcome::Ready(output))
+    }
+
+    /// Concludes the ceremony for the whole epoch once the logs of all
+    /// dealers are finalized.
+    ///
+    /// A request for the ceremony output adds logs from notarized blocks only
+    /// for dealers without a finalized log. So from this point, the output is
+    /// the same for each parent of the boundary block. Requests and the
+    /// boundary block use the cached result, and requests do not walk the
+    /// notarized blocks.
+    fn maybe_conclude_ceremony_for_epoch<TStorageContext>(
+        &mut self,
+        storage: &mut state::Storage<TStorageContext>,
+        round: &Round,
+        state: &State,
+        as_player: bool,
+    ) where
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
+    {
+        if storage.has_dkg_outcome_for_epoch(&round.epoch())
+            || storage.logs_for_epoch(round.epoch()).count() != round.dealers().len()
+        {
+            return;
+        }
+
+        info!("finalized the logs of all dealers; concluding DKG for the epoch");
+        let player = self.ad_hoc_player(storage, round, as_player);
+        let logs = storage
+            .logs_for_epoch(round.epoch())
+            .map(|(dealer, log)| (dealer.clone(), log.clone()));
+        let (output, share) = self.conclude_ceremony(round, state, player, logs);
+        storage.cache_dkg_outcome_for_epoch(round.epoch(), output, share);
     }
 
     /// Creates a player for `round` if this node is a player in it.

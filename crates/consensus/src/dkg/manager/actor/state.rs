@@ -324,14 +324,35 @@ where
             .insert(digest, (output, share));
     }
 
+    /// Caches the DKG outcome that holds for every parent in `epoch`.
+    pub(super) fn cache_dkg_outcome_for_epoch(
+        &mut self,
+        epoch: Epoch,
+        output: Output<MinSig, PublicKey>,
+        share: ShareState,
+    ) {
+        self.cache.entry(epoch).or_default().dkg_outcome_for_epoch = Some((output, share));
+    }
+
+    pub(super) fn has_dkg_outcome_for_epoch(&self, epoch: &Epoch) -> bool {
+        self.cache
+            .get(epoch)
+            .is_some_and(|events| events.dkg_outcome_for_epoch.is_some())
+    }
+
+    /// Returns the DKG outcome cached for the parent `digest`, or else the
+    /// DKG outcome cached for the whole `epoch`.
     pub(super) fn get_dkg_outcome(
         &self,
         epoch: &Epoch,
         digest: &Digest,
     ) -> Option<&(Output<MinSig, PublicKey>, ShareState)> {
-        self.cache
-            .get(epoch)
-            .and_then(|events| events.dkg_outcomes.get(digest))
+        self.cache.get(epoch).and_then(|events| {
+            events
+                .dkg_outcomes
+                .get(digest)
+                .or(events.dkg_outcome_for_epoch.as_ref())
+        })
     }
 
     /// Caches the notarized log in memory.
@@ -727,6 +748,7 @@ struct Events {
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
     dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, ShareState)>,
+    dkg_outcome_for_epoch: Option<(Output<MinSig, PublicKey>, ShareState)>,
 }
 
 impl Events {

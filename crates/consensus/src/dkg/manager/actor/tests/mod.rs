@@ -1440,6 +1440,70 @@ fn duplicate_outcome_requests_keep_all_live_waiters() {
 }
 
 #[test]
+fn finalized_logs_of_all_dealers_conclude_the_ceremony_for_every_parent() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let dealers = keys
+            .iter()
+            .map(|key| (key.clone(), None))
+            .collect::<Vec<_>>();
+        let signed_logs = signed_dealer_logs(
+            round.info(),
+            &dealers,
+            &keys,
+            |index| StdRng::seed_from_u64(index as u64),
+            |_, _| false,
+        );
+        let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+        for signed in &signed_logs {
+            let (dealer, log) = signed.clone().check(round.info()).unwrap();
+            logs.record(dealer, log);
+        }
+        let expected = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+
+        let mut harness = Harness::builder(context.child("test"), "concluded_ceremony")
+            .initial_state(state.clone())
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        harness.start().await;
+        for (offset, signed) in signed_logs.iter().enumerate() {
+            let mut log_header = header(Height::new(15 + offset as u64));
+            log_header.inner.extra_data = signed.encode().into();
+            harness.report_finalized_header(log_header).await;
+        }
+
+        // Marshal has neither parent. The actor answers without their ancestry.
+        let parent = |tag| {
+            parent_block(
+                ConsensusRound::new(state.epoch, View::new(18)),
+                Height::new(18),
+                tag,
+            )
+        };
+        let (first, second) = futures::join!(
+            harness.mailbox().subscribe_dkg_ceremony(parent(1)),
+            harness.mailbox().subscribe_dkg_ceremony(parent(2)),
+        );
+        assert_eq!(first.unwrap(), expected);
+        assert_eq!(second.unwrap(), expected);
+        assert!(harness.marshal.subscriptions().is_empty());
+
+        // Storage replays the logs after a restart.
+        harness.stop().await;
+        harness.start().await;
+        let restarted = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent(3))
+            .await
+            .unwrap();
+        assert_eq!(restarted, expected);
+        assert!(harness.marshal.subscriptions().is_empty());
+    });
+}
+
+#[test]
 fn dealer_log_verification_distinguishes_unavailable_state_from_invalid_logs() {
     Runner::default().start(|mut context| async move {
         let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
