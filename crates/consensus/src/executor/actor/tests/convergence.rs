@@ -184,6 +184,48 @@ fn rejected_notarized_block_is_withheld_then_retried() {
 }
 
 #[test_traced]
+fn queued_build_does_not_suppress_rejected_notarized_block_retry() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::builder()
+            .harness_options(HarnessOptions {
+                fcu_heartbeat_interval: Duration::from_millis(200),
+                ..Default::default()
+            })
+            .start(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution.script_new_payload(
+            d1,
+            Ok(PayloadStatusEnum::Invalid {
+                validation_error: "transient".into(),
+            }),
+        );
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
+            .await;
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+
+        // Consensus can request a proposal while the parent is withheld.
+        // The build must remain queued without suppressing the wakeup that
+        // makes the parent eligible for forwarding after the retry delay.
+        let _build = h.build(round(2), d1);
+        h.run_for(Duration::from_secs(11)).await;
+
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![d1, d1],
+            "the rejected parent must be retried while its dependent build is queued",
+        );
+        assert_eq!(h.execution.head(), d1);
+    });
+}
+
+#[test_traced]
 fn new_payload_transport_error_is_withheld_then_retried() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::builder()
