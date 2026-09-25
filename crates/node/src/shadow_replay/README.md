@@ -44,9 +44,10 @@ that could not execute are reported as incomplete coverage.
 ## Comparison model
 
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
-changes in order. Transaction comparisons cover success, output, ordered receipt logs, receipt
-and block gas, and net account and storage transitions. This compares observable effects at
-completed boundaries, not opcode traces or internal write history.
+changes in order. Transaction comparisons cover success, output, ordered receipt logs, and net
+account and storage transitions. Gas-only differences are not findings, although gas is still
+checked against canonical receipts and used to validate fee-derived effects. This compares
+observable effects at completed boundaries, not opcode traces or internal write history.
 
 Because every shadow transaction starts from the same canonical prefix, findings at later
 transactions remain independent and are all compared. The post-fee TIP-20 transfer amount is masked
@@ -55,12 +56,14 @@ and each amount equals its gas-derived charge. All other log contents and positi
 Fee-hook storage provenance alone never exempts a state difference: a fee-state expectation also
 requires the same value before the post-fee writes in both arms and validates each arm's final value
 against its ordered hook writes (including fee-AMM swaps). Unsupported fee changes remain findings;
-other gas and state differences still require fork expectations.
+other state differences still require fork expectations.
 
 ## Expectations
 
 `expectations.rs` registers checks at the hardfork introducing a feature. For each block,
-replay selects checks in `(canonical fork, candidate fork]` after validating the control.
+replay selects checks in `(canonical fork, candidate fork]` after validating the control. The T12
+channel and DEX rules retain their precompile-scoped storage checks, including TIP-1060 credits;
+they no longer need to accept gas differences because those are not compared.
 
 A check receives existing execution evidence and a changed field descriptor. It returns `None` when
 it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns

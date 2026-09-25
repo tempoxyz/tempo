@@ -13,8 +13,9 @@
 //! non-canonical STF and terminates live replay. Shadow findings never stop replay.
 //!
 //! Analysis compares completed pre-block, transaction, and post-block boundaries in order. It
-//! compares net effects at each boundary—not complete state equality or write history. Expectations
-//! classify individual differences, and incomplete coverage is reported separately.
+//! compares net effects at each boundary—not complete state equality or write history. Gas-only
+//! changes are not findings; fork expectations classify known effects, and incomplete coverage
+//! is reported separately.
 
 mod analysis;
 mod expectations;
@@ -433,9 +434,6 @@ enum TxOutcome {
 }
 
 /// Execution evidence retained for one successfully committed transaction.
-///
-/// Section/block gas consumption is tracked separately because it can diverge even when
-/// receipt gas is unchanged.
 #[derive(Debug, Default)]
 struct ObservedTx {
     /// Whether execution succeeded, reverted, or halted.
@@ -444,8 +442,6 @@ struct ObservedTx {
     gas_used: u64,
     /// Hash of the unmodified ordered logs, used to validate canonical receipts.
     receipt_logs_hash: B256,
-    /// Gas charged against the block, which can differ from receipt gas.
-    block_gas_used: u64,
     /// Hash of the transaction's output bytes (empty when there is no output).
     output_hash: B256,
     /// Validated post-fee amount and full receipt hash with only that amount zeroed.
@@ -462,7 +458,6 @@ impl ObservedTx {
         let logs = execution.logs();
         let fee_normalized = normalized_fee_transfer(logs, &writes);
         Self {
-            block_gas_used: result.block_gas_used(),
             outcome: match execution {
                 reth_revm::context::result::ExecutionResult::Success { .. } => TxOutcome::Success,
                 reth_revm::context::result::ExecutionResult::Revert { .. } => TxOutcome::Revert,

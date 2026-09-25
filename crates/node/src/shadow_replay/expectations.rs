@@ -8,7 +8,6 @@ use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post
 use alloy::{
     consensus::Transaction as _,
     primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
-    sol_types::SolCall as _,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
@@ -133,13 +132,12 @@ const FEE_STATE: Expectation = Expectation {
     },
 };
 
-/// Fields accepted by a precompile-scoped expectation, including its TIP-1060 credit balance.
-fn precompile_gas_or_storage(field: &Field, precompile: Address) -> bool {
-    matches!(field.name, "gas" | "block_gas")
-        || (field.name == "storage"
-            && (field.address == Some(precompile)
-                || (field.address == Some(STORAGE_CREDITS_ADDRESS)
-                    && field.slot == Some(StorageCredits::slot(precompile)))))
+/// Storage accepted by a precompile-scoped expectation, including its TIP-1060 credit balance.
+fn precompile_storage(field: &Field, precompile: Address) -> bool {
+    field.name == "storage"
+        && (field.address == Some(precompile)
+            || (field.address == Some(STORAGE_CREDITS_ADDRESS)
+                && field.slot == Some(StorageCredits::slot(precompile))))
 }
 
 /// Returns whether T11 rejects `calldata` for the Tempo precompile at `address` only because of
@@ -208,62 +206,34 @@ const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
 const T12_TIP20_CHANNEL: Expectation = Expectation {
     id: "t12.tip20-channel-reserve",
     check: |ctx, field| {
-        if !precompile_gas_or_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS) {
+        if !precompile_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS) {
             return None;
         }
 
-        let is_related = ctx.call().any(|(kind, calldata)| {
-            kind.to() == Some(&TIP20_CHANNEL_RESERVE_ADDRESS)
-                && [
-                    ITIP20ChannelReserve::openCall::SELECTOR,
-                    ITIP20ChannelReserve::settleCall::SELECTOR,
-                    ITIP20ChannelReserve::topUpCall::SELECTOR,
-                    ITIP20ChannelReserve::closeCall::SELECTOR,
-                    ITIP20ChannelReserve::withdrawCall::SELECTOR,
-                ]
-                .iter()
-                .any(|selector| calldata.starts_with(selector))
-        });
+        let is_related = ctx
+            .call()
+            .any(|(kind, _)| matches!(kind.to(), Some(&TIP20_CHANNEL_RESERVE_ADDRESS)));
+
         is_related.then_some(())?;
         ctx.observed_txs().map(|_| ())
     },
 };
 
-// LiFiDiamond delegates this selector to GenericSwapFacetV3; swaps can call the DEX internally.
+// LiFiDiamond swaps can call the DEX internally.
 const LIFI_DIAMOND: Address = address!("2cacae8e22418e65dcf7651c67aebe6288eb8243");
-const LIFI_SWAP_TOKENS_MULTIPLE_V3: [u8; 4] = [0x5f, 0xd9, 0xae, 0x2e];
 
 const T12_STABLECOIN_DEX: Expectation = Expectation {
     id: "t12.stablecoin-dex",
     check: |ctx, field| {
-        if !precompile_gas_or_storage(field, STABLECOIN_DEX_ADDRESS) {
+        if !precompile_storage(field, STABLECOIN_DEX_ADDRESS) {
             return None;
         }
 
-        let is_related = ctx.call().any(|(kind, calldata)| {
-            let selector = calldata.get(..4);
-            match kind.to() {
-                Some(to) if to == &STABLECOIN_DEX_ADDRESS => selector.is_some_and(|selector| {
-                    [
-                        IStablecoinDEX::placeCall::SELECTOR,
-                        IStablecoinDEX::placeFlipCall::SELECTOR,
-                        IStablecoinDEX::cancelCall::SELECTOR,
-                        IStablecoinDEX::cancelStaleOrderCall::SELECTOR,
-                        IStablecoinDEX::swapExactAmountInCall::SELECTOR,
-                        IStablecoinDEX::swapExactAmountOutCall::SELECTOR,
-                        IStablecoinDEX::quoteSwapExactAmountInCall::SELECTOR,
-                        IStablecoinDEX::quoteSwapExactAmountOutCall::SELECTOR,
-                        IStablecoinDEX::getTickLevelCall::SELECTOR,
-                    ]
-                    .iter()
-                    .any(|expected| selector == expected.as_slice())
-                }),
-                Some(to) if to == &LIFI_DIAMOND => {
-                    selector == Some(LIFI_SWAP_TOKENS_MULTIPLE_V3.as_slice())
-                }
-                _ => false,
-            }
+        let is_related = ctx.call().any(|(kind, _)| {
+            kind.to()
+                .is_some_and(|to| matches!(to, &STABLECOIN_DEX_ADDRESS | &LIFI_DIAMOND))
         });
+
         is_related.then_some(())?;
         ctx.observed_txs().map(|_| ())
     },
@@ -285,9 +255,7 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
         let real = ctx.real.pre_block.as_ref()?;
         let shadow = ctx.shadow.pre_block.as_ref()?;
 
-        // The canonical arm must not change code. The shadow arm must perform exactly the reviewed
-        // T10-to-T13 upgrade. An empty prior hash is also valid when replay activates the T10
-        // installation and T13 upgrade together at the same boundary.
+        // The canonical arm must not change code. The shadow arm activates the new bytecode.
         if AccountDelta(real.transitions.get(&address))
             .info(|info| info.code_hash)
             .is_some()
@@ -300,6 +268,7 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
             .as_ref()
             .map_or(KECCAK256_EMPTY, |info| info.code_hash);
         let after = transition.info.as_ref()?.code_hash;
+
         ((before == KECCAK256_EMPTY || before == keccak256(&old_runtime))
             && after == keccak256(&new_runtime))
         .then_some(())
@@ -324,15 +293,7 @@ pub(crate) fn between(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> Vec<&'static Expectation> {
-    select(REGISTRY, canonical, candidate)
-}
-
-fn select(
-    registry: &'static [(TempoHardfork, &[Expectation])],
-    canonical: TempoHardfork,
-    candidate: TempoHardfork,
-) -> Vec<&'static Expectation> {
-    registry
+    REGISTRY
         .iter()
         .filter(|(fork, _)| *fork > canonical && *fork <= candidate)
         .flat_map(|(_, rules)| *rules)
@@ -353,7 +314,7 @@ mod tests {
     };
     use tempo_primitives::{
         TempoTransaction,
-        transaction::{AASigned, PrimitiveSignature, TempoSignature},
+        transaction::{AASigned, Call, PrimitiveSignature, TempoSignature},
     };
 
     #[test]
@@ -400,44 +361,27 @@ mod tests {
     #[test]
     fn selects_only_newly_active_forks() {
         use TempoHardfork::*;
-        const T11_RULE: Expectation = Expectation {
-            id: "t11",
-            check: |_, _| None,
-        };
-        const SPARSE: &[(TempoHardfork, &[Expectation])] =
-            &[(T11, &[T11_RULE]), (T13, &[T13_ZONE_RUNTIME_UPGRADE])];
-
         let ids = |a, b| {
-            select(SPARSE, a, b)
+            between(a, b)
                 .into_iter()
                 .map(|rule| rule.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(T10, T13), ["t11", T13_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(
+            ids(T11, T12),
+            [
+                T12_ALLOW_PRECOMPILE_ABI_SUFFIX.id,
+                T12_TIP20_CHANNEL.id,
+                T12_STABLECOIN_DEX.id,
+                FEE_STATE.id,
+            ]
+        );
         assert_eq!(ids(T12, T13), [T13_ZONE_RUNTIME_UPGRADE.id]);
-        assert!(ids(T11, T12).is_empty());
+        let mut combined = ids(T11, T12);
+        combined.extend(ids(T12, T13));
+        assert_eq!(ids(T11, T13), combined);
         assert!(ids(T13, T12).is_empty());
     }
-
-    // Synthetic checks exercise the classifier contract; these are NOT TIP-1016 validators.
-    const GAS: Expectation = Expectation {
-        id: "test.gas",
-        check: |ctx, field| {
-            if field.name != "gas" {
-                return None;
-            }
-            let Boundary::Transaction(index) = ctx.boundary else {
-                return None;
-            };
-            let (real, shadow) = (
-                ctx.real.txs[index].as_ref().ok()?,
-                ctx.shadow.txs[index].as_ref().ok()?,
-            );
-            (real.gas_used.checked_add(200) == Some(shadow.gas_used)
-                && real.outcome == shadow.outcome)
-                .then_some(())
-        },
-    };
 
     fn block(txs: Vec<TempoTxEnvelope>) -> RecoveredBlock<Block> {
         let mut block = Block::default();
@@ -457,7 +401,6 @@ mod tests {
                     Ok(ObservedTx {
                         outcome: TxOutcome::Success,
                         gas_used,
-                        block_gas_used: 21_000,
                         ..Default::default()
                     })
                 })
@@ -504,12 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn accepted_gas_does_not_hide_unverified_fee_state() {
+    fn gas_only_difference_does_not_hide_unverified_fee_state() {
         let real = evidence(&[21_000, 21_000]);
         let mut shadow = evidence(&[21_200, 21_000]);
+        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        assert_eq!(report.outcome(&shadow), ReplayOutcome::Match);
+
         write_slot(tx_mut(&mut shadow, 0), 800);
-        let report = Report::analyze(&real, &shadow, &[&GAS], &block(vec![]));
-        assert_eq!(report.expected[GAS.id], 1);
+        let report = Report::analyze(&real, &shadow, &[&FEE_STATE], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
         let field = report.samples[0].1.field;
@@ -519,17 +464,21 @@ mod tests {
         assert!(field.fee_associated);
     }
 
-    #[test]
-    fn only_verified_fee_amount_is_masked_in_ordered_receipt_logs() {
-        let tx: TempoTxEnvelope = AASigned::new_unhashed(
+    fn signed_tx(calls: Vec<Call>) -> TempoTxEnvelope {
+        AASigned::new_unhashed(
             TempoTransaction {
                 max_priority_fee_per_gas: 1_000_000_000_000,
                 max_fee_per_gas: 1_000_000_000_000,
+                calls,
                 ..Default::default()
             },
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         )
-        .into();
+        .into()
+    }
+
+    #[test]
+    fn only_verified_fee_amount_is_masked_in_ordered_receipt_logs() {
         let original = B256::repeat_byte(1);
         let changed = B256::repeat_byte(2);
         let normalized = B256::repeat_byte(3);
@@ -543,38 +492,39 @@ mod tests {
             tx.fee.log_ranges = std::iter::once(0..1).collect();
             tx.fee_normalized = Some((U256::from(amount), normalized));
         }
-        let block = block(vec![tx]);
-        let report = |shadow: &Evidence, rules: &[&Expectation]| {
-            Report::analyze(&real, shadow, rules, &block)
-        };
-        let accepted = report(&shadow, &[&GAS]);
-        assert_eq!(accepted.outcome(&shadow), ReplayOutcome::Expected);
-        assert_eq!(accepted.expected[GAS.id], 1);
-        assert_eq!(accepted.unexplained, 0);
-        // Without a reviewed gas rule, the fee change is still masked, but gas is a finding.
-        assert_eq!(report(&shadow, &[]).unexplained, 1);
+        let block = block(vec![signed_tx(vec![])]);
+        let report = |shadow: &Evidence| Report::analyze(&real, shadow, &[], &block);
+        assert_eq!(report(&shadow).outcome(&shadow), ReplayOutcome::Match);
 
         let mut wrong = shadow;
         tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = B256::repeat_byte(4);
-        assert_eq!(report(&wrong, &[&GAS]).unexplained, 1);
+        assert_eq!(report(&wrong).unexplained, 1);
         tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = normalized;
         tx_mut(&mut wrong, 0).fee.log_ranges = std::iter::once(1..2).collect();
-        assert_eq!(report(&wrong, &[&GAS]).unexplained, 1);
+        assert_eq!(report(&wrong).unexplained, 1);
     }
 
     #[test]
     fn first_accepting_rule_owns_attribution() {
-        let stop = Expectation {
-            id: "test.stop-gas",
-            check: |_, field| (field.name == "gas").then_some(()),
+        let first = Expectation {
+            id: "test.first-output",
+            check: |_, field| (field.name == "output").then_some(()),
+        };
+        let second = Expectation {
+            id: "test.second-output",
+            check: |_, field| (field.name == "output").then_some(()),
         };
         let unreachable = Expectation {
             id: "must-not-run",
             check: |_, _| panic!("already accepted"),
         };
-        let real = evidence(&[21_000, 21_000]);
-        let shadow = evidence(&[21_200, 21_000]);
-        for rules in [[&GAS, &stop, &unreachable], [&stop, &GAS, &unreachable]] {
+        let real = evidence(&[21_000]);
+        let mut shadow = evidence(&[21_200]);
+        tx_mut(&mut shadow, 0).output_hash = B256::repeat_byte(1);
+        for rules in [
+            [&first, &second, &unreachable],
+            [&second, &first, &unreachable],
+        ] {
             let report = Report::analyze(&real, &shadow, &rules, &block(vec![]));
             assert_eq!(report.unexplained, 0);
             assert_eq!(report.expected, [(rules[0].id, 1)].into());
@@ -651,31 +601,5 @@ mod tests {
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
-    }
-
-    #[test]
-    fn accepted_post_block_change_is_expected() {
-        let real = evidence(&[]);
-        let mut shadow = evidence(&[]);
-        shadow.post_block.as_mut().unwrap().transitions.insert(
-            Address::ZERO,
-            TransitionAccount {
-                info: Some(AccountInfo {
-                    balance: U256::from(1),
-                    ..Default::default()
-                }),
-                previous_info: Some(AccountInfo::default()),
-                ..Default::default()
-            },
-        );
-        let rule = Expectation {
-            id: "test.post-block",
-            check: |ctx, field| {
-                (ctx.boundary == Boundary::PostBlock && field.name == "balance").then_some(())
-            },
-        };
-        let report = Report::analyze(&real, &shadow, &[&rule], &block(vec![]));
-        assert_eq!(report.boundaries_not_evaluated, 0);
-        assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
     }
 }

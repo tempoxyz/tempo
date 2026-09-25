@@ -76,8 +76,6 @@ impl Report {
                         .verified_fee_log_hashes()
                         .unwrap_or((real.receipt_logs_hash, shadow.receipt_logs_hash));
                     diff.record_values("receipt_logs", real_logs, shadow_logs);
-                    diff.record("gas", |tx| tx.gas_used);
-                    diff.record("block_gas", |tx| tx.block_gas_used);
                     report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
                 }
                 Err(error) => report.record(
