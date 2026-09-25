@@ -8,10 +8,7 @@ use core::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
-    },
+    transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
 use crate::TempoNetwork;
@@ -87,7 +84,7 @@ pub struct TempoTransactionRequest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_nonzero_quantity_opt"
+        with = "alloy_serde::quantity::opt"
     )]
     pub valid_before: Option<NonZeroU64>,
 
@@ -98,7 +95,7 @@ pub struct TempoTransactionRequest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_nonzero_quantity_opt"
+        with = "alloy_serde::quantity::opt"
     )]
     pub valid_after: Option<NonZeroU64>,
 
@@ -627,6 +624,52 @@ mod tests {
         assert_eq!(tx.valid_after, Some(nz(1234567800)));
         assert_eq!(tx.nonce_key, TEMPO_EXPIRING_NONCE_KEY);
         assert_eq!(tx.nonce, 0);
+    }
+
+    #[test]
+    fn test_validity_window_quantity_formats() {
+        for field in ["validBefore", "validAfter"] {
+            for (value, expected) in [
+                (serde_json::Value::Null, None),
+                (serde_json::json!("0x1"), NonZeroU64::new(1)),
+                (serde_json::json!("1234"), NonZeroU64::new(1234)),
+                (serde_json::json!(1234), NonZeroU64::new(1234)),
+                (
+                    serde_json::json!("0xffffffffffffffff"),
+                    NonZeroU64::new(u64::MAX),
+                ),
+            ] {
+                let request: TempoTransactionRequest =
+                    serde_json::from_value(serde_json::json!({field: value})).unwrap();
+                let actual = if field == "validBefore" {
+                    request.valid_before
+                } else {
+                    request.valid_after
+                };
+                assert_eq!(actual, expected);
+                let serialized = serde_json::to_value(&request).unwrap();
+                assert_eq!(
+                    serialized.get(field).cloned().unwrap_or_default(),
+                    expected
+                        .map(|value| serde_json::json!(format!("0x{:x}", value.get())))
+                        .unwrap_or_default()
+                );
+            }
+            for value in [
+                serde_json::json!(0),
+                serde_json::json!("0"),
+                serde_json::json!("0x0"),
+            ] {
+                let err = serde_json::from_value::<TempoTransactionRequest>(
+                    serde_json::json!({field: value}),
+                )
+                .unwrap_err();
+                assert!(err.to_string().contains("expected non-zero quantity"));
+            }
+        }
+        let request: TempoTransactionRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(request.valid_before, None);
+        assert_eq!(request.valid_after, None);
     }
 
     #[test]
