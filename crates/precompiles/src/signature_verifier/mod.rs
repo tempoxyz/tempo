@@ -16,7 +16,7 @@ use tempo_precompiles_macros::contract;
 use tempo_primitives::{
     account::decode_config_commitment,
     transaction::{
-        MultisigSignature, MultisigWeightAccumulator,
+        MultisigSignature,
         multisig::{MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN, MULTISIG_SIGNATURE_DOMAIN},
         tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
     },
@@ -125,25 +125,8 @@ impl SignatureVerifier {
             return Ok(false);
         }
 
-        let digest = signature.digest(hash);
-        let mut weight = MultisigWeightAccumulator::new(config.threshold)
-            .map_err(|_| SignatureVerifierError::invalid_signature())?;
-        for (index, approval) in signature.signatures().iter().enumerate() {
-            let owner = approval
-                .recover_signer(&digest)
-                .map_err(|_| SignatureVerifierError::invalid_signature())?;
-            let owner_weight = config
-                .owner_weight(owner)
-                .ok_or_else(SignatureVerifierError::invalid_signature)?;
-            weight
-                .record_owner(owner, owner_weight)
-                .map_err(|_| SignatureVerifierError::invalid_signature())?;
-            if weight.has_quorum() && index + 1 != signature.signatures().len() {
-                return Err(SignatureVerifierError::invalid_signature().into());
-            }
-        }
-        weight
-            .finish()
+        signature
+            .verify_approvals(hash)
             .map_err(|_| SignatureVerifierError::invalid_signature())?;
         Ok(true)
     }

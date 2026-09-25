@@ -11,8 +11,8 @@ use tempo_primitives::{
     TempoBlockEnv,
     account::decode_config_commitment,
     transaction::{
-        KeychainSignature, MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator,
-        SignatureType, TempoSignature, multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
+        KeychainSignature, MultisigQuorumError, MultisigSignature, SignatureType, TempoSignature,
+        multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
     },
 };
 
@@ -47,29 +47,14 @@ impl NativeAuthorization<'_> {
     /// Verifies owner signatures and quorum against the supplied configuration.
     /// Does not check account state, eligibility, or gas affordability; see [`validate_state`].
     pub fn verify(&self) -> Result<(), NativeMultisigError> {
-        let digest = self.signature.digest(self.inner_digest);
-        let config = self.signature.config();
-        let mut weight = MultisigWeightAccumulator::new(config.threshold)
-            .map_err(NativeMultisigError::Quorum)?;
-        for (approval_index, primitive) in self.signature.signatures().iter().enumerate() {
-            let owner = primitive.recover_signer(&digest).map_err(|_| {
-                NativeMultisigError::OwnerSignatureRecoveryFailed { approval_index }
-            })?;
-            let owner_weight = config
-                .owner_weight(owner)
-                .ok_or(NativeMultisigError::Quorum(
-                    MultisigQuorumError::SignerNotOwner,
-                ))?;
-            weight
-                .record_owner(owner, owner_weight)
-                .map_err(NativeMultisigError::Quorum)?;
-            if weight.has_quorum() && approval_index + 1 != self.signature.signatures().len() {
-                return Err(NativeMultisigError::Quorum(
-                    MultisigQuorumError::ExcessSignatures,
-                ));
-            }
-        }
-        weight.finish().map_err(NativeMultisigError::Quorum)
+        self.signature
+            .verify_approvals(self.inner_digest)
+            .map_err(|error| match error {
+                MultisigQuorumError::OwnerSignatureRecoveryFailed { approval_index } => {
+                    NativeMultisigError::OwnerSignatureRecoveryFailed { approval_index }
+                }
+                error => NativeMultisigError::Quorum(error),
+            })
     }
 }
 
