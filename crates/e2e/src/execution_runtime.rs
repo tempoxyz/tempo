@@ -899,7 +899,16 @@ impl std::fmt::Debug for ExecutionNode {
 }
 
 pub fn genesis() -> Genesis {
-    serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
+    let mut genesis =
+        serde_json::from_str::<Genesis>(include_str!("../../node/tests/assets/test-genesis.json"))
+            .unwrap();
+    // Exercise TIP-1123 in E2E tests without changing the generator's legacy fixture.
+    genesis
+        .config
+        .extra_fields
+        .insert_value("tip1123Time".to_owned(), 0)
+        .unwrap();
+    genesis
 }
 
 /// Returns MDBX DB args sized for tests (64 MB max with 4 MB growth step).
