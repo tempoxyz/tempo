@@ -86,11 +86,13 @@ impl SignatureVerifier {
         }
 
         let timestamp = self.storage.timestamp().saturating_to::<u64>();
+        // Pre-T14 verification ignored the stored type; preserve that behavior on replay.
+        let expected_type = self.storage.spec().is_t14().then_some(signature_type);
         match AccountKeychain::new().validate_keychain_authorization(
             account,
             key_id,
             timestamp,
-            self.storage.spec().is_t14().then_some(signature_type),
+            expected_type,
         ) {
             Ok(key) => Ok(!require_admin || key.is_admin),
             Err(err) if err.is_system_error() => Err(err),
