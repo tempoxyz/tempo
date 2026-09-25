@@ -12,6 +12,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "neobank-withdraw"
     "vault-deposit"
     "vault-withdraw"
+    "zones"
 ]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
