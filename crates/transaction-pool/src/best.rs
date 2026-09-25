@@ -4,6 +4,7 @@ use crate::{
     ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
     tt_2d_pool::BestAA2dTransactions,
 };
+use alloy_consensus::Transaction;
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
@@ -238,6 +239,14 @@ where
 /// [`StateAwareBestTransactions`] iterator item.
 pub trait StateAwarePoolTransaction {
     fn best_transaction(&self) -> &BestTransaction;
+
+    /// Gas expected to be charged if this transaction executes.
+    ///
+    /// Payload sources with a precomputed execution result can override this with the
+    /// measured value. Other sources conservatively use the transaction's declared limit.
+    fn estimated_gas_used(&self) -> u64 {
+        self.best_transaction().transaction.gas_limit()
+    }
 }
 
 impl StateAwarePoolTransaction for BestTransaction {

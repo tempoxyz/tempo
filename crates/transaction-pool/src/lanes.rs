@@ -16,12 +16,14 @@ const MAX_LOOKAHEAD: usize = 64;
 
 type Sequence = (Address, U256);
 
-/// Selects the lane furthest behind its share of the proposer's gas budget.
+/// Selects the lane with the lowest gas-weighted virtual finish time.
 ///
 /// The source's order is retained within each lane, except that nonce ancestors always
 /// precede their descendants, even across lanes. An empty or blocked preferred lane
-/// lends its capacity to the other lane. Bounded lookahead makes the ratio a soft target.
-/// Call [`Self::set_gas_used`] with actual execution gas before requesting the next item.
+/// lends its capacity to the other lane. Candidate cost prevents a large transaction from
+/// running as soon as its lane falls slightly behind, while actual execution gas corrects
+/// subsequent choices. Bounded lookahead makes the ratio a soft target. Call
+/// [`Self::set_gas_used`] with actual execution gas before requesting the next item.
 pub struct LaneBalancedTransactions<I: Iterator> {
     inner: I,
     general: BTreeMap<u64, I::Item>,
@@ -66,11 +68,39 @@ where
         self.total_used = total_used;
     }
 
-    fn prefer_general(&self) -> bool {
-        self.general_limit != 0
-            && (self.general_limit == self.total_limit
-                || u128::from(self.general_used) * u128::from(self.total_limit)
-                    < u128::from(self.total_used) * u128::from(self.general_limit))
+    fn select_general(&self) -> Option<bool> {
+        let general = self.general.first_key_value();
+        let payment = self.payments.first_key_value();
+
+        match (general, payment) {
+            (None, None) => None,
+            (Some(_), None) => Some(true),
+            (None, Some(_)) => Some(false),
+            (Some((general_rank, general)), Some((payment_rank, payment))) => {
+                if self.general_limit == 0 {
+                    return Some(false);
+                }
+                let payment_limit = self.total_limit.saturating_sub(self.general_limit);
+                if payment_limit == 0 {
+                    return Some(true);
+                }
+
+                let general_finish = u128::from(self.general_used)
+                    .saturating_add(u128::from(general.estimated_gas_used()));
+                let payment_used = self.total_used.saturating_sub(self.general_used);
+                let payment_finish = u128::from(payment_used)
+                    .saturating_add(u128::from(payment.estimated_gas_used()));
+                let general_weighted = general_finish.saturating_mul(u128::from(payment_limit));
+                let payment_weighted =
+                    payment_finish.saturating_mul(u128::from(self.general_limit));
+
+                Some(match general_weighted.cmp(&payment_weighted) {
+                    std::cmp::Ordering::Less => true,
+                    std::cmp::Ordering::Greater => false,
+                    std::cmp::Ordering::Equal => general_rank < payment_rank,
+                })
+            }
+        }
     }
 
     fn ready(&mut self, general: bool) -> &mut BTreeMap<u64, I::Item> {
@@ -140,15 +170,16 @@ where
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let general = self.prefer_general();
         for _ in 0..MAX_LOOKAHEAD {
-            if !self.ready(general).is_empty() || self.buffered >= MAX_BUFFERED_TRANSACTIONS {
+            if (!self.general.is_empty() && !self.payments.is_empty())
+                || self.buffered >= MAX_BUFFERED_TRANSACTIONS
+            {
                 break;
             }
             let Some(item) = self.inner.next() else { break };
             self.push(item);
         }
-        self.pop(general).or_else(|| self.pop(!general))
+        self.select_general().and_then(|general| self.pop(general))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -240,8 +271,17 @@ mod tests {
         fn set_skip_blobs(&mut self, _: bool) {}
     }
 
-    fn tx(payment: bool, sender: Address, key: U256, nonce: u64) -> BestTransaction {
-        let builder = TxBuilder::aa(sender).nonce_key(key).nonce(nonce);
+    fn tx_with_gas_limit(
+        payment: bool,
+        sender: Address,
+        key: U256,
+        nonce: u64,
+        gas_limit: u64,
+    ) -> BestTransaction {
+        let builder = TxBuilder::aa(sender)
+            .nonce_key(key)
+            .nonce(nonce)
+            .gas_limit(gas_limit);
         let builder = if payment {
             builder.calls(vec![Call {
                 to: TxKind::Call(DEFAULT_FEE_TOKEN),
@@ -261,8 +301,16 @@ mod tests {
         tx
     }
 
+    fn tx(payment: bool, sender: Address, key: U256, nonce: u64) -> BestTransaction {
+        tx_with_gas_limit(payment, sender, key, nonce, 1_000_000)
+    }
+
     fn independent(payment: bool) -> BestTransaction {
         tx(payment, Address::random(), U256::ZERO, 0)
+    }
+
+    fn independent_with_gas_limit(payment: bool, gas_limit: u64) -> BestTransaction {
+        tx_with_gas_limit(payment, Address::random(), U256::ZERO, 0, gas_limit)
     }
 
     fn scheduler(
@@ -287,8 +335,12 @@ mod tests {
 
     #[test]
     fn balances_actual_gas_and_preserves_order_within_each_lane() {
-        let general = (0..10).map(|_| independent(false)).collect::<Vec<_>>();
-        let payments = (0..100).map(|_| independent(true)).collect::<Vec<_>>();
+        let general = (0..10)
+            .map(|_| independent_with_gas_limit(false, 1))
+            .collect::<Vec<_>>();
+        let payments = (0..100)
+            .map(|_| independent_with_gas_limit(true, 1))
+            .collect::<Vec<_>>();
         let mut txs = scheduler(general.iter().chain(&payments).cloned().collect(), 10, 100);
         let (mut g, mut p) = (0, 0);
         for _ in 0..100 {
@@ -301,7 +353,7 @@ mod tests {
                 assert_eq!(item.hash(), general[g as usize].hash());
                 g += 1;
             }
-            // One indivisible transaction of slack, independent of its 1M declared gas limit.
+            // One indivisible transaction of slack.
             assert!((10 * g as i64 - (g + p) as i64).abs() <= 10);
         }
         assert_eq!((g, p), (10, 90));
@@ -391,15 +443,16 @@ mod tests {
             txs.set_gas_used(u64::MAX / 2, u64::MAX - 1);
             assert_eq!(next_hash(&mut txs), Some(*expected));
         }
+        let expected = *general.hash();
         let mut txs = scheduler(vec![general, payment], u64::MAX / 2, u64::MAX);
         txs.set_gas_used(u64::MAX / 4, u64::MAX - 1);
-        assert!(txs.prefer_general());
+        assert_eq!(next_hash(&mut txs), Some(expected));
     }
 
     #[test]
     fn unequal_execution_costs_change_the_transaction_ratio() {
-        let general = (0..10).map(|_| independent(false));
-        let payments = (0..1000).map(|_| independent(true));
+        let general = (0..10).map(|_| independent_with_gas_limit(false, 25));
+        let payments = (0..1000).map(|_| independent_with_gas_limit(true, 2));
         let mut txs = scheduler(general.chain(payments).collect(), 10, 100);
         let (mut general_gas, mut payment_gas, mut general_count) = (0, 0, 0);
         for _ in 0..300 {
@@ -413,6 +466,30 @@ mod tests {
             let target = (general_gas + payment_gas) as f64 / 10.0;
             assert!((general_gas as f64 - target).abs() <= 25.0);
         }
-        assert_eq!(general_count, 3);
+        assert_eq!(general_count, 2);
+    }
+
+    #[test]
+    fn candidate_cost_prevents_an_early_general_burst() {
+        let general = independent_with_gas_limit(false, 25);
+        let payments = (0..113)
+            .map(|_| independent_with_gas_limit(true, 2))
+            .collect::<Vec<_>>();
+        let mut txs = scheduler(
+            std::iter::once(general.clone())
+                .chain(payments.iter().cloned())
+                .collect(),
+            10,
+            100,
+        );
+
+        let mut payment_gas = 0;
+        for expected in &payments[..112] {
+            txs.set_gas_used(0, payment_gas);
+            assert_eq!(next_hash(&mut txs), Some(*expected.hash()));
+            payment_gas += 2;
+        }
+        txs.set_gas_used(0, payment_gas);
+        assert_eq!(next_hash(&mut txs), Some(*general.hash()));
     }
 }

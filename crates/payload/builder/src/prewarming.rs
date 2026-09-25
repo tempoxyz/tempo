@@ -4,6 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+use alloy_consensus::Transaction;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
@@ -331,6 +332,21 @@ impl PrewarmedTransaction {
 impl StateAwarePoolTransaction for PrewarmedTransaction {
     fn best_transaction(&self) -> &BestTransaction {
         &self.tx
+    }
+
+    fn estimated_gas_used(&self) -> u64 {
+        self.replay.as_ref().map_or_else(
+            || self.tx.transaction.gas_limit(),
+            |replay| {
+                let gas = replay.result.gas();
+                let block_gas = gas.block_regular_gas_used();
+                if block_gas == 0 {
+                    gas.tx_gas_used()
+                } else {
+                    block_gas
+                }
+            },
+        )
     }
 }
 
