@@ -141,7 +141,7 @@ impl GetDkgOutcome {
             players: outcome.players().iter().map(pubkey_to_hex).collect(),
             next_players: outcome.next_players().iter().map(pubkey_to_hex).collect(),
             is_next_full_dkg: outcome.is_next_full_dkg,
-            network_identity: Bytes::copy_from_slice(&sharing.public().encode()),
+            network_identity: sharing.public().encode().into(),
             threshold: sharing.required(),
             total_participants: sharing.total().get(),
         };

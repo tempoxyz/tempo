@@ -1,5 +1,5 @@
 use alloy_primitives::B256;
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::Decodable;
 
 #[derive(Debug)]
 pub struct InvalidPublicKey;
@@ -11,7 +11,7 @@ impl core::fmt::Display for InvalidPublicKey {
 }
 
 /// Validated Ed25519 public key bytes.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, alloy_rlp::RlpEncodableWrapper)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "B256", try_from = "B256"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
@@ -28,16 +28,6 @@ impl PublicKey {
         use commonware_cryptography::Signer;
         let key = commonware_cryptography::ed25519::PrivateKey::from_seed(seed).public_key();
         Self(B256::from(<[u8; 32]>::from(&key)))
-    }
-}
-
-impl Encodable for PublicKey {
-    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        self.0.encode(out);
-    }
-
-    fn length(&self) -> usize {
-        self.0.length()
     }
 }
 

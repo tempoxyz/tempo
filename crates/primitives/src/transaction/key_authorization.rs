@@ -204,7 +204,7 @@ pub struct KeyAuthorization {
     ///
     /// This uses `Option<NonZeroU64>` so `Some(0)` is unrepresentable and cannot silently
     /// roundtrip into `None`.
-    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub expiry: Option<NonZeroU64>,
 
     /// TIP20 spending limits for this key.
@@ -494,41 +494,13 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             chain_id: u.arbitrary()?,
             key_type: u.arbitrary()?,
             key_id: u.arbitrary()?,
-            expiry: u.arbitrary()?,
+            // Zero (including exhausted input) represents an absent expiry.
+            expiry: u.arbitrary::<Option<u64>>()?.and_then(NonZeroU64::new),
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
             witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
             is_admin: u.arbitrary()?,
             account: u.arbitrary()?,
-        })
-    }
-}
-
-#[cfg(feature = "serde")]
-#[doc(hidden)]
-pub mod serde_nonzero_quantity_opt {
-    use core::num::NonZeroU64;
-
-    use serde::{Deserializer, Serializer, de::Error as _};
-
-    pub fn serialize<S>(value: &Option<NonZeroU64>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        alloy_serde::quantity::opt::serialize(&value.map(NonZeroU64::get), serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        alloy_serde::quantity::opt::deserialize(deserializer).and_then(|value: Option<u64>| {
-            value
-                .map(|value| {
-                    NonZeroU64::new(value)
-                        .ok_or_else(|| D::Error::custom("expected non-zero quantity"))
-                })
-                .transpose()
         })
     }
 }
@@ -778,6 +750,27 @@ mod tests {
 
     fn nonzero(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test expiry must be non-zero")
+    }
+
+    #[test]
+    fn arbitrary_expiry_boundaries() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        for value in [None, Some(0u64), Some(1), Some(u64::MAX)] {
+            // Default chain ID, key type and key ID, followed by Some's tag.
+            let mut input = vec![0; 32];
+            input.push(1);
+            if let Some(value) = value {
+                input.extend_from_slice(&value.to_le_bytes());
+            }
+            let auth = KeyAuthorization::arbitrary(&mut Unstructured::new(&input)).unwrap();
+            assert_eq!(auth.expiry, value.and_then(NonZeroU64::new));
+
+            let encoded = alloy_rlp::encode(&auth);
+            let mut remaining = encoded.as_slice();
+            assert_eq!(KeyAuthorization::decode(&mut remaining).unwrap(), auth);
+            assert!(remaining.is_empty());
+        }
     }
 
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
