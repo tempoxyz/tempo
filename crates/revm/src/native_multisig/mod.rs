@@ -204,15 +204,8 @@ pub fn validate_state<J: JournalTr>(
         return grant_delegate_access_gas(journal, tx, spec, gas, &[]);
     }
     let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
-    for signature in [
-        aa.signature.as_multisig(),
-        aa.key_authorization
-            .as_ref()
-            .and_then(|auth| auth.signature.as_multisig()),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    // Grant signers may be admin access keys; later checks bind them to the caller.
+    if let Some(signature) = aa.signature.as_multisig() {
         if signature.account() != tx.caller {
             return Err(invalid(NativeMultisigError::AccountMismatch {
                 expected: tx.caller,
