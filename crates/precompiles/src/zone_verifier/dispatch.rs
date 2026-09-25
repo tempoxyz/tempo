@@ -27,7 +27,7 @@ impl Precompile for ZoneVerifier {
             calldata,
             |call| match call {
                 IZoneVerifier::IZoneVerifierCalls {
-                    verify(call) => view(call, |call| self.verify(msg_sender, call)),
+                    verify(call) => view(self, call, |this, call| this.verify(msg_sender, call)),
                 }
             }
         )
