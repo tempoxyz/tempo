@@ -9,7 +9,6 @@ use crate::{
     storage::{Handler, Mapping, Slot},
 };
 use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256, hex};
-use revm::state::Bytecode;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
     ZonePortalCapability, ZonePortalRole,
@@ -133,10 +132,8 @@ impl ZonePortalStorage {
             return Err(ZoneFactoryError::already_initialized().into());
         }
 
-        self.storage.set_code(
-            self.address,
-            Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
-        )?;
+        self.storage
+            .set_code(self.address, Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME))?;
 
         self.admin.write(params.admin)?;
         self.token_configs[params.initialToken].write(PortalTokenConfig {

@@ -24,10 +24,9 @@ tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-json-abi = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
-alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["map-foldhash"] }
 keccak-const.workspace = true
-revm.workspace = true
+evm2 = { workspace = true, features = ["std"] }
 paste.workspace = true
 bitflags.workspace = true
 aws-lc-rs.workspace = true
@@ -38,7 +37,7 @@ commonware-codec.workspace = true
 
 tracing.workspace = true
 thiserror.workspace = true
-derive_more.workspace = true
+derive_more = { workspace = true, features = ["from", "try_into"] }
 scoped-tls = "1.0"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -59,9 +58,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = { workspace = true, features = ["oid"] }
 x509-cert = { version = "=0.2.5", features = ["builder"] }
-tempo-evm = { workspace = true, features = ["engine"] }
 tempo-alloy.workspace = true
-tempo-revm.workspace = true
 
 [features]
 default = ["rpc"]

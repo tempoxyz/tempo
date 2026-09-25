@@ -36,21 +36,19 @@ use reth_engine_tree::tree::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
     instrumented_state::InstrumentedStateProvider,
 };
-use reth_errors::{ConsensusError, ProviderError};
+use reth_errors::ConsensusError;
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, ConfigureEvm,
+    Database, NextBlockEnvAttributes, OnStateHook, database::StateProviderDatabase,
     execute::BlockAssemblerInput,
 };
-use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
-use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention, state::EvmState,
+use reth_storage_api::{
+    EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
+    StateRootProvider,
 };
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -60,14 +58,13 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc,
     },
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult, evm::TempoEvm,
+    TempoTxResult,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
@@ -330,23 +327,29 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
-                state_provider,
+        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let evm_state_provider = state_provider.as_ref().into_evm_state_provider();
+        let cached_state_provider = execution_cache.as_ref().map(|execution_cache| {
+            CachedStateProvider::new(
+                &evm_state_provider,
                 execution_cache.cache().clone(),
                 Some(self.cache_metrics.clone()),
-            ));
-        }
-        if self.config.state_provider_metrics {
-            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
-        }
+            )
+        });
+        let evm_state_provider = cached_state_provider
+            .as_ref()
+            .map(|provider| provider as &dyn EvmStateProvider)
+            .unwrap_or(&evm_state_provider);
+        let instrumented_state_provider = self
+            .config
+            .state_provider_metrics
+            .then(|| InstrumentedStateProvider::new(evm_state_provider, "builder"));
+        let evm_state_provider = instrumented_state_provider
+            .as_ref()
+            .map(|provider| provider as &dyn EvmStateProvider)
+            .unwrap_or(evm_state_provider);
 
-        let state = StateProviderDatabase::new(&state_provider);
-        let mut db = State::builder()
-            .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
-            .with_bundle_update()
-            .build();
+        let mut db = StateProviderDatabase::new(evm_state_provider);
         drop(_state_setup_span);
         self.metrics
             .state_setup_duration_seconds
@@ -400,7 +403,7 @@ where
             timestamp_millis_part: attributes.timestamp_millis_part(),
             consensus_context: attributes.consensus_context(),
         };
-        let evm_env = self
+        let mut evm_env = self
             .evm_config
             .next_evm_env(&parent_header, &next_attributes)
             .map_err(PayloadBuilderError::other)?;
@@ -409,44 +412,29 @@ where
             .context_for_next_block(&parent_header, next_attributes)
             .map_err(PayloadBuilderError::other)?;
 
-        let evm = self.evm_config.evm_with_env(&mut db, evm_env);
+        // Resolve the configured fee recipient before moving the database into the EVM. This
+        // keeps the read out of EVM2's journal and therefore out of transaction gas accounting.
+        maybe_override_fee_recipient(&mut db, &mut evm_env, &attributes);
+
+        let prewarm_evm_env = evm_env.clone();
+        let assembly_evm_env = evm_env.clone();
+        let evm = self.evm_config.evm_with_database(db, evm_env);
         let mut executor = self.evm_config.create_executor(evm, ctx.clone());
 
         check_cancel!();
 
-        // Override the fee recipient with the on-chain value from the V2
-        // validator config contract, if available.
-        maybe_override_fee_recipient(&mut executor, &attributes);
-
-        let bal_task_handle = if self.enable_bal {
-            let bal_task_handle = self.spawn_bal_task(
-                state_root_handle
-                    .as_mut()
-                    .map(|handle| handle.take_state_hook()),
-            );
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
-            Some(bal_task_handle)
-        } else {
-            if let Some(handle) = state_root_handle.as_mut() {
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.take_state_hook())));
-            }
-            None
-        };
+        if self.enable_bal {
+            executor.enable_block_access_list_builder();
+        }
+        if let Some(handle) = state_root_handle.as_mut() {
+            let mut hook = handle.take_state_hook();
+            executor.set_state_hook(move |state| hook.on_state(state));
+        }
 
         executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-        if let Some(bal_task_handle) = &bal_task_handle {
-            bal_task_handle.bump_bal_index();
-        }
-
         check_cancel!();
 
         debug!("building new payload");
@@ -462,19 +450,16 @@ where
 
         let pool_fetch_start = Instant::now();
         let raw_best_txs = best_txs(BestTransactionsAttributes::new(
-            executor.evm().block().basefee,
-            executor
-                .evm()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
+            executor.evm().block().basefee.to(),
+            Some(executor.evm().block().blob_basefee.to()),
         ));
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
             execution_cache,
             parent_header.hash(),
-            executor.evm().evm_env(),
+            prewarm_evm_env,
+            self.evm_config.clone(),
             self.config.enable_parallel,
         );
         let mut best_txs = if self.config.enable_prewarming {
@@ -565,10 +550,8 @@ where
             let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
 
-            let max_regular_gas_used = core::cmp::min(
-                tx.gas_limit(),
-                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-            );
+            let max_regular_gas_used =
+                core::cmp::min(tx.gas_limit(), executor.evm().version().tx_gas_limit_cap);
 
             // Ensure we still have capacity for this transaction within the block gas limit.
             if cumulative_gas_used + max_regular_gas_used > block_gas_limit {
@@ -630,7 +613,7 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let result_closure = |result: &TempoTxResult| {
+            let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
@@ -651,16 +634,16 @@ where
                     tx.transaction.executable(),
                     *replay,
                     result_closure,
-                    bal_task_handle.is_some(),
+                    self.enable_bal,
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
-                    .execute_transaction_with_result_closure(
-                        tx.transaction.executable(),
-                        result_closure,
-                    )
-                    .map(|_| ())
+                    .execute_transaction_without_commit(tx.transaction.executable())
+                    .and_then(|result| {
+                        result_closure(&result);
+                        executor.commit_transaction(result).map(|_| ())
+                    })
             };
 
             if let Err(err) = execution_result {
@@ -717,10 +700,6 @@ where
             }
 
             trace!("Transaction executed");
-            if let Some(bal_task_handle) = &bal_task_handle {
-                bal_task_handle.bump_bal_index();
-            }
-
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
@@ -758,7 +737,6 @@ where
         if !is_better_payload(best_payload.as_ref(), total_fees) {
             // Release db
             drop(executor);
-            drop(db);
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
@@ -785,19 +763,9 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
-        let (evm, execution_result) = executor.finish()?;
-        let evm_env = evm.into_env();
-
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root. Nothing commits to `db` after `finish`, so this can happen
-        // before the transitions are merged, letting the trie finalization overlap with it.
-        db.set_state_hook(None);
-
-        // Drop the BAL task sender to trigger finalization.
-        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
-
-        // merge all transitions into bundle state before deriving the hashed post-state
-        db.merge_transitions(BundleRetention::Reverts);
+        let (execution_output, raw_block_access_list) = executor.finish_with_block_access_list()?;
+        let execution_result = &execution_output.result;
+        let execution_state = &execution_output.state;
 
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
@@ -806,11 +774,7 @@ where
         {
             hashed_state
         } else {
-            Arc::new(
-                finish_provider
-                    .hashed_post_state(&db.bundle_state)
-                    .map_err(PayloadBuilderError::other)?,
-            )
+            Arc::new(finish_provider.hashed_post_state(execution_state)?)
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -854,12 +818,15 @@ where
             }
             .unzip();
 
-        let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
-            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
-            (Some(bal), Some(bal_hash))
-        } else {
-            (None, None)
-        };
+        let (block_access_list, block_access_list_hash) = raw_block_access_list
+            .map(|raw| {
+                let bal = Bal::from(raw);
+                let mut encoded = Vec::new();
+                bal.encode(&mut encoded);
+                let hash = keccak256(&encoded);
+                (Bytes::from(encoded), hash)
+            })
+            .unzip();
 
         let (state_root, trie_updates) = if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
@@ -886,12 +853,12 @@ where
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
-                evm_env,
+                assembly_evm_env,
                 ctx,
                 &parent_header,
                 transactions,
-                &execution_result,
-                &db.bundle_state,
+                execution_result,
+                execution_state,
                 &finish_provider,
                 state_root,
                 block_access_list_hash,
@@ -1056,11 +1023,6 @@ where
         self.executor.spawn_drop(execution_block_encoder);
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
-        let execution_output = BlockExecutionOutput {
-            result: execution_result,
-            state: db.take_bundle(),
-        };
-
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
@@ -1078,7 +1040,8 @@ where
             execution_block_encoded,
         );
 
-        drop(db);
+        drop(instrumented_state_provider);
+        drop(cached_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }
@@ -1135,93 +1098,30 @@ where
 
         (transactions_tx, result_rx)
     }
-
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
-        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
-        let (bal_tx, bal_rx) = oneshot::channel();
-        self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state =
-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
-            for msg in task_rx {
-                match msg {
-                    BalMessage::BumpIndex => {
-                        bal_state.bump_bal_index();
-                    }
-                    BalMessage::State(state) => {
-                        bal_state.commit(&state);
-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(state);
-                        }
-                    }
-                }
-            }
-
-            drop(state_root_task_hook);
-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-            let mut encoded = Vec::new();
-            bal.encode(&mut encoded);
-            let bal_hash = keccak256(&encoded);
-
-            let _ = bal_tx.send((encoded.into(), bal_hash));
-        });
-
-        BalTaskHandle {
-            msg_tx: task_tx,
-            bal_rx,
-        }
-    }
-}
-
-struct BalTaskHandle {
-    msg_tx: mpsc::Sender<BalMessage>,
-    bal_rx: oneshot::Receiver<(Bytes, B256)>,
-}
-
-impl BalTaskHandle {
-    fn state_hook(&self) -> impl OnStateHook {
-        let msg_tx = self.msg_tx.clone();
-        move |state: EvmState| {
-            let _ = msg_tx.send(BalMessage::State(state));
-        }
-    }
-
-    fn bump_bal_index(&self) {
-        let _ = self.msg_tx.send(BalMessage::BumpIndex);
-    }
-
-    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
-        self.bal_rx
-    }
-}
-
-enum BalMessage {
-    State(EvmState),
-    BumpIndex,
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the
 /// V2 validator config contract, if the contract is active and returns a
 /// non-zero address for the given `public_key`.
 fn maybe_override_fee_recipient<DB: Database>(
-    executor: &mut impl BlockExecutor<Evm = TempoEvm<DB>>,
+    db: &mut DB,
+    evm_env: &mut reth_evm::EvmEnvFor<TempoEvmConfig>,
     attributes: &TempoPayloadAttributes,
 ) {
     let Some(public_key) = attributes.proposer_public_key() else {
         return;
     };
-    let ctx = executor.evm_mut().ctx_mut();
-    if !ctx.cfg.spec.is_t2() {
+    if !evm_env.spec.is_t2() {
         return;
     }
 
     // We are using the database as a read-only storage context to avoid modifying the journal state.
     // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    match ctx.journaled_state.database.with_read_only_storage_ctx(
-        ctx.cfg.spec,
+    let parent_number = evm_env.block.number.saturating_to::<u64>() - 1;
+    match db.with_read_only_storage_ctx(
+        evm_env.spec,
         StorageActions::disabled(),
         || -> Result<Option<Address>, PayloadBuilderError> {
-            let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
-
             let config = ValidatorConfigV2::default();
             if !config
                 .is_initialized()
@@ -1244,7 +1144,7 @@ fn maybe_override_fee_recipient<DB: Database>(
     ) {
         Ok(Some(fee_recipient)) => {
             debug!(%fee_recipient, "resolved fee recipient from contract");
-            executor.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+            evm_env.block.beneficiary = fee_recipient;
         }
         Ok(None) => {}
         Err(err) => {

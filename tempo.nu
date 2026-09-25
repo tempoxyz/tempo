@@ -3261,7 +3261,6 @@ def "main coverage" [
 [patch.'https://github.com/tempoxyz/tempo']
 tempo-alloy = { path = '($tempo_root)/crates/alloy' }
 tempo-contracts = { path = '($tempo_root)/crates/contracts' }
-tempo-revm = { path = '($tempo_root)/crates/revm' }
 tempo-evm = { path = '($tempo_root)/crates/evm' }
 tempo-chainspec = { path = '($tempo_root)/crates/chainspec' }
 tempo-primitives = { path = '($tempo_root)/crates/primitives' }

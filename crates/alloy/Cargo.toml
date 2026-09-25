@@ -21,7 +21,6 @@ tempo-contracts = { workspace = true, features = ["rpc"] }
 tempo-primitives = { workspace = true, features = ["serde"] }
 tempo-chainspec = { workspace = true, default-features = false }
 tempo-evm = { workspace = true, optional = true }
-tempo-revm = { workspace = true, optional = true }
 
 alloy-consensus.workspace = true
 alloy-contract.workspace = true
@@ -39,7 +38,6 @@ alloy-sol-types.workspace = true
 alloy-json-rpc.workspace = true
 alloy-transport.workspace = true
 
-reth-evm = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 reth-rpc-eth-types = { workspace = true, optional = true }
@@ -70,11 +68,8 @@ tower = { workspace = true, features = ["util"] }
 
 [features]
 default = []
-revm = ["dep:tempo-revm"]
 reth = [
-    "revm",
     "dep:tempo-evm",
-    "dep:reth-evm",
     "dep:reth-primitives-traits",
     "dep:reth-rpc-convert",
     "dep:reth-rpc-eth-types",

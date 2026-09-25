@@ -1,26 +1,17 @@
-use crate::gas_params::{tempo_gas_params, tempo_gas_params_with_amsterdam};
+use crate::{TempoBlockEnv, TempoEvmTypes, tempo_tx_registry};
+use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::Authorization;
-use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
 use alloy_sol_types::{SolCall, SolError};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use p256::{
-    ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
-    elliptic_curve::rand_core::OsRng,
+use evm2::{
+    EvmFeatures, ExecutionConfig, Inspector, SpecId,
+    bytecode::Bytecode,
+    evm::{AccountInfo, DynDatabase, InMemoryDB, SystemTx},
+    interpreter::{InstrStop, Interpreter, Message, MessageResult, op as opcode},
 };
-use reth_evm::EvmInternals;
-use revm::{
-    Context, DatabaseRef, ExecuteCommitEvm, ExecuteEvm, InspectEvm, MainContext,
-    bytecode::opcode,
-    context::{
-        CfgEnv, ContextTr, TxEnv,
-        result::{ExecutionResult, HaltReason},
-    },
-    database::{CacheDB, EmptyDB},
-    handler::system_call::SystemCallEvm,
-    inspector::{CountInspector, InspectSystemCallEvm},
-    state::{AccountInfo, Bytecode},
-};
+use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
+use rand_08::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::IStorageCredits::{self, Mode};
@@ -34,7 +25,7 @@ use tempo_precompiles::{
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{
-    TempoTransaction,
+    AASigned, TempoTransaction, TempoTxEnvelope,
     transaction::{
         KeyAuthorization, KeychainSignature, SignatureType, TempoSignedAuthorization,
         tempo_transaction::Call,
@@ -45,8 +36,7 @@ use tempo_primitives::{
     },
 };
 
-use crate::{TempoBlockEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
-use revm::context::result::InvalidTransaction;
+use crate::{TempoEvm, TempoInvalidTransaction, TempoTxEnv};
 
 // ==================== Test Constants ====================
 
@@ -58,43 +48,160 @@ const IDENTITY_PRECOMPILE: Address = Address::new([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
 ]);
 
+pub(super) trait TestEvmExt {
+    fn transact_commit(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> evm2::registry::HandlerResult<evm2::TxResult<TempoEvmTypes>>;
+
+    fn transact_detach(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> evm2::registry::HandlerResult<evm2::evm::TxResultWithState<TempoEvmTypes>>;
+}
+
+impl TestEvmExt for TempoEvm<'_> {
+    fn transact_commit(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> evm2::registry::HandlerResult<evm2::TxResult<TempoEvmTypes>> {
+        let signer = tx.evm_tx().signer();
+        Ok(self
+            .transact(&Recovered::new_unchecked(tx, signer))?
+            .commit())
+    }
+
+    fn transact_detach(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> evm2::registry::HandlerResult<evm2::evm::TxResultWithState<TempoEvmTypes>> {
+        let signer = tx.evm_tx().signer();
+        Ok(self
+            .transact(&Recovered::new_unchecked(tx, signer))?
+            .detach())
+    }
+}
+
+struct CountInspector {
+    opcodes: [usize; 256],
+    logs: usize,
+    calls: usize,
+    call_ends: usize,
+}
+
+impl Default for CountInspector {
+    fn default() -> Self {
+        Self {
+            opcodes: [0; 256],
+            logs: 0,
+            calls: 0,
+            call_ends: 0,
+        }
+    }
+}
+
+impl CountInspector {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_count(&self, opcode: u8) -> usize {
+        self.opcodes[usize::from(opcode)]
+    }
+
+    fn log_count(&self) -> usize {
+        self.logs
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls
+    }
+
+    fn call_end_count(&self) -> usize {
+        self.call_ends
+    }
+}
+
+impl Inspector<TempoEvmTypes> for CountInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, TempoEvmTypes>) {
+        self.opcodes[usize::from(interp.opcode())] += 1;
+    }
+
+    fn log(&mut self, _log: &alloy_primitives::Log, _host: &mut TempoEvm<'_>) {
+        self.logs += 1;
+    }
+
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, TempoEvmTypes>,
+        _message: &mut Message<TempoEvmTypes>,
+    ) -> Option<MessageResult<TempoEvmTypes>> {
+        self.calls += 1;
+        None
+    }
+
+    fn call_end(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, TempoEvmTypes>,
+        _message: &Message<TempoEvmTypes>,
+        _result: &mut MessageResult<TempoEvmTypes>,
+    ) {
+        self.call_ends += 1;
+    }
+}
+
 // ==================== Test Utility Functions ====================
 
 /// Create an empty EVM instance with default settings and no inspector.
-fn create_evm() -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(Default::default())
-        .with_cfg(Default::default())
-        .with_tx(Default::default());
-    TempoEvm::new(ctx, ())
+pub(super) fn configured_evm(
+    spec: TempoHardfork,
+    timestamp: u64,
+    amsterdam: bool,
+    database: InMemoryDB,
+) -> TempoEvm<'static> {
+    use reth_evm::BlockExecutorFactory;
+
+    let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, amsterdam);
+    version.chain_id = 1;
+    version.features.remove(EvmFeatures::BALANCE_CHECK);
+    version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+    crate::TempoEvmConfig::moderato().evm_with_env(
+        database,
+        crate::TempoEvmEnv {
+            spec,
+            version,
+            block: TempoBlockEnv {
+                timestamp: U256::from(timestamp),
+                gas_limit: U256::from(30_000_000),
+                ..Default::default()
+            },
+        },
+    )
+}
+
+pub(super) fn create_evm() -> TempoEvm<'static> {
+    configured_evm(TempoHardfork::Genesis, 0, false, InMemoryDB::default())
 }
 
 /// Create an EVM instance with a specific block timestamp.
-fn create_evm_with_timestamp(timestamp: u64) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut block = TempoBlockEnv::default();
-    block.inner.timestamp = U256::from(timestamp);
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(block)
-        .with_cfg(Default::default())
-        .with_tx(Default::default());
-
-    TempoEvm::new(ctx, ())
+fn create_evm_with_timestamp(timestamp: u64) -> TempoEvm<'static> {
+    configured_evm(
+        TempoHardfork::Genesis,
+        timestamp,
+        false,
+        InMemoryDB::default(),
+    )
 }
 
 /// Fund an account with the default balance (1 ETH).
-fn fund_account(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Address) {
+fn fund_account(evm: &mut TempoEvm<'static>, address: Address) {
     fund_account_with_nonce(evm, address, 0);
 }
 
 /// Fund an account with the default balance and a specific nonce.
-fn fund_account_with_nonce(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Address, nonce: u64) {
-    evm.ctx.db_mut().insert_account_info(
-        address,
+fn fund_account_with_nonce(evm: &mut TempoEvm<'static>, address: Address, nonce: u64) {
+    evm.overlay_db_mut().insert_account_info(
+        &address,
         AccountInfo {
             balance: U256::from(DEFAULT_BALANCE),
             nonce,
@@ -104,7 +211,7 @@ fn fund_account_with_nonce(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Ad
 }
 
 /// Create an EVM with a funded account at the given address.
-fn create_funded_evm(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+fn create_funded_evm(address: Address) -> TempoEvm<'static> {
     let mut evm = create_evm();
     fund_account(&mut evm, address);
     evm
@@ -112,78 +219,22 @@ fn create_funded_evm(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
 
 /// Create an EVM with T1C hardfork enabled and a funded account.
 /// This applies TIP-1000 gas params via `tempo_gas_params()`.
-fn create_funded_evm_t1(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T1C;
-    // Apply TIP-1000 gas params for T1C hardfork
-    cfg.gas_params = tempo_gas_params(TempoHardfork::T1C);
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(Default::default())
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
+fn create_funded_evm_t1(address: Address) -> TempoEvm<'static> {
+    let mut evm = configured_evm(TempoHardfork::T1C, 0, false, InMemoryDB::default());
     fund_account(&mut evm, address);
     evm
 }
 
 /// Create an EVM with T3 hardfork enabled and a funded account.
-fn create_funded_evm_t3(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T3;
-    cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(Default::default())
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
+fn create_funded_evm_t3(address: Address) -> TempoEvm<'static> {
+    let mut evm = configured_evm(TempoHardfork::T3, 0, false, InMemoryDB::default());
     fund_account(&mut evm, address);
     evm
 }
 
 /// Create an EVM with T4 hardfork enabled and a funded account.
-fn create_funded_evm_t4(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T4;
-    cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
-    cfg.enable_amsterdam_eip8037 = true;
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(Default::default())
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
-    fund_account(&mut evm, address);
-    evm
-}
-
-/// Create an EVM with T4 hardfork, the TIP-1016 regular/state gas split
-/// enabled (`enable_amsterdam_eip8037` plus the matching gas table), and a
-/// funded account.
-fn create_funded_evm_t4_amsterdam(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T4;
-    cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-    cfg.enable_amsterdam_eip8037 = true;
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(Default::default())
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
+fn create_funded_evm_t4(address: Address) -> TempoEvm<'static> {
+    let mut evm = configured_evm(TempoHardfork::T4, 0, true, InMemoryDB::default());
     fund_account(&mut evm, address);
     evm
 }
@@ -191,45 +242,23 @@ fn create_funded_evm_t4_amsterdam(address: Address) -> TempoEvm<CacheDB<EmptyDB>
 /// Creates a T7-enabled EVM with a funded account.
 /// This activates the TIP-1060 SSTORE storage credits hook while keeping the
 /// TIP-1016 state-gas split disabled to match production.
-fn create_funded_evm_t7(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T7;
-    cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
-    cfg.enable_amsterdam_eip8037 = false;
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(Default::default())
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
+fn create_funded_evm_t7(address: Address) -> TempoEvm<'static> {
+    let mut evm = configured_evm(TempoHardfork::T7, 0, false, InMemoryDB::default());
+    evm.overlay_db_mut().insert_account_info(
+        &STORAGE_CREDITS_ADDRESS,
+        AccountInfo::default().with_nonce(1),
+    );
     fund_account(&mut evm, address);
     evm
 }
 
 /// Create an EVM with T7 hardfork, a specific timestamp, and a funded account.
-fn create_funded_evm_t7_with_timestamp(
-    address: Address,
-    timestamp: u64,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T7;
-    cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
-    cfg.enable_amsterdam_eip8037 = false;
-
-    let mut block = TempoBlockEnv::default();
-    block.inner.timestamp = U256::from(timestamp);
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(block)
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
+fn create_funded_evm_t7_with_timestamp(address: Address, timestamp: u64) -> TempoEvm<'static> {
+    let mut evm = configured_evm(TempoHardfork::T7, timestamp, false, InMemoryDB::default());
+    evm.overlay_db_mut().insert_account_info(
+        &STORAGE_CREDITS_ADDRESS,
+        AccountInfo::default().with_nonce(1),
+    );
     fund_account(&mut evm, address);
     evm
 }
@@ -239,69 +268,56 @@ fn create_funded_evm_at_spec_with_timestamp(
     address: Address,
     timestamp: u64,
     spec: TempoHardfork,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = spec;
-    cfg.gas_params = tempo_gas_params_with_amsterdam(spec, false);
-
-    let mut block = TempoBlockEnv::default();
-    block.inner.timestamp = U256::from(timestamp);
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(block)
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
+) -> TempoEvm<'static> {
+    let mut evm = configured_evm(spec, timestamp, false, InMemoryDB::default());
     fund_account(&mut evm, address);
     evm
 }
 
 /// Create an EVM with a specific timestamp and a funded account.
-fn create_funded_evm_with_timestamp(
-    address: Address,
-    timestamp: u64,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+fn create_funded_evm_with_timestamp(address: Address, timestamp: u64) -> TempoEvm<'static> {
     let mut evm = create_evm_with_timestamp(timestamp);
     fund_account(&mut evm, address);
     evm
 }
 
 /// Create an EVM with T1 hardfork, a specific timestamp, and a funded account.
-fn create_funded_evm_t1_with_timestamp(
-    address: Address,
-    timestamp: u64,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T1;
-    cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
-
-    let mut block = TempoBlockEnv::default();
-    block.inner.timestamp = U256::from(timestamp);
-
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(block)
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-
-    let mut evm = TempoEvm::new(ctx, ());
+fn create_funded_evm_t1_with_timestamp(address: Address, timestamp: u64) -> TempoEvm<'static> {
+    let mut evm = configured_evm(TempoHardfork::T1, timestamp, false, InMemoryDB::default());
     fund_account(&mut evm, address);
     evm
 }
 
 /// Create an EVM instance with a custom inspector.
-fn create_evm_with_inspector<I>(inspector: I) -> TempoEvm<CacheDB<EmptyDB>, I> {
-    let db = CacheDB::new(EmptyDB::new());
-    let ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(Default::default())
-        .with_cfg(Default::default())
-        .with_tx(Default::default());
-    TempoEvm::new(ctx, inspector)
+fn create_evm_with_inspector<I: Inspector<TempoEvmTypes> + 'static>(
+    inspector: I,
+) -> TempoEvm<'static> {
+    let mut evm = create_evm();
+    evm.set_inspector(inspector);
+    evm
+}
+
+pub(super) fn legacy_tx_env(
+    caller: Address,
+    nonce: u64,
+    to: TxKind,
+    input: Bytes,
+    gas_limit: u64,
+) -> TempoTxEnv {
+    let tx = TxLegacy {
+        chain_id: Some(1),
+        nonce,
+        gas_limit,
+        to,
+        input,
+        ..Default::default()
+    };
+    let tx = Signed::new_unchecked(
+        tx,
+        alloy_primitives::Signature::test_signature(),
+        B256::ZERO,
+    );
+    Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), caller).into()
 }
 
 /// Helper struct for managing P256 key pairs in tests.
@@ -560,35 +576,47 @@ impl TxBuilder {
 
 // ==================== End Test Utility Functions ====================
 
+/// Test set_block and replay with default TempoEvm.
+#[test]
+fn test_set_block_and_replay() {
+    let mut evm = create_evm();
+
+    // Set block with default fields
+    evm.set_block(TempoBlockEnv::default());
+
+    // Detached execution returns the result with state.
+    // With an empty legacy call, it should succeed.
+    let result = evm.transact_detach(legacy_tx_env(
+        Address::ZERO,
+        0,
+        TxKind::Call(Address::ZERO),
+        Bytes::new(),
+        21_000,
+    ));
+    assert!(result.is_ok());
+
+    let exec_result = result.unwrap();
+    assert!(exec_result.result.status);
+}
+
 #[test_case::test_case(TempoHardfork::T1)]
 #[test_case::test_case(TempoHardfork::T1C)]
 fn test_access_millis_timestamp(spec: TempoHardfork) -> eyre::Result<()> {
-    let db = CacheDB::new(EmptyDB::new());
+    let mut tempo_evm = configured_evm(spec, 1000, false, InMemoryDB::default());
+    let mut block = *tempo_evm.block();
+    block.ext.timestamp_millis_part = 100;
+    tempo_evm.set_block(block);
 
-    let mut ctx = Context::mainnet()
-        .with_db(db)
-        .with_block(TempoBlockEnv::default())
-        .with_cfg(CfgEnv::<TempoHardfork>::default())
-        .with_tx(Default::default());
-
-    ctx.cfg.spec = spec;
-    ctx.block.timestamp = U256::from(1000);
-    ctx.block.timestamp_millis_part = 100;
-
-    let mut tempo_evm = TempoEvm::new(ctx, ());
-    let ctx = &mut tempo_evm.ctx;
-
-    let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-    let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
-
+    let spec = tempo_evm.config_spec_id();
+    let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut tempo_evm, spec);
     _ = StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(Address::ZERO).apply())?;
     drop(storage);
 
     let contract = Address::random();
 
     // Create a simple contract that returns output of the opcode.
-    ctx.db_mut().insert_account_info(
-        contract,
+    tempo_evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             // MILLISTIMESTAMP PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN
             code: Some(Bytecode::new_raw(bytes!("0x4F5F5260205FF3"))),
@@ -596,26 +624,26 @@ fn test_access_millis_timestamp(spec: TempoHardfork) -> eyre::Result<()> {
         },
     );
 
-    let tx_env = TxEnv {
-        kind: contract.into(),
+    let tx = TxLegacy {
+        chain_id: Some(1),
+        gas_limit: 1_000_000,
+        to: contract.into(),
         ..Default::default()
     };
-    let result = tempo_evm.transact_one(tx_env.into())?;
+    let tx = Signed::new_unchecked(
+        tx,
+        alloy_primitives::Signature::test_signature(),
+        B256::ZERO,
+    );
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), Address::ZERO).into();
+    let result = tempo_evm.transact_commit(tx_env)?;
 
     if !spec.is_t1c() {
-        assert!(result.is_success());
-        assert_eq!(
-            U256::from_be_slice(result.output().unwrap()),
-            U256::from(1000100)
-        );
+        assert!(result.status);
+        assert_eq!(U256::from_be_slice(&result.output), U256::from(1000100));
     } else {
-        assert!(matches!(
-            result,
-            ExecutionResult::Halt {
-                reason: HaltReason::OpcodeNotFound,
-                ..
-            }
-        ));
+        assert_eq!(result.stop, InstrStop::OpcodeNotFound);
     }
 
     Ok(())
@@ -680,10 +708,8 @@ fn test_inspector_calls() -> eyre::Result<()> {
     let mut evm = create_evm_with_inspector(CountInspector::new());
     // Set up TIP20 using the storage context pattern
     {
-        let ctx = &mut evm.ctx;
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
         StorageCtx::enter(&mut storage, || {
             TIP20Setup::path_usd(caller)
                 .with_issuer(caller)
@@ -693,8 +719,8 @@ fn test_inspector_calls() -> eyre::Result<()> {
     }
 
     // Deploy the contract bytecode
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(bytecode),
             ..Default::default()
@@ -702,33 +728,43 @@ fn test_inspector_calls() -> eyre::Result<()> {
     );
 
     // Execute a call to the contract
-    let tx_env = TxEnv {
-        caller,
-        kind: TxKind::Call(contract),
+    let tx = TxLegacy {
+        chain_id: Some(1),
+        to: TxKind::Call(contract),
         gas_limit: 1_000_000,
         ..Default::default()
     };
+    let tx = Signed::new_unchecked(
+        tx,
+        alloy_primitives::Signature::test_signature(),
+        B256::ZERO,
+    );
+    let tx_env = Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), caller).into();
     let result = evm
-        .inspect_tx(tx_env.into())
+        .transact_detach(tx_env)
         .expect("execution should succeed");
 
-    assert!(result.result.is_success());
+    assert!(result.result.status);
 
     // Verify that a SupplyCapUpdate log was emitted by the TIP20 precompile
-    assert_eq!(result.result.logs().len(), 3);
+    assert_eq!(result.result.logs.len(), 3);
     // Log should be from TIP20_FACTORY
-    assert_eq!(result.result.logs()[0].address, PATH_USD_ADDRESS);
+    assert_eq!(result.result.logs[0].address, PATH_USD_ADDRESS);
 
     // Get the inspector and verify counts
-    let inspector = &evm.inspector;
+    let inspector = evm
+        .inspector()
+        .unwrap()
+        .downcast_ref::<CountInspector>()
+        .unwrap();
 
     // Verify CALL opcode was executed (the call to PATH_USD)
     assert_eq!(inspector.get_count(opcode::CALL), 1);
 
     assert_eq!(inspector.get_count(opcode::STOP), 1);
 
-    // Verify log count
-    assert_eq!(inspector.log_count(), 1);
+    // Verify all emitted logs were inspected
+    assert_eq!(inspector.log_count(), result.result.logs.len());
 
     // Verify call count (initial tx + CALL to PATH_USD)
     assert_eq!(inspector.call_count(), 2);
@@ -754,12 +790,13 @@ fn test_inspector_calls() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, tempo_caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), tempo_caller).into();
 
     // Create a new EVM with fresh inspector for multi-call test
     let mut multi_evm = create_evm_with_inspector(CountInspector::new());
-    multi_evm.ctx.db_mut().insert_account_info(
-        tempo_caller,
+    multi_evm.overlay_db_mut().insert_account_info(
+        &tempo_caller,
         AccountInfo {
             balance: U256::from(DEFAULT_BALANCE),
             ..Default::default()
@@ -767,11 +804,15 @@ fn test_inspector_calls() -> eyre::Result<()> {
     );
 
     // Execute the multi-call transaction with inspector
-    let multi_result = multi_evm.inspect_tx(tx_env)?;
-    assert!(multi_result.result.is_success(),);
+    let multi_result = multi_evm.transact_detach(tx_env)?;
+    assert!(multi_result.result.status,);
 
     // Verify inspector tracked all 3 calls
-    let multi_inspector = &multi_evm.inspector;
+    let multi_inspector = multi_evm
+        .inspector()
+        .unwrap()
+        .downcast_ref::<CountInspector>()
+        .unwrap();
 
     // Multi-call Tempo transactions execute each call as a separate frame
     // call_count = 3 (one for each identity precompile call)
@@ -788,13 +829,13 @@ fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
 
     // Create EVM
     let mut evm = create_funded_evm(caller);
-    evm.block.basefee = 100_000_000_000;
+    let mut block_env = *evm.block();
+    block_env.basefee = U256::from(100_000_000_000u64);
+    evm.set_block(block_env);
 
     // Set up TIP20 first (required for fee token validation)
-    let block = TempoBlockEnv::default();
-    let ctx = &mut evm.ctx;
-    let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+    let spec = evm.config_spec_id();
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
     StorageCtx::enter(&mut provider, || {
         TIP20Setup::path_usd(caller)
@@ -814,11 +855,10 @@ fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
         .build();
 
     let signed_tx1 = key_pair.sign_tx(tx1)?;
-    let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
+    let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
 
-    let ctx = &mut evm.ctx;
-    let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+    let spec = evm.config_spec_id();
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
     let slot = StorageCtx::enter(&mut provider, || {
         TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -828,12 +868,11 @@ fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
     assert_eq!(slot, U256::from(100_000));
 
     let result1 = evm.transact_commit(tx_env1)?;
-    assert!(result1.is_success());
+    assert!(result1.status);
     assert_eq!(result1.tx_gas_used(), 28_671);
 
-    let ctx = &mut evm.ctx;
-    let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+    let spec = evm.config_spec_id();
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
     let slot = StorageCtx::enter(&mut provider, || {
         TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -853,15 +892,14 @@ fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
         .build();
 
     let signed_tx2 = key_pair.sign_tx(tx2)?;
-    let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
+    let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
 
     let result2 = evm.transact_commit(tx_env2)?;
-    assert!(result2.is_success());
+    assert!(result2.status);
     assert_eq!(result2.tx_gas_used(), 31_286);
 
-    let ctx = &mut evm.ctx;
-    let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+    let spec = evm.config_spec_id();
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
     let slot = StorageCtx::enter(&mut provider, || {
         TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -893,20 +931,21 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     // Verify transaction has AA auth list
-    assert!(tx_env.tempo_tx_env.is_some(),);
-    let tempo_env = tx_env.tempo_tx_env.as_ref().unwrap();
+    assert!(tx_env.as_aa().is_some(),);
+    let tempo_env = tx_env.as_aa().unwrap().inner().tx();
     assert_eq!(tempo_env.tempo_authorization_list.len(), 1);
-    assert_eq!(tempo_env.aa_calls.len(), 2);
+    assert_eq!(tempo_env.calls.len(), 2);
 
     // Create EVM with T1C (required for V2 keychain signatures) and execute transaction
     let mut evm = create_funded_evm_t1(caller);
 
     // Execute the transaction and commit state changes
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success());
+    assert!(result.status);
 
     // Test with KeychainSignature using key_authorization to provision the access key
     let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller);
@@ -924,15 +963,16 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx_keychain(tx2)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     // Explicitly test tempo_tx_env.signature.as_keychain()
     let tempo_env_keychain = tx_env
-        .tempo_tx_env
-        .as_ref()
-        .expect("Transaction should have tempo_tx_env");
+        .as_aa()
+        .expect("Transaction should have tempo_tx_env")
+        .inner();
     let keychain_sig = tempo_env_keychain
-        .signature
+        .signature()
         .as_keychain()
         .expect("Signature should be a KeychainSignature");
 
@@ -948,13 +988,13 @@ fn test_tempo_tx() -> eyre::Result<()> {
 
     // Verify key_id recovery works correctly using the transaction signature hash
     let recovered_key_id = keychain_sig
-        .key_id(&tempo_env_keychain.signature_hash)
+        .key_id(&tempo_env_keychain.signature_hash())
         .expect("Key ID recovery should succeed");
     assert_eq!(recovered_key_id, caller,);
 
     // Execute the transaction with keychain signature and commit state changes
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success());
+    assert!(result.status);
 
     // Test a transaction with a failing call to TIP20 contract with wrong input
     let tx_fail = TxBuilder::new()
@@ -963,10 +1003,10 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .build();
 
     let signed_tx_fail = key_pair.sign_tx_keychain(tx_fail)?;
-    let tx_env_fail = TempoTxEnv::from_recovered_tx(&signed_tx_fail, caller);
+    let tx_env_fail = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx_fail), caller).into();
 
-    let result_fail = evm.transact(tx_env_fail)?;
-    assert!(!result_fail.result.is_success());
+    let result_fail = evm.transact_detach(tx_env_fail)?;
+    assert!(!result_fail.result.status);
 
     // Test 2D nonce transaction (nonce_key > 0)
     let nonce_key_2d = U256::from(42);
@@ -977,23 +1017,23 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .build();
 
     let signed_tx_2d = key_pair.sign_tx_keychain(tx_2d)?;
-    let tx_env_2d = TempoTxEnv::from_recovered_tx(&signed_tx_2d, caller);
+    let tx_env_2d: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx_2d), caller).into();
 
-    assert!(tx_env_2d.tempo_tx_env.is_some());
+    assert!(tx_env_2d.as_aa().is_some());
     assert_eq!(
-        tx_env_2d.tempo_tx_env.as_ref().unwrap().nonce_key,
+        tx_env_2d.as_aa().unwrap().inner().tx().nonce_key,
         nonce_key_2d
     );
 
     let result_2d = evm.transact_commit(tx_env_2d)?;
-    assert!(result_2d.is_success());
+    assert!(result_2d.status);
 
     // Verify 2D nonce was incremented
     let nonce_slot = NonceManager::new().nonces[caller][nonce_key_2d].slot();
     let stored_nonce = evm
-        .ctx
-        .db()
-        .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
+        .overlay_db_mut()
+        .get_storage(&NONCE_PRECOMPILE_ADDRESS, &nonce_slot)
         .unwrap_or_default();
     assert_eq!(stored_nonce, U256::from(1));
 
@@ -1005,16 +1045,16 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .build();
 
     let signed_tx_2d_2 = key_pair.sign_tx_keychain(tx_2d_2)?;
-    let tx_env_2d_2 = TempoTxEnv::from_recovered_tx(&signed_tx_2d_2, caller);
+    let tx_env_2d_2: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx_2d_2), caller).into();
 
     let result_2d_2 = evm.transact_commit(tx_env_2d_2)?;
-    assert!(result_2d_2.is_success());
+    assert!(result_2d_2.status);
 
     // Verify nonce incremented again
     let stored_nonce_2 = evm
-        .ctx
-        .db()
-        .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
+        .overlay_db_mut()
+        .get_storage(&NONCE_PRECOMPILE_ADDRESS, &nonce_slot)
         .unwrap_or_default();
     assert_eq!(stored_nonce_2, U256::from(2));
 
@@ -1029,11 +1069,9 @@ fn test_t3_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Resu
     let mut evm = create_funded_evm_t3(caller);
 
     // Set up TIP20 for fee payment.
-    let block = TempoBlockEnv::default();
     {
-        let ctx = &mut evm.ctx;
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+        let spec = evm.config_spec_id();
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         StorageCtx::enter(&mut provider, || {
             TIP20Setup::path_usd(caller)
@@ -1057,11 +1095,12 @@ fn test_t3_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Resu
 
     // Use keychain signature so call-scope validation runs in the same tx.
     let signed_tx = key_pair.sign_tx_keychain(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
     assert!(
-        !result.is_success(),
+        !result.status,
         "deny-all scope should now fail during paid execution"
     );
     assert!(
@@ -1079,12 +1118,9 @@ fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained(
     let caller = key_pair.address;
 
     let mut evm = create_funded_evm_t3(caller);
-
-    let block = TempoBlockEnv::default();
     {
-        let ctx = &mut evm.ctx;
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+        let spec = evm.config_spec_id();
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         StorageCtx::enter(&mut provider, || {
             TIP20Setup::path_usd(caller)
@@ -1119,9 +1155,11 @@ fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained(
         .build();
 
     let signed_tx = key_pair.sign_tx_keychain(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-    evm.transact_commit(tx_env)
+    let _ = evm
+        .transact_commit(tx_env)
         .expect("empty recipient allowlist should allow the call");
 
     Ok(())
@@ -1145,7 +1183,8 @@ fn test_same_tx_key_authorization_rejects_key_type_mismatch() -> eyre::Result<()
         .build();
 
     let signed_tx = key_pair.sign_tx_keychain(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let err = evm
         .transact_commit(tx_env)
@@ -1153,10 +1192,8 @@ fn test_same_tx_key_authorization_rejects_key_type_mismatch() -> eyre::Result<()
 
     assert!(
         matches!(
-            err,
-            revm::context::result::EVMError::Transaction(
-                TempoInvalidTransaction::KeychainValidationFailed { .. }
-            )
+            err.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::KeychainValidationFailed { .. })
         ),
         "expected KeychainValidationFailed, got: {err:?}"
     );
@@ -1189,15 +1226,16 @@ fn test_tempo_tx_time_window() -> eyre::Result<()> {
     {
         let mut evm = create_funded_evm_with_timestamp(caller, 100);
         let signed_tx = create_signed_tx(Some(200), None)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        let result = evm.transact(tx_env);
+        let result = evm.transact_detach(tx_env);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
             matches!(
-                err,
-                revm::context::result::EVMError::Transaction(TempoInvalidTransaction::ValidAfter {
+                err.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::ValidAfter {
                     current: 100,
                     valid_after: 200
                 })
@@ -1210,20 +1248,19 @@ fn test_tempo_tx_time_window() -> eyre::Result<()> {
     {
         let mut evm = create_funded_evm_with_timestamp(caller, 200);
         let signed_tx = create_signed_tx(None, Some(200))?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        let result = evm.transact(tx_env);
+        let result = evm.transact_detach(tx_env);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
             matches!(
-                err,
-                revm::context::result::EVMError::Transaction(
-                    TempoInvalidTransaction::ValidBefore {
-                        current: 200,
-                        valid_before: 200
-                    }
-                )
+                err.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::ValidBefore {
+                    current: 200,
+                    valid_before: 200
+                })
             ),
             "Expected ValidBefore error, got: {err:?}"
         );
@@ -1233,20 +1270,19 @@ fn test_tempo_tx_time_window() -> eyre::Result<()> {
     {
         let mut evm = create_funded_evm_with_timestamp(caller, 300);
         let signed_tx = create_signed_tx(None, Some(200))?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        let result = evm.transact(tx_env);
+        let result = evm.transact_detach(tx_env);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
             matches!(
-                err,
-                revm::context::result::EVMError::Transaction(
-                    TempoInvalidTransaction::ValidBefore {
-                        current: 300,
-                        valid_before: 200
-                    }
-                )
+                err.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::ValidBefore {
+                    current: 300,
+                    valid_before: 200
+                })
             ),
             "Expected ValidBefore error, got: {err:?}"
         );
@@ -1256,35 +1292,38 @@ fn test_tempo_tx_time_window() -> eyre::Result<()> {
     {
         let mut evm = create_funded_evm_with_timestamp(caller, 200);
         let signed_tx = create_signed_tx(Some(200), None)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        let result = evm.transact(tx_env)?;
-        assert!(result.result.is_success());
+        let result = evm.transact_detach(tx_env)?;
+        assert!(result.result.status);
     }
 
     // Test case 5: Transaction succeeds when within time window
     {
         let mut evm = create_funded_evm_with_timestamp(caller, 150);
         let signed_tx = create_signed_tx(Some(100), Some(200))?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        let result = evm.transact(tx_env)?;
-        assert!(result.result.is_success());
+        let result = evm.transact_detach(tx_env)?;
+        assert!(result.result.status);
     }
 
     // Test case 6: Transaction fails when block_timestamp < valid_after in a window
     {
         let mut evm = create_funded_evm_with_timestamp(caller, 50);
         let signed_tx = create_signed_tx(Some(100), Some(200))?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        let result = evm.transact(tx_env);
+        let result = evm.transact_detach(tx_env);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
             matches!(
-                err,
-                revm::context::result::EVMError::Transaction(TempoInvalidTransaction::ValidAfter {
+                err.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::ValidAfter {
                     current: 50,
                     valid_after: 100
                 })
@@ -1297,20 +1336,19 @@ fn test_tempo_tx_time_window() -> eyre::Result<()> {
     {
         let mut evm = create_funded_evm_with_timestamp(caller, 200);
         let signed_tx = create_signed_tx(Some(100), Some(200))?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        let result = evm.transact(tx_env);
+        let result = evm.transact_detach(tx_env);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
             matches!(
-                err,
-                revm::context::result::EVMError::Transaction(
-                    TempoInvalidTransaction::ValidBefore {
-                        current: 200,
-                        valid_before: 200
-                    }
-                )
+                err.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::ValidBefore {
+                    current: 200,
+                    valid_before: 200
+                })
             ),
             "Expected ValidBefore error, got: {err:?}"
         );
@@ -1337,13 +1375,14 @@ fn test_tempo_tx_create_first_call() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     // Create EVM and execute
     let mut evm = create_funded_evm(caller);
     let result = evm.transact_commit(tx_env)?;
 
-    assert!(result.is_success(), "CREATE as first call should succeed");
+    assert!(result.status, "CREATE as first call should succeed");
 
     Ok(())
 }
@@ -1366,20 +1405,19 @@ fn test_tempo_tx_create_second_call_fails() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     // Create EVM and execute - should fail validation
     let mut evm = create_funded_evm(caller);
-    let result = evm.transact(tx_env);
+    let result = evm.transact_detach(tx_env);
 
     assert!(result.is_err(), "CREATE as second call should fail");
     let err = result.unwrap_err();
     assert!(
         matches!(
-            err,
-            revm::context::result::EVMError::Transaction(
-                TempoInvalidTransaction::CallsValidation(msg)
-            ) if msg.contains("first call")
+            err.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::CallsValidation(msg)) if msg.contains("first call")
         ),
         "Expected CallsValidation error about 'first call', got: {err:?}"
     );
@@ -1394,46 +1432,36 @@ fn test_tempo_tx_create_second_call_fails() -> eyre::Result<()> {
 /// - CallGasCostMoreThanGasLimit: when gas_limit < intrinsic_gas
 #[test]
 fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
-    use revm::{context::result::EVMError, handler::Handler};
-
-    use crate::handler::TempoEvmHandler;
-
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
     // Helper to create EVM with signed transaction
     let create_evm_with_tx =
-        |tx: TempoTransaction| -> eyre::Result<TempoEvm<CacheDB<EmptyDB>, ()>> {
+        |tx: TempoTransaction| -> eyre::Result<(TempoEvm<'static>, TempoTxEnv)> {
             let signed_tx = key_pair.sign_tx(tx)?;
-            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-            let mut evm = create_funded_evm(caller);
-            evm.ctx.tx = tx_env;
-            Ok(evm)
+            let tx_env: TempoTxEnv =
+                Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
+            let evm = create_funded_evm(caller);
+            Ok((evm, tx_env))
         };
-
-    let handler = TempoEvmHandler::default();
 
     // Test 1: CreateInitCodeSizeLimit - initcode exceeds max size
     {
         // Default max initcode size is 49152 bytes (2 * MAX_CODE_SIZE)
         let oversized_initcode = vec![0x60; 50_000];
 
-        let mut evm = create_evm_with_tx(
+        let (mut evm, tx_env) = create_evm_with_tx(
             TxBuilder::new()
                 .create(&oversized_initcode)
                 .gas_limit(10_000_000)
                 .build(),
         )?;
 
-        let result = handler.validate_initial_tx_gas(&mut evm);
+        let result = evm.transact_detach(tx_env);
         assert!(
             matches!(
                 result,
-                Err(EVMError::Transaction(
-                    TempoInvalidTransaction::EthInvalidTransaction(
-                        revm::context::result::InvalidTransaction::CreateInitCodeSizeLimit
-                    )
-                ))
+                Err(evm2::registry::HandlerError::CreateInitCodeSizeLimit { .. })
             ),
             "Expected CreateInitCodeSizeLimit error, got: {result:?}"
         );
@@ -1441,19 +1469,20 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
 
     // Test 2: ValueTransferNotAllowedInAATx - call has non-zero value
     {
-        let mut evm = create_evm_with_tx(
+        let (mut evm, tx_env) = create_evm_with_tx(
             TxBuilder::new()
                 .call_with_value(IDENTITY_PRECOMPILE, &[0x01, 0x02], U256::from(1000))
                 .build(),
         )?;
 
-        let result = handler.validate_initial_tx_gas(&mut evm);
+        let result = evm.transact_detach(tx_env);
         assert!(
             matches!(
                 result,
-                Err(EVMError::Transaction(
-                    TempoInvalidTransaction::ValueTransferNotAllowedInAATx
-                ))
+                Err(ref error) if matches!(
+                    error.external_ref::<TempoInvalidTransaction>(),
+                    Some(TempoInvalidTransaction::ValueTransferNotAllowedInAATx)
+                )
             ),
             "Expected ValueTransferNotAllowedInAATx error, got: {result:?}"
         );
@@ -1461,25 +1490,21 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
 
     // Test 3: CallGasCostMoreThanGasLimit - gas_limit < intrinsic_gas
     {
-        let mut evm = create_evm_with_tx(
+        let (mut evm, tx_env) = create_evm_with_tx(
             TxBuilder::new()
                 .call_identity(&[0x01, 0x02, 0x03, 0x04])
                 .gas_limit(1000) // Way too low, intrinsic cost is at least 21000
                 .build(),
         )?;
 
-        let result = handler.validate_initial_tx_gas(&mut evm);
+        let result = evm.transact_detach(tx_env);
         assert!(
             matches!(
                 result,
-                Err(EVMError::Transaction(
-                    TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::CallGasCostMoreThanGasLimit {
-                            gas_limit: 1000,
-                            initial_gas
-                        }
-                    )
-                )) if initial_gas > 1000
+                Err(evm2::registry::HandlerError::IntrinsicGasTooLow {
+                    got: 1000,
+                    required: initial_gas
+                }) if initial_gas > 1000
             ),
             "Expected CallGasCostMoreThanGasLimit error, got: {result:?}"
         );
@@ -1491,77 +1516,70 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
     // The floor gas error (GasFloorMoreThanGasLimit) would only appear if gas_limit
     // were between intrinsic_gas and floor_gas, but AA intrinsic gas already exceeds
     // both values here.
-    {
+    let initial_gas = {
         let large_calldata = vec![0x42; 1000]; // 1000 non-zero bytes = 1000 tokens
 
-        let mut evm = create_evm_with_tx(
+        let (mut evm, tx_env) = create_evm_with_tx(
             TxBuilder::new()
                 .call_identity(&large_calldata)
                 .gas_limit(31_000)
                 .build(),
         )?;
 
-        let result = handler.validate_initial_tx_gas(&mut evm);
+        let result = evm.transact_detach(tx_env);
 
-        assert!(
-            matches!(
-                result,
-                Err(EVMError::Transaction(
-                    TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::CallGasCostMoreThanGasLimit {
-                            gas_limit: 31_000,
-                            initial_gas
-                        }
-                    )
-                )) if initial_gas > 31_000
-            ),
-            "Expected CallGasCostMoreThanGasLimit, got: {result:?}"
-        );
-    }
+        match result {
+            Err(evm2::registry::HandlerError::IntrinsicGasTooLow {
+                got: 31_000,
+                required: initial_gas,
+            }) if initial_gas > 31_000 => initial_gas,
+            other => panic!("Expected CallGasCostMoreThanGasLimit, got: {other:?}"),
+        }
+    };
 
     // Test 5: Success when gas_limit >= both initial_gas and floor_gas
     // Verifies floor_gas > initial_gas for large calldata (EIP-7623 scenario)
     {
         let large_calldata = vec![0x42; 1000];
 
-        let mut evm = create_evm_with_tx(
+        let (mut evm, tx_env) = create_evm_with_tx(
             TxBuilder::new()
                 .call_identity(&large_calldata)
                 .gas_limit(1_000_000) // Plenty of gas for both initial and floor
                 .build(),
         )?;
 
-        let result = handler.validate_initial_tx_gas(&mut evm);
+        let result = evm.transact_detach(tx_env);
         assert!(
             result.is_ok(),
             "Expected success with sufficient gas, got: {result:?}"
         );
 
-        let gas = result.unwrap();
+        let gas = result.unwrap().result;
         // Verify floor_gas > initial_total_gas for this calldata (EIP-7623 scenario)
         assert!(
-            gas.floor_gas > gas.initial_total_gas(),
+            gas.floor_gas > initial_gas,
             "Expected floor_gas ({}) > initial_total_gas ({}) for large calldata",
             gas.floor_gas,
-            gas.initial_total_gas()
+            initial_gas
         );
     }
 
     // Test 6: Success case - sufficient gas provided (small calldata)
     {
-        let mut evm = create_evm_with_tx(
+        let (mut evm, tx_env) = create_evm_with_tx(
             TxBuilder::new()
                 .call_identity(&[0x01, 0x02, 0x03, 0x04])
                 .gas_limit(1_000_000)
                 .build(),
         )?;
 
-        let result = handler.validate_initial_tx_gas(&mut evm);
+        let result = evm.transact_detach(tx_env);
         assert!(result.is_ok(), "Expected success, got: {result:?}");
 
-        let gas = result.unwrap();
+        let gas = result.unwrap().result;
         assert!(
-            gas.initial_total_gas() >= 21_000,
+            gas.total_gas_spent >= 21_000,
             "Initial gas should be at least 21k base"
         );
     }
@@ -1589,10 +1607,11 @@ fn test_aa_tx_gas_baseline_identity_call() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success());
+    assert!(result.status);
 
     // With T1 TIP-1000: new account cost (250k) + base intrinsic (21k) + WebAuthn (~3.4k) + calldata
     let gas_used = result.tx_gas_used();
@@ -1619,8 +1638,8 @@ fn test_aa_tx_gas_sstore_new_slot() -> eyre::Result<()> {
     // PUSH1 0x42 PUSH1 0x00 SSTORE STOP
     // This stores value 0x42 at slot 0
     let sstore_bytecode = Bytecode::new_raw(bytes!("60426000555B00"));
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(sstore_bytecode),
             ..Default::default()
@@ -1634,10 +1653,11 @@ fn test_aa_tx_gas_sstore_new_slot() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "SSTORE transaction should succeed");
+    assert!(result.status, "SSTORE transaction should succeed");
 
     // With TIP-1000: new account (250k) + SSTORE to new slot (250k) + base costs
     let gas_used = result.tx_gas_used();
@@ -1663,8 +1683,8 @@ fn test_aa_tx_gas_sstore_warm_slot() -> eyre::Result<()> {
     // Deploy contract that does SSTORE to slot 0:
     // PUSH1 0x42 PUSH1 0x00 SSTORE STOP
     let sstore_bytecode = Bytecode::new_raw(bytes!("60426000555B00"));
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(sstore_bytecode),
             ..Default::default()
@@ -1672,10 +1692,8 @@ fn test_aa_tx_gas_sstore_warm_slot() -> eyre::Result<()> {
     );
 
     // Pre-populate storage slot 0 with a non-zero value
-    evm.ctx
-        .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
-        .unwrap();
+    evm.overlay_db_mut()
+        .insert_account_storage(&contract, &U256::ZERO, &U256::from(1));
 
     // T1 costs: new account (250k) + SSTORE reset (not new slot) + base costs
     let tx = TxBuilder::new()
@@ -1684,13 +1702,11 @@ fn test_aa_tx_gas_sstore_warm_slot() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(
-        result.is_success(),
-        "SSTORE to existing slot should succeed"
-    );
+    assert!(result.status, "SSTORE to existing slot should succeed");
 
     // SSTORE to existing non-zero slot (reset) doesn't trigger the 250k new slot cost
     // But still has new account cost (250k) + cold SLOAD (2100) + warm SSTORE reset (~2900)
@@ -1718,8 +1734,8 @@ fn test_aa_tx_gas_multiple_sstores() -> eyre::Result<()> {
     // PUSH1 0x22 PUSH1 0x01 SSTORE  (store 0x22 at slot 1)
     // STOP
     let multi_sstore_bytecode = Bytecode::new_raw(bytes!("601160005560226001555B00"));
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(multi_sstore_bytecode),
             ..Default::default()
@@ -1733,13 +1749,11 @@ fn test_aa_tx_gas_multiple_sstores() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(
-        result.is_success(),
-        "Multiple SSTORE transaction should succeed"
-    );
+    assert!(result.status, "Multiple SSTORE transaction should succeed");
 
     // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
     let gas_used = result.tx_gas_used();
@@ -1751,32 +1765,29 @@ fn test_aa_tx_gas_multiple_sstores() -> eyre::Result<()> {
 /// Seed the TIP-1060 persistent storage credit balance for `owner` directly into the storage
 /// credits contract's storage. Storage creation mode is transient and must be selected inside
 /// each transaction with `setMode`.
-fn seed_storage_credit_balance(
-    evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
-    owner: Address,
-    balance: u64,
-) {
+fn seed_storage_credit_balance(evm: &mut TempoEvm<'static>, owner: Address, balance: u64) {
     // The storage credits contract account must exist before we can write storage to it.
-    evm.ctx
-        .db_mut()
-        .insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
+    evm.overlay_db_mut().insert_account_info(
+        &STORAGE_CREDITS_ADDRESS,
+        AccountInfo::default().with_nonce(1),
+    );
     let slot = StorageCredits::slot(owner);
-    evm.ctx
-        .db_mut()
-        .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, U256::from(balance))
-        .unwrap();
+    evm.overlay_db_mut().insert_account_storage(
+        &STORAGE_CREDITS_ADDRESS,
+        &slot,
+        &U256::from(balance),
+    );
 }
 
-fn storage_credit_word(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
+fn storage_credit_word(evm: &mut TempoEvm<'static>, owner: Address) -> U256 {
     let slot = StorageCredits::slot(owner);
-    evm.ctx
-        .db()
-        .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
+    evm.overlay_db_mut()
+        .get_storage(&STORAGE_CREDITS_ADDRESS, &slot)
         .unwrap()
 }
 
 /// Read back the TIP-1060 storage credit balance stored for `owner` from the storage credits contract.
-fn storage_credit_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
+fn storage_credit_balance(evm: &mut TempoEvm<'static>, owner: Address) -> u64 {
     u64::from_word(storage_credit_word(evm, owner)).unwrap()
 }
 
@@ -1863,7 +1874,7 @@ fn run_tx_on_tip1060_contract(
     mode: CreditMode,
     contract: Address,
     bytecode: &[u8],
-) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+) -> eyre::Result<(u64, TempoEvm<'static>)> {
     run_tx_on_tip1060_contract_with_setup(mode, contract, bytecode, |_, _| Ok(()))
 }
 
@@ -1871,14 +1882,14 @@ fn run_tx_on_tip1060_contract_with_setup(
     mode: CreditMode,
     contract: Address,
     bytecode: &[u8],
-    setup: impl FnOnce(&mut TempoEvm<CacheDB<EmptyDB>, ()>, Address) -> eyre::Result<()>,
-) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+    setup: impl FnOnce(&mut TempoEvm<'static>, Address) -> eyre::Result<()>,
+) -> eyre::Result<(u64, TempoEvm<'static>)> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
     let mut evm = create_funded_evm_t7(caller);
 
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(bytecode_with_tip1060_mode(mode, bytecode)),
             ..Default::default()
@@ -1891,14 +1902,15 @@ fn run_tx_on_tip1060_contract_with_setup(
         .gas_limit(2_000_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
-    assert!(result.is_success(), "test transaction should succeed");
+    let result = evm
+        .transact_commit(Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into())?;
+    assert!(result.status, "test transaction should succeed");
 
     Ok((result.tx_gas_used(), evm))
 }
 
 fn mint_storage_credits_with_clears(
-    evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+    evm: &mut TempoEvm<'static>,
     key_pair: &P256KeyPair,
     caller: Address,
     contract: Address,
@@ -1913,15 +1925,14 @@ fn mint_storage_credits_with_clears(
     for credit in 0..credits {
         let slot = 0xf0 + credit;
         assert!(slot <= u64::from(u8::MAX));
-        evm.ctx
-            .db_mut()
-            .insert_account_storage(contract, U256::from(slot), U256::ONE)?;
+        evm.overlay_db_mut()
+            .insert_account_storage(&contract, &U256::from(slot), &U256::ONE);
         body.extend_from_slice(&[opcode::PUSH1, 0, opcode::PUSH1, slot as u8, opcode::SSTORE]);
     }
     body.push(opcode::STOP);
 
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(Bytecode::new_raw(body.into())),
             ..Default::default()
@@ -1934,8 +1945,9 @@ fn mint_storage_credits_with_clears(
         .gas_limit(2_000_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
-    assert!(result.is_success(), "credit-minting prelude should succeed");
+    let result = evm
+        .transact_commit(Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into())?;
+    assert!(result.status, "credit-minting prelude should succeed");
     assert_eq!(
         storage_credit_balance(evm, contract),
         credits,
@@ -2011,8 +2023,8 @@ fn test_tip1060_storage_credits_delegatecall_rejected() -> eyre::Result<()> {
         bytecode.extend_from_slice(&bytes!("3d600060003e3d6000fd"));
 
         let mut evm = create_funded_evm_t7(caller);
-        evm.ctx.db_mut().insert_account_info(
-            contract,
+        evm.overlay_db_mut().insert_account_info(
+            &contract,
             AccountInfo {
                 code: Some(Bytecode::new_raw(bytecode.into())),
                 ..Default::default()
@@ -2024,11 +2036,13 @@ fn test_tip1060_storage_credits_delegatecall_rejected() -> eyre::Result<()> {
             .gas_limit(1_000_000)
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-        if let ExecutionResult::Revert { output, .. } = evm.transact_commit(tx_env)? {
+        let result = evm.transact_commit(tx_env)?;
+        if result.stop == InstrStop::Revert {
             assert_eq!(
-                output.as_ref(),
+                result.output.as_ref(),
                 DelegateCallNotAllowed {}.abi_encode().as_slice()
             );
         } else {
@@ -2057,8 +2071,8 @@ fn test_tip1060_refund_settlement_uses_pending_field_not_mode() -> eyre::Result<
         bytecode.push(opcode::STOP);
 
         let mut evm = create_funded_evm_t7(caller);
-        evm.ctx.db_mut().insert_account_info(
-            contract,
+        evm.overlay_db_mut().insert_account_info(
+            &contract,
             AccountInfo {
                 code: Some(Bytecode::new_raw(bytecode.into())),
                 ..Default::default()
@@ -2070,18 +2084,19 @@ fn test_tip1060_refund_settlement_uses_pending_field_not_mode() -> eyre::Result<
             .gas_limit(2_000_000)
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
         let result = evm.transact_commit(tx_env)?;
-        assert!(result.is_success());
+        assert!(result.status);
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             0,
             "settlement must not consume the transient mode field as storage credit balance in {mode:?} mode"
         );
         assert_eq!(
-            storage_credit_word(&evm, contract),
+            storage_credit_word(&mut evm, contract),
             U256::ZERO,
             "mode is transient and must not persist in the storage credit state word in {mode:?} mode"
         );
@@ -2099,8 +2114,8 @@ fn test_tip1060_set_mode_uses_transient_state_only() -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        caller,
+    evm.overlay_db_mut().insert_account_info(
+        &caller,
         AccountInfo {
             balance: U256::from(DEFAULT_BALANCE),
             nonce: 1,
@@ -2123,11 +2138,12 @@ fn test_tip1060_set_mode_uses_transient_state_only() -> eyre::Result<()> {
         .gas_limit(50_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
     assert!(
-        result.is_success(),
+        result.status,
         "setMode should not need the 250k TIP-1000 storage-creation charge"
     );
     assert!(
@@ -2136,19 +2152,19 @@ fn test_tip1060_set_mode_uses_transient_state_only() -> eyre::Result<()> {
     );
 
     assert_eq!(
-        storage_credit_balance(&evm, caller),
+        storage_credit_balance(&mut evm, caller),
         0,
         "setMode must not mint caller credits"
     );
     assert_eq!(
-        storage_credit_word(&evm, caller),
+        storage_credit_word(&mut evm, caller),
         U256::ZERO,
         "setMode must not create or update persistent caller state"
     );
 
     // Sentinel: setMode must not consume the precompile's own pre-seeded credit.
     assert_eq!(
-        storage_credit_balance(&evm, STORAGE_CREDITS_ADDRESS),
+        storage_credit_balance(&mut evm, STORAGE_CREDITS_ADDRESS),
         1,
         "storage-credits bookkeeping must not recursively consume its own storage credits"
     );
@@ -2170,33 +2186,32 @@ fn test_tip1060_sstore_clear_mints_storage_credit_without_legacy_refund() -> eyr
     let contract = Address::repeat_byte(0x63);
 
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(clear_bytecode),
             ..Default::default()
         },
     );
-    evm.ctx
-        .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
+    evm.overlay_db_mut()
+        .insert_account_storage(&contract, &U256::ZERO, &U256::ONE);
 
     let tx = TxBuilder::new()
         .call(contract, &[])
         .gas_limit(2_000_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "clear tx should succeed");
+    assert!(result.status, "clear tx should succeed");
     assert_eq!(
-        result.gas().inner_refunded(),
-        0,
+        result.refunded, 0,
         "TIP-1060 removes the legacy SSTORE clearing refund"
     );
     assert_eq!(
-        storage_credit_balance(&evm, contract),
+        storage_credit_balance(&mut evm, contract),
         1,
         "clearing a nonzero slot should mint one storage credit"
     );
@@ -2229,7 +2244,7 @@ fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
 
     for (case_id, (mode, expected_gas, expected_balance)) in cases.into_iter().enumerate() {
         let contract = Address::repeat_byte(0x60 + case_id as u8);
-        let (gas_used, evm) = run_tx_on_tip1060_contract(mode, contract, &create_clear_body)?;
+        let (gas_used, mut evm) = run_tx_on_tip1060_contract(mode, contract, &create_clear_body)?;
 
         assert!(
             gas_used >= noop_gas,
@@ -2242,7 +2257,7 @@ fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
         );
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_balance,
             "TIP-1060 post-tx storage credit balance should be exact in {mode:?} mode"
         );
@@ -2515,11 +2530,11 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
                 let mut evm = create_funded_evm_t7(caller);
                 fund_account_with_nonce(&mut evm, caller, 1);
                 if scenario.original != 0 {
-                    evm.ctx.db_mut().insert_account_storage(
-                        contract,
-                        U256::ZERO,
-                        U256::from(scenario.original),
-                    )?;
+                    evm.overlay_db_mut().insert_account_storage(
+                        &contract,
+                        &U256::ZERO,
+                        &U256::from(scenario.original),
+                    );
                 }
                 let nonce = mint_storage_credits_with_clears(
                     &mut evm,
@@ -2530,8 +2545,8 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
                     credit_case.initial_credits,
                 )?;
 
-                evm.ctx.db_mut().insert_account_info(
-                    contract,
+                evm.overlay_db_mut().insert_account_info(
+                    &contract,
                     AccountInfo {
                         code: Some(bytecode_with_tip1060_mode(mode, &body)),
                         ..Default::default()
@@ -2544,13 +2559,13 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
                     .gas_limit(2_000_000)
                     .build();
                 let signed_tx = key_pair.sign_tx(tx)?;
-                let result =
-                    evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+                let result = evm.transact_commit(
+                    Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into(),
+                )?;
                 assert!(
-                    result.is_success(),
+                    result.status,
                     "{} / {} in {mode:?} should succeed",
-                    scenario.name,
-                    credit_case.name
+                    scenario.name, credit_case.name
                 );
 
                 assert_eq!(
@@ -2561,14 +2576,14 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
                     credit_case.name
                 );
                 assert_eq!(
-                    storage_credit_balance(&evm, contract),
+                    storage_credit_balance(&mut evm, contract),
                     expectation.expected_credits,
                     "{} / {} final persistent credit balance should stay exact in {mode:?}",
                     scenario.name,
                     credit_case.name
                 );
                 assert_eq!(
-                    evm.ctx.db().storage_ref(contract, U256::ZERO)?,
+                    evm.overlay_db_mut().get_storage(&contract, &U256::ZERO)?,
                     U256::from(scenario.expected_slot),
                     "{} / {} should leave the expected slot value in {mode:?}",
                     scenario.name,
@@ -2590,16 +2605,8 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
 #[test]
 fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
-    use revm::{
-        Context, Database, ExecuteCommitEvm, MainContext,
-        context::{CfgEnv, TxEnv},
-        database::{CacheDB, EmptyDB},
-        state::AccountInfo,
-    };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
-
-    use crate::{TempoBlockEnv, TempoEvm, gas_params::tempo_gas_params};
 
     // Initcode:
     //   constructor: SSTORE(0, 1)
@@ -2619,20 +2626,13 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     );
 
     let caller = Address::repeat_byte(0x11);
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.spec = TempoHardfork::T7;
-    cfg.gas_params = tempo_gas_params(TempoHardfork::T7);
     const GAS_LIMIT: u64 = 16_777_216;
-    let mut block = TempoBlockEnv::default();
-    block.inner.gas_limit = GAS_LIMIT;
-    let ctx = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::new()))
-        .with_block(block)
-        .with_cfg(cfg)
-        .with_tx(Default::default());
-    let mut evm = TempoEvm::new(ctx, ());
-    evm.ctx.db_mut().insert_account_info(
-        caller,
+    let mut evm = configured_evm(TempoHardfork::T7, 0, false, InMemoryDB::default());
+    let mut block = *evm.block();
+    block.gas_limit = U256::from(GAS_LIMIT);
+    evm.set_block(block);
+    evm.overlay_db_mut().insert_account_info(
+        &caller,
         AccountInfo {
             balance: U256::from(1_000_000_000_000_000_000u128),
             ..Default::default()
@@ -2640,55 +2640,41 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     );
 
     // tx#1: deploy; constructor pays the one-time bootstrap creation.
-    let deploy = evm.transact_commit(
-        TxEnv {
-            caller,
-            kind: TxKind::Create,
-            data: init,
-            gas_limit: GAS_LIMIT,
-            ..Default::default()
-        }
-        .into(),
-    )?;
-    assert!(deploy.is_success(), "deploy reverted/halted: {deploy:?}");
+    let deploy = evm.transact_commit(legacy_tx_env(caller, 0, TxKind::Create, init, GAS_LIMIT))?;
+    assert!(deploy.status, "deploy reverted/halted: {deploy:?}");
     let contract = deploy
-        .created_address()
+        .created_address
         .expect("CREATE should yield an address");
 
     // tx#2: churn in Preserve, then try to spend credits in Direct.
-    let call = evm.transact_commit(
-        TxEnv {
-            caller,
-            nonce: 1,
-            kind: TxKind::Call(contract),
-            gas_limit: GAS_LIMIT,
-            ..Default::default()
-        }
-        .into(),
-    )?;
+    let call = evm.transact_commit(legacy_tx_env(
+        caller,
+        1,
+        TxKind::Call(contract),
+        Bytes::new(),
+        GAS_LIMIT,
+    ))?;
 
     let balance = evm
-        .ctx
-        .db_mut()
-        .storage(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(contract))?
+        .overlay_db_mut()
+        .get_storage(&STORAGE_CREDITS_ADDRESS, &StorageCredits::slot(contract))?
         .as_limbs()[0];
     let slots = evm
-        .ctx
-        .db_mut()
+        .overlay_db()
         .cache
-        .accounts
+        .storage
         .get(&contract)
-        .map(|a| a.storage.iter().filter(|(_, v)| !v.is_zero()).count())
+        .map(|storage| {
+            storage
+                .slots
+                .values()
+                .filter(|value| !value.is_zero())
+                .count()
+        })
         .unwrap_or(0);
-    eprintln!(
-        "tx#2 success/gas: {}/{}  slots: {slots}  bal: {balance}",
-        call.is_success(),
-        call.tx_gas_used()
-    );
-
     // Each Preserve recreation costs the full 245k creditable portion, so the churn loop
     // exhausts gas and reverts before any churned credit can subsidize a Direct create.
-    assert!(!call.is_success());
+    assert!(!call.status);
     assert_eq!(slots, 1);
     assert_eq!(balance, 0);
     Ok(())
@@ -2716,29 +2702,26 @@ fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> 
     body.push(opcode::STOP);
 
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(bytecode_with_tip1060_mode(CreditMode::Preserve, &body)),
             ..Default::default()
         },
     );
     // Slot 0 starts non-zero.
-    evm.ctx
-        .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
-        .unwrap();
+    evm.overlay_db_mut()
+        .insert_account_storage(&contract, &U256::ZERO, &U256::from(1));
     seed_storage_credit_balance(&mut evm, contract, 0);
 
     let tx = TxBuilder::new()
         .call(contract, &[])
         .gas_limit(2_000_000)
         .build();
-    let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(tx)?,
-        caller,
-    ))?;
-    assert!(result.is_success(), "preserve churn tx should succeed");
+    let result = evm.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx)?), caller).into(),
+    )?;
+    assert!(result.status, "preserve churn tx should succeed");
     assert_eq!(
         result.tx_gas_used(),
         1_027_757,
@@ -2746,7 +2729,7 @@ fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> 
     );
 
     assert_eq!(
-        storage_credit_balance(&evm, contract),
+        storage_credit_balance(&mut evm, contract),
         3,
         "each clear mints a credit and Preserve recreations pay 245k without consuming, so \
              three churn cycles accumulate three credits"
@@ -2772,42 +2755,43 @@ fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::
     body.push(opcode::STOP);
 
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(bytecode_with_tip1060_mode(CreditMode::Direct, &body)),
             ..Default::default()
         },
     );
-    evm.ctx
-        .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
-        .unwrap();
+    evm.overlay_db_mut()
+        .insert_account_storage(&contract, &U256::ZERO, &U256::from(1));
     seed_storage_credit_balance(&mut evm, contract, 0);
 
     let tx = TxBuilder::new()
         .call(contract, &[])
         .gas_limit(2_000_000)
         .build();
-    let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(tx)?,
-        caller,
-    ))?;
-    assert!(result.is_success(), "direct reorder tx should succeed");
+    let result = evm.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx)?), caller).into(),
+    )?;
+    assert!(result.status, "direct reorder tx should succeed");
 
     // The fresh slot exists, the original slot is restored, and the credit balance nets to zero.
     assert_eq!(
-        evm.ctx.db().storage_ref(contract, U256::from(1)).unwrap(),
+        evm.overlay_db_mut()
+            .get_storage(&contract, &U256::from(1))
+            .unwrap(),
         U256::from(1),
         "the genuinely new slot must be created"
     );
     assert_eq!(
-        evm.ctx.db().storage_ref(contract, U256::ZERO).unwrap(),
+        evm.overlay_db_mut()
+            .get_storage(&contract, &U256::ZERO)
+            .unwrap(),
         U256::from(2),
         "the churned slot must be restored"
     );
     assert_eq!(
-        storage_credit_balance(&evm, contract),
+        storage_credit_balance(&mut evm, contract),
         0,
         "balance must net to zero after mint + Direct spend + dirty-restore repay"
     );
@@ -2841,8 +2825,8 @@ fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
 
         let mut evm = create_funded_evm_t7(caller);
 
-        evm.ctx.db_mut().insert_account_info(
-            contract,
+        evm.overlay_db_mut().insert_account_info(
+            &contract,
             AccountInfo {
                 code: Some(branching_bytecode_with_tip1060_mode(mode)),
                 ..Default::default()
@@ -2857,14 +2841,11 @@ fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
             .gas_limit(2_000_000)
             .build();
         let signed_tx1 = key_pair.sign_tx(tx1)?;
-        let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
+        let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
         let result1 = evm.transact_commit(tx_env1)?;
-        assert!(
-            result1.is_success(),
-            "minting tx should succeed in {mode:?} mode"
-        );
+        assert!(result1.status, "minting tx should succeed in {mode:?} mode");
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_credit_tx1,
             "storage credit balance after the minting tx should be exact in {mode:?} mode"
         );
@@ -2876,10 +2857,10 @@ fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
             .gas_limit(2_000_000)
             .build();
         let signed_tx2 = key_pair.sign_tx(tx2)?;
-        let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
+        let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
         let result2 = evm.transact_commit(tx_env2)?;
         assert!(
-            result2.is_success(),
+            result2.status,
             "create-only tx should succeed in {mode:?} mode"
         );
 
@@ -2890,7 +2871,7 @@ fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
         );
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_credit_tx2,
             "storage credit balance after the create-only tx should be exact in {mode:?} mode"
         );
@@ -2920,15 +2901,15 @@ fn test_tip1060_direct_budget_caps_credit_consumption() -> eyre::Result<()> {
         bytecode_with_tip1060_mode(CreditMode::Direct, &bytes!("6001600055600160015500"));
 
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        budgeted_contract,
+    evm.overlay_db_mut().insert_account_info(
+        &budgeted_contract,
         AccountInfo {
             code: Some(Bytecode::new_raw(budgeted_bytecode.into())),
             ..Default::default()
         },
     );
-    evm.ctx.db_mut().insert_account_info(
-        unlimited_contract,
+    evm.overlay_db_mut().insert_account_info(
+        &unlimited_contract,
         AccountInfo {
             code: Some(unlimited_bytecode),
             ..Default::default()
@@ -2942,13 +2923,13 @@ fn test_tip1060_direct_budget_caps_credit_consumption() -> eyre::Result<()> {
         .nonce(0)
         .gas_limit(2_000_000)
         .build();
-    let budgeted_result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(budgeted_tx)?,
-        caller,
-    ))?;
-    assert!(budgeted_result.is_success());
+    let budgeted_result = evm.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(budgeted_tx)?), caller)
+            .into(),
+    )?;
+    assert!(budgeted_result.status);
     assert_eq!(
-        storage_credit_balance(&evm, budgeted_contract),
+        storage_credit_balance(&mut evm, budgeted_contract),
         1,
         "budget 1 must consume exactly one of the two available credits"
     );
@@ -2958,13 +2939,13 @@ fn test_tip1060_direct_budget_caps_credit_consumption() -> eyre::Result<()> {
         .nonce(1)
         .gas_limit(2_000_000)
         .build();
-    let unlimited_result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(unlimited_tx)?,
-        caller,
-    ))?;
-    assert!(unlimited_result.is_success());
+    let unlimited_result = evm.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(unlimited_tx)?), caller)
+            .into(),
+    )?;
+    assert!(unlimited_result.status);
     assert_eq!(
-        storage_credit_balance(&evm, unlimited_contract),
+        storage_credit_balance(&mut evm, unlimited_contract),
         0,
         "setMode(Direct) has unlimited budget and must consume both available credits"
     );
@@ -3007,28 +2988,29 @@ fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
     store_gas(&mut bytecode, AFTER_CLEAR_GAS.1);
     bytecode.push(opcode::STOP);
 
-    let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+    let (_, mut evm) = run_tx_on_tip1060_contract_with_setup(
         CreditMode::Refund,
         contract,
         &bytecode,
         |evm, contract| {
             seed_storage_credit_balance(evm, contract, 2);
             for slot in MODE_SLOT..=AFTER_CLEAR_GAS.1 {
-                evm.ctx
-                    .db_mut()
-                    .insert_account_storage(contract, U256::from(slot), U256::ONE)?;
+                evm.overlay_db_mut().insert_account_storage(
+                    &contract,
+                    &U256::from(slot),
+                    &U256::ONE,
+                );
             }
             Ok(())
         },
     )?;
 
-    let word = |slot: u8| {
-        evm.ctx
-            .db()
-            .storage_ref(contract, U256::from(slot))
+    let mut word = |slot: u8| {
+        evm.overlay_db_mut()
+            .get_storage(&contract, &U256::from(slot))
             .unwrap()
     };
-    let delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
+    let mut delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
 
     assert!(
         delta(EXHAUSTED_GAS) > STORAGE_CREDIT_VALUE
@@ -3037,7 +3019,7 @@ fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
     );
     let expected = (U256::from(CreditMode::Direct as u8), U256::ZERO, U256::ONE);
     assert_eq!((word(MODE_SLOT), word(1), word(2)), expected);
-    assert_eq!(storage_credit_balance(&evm, contract), 2);
+    assert_eq!(storage_credit_balance(&mut evm, contract), 2);
 
     Ok(())
 }
@@ -3104,24 +3086,26 @@ fn test_tip1060_reverted_scopes_unwind_credit_accounting() -> eyre::Result<()> {
         let caller_contract = Address::repeat_byte(case.callee[0] ^ 0xff);
         let mut evm = create_funded_evm_t7(caller);
 
-        evm.ctx.db_mut().insert_account_info(
-            caller_contract,
+        evm.overlay_db_mut().insert_account_info(
+            &caller_contract,
             AccountInfo {
                 code: Some(caller_ignoring_reverted_callee(case.callee)),
                 ..Default::default()
             },
         );
-        evm.ctx.db_mut().insert_account_info(
-            case.callee,
+        evm.overlay_db_mut().insert_account_info(
+            &case.callee,
             AccountInfo {
                 code: Some(case.bytecode.clone()),
                 ..Default::default()
             },
         );
         if !case.initial_slot.is_zero() {
-            evm.ctx
-                .db_mut()
-                .insert_account_storage(case.callee, U256::ZERO, case.initial_slot)?;
+            evm.overlay_db_mut().insert_account_storage(
+                &case.callee,
+                &U256::ZERO,
+                &case.initial_slot,
+            );
         }
         seed_storage_credit_balance(&mut evm, case.callee, case.initial_credits);
 
@@ -3129,24 +3113,24 @@ fn test_tip1060_reverted_scopes_unwind_credit_accounting() -> eyre::Result<()> {
             .call(caller_contract, &[])
             .gas_limit(2_000_000)
             .build();
-        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
-            &key_pair.sign_tx(tx)?,
-            caller,
-        ))?;
+        let result = evm.transact_commit(
+            Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx)?), caller).into(),
+        )?;
         assert!(
-            result.is_success(),
+            result.status,
             "top-level caller should ignore the reverted {} subcall",
             case.name
         );
 
         assert_eq!(
-            evm.ctx.db().storage_ref(case.callee, U256::ZERO)?,
+            evm.overlay_db_mut()
+                .get_storage(&case.callee, &U256::ZERO)?,
             case.expected_slot,
             "reverted {} storage write must unwind",
             case.name
         );
         assert_eq!(
-            storage_credit_balance(&evm, case.callee),
+            storage_credit_balance(&mut evm, case.callee),
             case.expected_credits,
             "reverted {} credit accounting must unwind",
             case.name
@@ -3175,7 +3159,7 @@ fn test_tip1060_refund_settlement_min_pending_balance() -> eyre::Result<()> {
         }
         bytecode.push(opcode::STOP);
 
-        let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+        let (_, mut evm) = run_tx_on_tip1060_contract_with_setup(
             CreditMode::Refund,
             contract,
             &bytecode,
@@ -3186,7 +3170,7 @@ fn test_tip1060_refund_settlement_min_pending_balance() -> eyre::Result<()> {
         )?;
 
         assert_eq!(
-            storage_credit_balance(&evm, contract),
+            storage_credit_balance(&mut evm, contract),
             expected_balance,
             "settlement must consume exactly min(pending, balance) storage credits"
         );
@@ -3216,15 +3200,15 @@ fn test_tip1060_refund_settlement_is_per_account() -> eyre::Result<()> {
     let account_b_bytecode = Bytecode::new_raw(bytes!("600160005500"));
 
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        account_a,
+    evm.overlay_db_mut().insert_account_info(
+        &account_a,
         AccountInfo {
             code: Some(Bytecode::new_raw(account_a_bytecode.into())),
             ..Default::default()
         },
     );
-    evm.ctx.db_mut().insert_account_info(
-        account_b,
+    evm.overlay_db_mut().insert_account_info(
+        &account_b,
         AccountInfo {
             code: Some(account_b_bytecode),
             ..Default::default()
@@ -3238,17 +3222,18 @@ fn test_tip1060_refund_settlement_is_per_account() -> eyre::Result<()> {
         .gas_limit(2_000_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "multi-account tx should succeed");
+    assert!(result.status, "multi-account tx should succeed");
 
     assert_eq!(
-        storage_credit_balance(&evm, account_a),
+        storage_credit_balance(&mut evm, account_a),
         1,
         "A consumes its own storage credits"
     );
     assert_eq!(
-        storage_credit_balance(&evm, account_b),
+        storage_credit_balance(&mut evm, account_b),
         0,
         "B cannot consume A's extra storage credits"
     );
@@ -3270,16 +3255,15 @@ fn test_tip1060_same_tx_create_before_delete_different_slots() -> eyre::Result<(
     let bytecode = Bytecode::new_raw(bytes!("6001600055600060015500"));
 
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(bytecode),
             ..Default::default()
         },
     );
-    evm.ctx
-        .db_mut()
-        .insert_account_storage(contract, U256::from(1), U256::ONE)?;
+    evm.overlay_db_mut()
+        .insert_account_storage(&contract, &U256::from(1), &U256::ONE);
     seed_storage_credit_balance(&mut evm, contract, 0);
 
     let tx = TxBuilder::new()
@@ -3287,14 +3271,12 @@ fn test_tip1060_same_tx_create_before_delete_different_slots() -> eyre::Result<(
         .gas_limit(1_000_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
     let result = evm.transact_commit(tx_env)?;
-    assert!(
-        result.is_success(),
-        "create-before-delete tx should succeed"
-    );
+    assert!(result.status, "create-before-delete tx should succeed");
 
-    assert_eq!(storage_credit_balance(&evm, contract), 0);
+    assert_eq!(storage_credit_balance(&mut evm, contract), 0);
     assert_eq!(
         result.tx_gas_used(),
         295_868,
@@ -3319,15 +3301,15 @@ fn test_tip1060_direct_storage_credits_no_end_of_tx_double_benefit() -> eyre::Re
     let create_body = bytes!("600160005500");
 
     let mut evm = create_funded_evm_t7(caller);
-    evm.ctx.db_mut().insert_account_info(
-        direct_contract,
+    evm.overlay_db_mut().insert_account_info(
+        &direct_contract,
         AccountInfo {
             code: Some(bytecode_with_tip1060_mode(CreditMode::Direct, &create_body)),
             ..Default::default()
         },
     );
-    evm.ctx.db_mut().insert_account_info(
-        refund_contract,
+    evm.overlay_db_mut().insert_account_info(
+        &refund_contract,
         AccountInfo {
             code: Some(bytecode_with_tip1060_mode(CreditMode::Refund, &create_body)),
             ..Default::default()
@@ -3343,10 +3325,12 @@ fn test_tip1060_direct_storage_credits_no_end_of_tx_double_benefit() -> eyre::Re
         .gas_limit(1_000_000)
         .build();
     let signed_direct = key_pair.sign_tx(direct_tx)?;
-    let direct = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_direct, caller))?;
-    assert!(direct.is_success());
+    let direct = evm.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_direct), caller).into(),
+    )?;
+    assert!(direct.status);
     assert_eq!(
-        storage_credit_balance(&evm, direct_contract),
+        storage_credit_balance(&mut evm, direct_contract),
         1,
         "Direct must not consume the surplus storage credit at settlement"
     );
@@ -3357,9 +3341,11 @@ fn test_tip1060_direct_storage_credits_no_end_of_tx_double_benefit() -> eyre::Re
         .gas_limit(1_000_000)
         .build();
     let signed_refund = key_pair.sign_tx(refund_tx)?;
-    let refund = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_refund, caller))?;
-    assert!(refund.is_success());
-    assert_eq!(storage_credit_balance(&evm, refund_contract), 0);
+    let refund = evm.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_refund), caller).into(),
+    )?;
+    assert!(refund.status);
+    assert_eq!(storage_credit_balance(&mut evm, refund_contract), 0);
 
     assert_eq!(
         direct.tx_gas_used(),
@@ -3386,19 +3372,18 @@ fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
     // Bytecode: SSTORE(0,0); STOP.
     let clear_bytecode = bytes!("600060005500");
 
-    let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+    let (_, mut evm) = run_tx_on_tip1060_contract_with_setup(
         CreditMode::Refund,
         contract,
         &clear_bytecode,
         |evm, contract| {
-            evm.ctx
-                .db_mut()
-                .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
+            evm.overlay_db_mut()
+                .insert_account_storage(&contract, &U256::ZERO, &U256::ONE);
             seed_storage_credit_balance(evm, contract, u64::MAX);
             Ok(())
         },
     )?;
-    assert_eq!(storage_credit_balance(&evm, contract), u64::MAX);
+    assert_eq!(storage_credit_balance(&mut evm, contract), u64::MAX);
 
     Ok(())
 }
@@ -3420,26 +3405,27 @@ fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::R
         .gas_limit(500_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let unindexed_tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let unindexed_tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let mut indexed_tx_env = unindexed_tx_env.clone();
-    indexed_tx_env
-        .tempo_tx_env
-        .as_mut()
-        .expect("expiring nonce tx must be AA")
-        .expiring_nonce_idx = Some(1);
+    assert!(
+        indexed_tx_env.as_aa().is_some(),
+        "expiring nonce tx must be AA"
+    );
+    indexed_tx_env.set_expiring_nonce_idx(Some(1));
 
     let mut unindexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
     let unindexed_result = unindexed_evm.transact_commit(unindexed_tx_env)?;
     assert!(
-        unindexed_result.is_success(),
+        unindexed_result.status,
         "unindexed expiring nonce tx should succeed"
     );
 
     let mut indexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
     let indexed_result = indexed_evm.transact_commit(indexed_tx_env)?;
     assert!(
-        indexed_result.is_success(),
+        indexed_result.status,
         "indexed expiring nonce tx should succeed"
     );
 
@@ -3449,7 +3435,7 @@ fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::R
         "pointer restore must not create a TIP-1060 settlement discount"
     );
     assert_eq!(
-        storage_credit_balance(&indexed_evm, NONCE_PRECOMPILE_ADDRESS),
+        storage_credit_balance(&mut indexed_evm, NONCE_PRECOMPILE_ADDRESS),
         0,
         "expiring nonce bookkeeping must not accrue storage credits"
     );
@@ -3475,30 +3461,33 @@ fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
             .gas_limit(500_000)
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
-        Ok(TempoTxEnv::from_recovered_tx(&signed_tx, caller))
+        Ok(Recovered::new_unchecked(
+            TempoTxEnv::from(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(signed_tx),
+                caller,
+            )),
+            caller,
+        ))
     };
 
     let mut pre_activation =
         create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T11);
     assert!(
-        pre_activation.transact_commit(build_env(1)?).is_err(),
+        pre_activation.transact(&build_env(1)?).is_err(),
         "T11 must reject a non-zero expiring nonce"
     );
 
     for nonce in [0, 1, u64::MAX] {
         let mut evm =
             create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T12);
-        let result = evm.transact_commit(build_env(nonce)?)?;
+        let result = evm.transact(&build_env(nonce)?)?.commit();
         assert!(
-            result.is_success(),
+            result.status,
             "T12 must accept expiring nonce discriminator {nonce}"
         );
         assert_eq!(
-            evm.ctx
-                .db()
-                .basic_ref(caller)
-                .ok()
-                .flatten()
+            evm.overlay_db()
+                .account_info(&caller)
                 .map(|account| account.nonce)
                 .unwrap_or_default(),
             0,
@@ -3522,12 +3511,13 @@ fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::R
         .gas_limit(1_000_000)
         .build();
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let mut baseline_evm = create_funded_evm_t7(caller);
     let baseline_result = baseline_evm.transact_commit(tx_env.clone())?;
     assert!(
-        baseline_result.is_success(),
+        baseline_result.status,
         "baseline 2D nonce tx should succeed"
     );
 
@@ -3535,7 +3525,7 @@ fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::R
     seed_storage_credit_balance(&mut credited_evm, NONCE_PRECOMPILE_ADDRESS, 1);
     let credited_result = credited_evm.transact_commit(tx_env)?;
     assert!(
-        credited_result.is_success(),
+        credited_result.status,
         "preseeded-credit 2D nonce tx should succeed"
     );
 
@@ -3545,7 +3535,7 @@ fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::R
         "2D nonce bookkeeping must not consume nonce storage credits for a gas discount"
     );
     assert_eq!(
-        storage_credit_balance(&credited_evm, NONCE_PRECOMPILE_ADDRESS),
+        storage_credit_balance(&mut credited_evm, NONCE_PRECOMPILE_ADDRESS),
         1,
         "2D nonce bookkeeping must not consume pre-existing nonce storage credits"
     );
@@ -3573,10 +3563,11 @@ fn test_aa_tx_gas_create_contract() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "CREATE transaction should succeed");
+    assert!(result.status, "CREATE transaction should succeed");
 
     // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + base costs
     let gas_used = result.tx_gas_used();
@@ -3602,15 +3593,28 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
     let run_create = |without_word_cost: bool| -> eyre::Result<u64> {
         let mut evm = create_funded_evm_t4(caller);
         if without_word_cost {
-            evm.ctx.cfg.gas_params.override_gas(vec![(
-                revm::context_interface::cfg::GasId::keccak256_per_word(),
-                0,
-            )]);
+            let mut version = *evm.version();
+            version
+                .gas_params
+                .set(evm2::version::GasId::Keccak256PerWord, 0);
+            let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+                TempoHardfork::T4,
+                evm.ext().actions.clone(),
+                evm.ext().non_creditable_slots.clone(),
+            );
+            evm.set_execution_config(
+                ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
+                TempoHardfork::T4,
+                tempo_tx_registry(SpecId::OSAKA),
+                precompiles,
+            );
         }
 
-        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+        let result = evm.transact_commit(
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller).into(),
+        )?;
         assert!(
-            result.is_success(),
+            result.status,
             "T4 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
         );
         Ok(result.tx_gas_used())
@@ -3618,7 +3622,9 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
 
     assert_eq!(
         run_create(false)? - run_create(true)?, // gas_with_hash - gas_without_hash (test fixture)
-        tempo_gas_params(TempoHardfork::T4).keccak256_cost(1),
+        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, true)
+            .gas_params
+            .keccak256_word_cost(1),
         "generic CREATE should add HASH_COST(L) on top of the non-hash baseline"
     );
     Ok(())
@@ -3626,13 +3632,6 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
 
 /// TIP-1016 / EIP-8037: a reverting CREATE must not consume `create_state_gas`,
 /// no matter where the CREATE sits.
-///
-/// revm 42 refunds a failed first frame's CREATE state gas only when the
-/// frame input is marked as charged (`FrameResult::refundable_state_gas`).
-/// Tempo charges that gas at the intrinsic phase (EIP-2780 stays disabled),
-/// so the first frame must carry the flag or a reverting top-level CREATE
-/// would permanently consume `create_state_gas` while a reverting inner
-/// CREATE gets it refunded.
 ///
 /// Each scenario's create-state-gas consumption is measured as the gas
 /// delta between default T4 params and `create_state_gas` overridden to
@@ -3648,55 +3647,60 @@ fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Resul
     let inner_create_code = bytes!("6460006000fd6000526005601b6000f05000");
 
     assert!(
-        tempo_gas_params_with_amsterdam(TempoHardfork::T4, true).create_state_gas() > 0,
+        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, true)
+            .gas_params
+            .create_state_gas()
+            > 0,
         "T4 must price CREATE state gas for this test to be meaningful"
     );
 
     let run = |top_level: bool, zero_create_state_gas: bool| -> eyre::Result<u64> {
-        let mut evm = create_funded_evm_t4_amsterdam(caller);
+        let mut evm = create_funded_evm_t4(caller);
         if zero_create_state_gas {
-            evm.ctx.cfg.gas_params.override_gas(vec![(
-                revm::context_interface::cfg::GasId::create_state_gas(),
-                0,
-            )]);
+            let mut version = *evm.version();
+            version.gas_params.set(evm2::version::GasId::CreateState, 0);
+            let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+                TempoHardfork::T4,
+                evm.ext().actions.clone(),
+                evm.ext().non_creditable_slots.clone(),
+            );
+            evm.set_execution_config(
+                ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
+                TempoHardfork::T4,
+                tempo_tx_registry(SpecId::OSAKA),
+                precompiles,
+            );
         }
 
         let tx_env = if top_level {
-            TxEnv {
+            legacy_tx_env(
                 caller,
-                kind: TxKind::Create,
-                data: reverting_initcode.clone(),
-                gas_limit: 3_000_000,
-                ..Default::default()
-            }
+                0,
+                TxKind::Create,
+                reverting_initcode.clone(),
+                3_000_000,
+            )
         } else {
             let contract = Address::repeat_byte(0x42);
-            evm.ctx.db_mut().insert_account_info(
-                contract,
+            evm.overlay_db_mut().insert_account_info(
+                &contract,
                 AccountInfo {
                     code: Some(Bytecode::new_raw(inner_create_code.clone())),
                     ..Default::default()
                 },
             );
-            TxEnv {
-                caller,
-                kind: TxKind::Call(contract),
-                gas_limit: 3_000_000,
-                ..Default::default()
-            }
+            legacy_tx_env(caller, 0, TxKind::Call(contract), Bytes::new(), 3_000_000)
         };
 
-        let result = evm.transact_commit(tx_env.into())?;
+        let result = evm.transact_commit(tx_env)?;
         if top_level {
-            assert!(
-                matches!(result, ExecutionResult::Revert { .. }),
+            assert_eq!(
+                result.stop,
+                InstrStop::Revert,
                 "top-level CREATE should revert"
             );
         } else {
-            assert!(
-                result.is_success(),
-                "inner-CREATE caller swallows the revert"
-            );
+            assert!(result.status, "inner-CREATE caller swallows the revert");
         }
         Ok(result.tx_gas_used())
     };
@@ -3715,9 +3719,9 @@ fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Resul
 }
 
 /// Same regression for the AA batch path: a failed batch must refund the
-/// intrinsic CREATE state gas of every CREATE call in the batch — both the
-/// reverting CREATE itself and a successfully deployed CREATE whose state
-/// is rolled back by the atomic batch revert.
+/// CREATE state gas of every CREATE call in the batch — both the reverting
+/// CREATE itself and a successfully deployed CREATE whose state is rolled
+/// back by the atomic batch revert.
 #[test]
 fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();
@@ -3746,26 +3750,35 @@ fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
             .build(),
     )?;
 
-    let run = |signed_tx: &tempo_primitives::AASigned,
-               zero_create_state_gas: bool|
-     -> eyre::Result<u64> {
-        let mut evm = create_funded_evm_t4_amsterdam(caller);
+    let run = |signed_tx: &AASigned, zero_create_state_gas: bool| -> eyre::Result<u64> {
+        let mut evm = create_funded_evm_t4(caller);
         if zero_create_state_gas {
-            evm.ctx.cfg.gas_params.override_gas(vec![(
-                revm::context_interface::cfg::GasId::create_state_gas(),
-                0,
-            )]);
+            let mut version = *evm.version();
+            version.gas_params.set(evm2::version::GasId::CreateState, 0);
+            let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+                TempoHardfork::T4,
+                evm.ext().actions.clone(),
+                evm.ext().non_creditable_slots.clone(),
+            );
+            evm.set_execution_config(
+                ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
+                TempoHardfork::T4,
+                tempo_tx_registry(SpecId::OSAKA),
+                precompiles,
+            );
         }
-        evm.ctx.db_mut().insert_account_info(
-            reverting_contract,
+        evm.overlay_db_mut().insert_account_info(
+            &reverting_contract,
             AccountInfo {
                 code: Some(Bytecode::new_raw(bytes!("60006000fd"))),
                 ..Default::default()
             },
         );
 
-        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(signed_tx, caller))?;
-        assert!(!result.is_success(), "the batch should fail");
+        let result = evm.transact_commit(
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx.clone()), caller).into(),
+        )?;
+        assert!(!result.status, "the batch should fail");
         Ok(result.tx_gas_used())
     };
 
@@ -3806,9 +3819,8 @@ fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
 
     // Verify that account nonce is 0 before transaction
     assert_eq!(
-        evm.ctx
-            .db()
-            .basic_ref(caller)
+        evm.overlay_db_mut()
+            .get_account(&caller)
             .ok()
             .flatten()
             .map(|a| a.nonce)
@@ -3818,10 +3830,10 @@ fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
     );
 
     let signed_tx1 = key_pair.sign_tx(tx1)?;
-    let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
+    let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
 
     let result1 = evm.transact_commit(tx_env1)?;
-    assert!(result1.is_success(), "CREATE with 2D nonce should succeed");
+    assert!(result1.status, "CREATE with 2D nonce should succeed");
 
     // With TIP-1000: CREATE cost (500k) + new account (250k) + 2D nonce sender creation (250k) + base
     assert_eq!(
@@ -3843,13 +3855,10 @@ fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
         .build();
 
     let signed_tx2 = key_pair.sign_tx(tx2)?;
-    let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
+    let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
 
     let result2 = evm.transact_commit(tx_env2)?;
-    assert!(
-        result2.is_success(),
-        "Second CREATE with 2D nonce should succeed"
-    );
+    assert!(result2.status, "Second CREATE with 2D nonce should succeed");
 
     // With TIP-1000: CREATE cost (500k) + new account (250k) + base (no extra 250k since caller.nonce != 0)
     assert_eq!(
@@ -3888,17 +3897,16 @@ fn test_aa_tx_gas_create_with_expiring_nonce() -> eyre::Result<()> {
         .valid_before(Some(valid_before))
         .gas_limit(2_000_000)
         .build();
-    let result1 = evm1.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(tx1)?,
-        caller,
-    ))?;
-    assert!(result1.is_success());
+    let result1 = evm1.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx1)?), caller).into(),
+    )?;
+    assert!(result1.status);
     let gas_nonce_zero = result1.tx_gas_used();
 
     // CREATE with caller.nonce == 1 (no extra 250k)
     let mut evm2 = create_funded_evm_t1_with_timestamp(caller, timestamp);
-    evm2.ctx.db_mut().insert_account_info(
-        caller,
+    evm2.overlay_db_mut().insert_account_info(
+        &caller,
         AccountInfo {
             balance: U256::from(DEFAULT_BALANCE),
             nonce: 1,
@@ -3911,11 +3919,10 @@ fn test_aa_tx_gas_create_with_expiring_nonce() -> eyre::Result<()> {
         .valid_before(Some(valid_before))
         .gas_limit(2_000_000)
         .build();
-    let result2 = evm2.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(tx2)?,
-        caller,
-    ))?;
-    assert!(result2.is_success());
+    let result2 = evm2.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx2)?), caller).into(),
+    )?;
+    assert!(result2.status);
     let gas_nonce_one = result2.tx_gas_used();
 
     // The fix adds 250k when caller.nonce == 0 for CREATE with non-zero nonce_key
@@ -3944,9 +3951,9 @@ fn test_aa_tx_gas_single_vs_multiple_calls() -> eyre::Result<()> {
         .build();
 
     let signed_tx1 = key_pair.sign_tx(tx1)?;
-    let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
+    let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
     let result1 = evm1.transact_commit(tx_env1)?;
-    assert!(result1.is_success());
+    assert!(result1.status);
     let gas_single = result1.tx_gas_used();
 
     // Test 2: Three calls
@@ -3960,9 +3967,9 @@ fn test_aa_tx_gas_single_vs_multiple_calls() -> eyre::Result<()> {
         .build();
 
     let signed_tx2 = key_pair.sign_tx(tx2)?;
-    let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
+    let tx_env2 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx2), caller).into();
     let result2 = evm2.transact_commit(tx_env2)?;
-    assert!(result2.is_success());
+    assert!(result2.status);
     let gas_triple = result2.tx_gas_used();
 
     // Three calls should cost more than single call
@@ -3995,8 +4002,8 @@ fn test_aa_tx_gas_sload_cold_vs_warm() -> eyre::Result<()> {
     // PUSH1 0x00 SLOAD POP  (warm SLOAD from slot 0)
     // STOP
     let sload_bytecode = Bytecode::new_raw(bytes!("6000545060005450"));
-    evm.ctx.db_mut().insert_account_info(
-        contract,
+    evm.overlay_db_mut().insert_account_info(
+        &contract,
         AccountInfo {
             code: Some(sload_bytecode),
             ..Default::default()
@@ -4004,10 +4011,8 @@ fn test_aa_tx_gas_sload_cold_vs_warm() -> eyre::Result<()> {
     );
 
     // Pre-populate storage
-    evm.ctx
-        .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(0x1234))
-        .unwrap();
+    evm.overlay_db_mut()
+        .insert_account_storage(&contract, &U256::ZERO, &U256::from(0x1234));
 
     // T1 costs: new account (250k) + SLOAD costs + base costs
     let tx = TxBuilder::new()
@@ -4016,10 +4021,11 @@ fn test_aa_tx_gas_sload_cold_vs_warm() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "SLOAD transaction should succeed");
+    assert!(result.status, "SLOAD transaction should succeed");
 
     // T1 costs: new account (250k) + cold SLOAD (2100) + warm SLOAD (100) + cold account (~2.6k)
     let gas_used = result.tx_gas_used();
@@ -4030,8 +4036,7 @@ fn test_aa_tx_gas_sload_cold_vs_warm() -> eyre::Result<()> {
 
 // ==================== End TIP-1000 Tests ====================
 
-/// Test system call functions and inspector management.
-/// Tests `system_call_one_with_caller`, `inspect_one_system_call_with_caller`, and `set_inspector`.
+/// Test that system calls preserve but do not invoke an installed inspector.
 #[test]
 fn test_system_call_and_inspector() -> eyre::Result<()> {
     let caller = Address::repeat_byte(0x01);
@@ -4044,46 +4049,72 @@ fn test_system_call_and_inspector() -> eyre::Result<()> {
     // Test system_call_one_with_caller (no inspector needed)
     {
         let mut evm = create_evm();
-        evm.ctx.db_mut().insert_account_info(
-            contract,
+        evm.overlay_db_mut().insert_account_info(
+            &contract,
             AccountInfo {
                 code: Some(bytecode.clone()),
                 ..Default::default()
             },
         );
 
-        let result = evm.system_call_one_with_caller(caller, contract, Bytes::new())?;
-        assert!(result.is_success());
+        let result = evm
+            .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
+            .commit();
+        assert!(result.status);
     }
 
-    // Test set_inspector and inspect_one_system_call_with_caller
+    // Test set_inspector and system call inspector preservation
     {
         let mut evm = create_evm_with_inspector(CountInspector::new());
-        evm.ctx.db_mut().insert_account_info(
-            contract,
+        evm.overlay_db_mut().insert_account_info(
+            &contract,
             AccountInfo {
                 code: Some(bytecode),
                 ..Default::default()
             },
         );
 
-        // Test inspect_one_system_call_with_caller
-        let result = evm.inspect_one_system_call_with_caller(caller, contract, Bytes::new())?;
-        assert!(result.is_success());
+        let result = evm
+            .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
+            .commit();
+        assert!(result.status);
 
-        // Verify inspector was called
-        assert!(evm.inspector.call_count() > 0,);
+        // Verify the inspector was preserved but not called.
+        assert_eq!(
+            evm.inspector()
+                .unwrap()
+                .downcast_ref::<CountInspector>()
+                .unwrap()
+                .call_count(),
+            0,
+        );
 
         // Test set_inspector - replace with a fresh CountInspector
         evm.set_inspector(CountInspector::new());
 
         // Verify the new inspector starts fresh
-        assert_eq!(evm.inspector.call_count(), 0,);
+        assert_eq!(
+            evm.inspector()
+                .unwrap()
+                .downcast_ref::<CountInspector>()
+                .unwrap()
+                .call_count(),
+            0,
+        );
 
-        // Run another system call and verify new inspector records it
-        let result = evm.inspect_one_system_call_with_caller(caller, contract, Bytes::new())?;
-        assert!(result.is_success());
-        assert!(evm.inspector.call_count() > 0);
+        // Run another system call and verify the new inspector remains untouched.
+        let result = evm
+            .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
+            .commit();
+        assert!(result.status);
+        assert_eq!(
+            evm.inspector()
+                .unwrap()
+                .downcast_ref::<CountInspector>()
+                .unwrap()
+                .call_count(),
+            0
+        );
     }
 
     Ok(())
@@ -4098,22 +4129,22 @@ fn test_system_call_and_inspector() -> eyre::Result<()> {
 ///
 /// Related fix: The handler creates a checkpoint before key_authorization
 /// precompile execution and reverts it on OOG. This ensures storage consistency.
-#[test]
-fn test_key_authorization_t1() -> eyre::Result<()> {
+#[test_case::test_case(TempoHardfork::T1)]
+#[test_case::test_case(TempoHardfork::T1A)]
+fn test_key_authorization_t1(spec: TempoHardfork) -> eyre::Result<()> {
     use tempo_precompiles::account_keychain::AccountKeychain;
 
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
-    // Create a T1 EVM (the fix only applies to T1)
-    let mut evm = create_funded_evm_t1(caller);
+    // Create a T1/T1A EVM (the fix only applies before T1B)
+    let mut evm = configured_evm(spec, 0, false, InMemoryDB::default());
+    fund_account(&mut evm, caller);
 
     // Set up TIP20 for fee payment
-    let block = TempoBlockEnv::default();
     {
-        let ctx = &mut evm.ctx;
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+        let spec = evm.config_spec_id();
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         StorageCtx::enter(&mut provider, || {
             TIP20Setup::path_usd(caller)
@@ -4133,9 +4164,8 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
 
     // Verify key does NOT exist before the transaction
     {
-        let ctx = &mut evm.ctx;
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+        let spec = evm.config_spec_id();
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         let key_exists = StorageCtx::enter(&mut provider, || {
             let keychain = AccountKeychain::default();
@@ -4147,7 +4177,9 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
         );
     }
 
-    let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
+    let authorization_authority = P256KeyPair::random();
+    let signed_auth =
+        authorization_authority.create_signed_authorization(Address::repeat_byte(0x42))?;
 
     // Insufficient gas - will cause OOG during key_authorization processing
     let tx_low_gas = TxBuilder::new()
@@ -4158,7 +4190,7 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
         .build();
 
     let signed_tx_low = key_pair.sign_tx(tx_low_gas)?;
-    let tx_env_low = TempoTxEnv::from_recovered_tx(&signed_tx_low, caller);
+    let tx_env_low = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx_low), caller).into();
 
     // Execute the transaction - it should fail due to insufficient gas
     let result_low = evm.transact_commit(tx_env_low);
@@ -4173,7 +4205,7 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
                 "Gas used should be gas limit"
             );
             assert!(
-                !result.is_success(),
+                !result.status,
                 "Transaction with insufficient gas should fail"
             );
             true // OOG: tx committed, nonce incremented
@@ -4181,16 +4213,9 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
         Err(e) => {
             // Transaction rejected during validation - must be CallGasCostMoreThanGasLimit
             assert!(
-                    matches!(
-                        e,
-                        revm::context::result::EVMError::Transaction(
-                            TempoInvalidTransaction::EthInvalidTransaction(
-                                revm::context::result::InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
-                            )
-                        )
-                    ),
-                    "Expected CallGasCostMoreThanGasLimit, got: {e:?}"
-                );
+                matches!(e, evm2::registry::HandlerError::IntrinsicGasTooLow { .. }),
+                "Expected CallGasCostMoreThanGasLimit, got: {e:?}"
+            );
             false // Validation rejection: nonce NOT incremented
         }
     };
@@ -4198,9 +4223,8 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
     // CRITICAL: Verify the key was NOT authorized
     // This tests that storage changes are properly reverted on failure
     {
-        let ctx = &mut evm.ctx;
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+        let spec = evm.config_spec_id();
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         let key_after_fail = StorageCtx::enter(&mut provider, || {
             let keychain = AccountKeychain::default();
@@ -4213,6 +4237,17 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
             "Key should NOT be authorized when transaction fails due to insufficient gas"
         );
     }
+    assert!(
+        nonce_incremented,
+        "key authorization OOG should be included, not rejected"
+    );
+    assert_eq!(
+        evm.overlay_db_mut()
+            .get_account(&authorization_authority.address)?
+            .map(|account| account.code_hash),
+        Some(Bytecode::new_eip7702(Address::repeat_byte(0x42)).hash_slow()),
+        "EIP-7702 delegation should persist when key authorization runs out of gas"
+    );
 
     // ==================== Test 2: SUFFICIENT gas ====================
     // Now try with sufficient gas - key should be authorized
@@ -4235,16 +4270,16 @@ fn test_key_authorization_t1() -> eyre::Result<()> {
         .build();
 
     let signed_tx = key_pair.sign_tx(tx)?;
-    let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
     let result = evm.transact_commit(tx_env)?;
-    assert!(result.is_success(), "Transaction should succeed");
+    assert!(result.status, "Transaction should succeed");
 
     // Verify the key was authorized
     {
-        let ctx = &mut evm.ctx;
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+        let spec = evm.config_spec_id();
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         let key_after_success = StorageCtx::enter(&mut provider, || {
             let keychain = AccountKeychain::default();
@@ -4285,30 +4320,17 @@ fn test_create_nonce_replay_regression() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
-        let db = CacheDB::new(EmptyDB::new());
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = spec;
-        cfg.gas_params = tempo_gas_params(spec);
-
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(Default::default())
-            .with_cfg(cfg)
-            .with_tx(Default::default());
-
-        let mut evm = TempoEvm::new(ctx, ());
+        let mut evm = configured_evm(spec, 0, false, InMemoryDB::default());
         fund_account(&mut evm, caller);
-        evm.block.basefee = 100_000_000_000;
-
-        let block = TempoBlockEnv::default();
+        let mut block = *evm.block();
+        block.basefee = U256::from(100_000_000_000u64);
+        evm.set_block(block);
         {
-            let ctx = &mut evm.ctx;
-            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let spec = evm.config_spec_id();
             // Use default cfg for TIP20 setup — the test infrastructure's
             // `is_initialized` check uses an unsafe `as_hashmap()` cast that
             // only works with default gas params.
-            let mut provider =
-                EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
                     .with_issuer(caller)
@@ -4331,7 +4353,8 @@ fn test_create_nonce_replay_regression() -> eyre::Result<()> {
             .build();
 
         let signed_tx = key_pair.sign_tx(tx)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
         // Replay the same signed transaction directly: live payload building
         // only supports T4+, but historical execution must retain this bug.
         let pre_t1b = spec < TempoHardfork::T1B;
@@ -4339,23 +4362,15 @@ fn test_create_nonce_replay_regression() -> eyre::Result<()> {
         for _ in 0..if pre_t1b { 2 } else { 1 } {
             let result = evm.transact_commit(tx_env.clone())?;
             if pre_t1b {
-                assert!(matches!(
-                    result,
-                    ExecutionResult::Halt {
-                        reason: HaltReason::OutOfGas(_),
-                        ..
-                    }
-                ));
+                assert_eq!(result.stop, InstrStop::OutOfGas);
                 assert_eq!(result.tx_gas_used(), gas_limit);
-                assert_eq!(evm.ctx.db().basic_ref(caller)?.unwrap().nonce, 0);
+                assert_eq!(evm.overlay_db_mut().get_account(&caller)?.unwrap().nonce, 0);
             } else {
-                assert!(result.is_success());
+                assert!(result.status);
             }
 
-            let ctx = &mut evm.ctx;
-            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-            let mut provider =
-                EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+            let evm_spec = evm.config_spec_id();
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, evm_spec);
             let balance_after = StorageCtx::enter(&mut provider, || {
                 TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
             })?;
@@ -4367,19 +4382,16 @@ fn test_create_nonce_replay_regression() -> eyre::Result<()> {
         }
 
         let nonce = evm
-            .ctx
-            .db()
-            .basic_ref(caller)
+            .overlay_db_mut()
+            .get_account(&caller)
             .ok()
             .flatten()
             .map(|a| a.nonce)
             .unwrap_or(0);
 
         let key_expiry = {
-            let ctx = &mut evm.ctx;
-            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-            let mut provider =
-                EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+            let spec = evm.config_spec_id();
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             let key = StorageCtx::enter(&mut provider, || {
                 AccountKeychain::default().keys[caller][access_key.address].read()
             })?;
@@ -4439,26 +4451,11 @@ fn test_double_charge_key_authorization_regression() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
-        let db = CacheDB::new(EmptyDB::new());
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = spec;
-        cfg.gas_params = tempo_gas_params(spec);
-
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(Default::default())
-            .with_cfg(cfg)
-            .with_tx(Default::default());
-
-        let mut evm = TempoEvm::new(ctx, ());
+        let mut evm = configured_evm(spec, 0, false, InMemoryDB::default());
         fund_account(&mut evm, caller);
-
-        let block = TempoBlockEnv::default();
         {
-            let ctx = &mut evm.ctx;
-            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
-            let mut provider =
-                EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+            let spec = evm.config_spec_id();
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
                     .with_issuer(caller)
@@ -4480,9 +4477,10 @@ fn test_double_charge_key_authorization_regression() -> eyre::Result<()> {
             .build();
 
         let signed_tx = key_pair.sign_tx(tx)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let tx_env: TempoTxEnv =
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
         let result = evm.transact_commit(tx_env)?;
-        assert!(result.is_success());
+        assert!(result.status);
         Ok(result.tx_gas_used())
     }
 
@@ -4534,14 +4532,11 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
         .nonce(0)
         .gas_limit(500_000)
         .build();
-    let result_baseline = evm_baseline.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(tx_baseline)?,
-        caller,
-    ))?;
-    assert!(
-        result_baseline.is_success(),
-        "baseline transfer should succeed"
-    );
+    let result_baseline = evm_baseline.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx_baseline)?), caller)
+            .into(),
+    )?;
+    assert!(result_baseline.status, "baseline transfer should succeed");
     let gas_baseline = result_baseline.tx_gas_used();
 
     // Issue #3178 scenario: calls-format transfer with nonce_key != 0, caller.nonce == 0.
@@ -4556,12 +4551,11 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
         .nonce(0)
         .gas_limit(500_000)
         .build();
-    let result_2d = evm_2d.transact_commit(TempoTxEnv::from_recovered_tx(
-        &key_pair.sign_tx(tx_2d)?,
-        caller,
-    ))?;
+    let result_2d = evm_2d.transact_commit(
+        Recovered::new_unchecked(TempoTxEnvelope::AA(key_pair.sign_tx(tx_2d)?), caller).into(),
+    )?;
     assert!(
-        result_2d.is_success(),
+        result_2d.status,
         "calls-format transfer with 2D nonce should succeed"
     );
     let gas_2d = result_2d.tx_gas_used();

@@ -6,6 +6,7 @@ use alloy::{
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
+use evm2::PrecompileError;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinDEX, IStorageCredits,
@@ -38,10 +39,10 @@ struct DexGasOutcome {
 }
 
 fn under_overflow_revert() -> Bytes {
-    TempoPrecompileError::under_overflow()
-        .into_precompile_result(0, 0)
-        .unwrap()
-        .bytes
+    match TempoPrecompileError::under_overflow().into_precompile_result() {
+        Err(PrecompileError::Revert(bytes)) => bytes,
+        result => panic!("expected precompile revert, got {result:?}"),
+    }
 }
 
 fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {

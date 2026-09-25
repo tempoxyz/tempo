@@ -1,14 +1,10 @@
 use crate::{
-    TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
-    common::is_tip20_fee_inference_call,
+    TempoEvmTypes, TempoStateAccess, TempoTx, TempoTxEnv, common::is_tip20_fee_inference_call,
 };
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolCall;
 use core::fmt::Debug;
-use revm::{
-    Database,
-    context::{CfgEnv, Journal, result::EVMError},
-};
+use evm2::{Evm, registry::HandlerResult};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
@@ -21,32 +17,17 @@ use tempo_precompiles::{
 };
 
 /// EVM state needed to install storage for an internal protocol fee hook.
-pub struct ProtocolFeeContext<'a, DB: Database> {
-    /// Active transaction journal.
-    pub journal: &'a mut Journal<DB>,
-    /// Active block environment.
-    pub block_env: &'a TempoBlockEnv,
-    /// Active EVM configuration.
-    pub cfg: &'a CfgEnv<TempoHardfork>,
-    /// Active transaction environment.
-    pub tx_env: &'a TempoTxEnv,
-    /// Storage-action recorder shared with transaction execution.
-    pub actions: StorageActions,
+pub struct ProtocolFeeContext<'evm, 'db> {
+    /// Active Tempo EVM.
+    pub host: &'evm mut Evm<'db, TempoEvmTypes>,
 }
 
-impl<DB: alloy_evm::Database> ProtocolFeeContext<'_, DB> {
+impl ProtocolFeeContext<'_, '_> {
     /// Installs Tempo's ordinary protocol storage context and executes `f`.
     ///
     /// TIP-1060 accounting is disabled because protocol fee storage is charged externally.
     pub fn enter<R>(self, f: impl FnOnce() -> R) -> R {
-        StorageCtx::enter_evm_without_tip1060_accounting(
-            self.journal,
-            self.block_env,
-            self.cfg,
-            self.tx_env,
-            self.actions,
-            f,
-        )
+        StorageCtx::enter_evm_without_tip1060_accounting(self.host, f)
     }
 }
 
@@ -66,48 +47,46 @@ pub trait FeeTokenResolver {
 }
 
 /// Internal protocol fee hooks, separate from the public FeeManager precompile.
-pub trait ProtocolFeeManager<DB: Database>: Debug {
+pub trait ProtocolFeeManager: Debug + Send + Sync {
     /// Resolves the fee token that should pay for `tx`.
     fn get_fee_token(
         &self,
-        journal: &mut Journal<DB>,
+        host: &mut Evm<'_, TempoEvmTypes>,
         tx: &TempoTxEnv,
         fee_payer: Address,
         spec: TempoHardfork,
-        actions: StorageActions,
     ) -> TempoResult<Address> {
-        TempoFeeManager::new().resolve_fee_token(journal, tx, fee_payer, spec, actions)
+        let actions = host.ext().actions.clone();
+        TempoFeeManager::new().resolve_fee_token(host, tx, fee_payer, spec, actions)
     }
 
     /// Validates whether a TIP-20 can be used to pay fees.
     ///
     /// The handler checks the TIP-20 prefix first. Implementations define which tokens are valid.
-    /// `journal` is mutable because validation reads can warm accounts and storage, but
+    /// `host` is mutable because validation reads can warm accounts and storage, but
     /// implementations must not stage state changes here.
-    ///
-    /// This hook runs before nonce and replay state are consumed.
     ///
     /// Implementations charging non-zero fees in non-USD tokens must normalize them to the fee
     /// unit used by admission, ordering, charging, and settlement.
     fn validate_fee_token(
         &self,
-        journal: &mut Journal<DB>,
+        host: &mut Evm<'_, TempoEvmTypes>,
         fee_token: Address,
         spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        journal.ensure_tip20_usd(spec, fee_token, actions)
+    ) -> HandlerResult<()> {
+        let actions = host.ext().actions.clone();
+        host.ensure_tip20_usd(spec, fee_token, actions)
     }
 
     /// Resolves the validator token used to receive protocol fees.
     fn get_validator_token(
         &self,
-        journal: &mut Journal<DB>,
+        host: &mut Evm<'_, TempoEvmTypes>,
         beneficiary: Address,
-        spec: TempoHardfork,
-        actions: StorageActions,
     ) -> TempoResult<Address> {
-        journal.with_read_only_storage_ctx(spec, actions, || {
+        let spec = host.config_spec_id();
+        let actions = host.ext().actions.clone();
+        host.with_read_only_storage_ctx(spec, actions, || {
             TipFeeManager::new().get_validator_token(beneficiary)
         })
     }
@@ -120,7 +99,7 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
     #[allow(clippy::too_many_arguments)]
     fn collect_fee_pre_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         user_token: Address,
         max_amount: U256,
@@ -136,7 +115,7 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
     #[allow(clippy::too_many_arguments)]
     fn collect_fee_post_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,
@@ -156,10 +135,10 @@ impl TempoFeeManager {
     }
 }
 
-impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for TempoFeeManager {
+impl ProtocolFeeManager for TempoFeeManager {
     fn collect_fee_pre_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         user_token: Address,
         max_amount: U256,
@@ -179,7 +158,7 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for TempoFeeManager {
 
     fn collect_fee_post_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,

@@ -2671,7 +2671,7 @@ mod tests {
                 .abi_encode(),
                 Address::ZERO,
             );
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
             Ok(())
         })
     }

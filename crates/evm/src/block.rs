@@ -1,27 +1,27 @@
-use crate::{StorageActionReplayState, TempoBlockExecutionCtx, evm::TempoEvm};
-use alloy_consensus::{Transaction, transaction::TxHashRef};
-use alloy_evm::{
-    Database, Evm, RecoveredTx,
-    block::{
-        BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, GasOutput, TxResult,
-    },
-    eth::{
-        EthBlockExecutor, EthTxResult,
-        receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
-    },
+use crate::{
+    SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
+    TempoEvmTypes, transaction::ExecutionContext,
 };
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
-use reth_chainspec::EthChainSpec as _;
-use reth_evm::block::StateDB;
-use reth_revm::{
-    Inspector,
-    context::result::{ExecutionResult, HaltReason, ResultAndState},
-    state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
+use evm2::{
+    EvmTypes, TxResult, TxResultWithState,
+    bytecode::Bytecode,
+    evm::{Bal, PendingState, SystemTx},
 };
+use reth_chainspec::EthChainSpec as _;
+use reth_evm::{
+    BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
+    BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
+    execute::{map_database_error, map_handler_error},
+};
+use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
+use reth_execution_types::EvmState;
+use std::sync::Arc;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
@@ -30,7 +30,6 @@ use tempo_contracts::precompiles::{
     initial_zone_factory_state, t13_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
-use tempo_revm::{ExecutionContext, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,31 +55,33 @@ impl ReceiptBuilder for TempoReceiptBuilder {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
 
-    fn build_receipt<E: Evm>(&self, ctx: ReceiptBuilderCtx<'_, TempoTxType, E>) -> Self::Receipt {
+    fn build_receipt<T: EvmTypes>(
+        &self,
+        ctx: ReceiptBuilderCtx<TempoTxType, TxResult<T>>,
+    ) -> Self::Receipt {
         let ReceiptBuilderCtx {
             tx_type,
             result,
             cumulative_gas_used,
-            ..
         } = ctx;
         TempoReceipt {
             tx_type,
             // Success flag was added in `EIP-658: Embedding transaction status code in
             // receipts`.
-            success: result.is_success(),
+            success: result.status,
             cumulative_gas_used,
-            logs: result.into_logs(),
+            logs: result.logs,
         }
     }
 }
 
 /// The result of executing a Tempo transaction.
 ///
-/// This is an extension of [`EthTxResult`] with context necessary for committing a Tempo transaction.
+/// This is an extension of [`TxResultWithState`] with context necessary for committing a Tempo transaction.
 #[derive(Debug)]
 pub struct TempoTxResult {
     /// Inner transaction execution result.
-    inner: EthTxResult<HaltReason, TempoTxType>,
+    inner: EthTransactionResultWithState<TempoEvmTypes, TempoTxType>,
     /// Execution provenance used to exempt RPC simulations from block gas validation.
     execution_context: ExecutionContext,
     /// Next section of the block.
@@ -105,25 +106,34 @@ impl TempoTxResult {
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
         execution_context: ExecutionContext,
-        result: ExecutionResult<HaltReason>,
-        state: EvmState,
+        result: TxResult<TempoEvmTypes>,
+        state: PendingState,
         next_section: BlockSection,
         is_payment: bool,
         block_gas_used: u64,
         validator_fee: U256,
     ) -> Self {
         Self {
-            inner: EthTxResult {
-                result: ResultAndState::new(result, state),
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result,
+                    pending_state: state,
+                    _non_exhaustive: (),
+                },
+                tx.tx_type(),
+                0,
+            ),
             execution_context,
             next_section,
             is_payment,
             block_gas_used,
             validator_fee,
         }
+    }
+
+    /// Returns the EVM2 execution result.
+    pub const fn result(&self) -> &TxResult<TempoEvmTypes> {
+        &self.inner.result().result
     }
 
     /// Returns the block gas consumed by this transaction.
@@ -133,24 +143,29 @@ impl TempoTxResult {
 
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
-        self.inner.result.result.gas().state_gas_spent_final()
+        self.inner.result().result.state_gas_spent()
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
     pub fn validator_fee(&self) -> U256 {
         self.validator_fee
     }
+
+    /// Returns the transaction's pending EVM2 state.
+    pub const fn pending_state(&self) -> &PendingState {
+        &self.inner.result().pending_state
+    }
 }
 
-impl TxResult for TempoTxResult {
-    type HaltReason = HaltReason;
-
-    fn result(&self) -> &ResultAndState<Self::HaltReason> {
+impl BlockTransactionResult<TempoEvmTypes> for TempoTxResult {
+    fn result(&self) -> &TxResultWithState<TempoEvmTypes> {
         self.inner.result()
     }
+}
 
-    fn into_result(self) -> ResultAndState<Self::HaltReason> {
-        self.inner.into_result()
+impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
+    fn as_ref(&self) -> &TxResult<TempoEvmTypes> {
+        self.result()
     }
 }
 
@@ -159,10 +174,11 @@ impl TxResult for TempoTxResult {
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
 /// logic on top: section-based transaction ordering (`BlockSection`), system transaction
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
-pub struct TempoBlockExecutor<'a, DB: Database, I> {
-    pub(crate) inner:
-        EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
+#[expect(missing_debug_implementations)]
+pub struct TempoBlockExecutor<'a> {
+    pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
+    t13_active_at_genesis: bool,
     section: BlockSection,
     extra_data: Bytes,
 
@@ -172,29 +188,25 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_payment_gas_left: u64,
     /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
+    block_gas_used: u64,
 }
 
-impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
-where
-    DB: StateDB,
-    I: Inspector<TempoContext<DB>>,
-{
+impl<'a> TempoBlockExecutor<'a> {
     pub(crate) fn new(
-        evm: TempoEvm<DB, I>,
+        evm: TempoEvm<'a>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
+        let block_gas_limit = evm.block().gas_limit.to::<u64>();
         Self {
+            t13_active_at_genesis: chain_spec
+                .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
             incentive_gas_used: 0,
+            block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
-            non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
+            non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
             extra_data: ctx.inner.extra_data.clone(),
-            inner: EthBlockExecutor::new(
-                evm,
-                ctx.inner,
-                chain_spec,
-                TempoReceiptBuilder::default(),
-            ),
+            inner: EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder),
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
@@ -209,29 +221,33 @@ where
         address: Address,
         storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
-        let db = self.inner.evm.db_mut();
-        let info = db
-            .basic(address)
-            .map_err(BlockExecutionError::other)?
-            .unwrap_or_default();
-        if info.is_empty_code_hash() {
-            let mut account = Account::from(info);
-            let code = Bytecode::new_legacy([0xef].into());
-            account.info.code_hash = code.hash_slow();
-            account.info.code = Some(code);
-            for &(slot, value) in storage {
-                let original_value = db
-                    .storage(address, slot)
-                    .map_err(BlockExecutionError::other)?;
-                account.storage.insert(
-                    slot,
-                    EvmStorageSlot::new_changed(original_value, value, TransactionId::ZERO),
-                );
-            }
-            account.mark_touch();
-            let state = EvmState::from_iter([(address, account)]);
-            db.commit(state);
+        let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
+            Ok(info) => info,
+            Err(error) => return Err(map_database_error(error)),
+        };
+        if original
+            .as_ref()
+            .is_some_and(|info| info.code_hash != KECCAK256_EMPTY)
+        {
+            return Ok(());
         }
+
+        let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
+        let current = original.clone().unwrap_or_default().with_code(code);
+        let mut state = PendingState::default();
+        state.insert_account(address, original, Some(current));
+        for &(slot, value) in storage {
+            let original = match self
+                .evm_mut()
+                .state_mut()
+                .storage_slot_untracked(&address, &slot)
+            {
+                Ok(value) => value,
+                Err(error) => return Err(map_database_error(error)),
+            };
+            state.insert_storage(address, slot, original, value);
+        }
+        self.inner.commit_pending_state(&state);
         Ok(())
     }
 
@@ -240,14 +256,20 @@ where
         let [factory, portal, verifier, messenger] =
             initial_zone_factory_state(INITIAL_FACTORY_OWNER);
 
-        let db = self.inner.evm.db_mut();
-        let factory_info = db
-            .basic(factory.address)
-            .map_err(BlockExecutionError::other)?
-            .unwrap_or_default();
+        let original = match self
+            .evm_mut()
+            .state_mut()
+            .account_info_untracked(&factory.address)
+        {
+            Ok(info) => info,
+            Err(error) => return Err(map_database_error(error)),
+        };
         // Genesis allocations are authoritative, and the marker also records a completed
         // post-genesis installation.
-        if !factory_info.is_empty_code_hash() {
+        if original
+            .as_ref()
+            .is_some_and(|info| info.code_hash != KECCAK256_EMPTY)
+        {
             return Ok(());
         }
 
@@ -267,37 +289,41 @@ where
         &mut self,
         runtimes: [InitialZoneFactoryAccount; 3],
     ) -> Result<(), BlockExecutionError> {
-        let db = self.inner.evm.db_mut();
-        let mut state = EvmState::default();
+        let mut state = PendingState::default();
         for runtime in runtimes {
             let destination = runtime.address;
-            let code = Bytecode::new_legacy(runtime.code);
-            let code_hash = code.hash_slow();
-            let info = db
-                .basic(destination)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            if info.code_hash == code_hash {
+            let original = match self
+                .evm_mut()
+                .state_mut()
+                .account_info_untracked(&destination)
+            {
+                Ok(info) => info,
+                Err(error) => return Err(map_database_error(error)),
+            };
+            let current = original
+                .clone()
+                .unwrap_or_default()
+                .with_code(Bytecode::new_raw(runtime.code));
+            if original
+                .as_ref()
+                .is_some_and(|info| info.code_hash == current.code_hash)
+            {
                 continue;
             }
-            let mut account = Account::from(info);
-            account.info.code_hash = code_hash;
-            account.info.code = Some(code);
-            account.mark_touch();
-            state.insert(destination, account);
+            state.insert_account(destination, original, Some(current));
         }
         if !state.is_empty() {
-            db.commit(state);
+            self.inner.commit_pending_state(&state);
         }
         Ok(())
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
-        if !self.evm().cfg.spec.is_t8() {
+        if !self.evm().config_spec_id().is_t8() {
             return Ok(());
         }
 
-        let epoch_length = self.evm().block().epoch_length.get();
+        let epoch_length = self.evm().block().ext.epoch_length.get();
         let block_number = self.evm().block().number.saturating_to::<u64>();
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
@@ -326,14 +352,19 @@ where
 
         let result = self
             .evm_mut()
-            .transact_system_call(Address::ZERO, CURRENT_COMMITTEE_ADDRESS, calldata)
-            .map_err(BlockExecutionError::other)?;
+            .system_call(
+                SystemTx::new(CURRENT_COMMITTEE_ADDRESS, calldata)
+                    .with_caller(Address::ZERO)
+                    .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
+            )
+            .map_err(map_handler_error)?
+            .detach();
 
-        if !result.result.is_success() {
+        if !result.result.status {
             return Err(BlockValidationError::msg("current committee system call failed").into());
         }
 
-        self.evm_mut().db_mut().commit(result.state);
+        self.inner.commit_pending_state(&result.pending_state);
         Ok(())
     }
 
@@ -361,7 +392,7 @@ where
                 ));
             }
 
-            if self.evm().cfg.spec.is_t4() {
+            if self.evm().config_spec_id().is_t4() {
                 return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
             }
 
@@ -428,7 +459,7 @@ where
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        if self.evm().cfg.spec.is_t5() {
+        if self.evm().config_spec_id().is_t5() {
             tx.is_payment_v2()
         } else {
             tx.is_payment_v1()
@@ -472,20 +503,17 @@ where
     }
 }
 
-impl<'a, DB, I> BlockExecutor for TempoBlockExecutor<'a, DB, I>
-where
-    DB: StateDB,
-    I: Inspector<TempoContext<DB>>,
-{
+impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
-    type Evm = TempoEvm<DB, I>;
-    type Result = TempoTxResult;
+    type Evm = TempoEvm<'a>;
+    type TransactionResultWithState = TempoTxResult;
+    type BlockAccessList = Bal;
 
-    fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
+    fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         if self
             .inner
-            .ctx
+            .context()
             .withdrawals
             .as_ref()
             .is_some_and(|withdrawals| !withdrawals.is_empty())
@@ -496,91 +524,86 @@ where
         self.inner.apply_pre_execution_changes()?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
+        if self.evm().config_spec_id().is_t2() {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+        if self.evm().config_spec_id().is_t3() {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS, &[])?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
+        if self.evm().config_spec_id().is_t5() {
             self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
+        if self.evm().config_spec_id().is_t6() {
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
+        if self.evm().config_spec_id().is_t7() {
             self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
+        if self.evm().config_spec_id().is_t8() {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
+        if self.evm().config_spec_id().is_t10() {
             self.deploy_zone_factory_at_boundary()?;
         }
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
         // that activate T13 later still follow the normal runtime upgrade path.
-        if self.inner.spec.is_t13_active_at_timestamp(timestamp)
-            && !self
-                .inner
-                .spec
-                .is_t13_active_at_timestamp(self.inner.spec.genesis().timestamp)
-        {
+        if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
 
         Ok(())
     }
 
-    fn receipts(&self) -> &[Self::Receipt] {
+    fn receipts(&self) -> &[TempoReceipt] {
         self.inner.receipts()
     }
 
     fn execute_transaction_without_commit(
         &mut self,
-        tx: impl ExecutableTx<Self>,
-    ) -> Result<Self::Result, BlockExecutionError> {
+        tx: impl ExecutorTx<Self>,
+    ) -> Result<Self::TransactionResultWithState, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
-        let execution_context = tx_env.execution_context;
         // Remove any prewarming-specific context that was added to the tx env.
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = None;
-        }
-        let next_section = self.validate_tx_pre_execution(recovered.tx())?;
-
+        tx_env.inner_mut().set_expiring_nonce_idx(None);
+        let execution_context = tx_env.inner().execution_context();
+        let original = recovered.tx().clone();
+        let next_section = self.validate_tx_pre_execution(&original)?;
         let inner = self
             .inner
-            .execute_transaction_without_commit((tx_env, &recovered))?;
+            .execute_transaction_without_commit((tx_env, recovered))?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
-        let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
-            inner.result.result.gas().block_regular_gas_used()
+        let block_gas_used = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
+            inner.result().result.execution_gas_spent()
         } else {
-            inner.result.result.tx_gas_used()
+            inner.result().result.tx_gas_used()
         };
 
         let next_section = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            self.validate_tx(&original, block_gas_used)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
-        let validator_fee = self.evm().validator_fee();
+        let validator_fee = inner.result().result.ext.validator_fee;
         Ok(TempoTxResult {
             inner,
             execution_context,
             next_section,
-            is_payment: self.is_payment(recovered.tx()),
+            is_payment: self.is_payment(&original),
             block_gas_used,
             validator_fee,
         })
     }
 
-    fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
+    fn commit_transaction(
+        &mut self,
+        output: Self::TransactionResultWithState,
+    ) -> Result<GasOutput, BlockExecutionError> {
         let TempoTxResult {
             inner,
             execution_context,
@@ -590,7 +613,8 @@ where
             validator_fee: _,
         } = output;
 
-        let gas_output = self.inner.commit_transaction(inner);
+        let gas_output = self.inner.commit_transaction(inner)?;
+        self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
 
         self.section = next_section;
 
@@ -616,24 +640,24 @@ where
 
         self.replay_state.commit_tx_changes();
 
-        gas_output
+        Ok(gas_output)
     }
 
-    fn finish(
+    fn finish_with_block_access_list(
         mut self,
-    ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+    ) -> Result<(BlockExecutionOutput<TempoReceipt>, Option<BlockAccessList>), BlockExecutionError>
+    {
         // T4 sets the shared gas limit to zero, so any gas spilled into the
         // incentive section exceeds the available block capacity.
-        if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
+        if self.evm().config_spec_id().is_t4() && self.incentive_gas_used > 0 {
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
         self.apply_current_committee_system_call()?;
 
-        let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
-
-        let regular_gas_used = self.inner.block_regular_gas_used;
-        let (evm, mut result) = self.inner.finish()?;
+        let block_gas_used = self.block_gas_used;
+        let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
+        let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
@@ -643,11 +667,10 @@ where
         // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
         // cumulative_tx_gas_used (total_spent - refunded), matching the original
         // block header semantics.
-        if amsterdam_eip8037_enabled {
-            result.gas_used = regular_gas_used;
+        if use_regular_gas {
+            output.result.gas_used = block_gas_used;
         }
-
-        Ok((evm, result))
+        Ok((output, block_access_list))
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -657,15 +680,45 @@ where
     fn evm(&self) -> &Self::Evm {
         self.inner.evm()
     }
+
+    fn set_state_hook(&mut self, hook: impl FnMut(EvmState) + Send + 'static) -> bool {
+        self.inner.set_state_hook(hook);
+        true
+    }
+
+    fn validate_transaction_gas_limit(
+        &mut self,
+        gas_limit: u64,
+    ) -> Result<(), BlockExecutionError> {
+        self.inner.validate_transaction_gas_limit(gas_limit)
+    }
+
+    fn convert_block_access_list(
+        block_access_list: &BlockAccessList,
+    ) -> Result<Self::BlockAccessList, BlockExecutionError> {
+        Bal::try_from(block_access_list.as_slice()).map_err(BlockExecutionError::other)
+    }
+
+    fn set_block_access_list(&mut self, block_access_list: Arc<Self::BlockAccessList>) {
+        self.inner.set_block_access_list(block_access_list);
+    }
+
+    fn set_block_access_index(&mut self, index: BlockAccessIndex) {
+        self.inner.set_block_access_index(index);
+    }
+
+    fn enable_block_access_list_builder(&mut self) {
+        self.inner.enable_block_access_list_builder();
+    }
+
+    fn take_block_access_list(&mut self) -> Option<BlockAccessList> {
+        self.inner.take_block_access_list()
+    }
 }
 
 // Test-only methods to set internal state without exposing fields as pub(crate)
 #[cfg(test)]
-impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
-where
-    DB: Database,
-    I: Inspector<TempoContext<DB>>,
-{
+impl TempoBlockExecutor<'_> {
     /// Set the block section for testing section transition logic.
     pub(crate) fn set_section_for_test(&mut self, section: BlockSection) {
         self.section = section;
@@ -680,9 +733,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
+    use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
-    use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
@@ -693,13 +745,12 @@ mod tests {
     };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
+    use evm2::{
+        evm::{AccountInfo, InMemoryDB},
+        interpreter::Host as _,
+    };
     use rand::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
-    use reth_revm::{State, state::AccountInfo};
-    use revm::{
-        context::result::{ExecutionResult, ResultGas},
-        database::EmptyDB,
-    };
     use std::{
         iter::repeat_with,
         sync::{Arc, Mutex},
@@ -768,65 +819,47 @@ mod tests {
         }
     }
 
-    fn read_current_committee<DB, I>(
-        executor: &mut TempoBlockExecutor<'_, DB, I>,
-    ) -> ICurrentCommittee::getCommitteeMembersReturn
-    where
-        DB: StateDB,
-        I: Inspector<TempoContext<DB>>,
-    {
+    fn read_current_committee(
+        executor: &mut TempoBlockExecutor<'_>,
+    ) -> ICurrentCommittee::getCommitteeMembersReturn {
         let result = executor
             .evm_mut()
-            .transact_system_call(
-                Address::ZERO,
+            .system_call(SystemTx::new(
                 CURRENT_COMMITTEE_ADDRESS,
                 ICurrentCommittee::getCommitteeMembersCall {}
                     .abi_encode()
                     .into(),
-            )
+            ))
             .unwrap();
         assert!(
-            result.result.is_success(),
-            "getCommitteeMembers failed: {:?}",
-            result.result
+            result.result().status,
+            "getCommitteeMembers failed: {result:?}"
         );
-
-        let output = match result.result {
-            ExecutionResult::Success {
-                output: revm::context::result::Output::Call(output),
-                ..
-            } => output,
-            result => panic!("unexpected getCommitteeMembers result: {result:?}"),
-        };
-
-        ICurrentCommittee::getCommitteeMembersCall::abi_decode_returns(&output).unwrap()
+        ICurrentCommittee::getCommitteeMembersCall::abi_decode_returns(&result.result().output)
+            .unwrap()
     }
 
     #[test]
     fn test_build_receipt() {
         let builder = TempoReceiptBuilder;
         let tx = create_legacy_tx();
-        let evm = test_evm(EmptyDB::default());
-
         let logs = vec![Log::new_unchecked(
             Address::ZERO,
             vec![B256::ZERO],
             Bytes::new(),
         )];
-        let result: ExecutionResult<HaltReason> = ExecutionResult::Success {
-            reason: revm::context::result::SuccessReason::Return,
-            gas: ResultGas::default().with_total_gas_spent(21000),
+        let result = TxResult::<TempoEvmTypes> {
+            status: true,
+            total_gas_spent: 21000,
             logs,
-            output: revm::context::result::Output::Call(Bytes::new()),
+            ..Default::default()
         };
 
         let cumulative_gas_used = 21000;
 
-        let receipt = builder.build_receipt(ReceiptBuilderCtx {
+        let receipt = builder.build_receipt::<TempoEvmTypes>(ReceiptBuilderCtx {
             tx_type: tx.tx_type(),
-            evm: &evm,
             result,
-            state: &Default::default(),
             cumulative_gas_used,
         });
 
@@ -840,7 +873,7 @@ mod tests {
     #[test]
     fn test_validate_system_tx() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
@@ -897,7 +930,7 @@ mod tests {
     #[test]
     fn test_validate_system_tx_duplicate_subblocks_system_tx() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: true,
@@ -920,7 +953,7 @@ mod tests {
     #[test]
     fn test_validate_system_tx_invalid_sublocks_metadata() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let mut input = BytesMut::new();
@@ -939,7 +972,7 @@ mod tests {
     #[test]
     fn test_validate_system_tx_invalid_system_tx() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Create system tx with non-zero `to` address
@@ -967,11 +1000,10 @@ mod tests {
     #[test]
     fn test_validate_system_tx_rejects_metadata_tx_in_t4() {
         let chainspec = DEV.clone();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-
-        // TestExecutorBuilder seeds the default runtime spec, so force the T4 path explicitly.
-        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
+        let mut db = InMemoryDB::default();
+        let executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T4)
+            .build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_subblock_metadata(&signer)];
@@ -999,21 +1031,22 @@ mod tests {
         );
 
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let pre_t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
         assert!(pre_t5_executor.is_payment(&tx));
 
         let chainspec = DEV.clone();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        t5_executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T5;
+        let mut db = InMemoryDB::default();
+        let t5_executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T5)
+            .build(&mut db, &chainspec);
         assert!(!t5_executor.is_payment(&tx));
     }
 
     #[test]
     fn test_validate_tx() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Test regular transaction in StartOfBlock section goes to NonShared
@@ -1050,7 +1083,7 @@ mod tests {
     fn test_subblock_nonce_rejected_before_execution_and_commit() {
         let chainspec = DEV.clone();
         for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
-            let mut db = State::builder().with_bundle_update().build();
+            let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
                 .with_spec(spec)
                 .build(&mut db, &chainspec);
@@ -1061,7 +1094,7 @@ mod tests {
                 "subblock transactions are not supported"
             );
             let recovered = Recovered::new_unchecked(tx, Address::ZERO);
-            let err = executor.execute_transaction(&recovered).unwrap_err();
+            let err = executor.execute_transaction(recovered).unwrap_err();
             assert!(
                 matches!(&err, BlockExecutionError::Validation(_)),
                 "{err:?}"
@@ -1073,7 +1106,7 @@ mod tests {
     #[test]
     fn test_validate_tx_regular_tx_follow_system_tx() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
 
         // Set section to System
         let executor = TestExecutorBuilder::default()
@@ -1095,7 +1128,7 @@ mod tests {
     #[test]
     fn test_commit_transaction() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1109,26 +1142,25 @@ mod tests {
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::default().with_total_gas_spent(21000),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 21000,
+                        ..Default::default()
                     },
-                    state: Default::default(),
+                    ..Default::default()
                 },
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
 
-        let gas_output = executor.commit_transaction(output);
+        let gas_output = executor.commit_transaction(output).unwrap();
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
@@ -1137,7 +1169,7 @@ mod tests {
     #[test]
     fn test_current_committee_system_call_writes_boundary_outcome() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let outcome = create_dkg_outcome(42, 3);
         let expected_public_keys = outcome
             .players()
@@ -1165,7 +1197,7 @@ mod tests {
     #[test]
     fn test_current_committee_system_call_skips_non_boundary_block() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_block_number(3)
             .with_epoch_length(5)
@@ -1186,7 +1218,7 @@ mod tests {
     #[test]
     fn test_current_committee_system_call_rejects_invalid_boundary_extra_data() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_block_number(4)
             .with_epoch_length(5)
@@ -1205,7 +1237,7 @@ mod tests {
     #[test]
     fn test_finish() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let result = executor.finish();
@@ -1215,12 +1247,11 @@ mod tests {
     #[test]
     fn test_finish_t4_without_metadata_passes_when_incentive_gas_is_zero() {
         let chainspec = DEV.clone();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T4)
             .build(&mut db, &chainspec);
-
-        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
         executor.apply_pre_execution_changes().unwrap();
 
         assert!(executor.finish().is_ok());
@@ -1236,51 +1267,47 @@ mod tests {
                 vec![true, false],
             ] {
                 let chainspec = DEV.clone();
-                let mut db = State::builder().with_bundle_update().build();
+                let mut db = InMemoryDB::default();
                 let mut executor = TestExecutorBuilder::default()
                     .with_parent_beacon_block_root(B256::ZERO)
                     .with_general_gas_limit(0)
+                    .with_spec(hardfork)
                     .build(&mut db, &chainspec);
-                executor.inner.evm.cfg.spec = hardfork;
                 executor.apply_pre_execution_changes().unwrap();
-                let tx = create_legacy_tx();
                 for &simulation in &simulations {
-                    let context = if simulation {
-                        ExecutionContext::Simulation
-                    } else {
-                        ExecutionContext::Transaction {
-                            tx_hash: *tx.tx_hash(),
-                        }
-                    };
-                    let env = tempo_revm::TempoTxEnv {
-                        execution_context: context,
-                        ..Default::default()
-                    };
-                    let recovered = Recovered::new_unchecked(tx.clone(), Address::ZERO);
                     executor
-                        .execute_transaction_with_actions(
-                            (env, &recovered),
-                            crate::action_replay::StorageActionReplay {
-                                result: ExecutionResult::Success {
-                                    reason: revm::context::result::SuccessReason::Stop,
-                                    logs: vec![],
-                                    gas: ResultGas::default().with_total_gas_spent(21_000),
-                                    output: revm::context::result::Output::Call(Bytes::new()),
-                                },
-                                actions: vec![],
-                                expiring_nonce: None,
-                                validator_fee: U256::ZERO,
+                        .commit_transaction(TempoTxResult {
+                            execution_context: if simulation {
+                                ExecutionContext::Simulation
+                            } else {
+                                ExecutionContext::Transaction {
+                                    tx_hash: B256::ZERO,
+                                }
                             },
-                            |_| {},
-                            false,
-                        )
+                            inner: EthTransactionResultWithState::new(
+                                TxResultWithState {
+                                    result: TxResult::<TempoEvmTypes> {
+                                        status: true,
+                                        total_gas_spent: 21_000,
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                },
+                                TempoTxType::Legacy,
+                                0,
+                            ),
+                            next_section: BlockSection::GasIncentive,
+                            is_payment: false,
+                            block_gas_used: 21_000,
+                            validator_fee: U256::ZERO,
+                        })
                         .unwrap();
                 }
                 let should_reject = hardfork == TempoHardfork::T4 && simulations.contains(&false);
                 match executor.finish() {
-                    Err(err) => {
+                    Err(error) => {
                         assert!(should_reject);
-                        assert_eq!(err.to_string(), "incentive gas limit exceeded");
+                        assert_eq!(error.to_string(), "incentive gas limit exceeded");
                     }
                     Ok(_) => assert!(!should_reject),
                 }
@@ -1291,7 +1318,7 @@ mod tests {
     #[test]
     fn test_commit_transaction_tracks_total_cumulative_gas() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1304,26 +1331,25 @@ mod tests {
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 21000,
+                        ..Default::default()
                     },
-                    state: Default::default(),
+                    ..Default::default()
                 },
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
 
-        let gas_output = executor.commit_transaction(output);
+        let gas_output = executor.commit_transaction(output).unwrap();
 
         // With zero storage creation gas, execution gas equals total gas
         assert_eq!(gas_output.tx_gas_used(), 21000);
@@ -1332,7 +1358,7 @@ mod tests {
     #[test]
     fn test_cumulative_gas_accumulates_across_transactions() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1346,25 +1372,24 @@ mod tests {
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 21000,
+                        ..Default::default()
                     },
-                    state: Default::default(),
+                    ..Default::default()
                 },
-                blob_gas_used: 0,
-                tx_type: tx1.tx_type(),
-            },
+                tx1.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
-        executor.commit_transaction(output1);
+        executor.commit_transaction(output1).unwrap();
 
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
@@ -1372,25 +1397,24 @@ mod tests {
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(50000, 0, 0, 0),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 50000,
+                        ..Default::default()
                     },
-                    state: Default::default(),
+                    ..Default::default()
                 },
-                blob_gas_used: 0,
-                tx_type: tx2.tx_type(),
-            },
+                tx2.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
-        executor.commit_transaction(output2);
+        executor.commit_transaction(output2).unwrap();
 
         // Receipts should have cumulative total gas (tracked by inner executor)
         let receipts = executor.receipts();
@@ -1401,7 +1425,7 @@ mod tests {
     #[test]
     fn test_finish_returns_execution_gas_for_block_header() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1411,10 +1435,31 @@ mod tests {
         executor.apply_pre_execution_changes().unwrap();
 
         // Manually set state to simulate a committed transaction (no state gas)
-        executor.inner.cumulative_tx_gas_used += 21000;
-        executor.inner.block_regular_gas_used += 21000;
+        executor
+            .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult::<TempoEvmTypes> {
+                            status: true,
+                            total_gas_spent: 21000,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    TempoTxType::Legacy,
+                    0,
+                ),
+                next_section: BlockSection::NonShared,
+                is_payment: false,
+                block_gas_used: 21000,
+                validator_fee: U256::ZERO,
+            })
+            .unwrap();
 
-        let (_, result) = executor.finish().unwrap();
+        let result = executor.finish().unwrap();
         // Block header gas_used = block_regular_gas_used
         assert_eq!(result.gas_used, 21000);
     }
@@ -1422,7 +1467,7 @@ mod tests {
     #[test]
     fn test_non_shared_gas_uses_execution_gas_only() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1437,25 +1482,24 @@ mod tests {
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(50_000, 0, 0, 0),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 50_000,
+                        ..Default::default()
                     },
-                    state: Default::default(),
+                    ..Default::default()
                 },
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            block_gas_used: 50000,
+            block_gas_used: 50_000,
             validator_fee: U256::ZERO,
         };
-        executor.commit_transaction(output);
+        executor.commit_transaction(output).unwrap();
 
         assert_eq!(executor.non_shared_gas_left, initial_non_shared - 50_000);
     }
@@ -1465,7 +1509,7 @@ mod tests {
     #[test]
     fn test_t4_non_shared_gas_excludes_state_gas() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1485,25 +1529,25 @@ mod tests {
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(300_000, 0, 0, 100_000),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 300_000,
+                        state_gas_spent: 100_000,
+                        ..Default::default()
                     },
-                    state: Default::default(),
+                    ..Default::default()
                 },
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
-        executor.commit_transaction(output);
+        executor.commit_transaction(output).unwrap();
 
         // non_shared_gas_left should decrease by regular gas (200k), not total (300k)
         assert_eq!(
@@ -1522,7 +1566,7 @@ mod tests {
     #[test]
     fn test_t4_incentive_gas_excludes_state_gas() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1536,25 +1580,25 @@ mod tests {
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
-            inner: EthTxResult {
-                result: ResultAndState {
-                    result: revm::context::result::ExecutionResult::Success {
-                        reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new_with_state_gas(300_000, 0, 0, 100_000),
-                        logs: vec![],
-                        output: revm::context::result::Output::Call(Bytes::new()),
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 300_000,
+                        state_gas_spent: 100_000,
+                        ..Default::default()
                     },
-                    state: Default::default(),
+                    ..Default::default()
                 },
-                blob_gas_used: 0,
-                tx_type: tx.tx_type(),
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::GasIncentive,
             is_payment: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
-        executor.commit_transaction(output);
+        executor.commit_transaction(output).unwrap();
 
         assert_eq!(
             executor.incentive_gas_used, 200_000,
@@ -1566,69 +1610,79 @@ mod tests {
     fn test_apply_pre_execution_deploys_validator_v2_code() {
         // Dev chainspec has t2Time: 0, so T2 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T2)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
-        drop(executor);
-
-        let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
-        let info = acc.account_info().unwrap();
-        assert!(!info.is_empty_code_hash());
+        let info = executor
+            .evm()
+            .state()
+            .overlay_db()
+            .account_info(&VALIDATOR_CONFIG_V2_ADDRESS)
+            .unwrap();
+        assert_ne!(info.code_hash, KECCAK256_EMPTY);
     }
 
     #[test]
     fn test_apply_pre_execution_deploys_signature_verifier_code() {
         // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T3)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
-        drop(executor);
-
-        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
-        let info = acc.account_info().unwrap();
-        assert!(!info.is_empty_code_hash());
+        let info = executor
+            .evm()
+            .state()
+            .overlay_db()
+            .account_info(&SIGNATURE_VERIFIER_ADDRESS)
+            .unwrap();
+        assert_ne!(info.code_hash, KECCAK256_EMPTY);
     }
 
     #[test]
     fn test_apply_pre_execution_deploys_guard_code() {
         // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T6)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
-        drop(executor);
-
-        let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
-        let info = acc.account_info().unwrap();
-        assert!(!info.is_empty_code_hash());
+        let info = executor
+            .evm()
+            .state()
+            .overlay_db()
+            .account_info(&RECEIVE_POLICY_GUARD_ADDRESS)
+            .unwrap();
+        assert_ne!(info.code_hash, KECCAK256_EMPTY);
     }
 
     #[test]
     fn test_pre_t3_does_not_deploy_signature_verifier_code() {
         // Moderato does not have T4 active (no t3Time set), so the code should NOT be deployed.
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
-        drop(executor);
-
-        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
-        let info = acc.account_info();
+        let info = executor
+            .evm()
+            .state()
+            .overlay_db()
+            .account_info(&SIGNATURE_VERIFIER_ADDRESS);
         assert!(
-            info.is_none() || info.unwrap().is_empty_code_hash(),
+            info.is_none() || info.unwrap().code_hash == KECCAK256_EMPTY,
             "SignatureVerifier code should not be deployed before T3"
         );
     }
@@ -1636,28 +1690,26 @@ mod tests {
     #[test]
     fn test_deploy_precompile_at_boundary_dispatches_state_hook() {
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
         let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor
-            .evm_mut()
-            .db_mut()
-            .set_state_hook(Some(Box::new(move |state: EvmState| {
-                hook_calls_clone.lock().unwrap().push(state);
-            })));
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         let addr = Address::with_last_byte(0xff);
         executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
-        drop(executor);
 
         // Verify code was deployed.
-        let acc = db.load_cache_account(addr).unwrap();
-        let info = acc.account_info().unwrap();
-        assert!(!info.is_empty_code_hash());
+        let info = executor
+            .evm()
+            .state()
+            .overlay_db()
+            .account_info(&addr)
+            .unwrap();
+        assert_ne!(info.code_hash, KECCAK256_EMPTY);
 
         // Verify the state hook was called exactly once with the correct address.
         let calls = hook_calls.lock().unwrap();
@@ -1678,14 +1730,14 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let addr = Address::with_last_byte(0xfe);
         let original_info = AccountInfo {
             balance: U256::from(42),
             nonce: 7,
             ..Default::default()
         };
-        db.insert_account(addr, original_info.clone());
+        db.insert_account_info(&addr, original_info.clone());
 
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1693,12 +1745,7 @@ mod tests {
 
         let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor
-            .evm_mut()
-            .db_mut()
-            .set_state_hook(Some(Box::new(move |state: EvmState| {
-                hook_calls_clone.lock().unwrap().push(state);
-            })));
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
 
@@ -1706,7 +1753,7 @@ mod tests {
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
             calls[0][&addr].original_info(),
-            original_info,
+            reth_execution_types::revm_account(&original_info),
             "state hook account should preserve existing original_info"
         );
     }
@@ -1723,7 +1770,7 @@ mod tests {
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-            let mut db = State::builder().with_bundle_update().build();
+            let mut db = InMemoryDB::default();
             let mut expected = Vec::new();
             for (index, address) in [
                 ZONE_FACTORY_ADDRESS,
@@ -1734,7 +1781,7 @@ mod tests {
             .into_iter()
             .enumerate()
             {
-                let code = Bytecode::new_legacy(Bytes::from(vec![0x00, index as u8]));
+                let code = Bytecode::new_raw(Bytes::from(vec![0x00, index as u8]));
                 let info = AccountInfo {
                     balance: U256::from(42),
                     nonce: 7,
@@ -1742,11 +1789,8 @@ mod tests {
                     code: Some(code),
                     ..Default::default()
                 };
-                db.insert_account_with_storage(
-                    address,
-                    info.clone(),
-                    [(U256::from(9), U256::from(123))].into_iter().collect(),
-                );
+                db.insert_account_info(&address, info.clone());
+                db.insert_account_storage(&address, &U256::from(9), &U256::from(123));
                 expected.push((address, info));
             }
             for block_number in [1, 2] {
@@ -1755,20 +1799,26 @@ mod tests {
                     .with_block_number(block_number)
                     .with_parent_beacon_block_root(B256::ZERO)
                     .build(&mut db, &chainspec);
-                executor.evm_mut().ctx_mut().block.timestamp =
-                    U256::from(genesis_timestamp + block_number);
+                let mut block = *executor.evm().block();
+                block.timestamp = U256::from(genesis_timestamp + block_number);
+                executor.evm_mut().set_block(block);
                 executor.apply_pre_execution_changes().unwrap();
-                drop(executor);
                 for (address, info) in &expected {
                     assert_eq!(
-                        &db.load_cache_account(*address)
+                        &executor
+                            .evm_mut()
+                            .state_mut()
+                            .account_info_untracked(address)
                             .unwrap()
-                            .account_info()
                             .unwrap(),
                         info
                     );
                     assert_eq!(
-                        revm::Database::storage(&mut db, *address, U256::from(9)).unwrap(),
+                        executor
+                            .evm_mut()
+                            .sload(address, &U256::from(9), false)
+                            .unwrap()
+                            .value,
                         U256::from(123)
                     );
                 }
@@ -1823,7 +1873,7 @@ mod tests {
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-            let mut db = State::builder().with_bundle_update().build();
+            let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
                 .with_spec(if timestamp >= activation {
                     TempoHardfork::T13
@@ -1832,10 +1882,10 @@ mod tests {
                 })
                 .with_parent_beacon_block_root(B256::ZERO)
                 .build(&mut db, &chainspec);
-            executor.evm_mut().ctx_mut().block.timestamp = U256::from(timestamp);
+            let mut block = *executor.evm().block();
+            block.timestamp = U256::from(timestamp);
+            executor.evm_mut().set_block(block);
             executor.apply_pre_execution_changes().unwrap();
-            drop(executor);
-
             for (address, expected) in [
                 ZONE_PORTAL_IMPL_ADDRESS,
                 ZONE_VERIFIER_ADDRESS,
@@ -1844,13 +1894,9 @@ mod tests {
             .into_iter()
             .zip(expected_runtimes)
             {
-                let installed = db
-                    .load_cache_account(address)
-                    .unwrap()
-                    .account_info()
-                    .unwrap()
-                    .code
-                    .unwrap();
+                let overlay = executor.evm().state().overlay_db();
+                let info = overlay.account_info(&address).unwrap();
+                let installed = &overlay.cache.contracts[&info.code_hash];
                 assert_eq!(installed.original_bytes(), expected);
             }
         }
@@ -1863,64 +1909,54 @@ mod tests {
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
         );
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
         let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor
-            .evm_mut()
-            .db_mut()
-            .set_state_hook(Some(Box::new(move |state: EvmState| {
-                hook_calls_clone.lock().unwrap().push(state);
-            })));
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.upgrade_zone_runtimes_at_boundary().unwrap();
         executor.upgrade_zone_runtimes_at_boundary().unwrap();
-        drop(executor);
 
-        let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
+        let factory = executor
+            .evm()
+            .state()
+            .overlay_db()
+            .account_info(&ZONE_FACTORY_ADDRESS)
+            .unwrap();
         assert_eq!(
-            factory
-                .account_info()
-                .unwrap()
-                .code
-                .unwrap()
+            executor.evm().state().overlay_db().cache.contracts[&factory.code_hash]
                 .original_bytes(),
             Bytes::from_static(&[0xef])
         );
         let expected_factory_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         assert_eq!(
-            factory.storage_slot(U256::ZERO),
-            Some(expected_factory_config)
+            executor.evm().state().overlay_db().cache.storage[&ZONE_FACTORY_ADDRESS].slots
+                [&U256::ZERO],
+            expected_factory_config
         );
         for (destination, expected) in [
-            (
-                ZONE_PORTAL_IMPL_ADDRESS,
-                Bytecode::new_legacy(T13_ZONE_PORTAL_RUNTIME),
-            ),
-            (
-                ZONE_VERIFIER_ADDRESS,
-                Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME),
-            ),
-            (
-                ZONE_MESSENGER_ADDRESS,
-                Bytecode::new_legacy(T13_ZONE_MESSENGER_RUNTIME),
-            ),
+            (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
         ] {
-            let installed = db
-                .load_cache_account(destination)
-                .unwrap()
-                .account_info()
-                .unwrap()
-                .code
+            let info = executor
+                .evm()
+                .state()
+                .overlay_db()
+                .account_info(&destination)
                 .unwrap();
-            assert_eq!(installed, expected);
+            assert_eq!(
+                executor.evm().state().overlay_db().cache.contracts[&info.code_hash]
+                    .original_bytes(),
+                expected
+            );
         }
 
         let calls = hook_calls.lock().unwrap();
@@ -1954,7 +1990,7 @@ mod tests {
     fn test_t4_finish_exempts_state_gas_from_header() {
         // DEV chainspec has T4 active at timestamp 0.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .with_amsterdam_eip8037_enabled(true)
@@ -1970,18 +2006,33 @@ mod tests {
         let regular_gas = 260_000u64;
         let state_gas = 40_000u64;
 
-        executor.inner.cumulative_tx_gas_used = tx_gas_used;
-        executor.inner.block_regular_gas_used = regular_gas;
-        executor.inner.block_state_gas_used = state_gas;
+        executor
+            .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult::<TempoEvmTypes> {
+                            status: true,
+                            total_gas_spent: 300_000,
+                            state_gas_spent: state_gas,
+                            refunded: 30_000,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    TempoTxType::Legacy,
+                    0,
+                ),
+                next_section: BlockSection::StartOfBlock,
+                is_payment: false,
+                block_gas_used: regular_gas,
+                validator_fee: U256::ZERO,
+            })
+            .unwrap();
 
-        executor.inner.receipts.push(TempoReceipt {
-            tx_type: TempoTxType::Legacy,
-            success: true,
-            cumulative_gas_used: tx_gas_used,
-            logs: vec![],
-        });
-
-        let (_evm, result) = executor.finish().expect("finish should succeed");
+        let result = executor.finish().expect("finish should succeed");
 
         // T4: Block header gas_used must equal block_regular_gas_used
         assert_eq!(
@@ -1995,6 +2046,45 @@ mod tests {
         assert_eq!(last_cumulative, tx_gas_used);
     }
 
+    #[test]
+    fn test_t4_finish_uses_regular_gas_when_state_gas_is_higher() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_amsterdam_eip8037_enabled(true)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        executor
+            .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult::<TempoEvmTypes> {
+                            status: true,
+                            total_gas_spent: 300_000,
+                            state_gas_spent: 200_000,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    TempoTxType::Legacy,
+                    0,
+                ),
+                next_section: BlockSection::StartOfBlock,
+                is_payment: false,
+                block_gas_used: 100_000,
+                validator_fee: U256::ZERO,
+            })
+            .unwrap();
+
+        let result = executor.finish().expect("finish should succeed");
+        assert_eq!(result.gas_used, 100_000);
+    }
+
     /// Pre-T4: block header `gas_used` must use cumulative_tx_gas_used (post-refund),
     /// not block_regular_gas_used (pre-refund). This is a regression test for a bug
     /// where `finish()` unconditionally used block_regular_gas_used, causing re-execution
@@ -2003,7 +2093,7 @@ mod tests {
     fn test_pre_t4_finish_uses_cumulative_gas_with_refunds() {
         let chainspec = test_chainspec(); // MODERATO, T4 not active at timestamp 0
 
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -2016,17 +2106,32 @@ mod tests {
         let cumulative = 273_278u64; // post-refund
         let regular = 276_078u64; // pre-refund (no state gas subtraction pre-T4)
 
-        executor.inner.cumulative_tx_gas_used = cumulative;
-        executor.inner.block_regular_gas_used = regular;
+        executor
+            .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult::<TempoEvmTypes> {
+                            status: true,
+                            total_gas_spent: regular,
+                            refunded: regular - cumulative,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    TempoTxType::Legacy,
+                    0,
+                ),
+                next_section: BlockSection::StartOfBlock,
+                is_payment: false,
+                block_gas_used: cumulative,
+                validator_fee: U256::ZERO,
+            })
+            .unwrap();
 
-        executor.inner.receipts.push(TempoReceipt {
-            tx_type: TempoTxType::Legacy,
-            success: true,
-            cumulative_gas_used: cumulative,
-            logs: vec![],
-        });
-
-        let (_evm, result) = executor.finish().expect("finish should succeed");
+        let result = executor.finish().expect("finish should succeed");
 
         // Pre-T4: header gas_used must equal cumulative_tx_gas_used (post-refund),
         // NOT block_regular_gas_used (pre-refund).

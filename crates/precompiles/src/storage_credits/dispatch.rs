@@ -4,7 +4,7 @@ use crate::{
     Precompile, charge_input_cost, dispatch, mutate_void, storage_credits::StorageCredits, view,
 };
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IStorageCredits;
 
 impl Precompile for StorageCredits {
@@ -37,7 +37,7 @@ mod tests {
     use super::*;
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::sol_types::{SolCall, SolInterface};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -72,15 +72,14 @@ mod tests {
             let mut storage_credits_precompile = StorageCredits::new();
 
             let set_budget = IStorageCredits::setBudgetCall { credits: 7 };
-            let output = storage_credits_precompile.call(&set_budget.abi_encode(), caller)?;
-            assert!(!output.is_revert());
+            storage_credits_precompile.call(&set_budget.abi_encode(), caller)?;
 
             let mode = storage_credits_precompile.call(
                 &IStorageCredits::modeOfCall { account: caller }.abi_encode(),
                 caller,
             )?;
             assert_eq!(
-                IStorageCredits::modeOfCall::abi_decode_returns(&mode.bytes)?,
+                IStorageCredits::modeOfCall::abi_decode_returns(mode.bytes())?,
                 IStorageCredits::Mode::Direct
             );
 
@@ -89,20 +88,19 @@ mod tests {
                 caller,
             )?;
             assert_eq!(
-                IStorageCredits::budgetOfCall::abi_decode_returns(&budget.bytes)?,
+                IStorageCredits::budgetOfCall::abi_decode_returns(budget.bytes())?,
                 7
             );
 
             let zero_budget = IStorageCredits::setBudgetCall { credits: 0 };
-            let output = storage_credits_precompile.call(&zero_budget.abi_encode(), caller)?;
-            assert!(!output.is_revert());
+            storage_credits_precompile.call(&zero_budget.abi_encode(), caller)?;
 
             let mode = storage_credits_precompile.call(
                 &IStorageCredits::modeOfCall { account: caller }.abi_encode(),
                 caller,
             )?;
             assert_eq!(
-                IStorageCredits::modeOfCall::abi_decode_returns(&mode.bytes)?,
+                IStorageCredits::modeOfCall::abi_decode_returns(mode.bytes())?,
                 IStorageCredits::Mode::Direct,
                 "setBudget(0) keeps Direct selected with a zero spend budget"
             );
@@ -112,7 +110,7 @@ mod tests {
                 caller,
             )?;
             assert_eq!(
-                IStorageCredits::budgetOfCall::abi_decode_returns(&budget.bytes)?,
+                IStorageCredits::budgetOfCall::abi_decode_returns(budget.bytes())?,
                 0
             );
 
@@ -134,13 +132,13 @@ mod tests {
         for spec in [TempoHardfork::T10, TempoHardfork::T11] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                let output = StorageCredits::new().call(&calldata, caller)?;
-                assert!(output.is_revert());
+                let output = StorageCredits::new().call(&calldata, caller);
+                assert!(output.is_err());
                 if spec.is_t11() {
-                    assert!(output.bytes.is_empty());
+                    assert!(revert_bytes(&output).is_empty());
                 } else {
                     assert_eq!(
-                        &output.bytes[..4],
+                        &revert_bytes(&output)[..4],
                         StorageCreditsError::invalid_mode().selector().as_slice()
                     );
                 }

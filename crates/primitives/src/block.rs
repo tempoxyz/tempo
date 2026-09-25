@@ -1,41 +1,28 @@
-//! Tempo EVM block environment.
+//! Tempo-specific EVM2 block environment fields.
 
+use alloy_primitives::{U256, uint};
 use core::num::NonZeroU64;
-
-use alloy_evm::{
-    env::BlockEnvironment,
-    revm::{
-        context::{Block, BlockEnv},
-        context_interface::block::BlobExcessGasAndPrice,
-    },
-};
-use alloy_primitives::{Address, B256, U256, uint};
 
 use crate::ed25519::PublicKey;
 
-/// Tempo EVM block environment.
-#[derive(Debug, Clone, PartialEq, derive_more::Deref, derive_more::DerefMut)]
+/// Tempo's complete EVM2 block environment.
+pub type TempoBlockEnv = evm2::env::BlockEnvExt<TempoBlockExt>;
+
+/// Tempo fields carried in EVM2's block environment extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TempoBlockEnv {
-    /// Inner [`BlockEnv`].
-    #[deref]
-    #[deref_mut]
-    pub inner: BlockEnv,
-
-    /// Milliseconds portion of the timestamp.
+pub struct TempoBlockExt {
+    /// Milliseconds portion of the block timestamp.
     pub timestamp_millis_part: u64,
-
     /// Number of blocks in a consensus epoch.
     pub epoch_length: NonZeroU64,
-
     /// Proposer's Ed25519 public key. `Some` only for post-T4 blocks.
     pub proposer_public_key: Option<PublicKey>,
 }
 
-impl Default for TempoBlockEnv {
+impl Default for TempoBlockExt {
     fn default() -> Self {
         Self {
-            inner: Default::default(),
             timestamp_millis_part: 0,
             epoch_length: NonZeroU64::MIN,
             proposer_public_key: None,
@@ -43,11 +30,10 @@ impl Default for TempoBlockEnv {
     }
 }
 
-impl TempoBlockEnv {
-    /// Returns the current timestamp in milliseconds.
-    pub fn timestamp_millis(&self) -> U256 {
-        self.inner
-            .timestamp
+impl TempoBlockExt {
+    /// Returns the timestamp with the millisecond component applied.
+    pub fn timestamp_millis(&self, timestamp: U256) -> U256 {
+        timestamp
             .saturating_mul(uint!(1000_U256))
             .saturating_add(U256::from(self.timestamp_millis_part))
     }
@@ -58,66 +44,14 @@ impl TempoBlockEnv {
     }
 }
 
-impl Block for TempoBlockEnv {
-    #[inline]
-    fn number(&self) -> U256 {
-        self.inner.number()
-    }
-
-    #[inline]
-    fn beneficiary(&self) -> Address {
-        self.inner.beneficiary()
-    }
-
-    #[inline]
-    fn timestamp(&self) -> U256 {
-        self.inner.timestamp()
-    }
-
-    #[inline]
-    fn gas_limit(&self) -> u64 {
-        self.inner.gas_limit()
-    }
-
-    #[inline]
-    fn basefee(&self) -> u64 {
-        self.inner.basefee()
-    }
-
-    #[inline]
-    fn difficulty(&self) -> U256 {
-        self.inner.difficulty()
-    }
-
-    #[inline]
-    fn prevrandao(&self) -> Option<B256> {
-        self.inner.prevrandao()
-    }
-
-    #[inline]
-    fn blob_excess_gas_and_price(&self) -> Option<BlobExcessGasAndPrice> {
-        self.inner.blob_excess_gas_and_price()
-    }
-}
-
-impl BlockEnvironment for TempoBlockEnv {
-    fn inner_mut(&mut self) -> &mut BlockEnv {
-        &mut self.inner
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// Helper to create a TempoBlockEnv with the given timestamp and millis_part.
-    fn make_block_env(timestamp: U256, millis_part: u64) -> TempoBlockEnv {
-        TempoBlockEnv {
-            inner: BlockEnv {
-                timestamp,
-                ..Default::default()
-            },
+    /// Helper to create a TempoBlockExt with the given millis_part.
+    fn make_block_env(millis_part: u64) -> TempoBlockExt {
+        TempoBlockExt {
             timestamp_millis_part: millis_part,
             ..Default::default()
         }
@@ -130,7 +64,7 @@ mod tests {
 
     #[test]
     fn epoch_uses_epoch_length() {
-        let block = TempoBlockEnv {
+        let block = TempoBlockExt {
             epoch_length: NonZeroU64::new(10).unwrap(),
             ..Default::default()
         };
@@ -143,7 +77,7 @@ mod tests {
 
     #[test]
     fn epoch_defaults_to_height_when_epoch_length_is_one() {
-        let block = TempoBlockEnv::default();
+        let block = TempoBlockExt::default();
 
         assert_eq!(block.epoch(0), 0);
         assert_eq!(block.epoch(100), 100);
@@ -158,8 +92,7 @@ mod tests {
             timestamp in arb_u256(),
             millis_part in any::<u64>(),
         ) {
-            let block = make_block_env(timestamp, millis_part);
-            let _ = block.timestamp_millis();
+            let _ = make_block_env(millis_part).timestamp_millis(timestamp);
         }
 
         /// Property: timestamp_millis >= timestamp * 1000 (saturation means >= not >)
@@ -168,8 +101,8 @@ mod tests {
             timestamp in arb_u256(),
             millis_part in any::<u64>(),
         ) {
-            let block = make_block_env(timestamp, millis_part);
-            let result = block.timestamp_millis();
+            let block = make_block_env(millis_part);
+            let result = block.timestamp_millis(timestamp);
             let scaled = timestamp.saturating_mul(uint!(1000_U256));
 
             prop_assert!(result >= scaled,
@@ -183,9 +116,9 @@ mod tests {
             timestamp in 0u64..u64::MAX / 1000,
             millis_part in 0u64..1000,
         ) {
-            let block = make_block_env(U256::from(timestamp), millis_part);
             let expected = U256::from(timestamp) * uint!(1000_U256) + U256::from(millis_part);
-            prop_assert_eq!(block.timestamp_millis(), expected);
+            let block = make_block_env(millis_part);
+            prop_assert_eq!(block.timestamp_millis(U256::from(timestamp)), expected);
         }
 
         /// Property: timestamp_millis is monotonic in both inputs
@@ -196,11 +129,11 @@ mod tests {
             mp1 in 0u64..1000,
             mp2 in 0u64..1000,
         ) {
-            let block1 = make_block_env(U256::from(ts1), mp1);
-            let block2 = make_block_env(U256::from(ts2), mp2);
+            let block1 = make_block_env(mp1);
+            let block2 = make_block_env(mp2);
 
-            let result1 = block1.timestamp_millis();
-            let result2 = block2.timestamp_millis();
+            let result1 = block1.timestamp_millis(U256::from(ts1));
+            let result2 = block2.timestamp_millis(U256::from(ts2));
 
             if ts1 < ts2 || (ts1 == ts2 && mp1 <= mp2) {
                 prop_assert!(result1 <= result2,
@@ -215,8 +148,8 @@ mod tests {
             timestamp in 0u64..u64::MAX / 1000,
             millis_part in 0u64..1000,
         ) {
-            let block = make_block_env(U256::from(timestamp), millis_part);
-            let result = block.timestamp_millis();
+            let block = make_block_env(millis_part);
+            let result = block.timestamp_millis(U256::from(timestamp));
             let next_second = U256::from(timestamp + 1) * uint!(1000_U256);
 
             prop_assert!(result < next_second,
@@ -234,8 +167,8 @@ mod tests {
             timestamp in 0u64..u64::MAX / 1000,
             millis_part in 1000u64..u64::MAX,
         ) {
-            let block = make_block_env(U256::from(timestamp), millis_part);
-            let result = block.timestamp_millis();
+            let block = make_block_env(millis_part);
+            let result = block.timestamp_millis(U256::from(timestamp));
 
             // Result should equal timestamp * 1000 + millis_part (saturating)
             let scaled = U256::from(timestamp).saturating_mul(uint!(1000_U256));
@@ -257,12 +190,12 @@ mod tests {
             large_mp in 1000u64..u64::MAX,
         ) {
             // Block with timestamp=ts and large millis_part
-            let block1 = make_block_env(U256::from(ts), large_mp);
+            let block1 = make_block_env(large_mp);
             // Block with timestamp=ts+1 and millis_part=0
-            let block2 = make_block_env(U256::from(ts + 1), 0);
+            let block2 = make_block_env(0);
 
-            let result1 = block1.timestamp_millis();
-            let result2 = block2.timestamp_millis();
+            let result1 = block1.timestamp_millis(U256::from(ts));
+            let result2 = block2.timestamp_millis(U256::from(ts + 1));
 
             // When large_mp >= 1000, result1 may exceed result2 even though ts < ts+1
             // This is expected behavior - millis_part is expected to be < 1000

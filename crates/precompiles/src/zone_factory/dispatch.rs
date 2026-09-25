@@ -2,7 +2,7 @@
 
 use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IZoneFactory;
 
 use super::ZoneFactory;

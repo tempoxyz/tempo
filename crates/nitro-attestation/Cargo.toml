@@ -16,7 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-arrayvec = { version = "=0.7.6", default-features = false, features = ["serde"] }
+arrayvec = { version = "=0.7.8", default-features = false, features = ["serde"] }
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
 minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
 serde = { workspace = true, features = ["alloc"] }

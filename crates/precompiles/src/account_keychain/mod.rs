@@ -1590,8 +1590,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, B256, TxKind, U256};
-    use revm::state::Bytecode;
+    use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
 
@@ -2385,7 +2384,7 @@ mod tests {
             // Mark delegated sender as a contract account to model the confused-deputy path.
             keychain
                 .storage
-                .set_code(delegated_sender, Bytecode::new_raw(vec![0x60, 0x00].into()))?;
+                .set_code(delegated_sender, Bytes::from(vec![0x60, 0x00]))?;
 
             // Setup a key for delegated_sender under a direct-root call.
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2464,7 +2463,7 @@ mod tests {
 
             keychain
                 .storage
-                .set_code(contract_sender, Bytecode::new_raw(vec![0x60, 0x00].into()))?;
+                .set_code(contract_sender, Bytes::from(vec![0x60, 0x00]))?;
 
             // On T2, contract callers are allowed for admin operations only when
             // `msg.sender == tx.origin`.

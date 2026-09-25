@@ -1,27 +1,18 @@
 //! Tempo-specific transaction validation errors.
 
-use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
-use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
-///
-/// This enum extends the standard Ethereum [`InvalidTransaction`] with Tempo-specific
-/// validation errors that occur during transaction processing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
-    /// Standard Ethereum transaction validation error.
-    #[error(transparent)]
-    EthInvalidTransaction(#[from] InvalidTransaction),
-
     /// System transaction must be a call (not a create).
     #[error("system transaction must be a call, not a create")]
     SystemTransactionMustBeCall,
 
     /// System transaction execution failed.
-    #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(Box<ExecutionResult<HaltReason>>),
+    #[error("system transaction execution failed: {0}")]
+    SystemTransactionFailed(String),
 
     /// Fee payer signature recovery failed.
     ///
@@ -251,43 +242,6 @@ impl TempoInvalidTransaction {
     /// that may resolve as state advances.
     pub fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::EthInvalidTransaction(eth) => match eth {
-                InvalidTransaction::PriorityFeeGreaterThanMaxFee
-                | InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
-                | InvalidTransaction::GasFloorMoreThanGasLimit { .. }
-                | InvalidTransaction::CreateInitCodeSizeLimit
-                | InvalidTransaction::InvalidChainId
-                | InvalidTransaction::MissingChainId
-                | InvalidTransaction::AccessListNotSupported
-                | InvalidTransaction::MaxFeePerBlobGasNotSupported
-                | InvalidTransaction::BlobVersionedHashesNotSupported
-                | InvalidTransaction::EmptyBlobs
-                | InvalidTransaction::BlobCreateTransaction
-                | InvalidTransaction::TooManyBlobs { .. }
-                | InvalidTransaction::BlobVersionNotSupported
-                | InvalidTransaction::AuthorizationListNotSupported
-                | InvalidTransaction::AuthorizationListInvalidFields
-                | InvalidTransaction::EmptyAuthorizationList
-                | InvalidTransaction::Eip2930NotSupported
-                | InvalidTransaction::Eip1559NotSupported
-                | InvalidTransaction::Eip4844NotSupported
-                | InvalidTransaction::Eip7702NotSupported
-                | InvalidTransaction::Eip7873NotSupported
-                | InvalidTransaction::Eip7873MissingTarget
-                | InvalidTransaction::OverflowPaymentInTransaction
-                | InvalidTransaction::NonceOverflowInTransaction
-                | InvalidTransaction::TxGasLimitGreaterThanCap { .. } => true,
-
-                InvalidTransaction::GasPriceLessThanBasefee
-                | InvalidTransaction::CallerGasLimitMoreThanBlock
-                | InvalidTransaction::RejectCallerWithCode
-                | InvalidTransaction::LackOfFundForMaxFee { .. }
-                | InvalidTransaction::NonceTooHigh { .. }
-                | InvalidTransaction::NonceTooLow { .. }
-                | InvalidTransaction::BlobGasPriceGreaterThanMax { .. }
-                | InvalidTransaction::Str(_) => false,
-            },
-
             // Deterministic: tx is inherently malformed.
             Self::SystemTransactionMustBeCall
             | Self::SystemTransactionFailed(_)
@@ -309,7 +263,6 @@ impl TempoInvalidTransaction {
             | Self::SubblockTransactionsDisabled
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
-
             // State-dependent: may resolve as state advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
@@ -324,28 +277,6 @@ impl TempoInvalidTransaction {
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
         }
-    }
-}
-
-impl InvalidTxError for TempoInvalidTransaction {
-    fn is_nonce_too_low(&self) -> bool {
-        match self {
-            Self::EthInvalidTransaction(err) => err.is_nonce_too_low(),
-            _ => false,
-        }
-    }
-
-    fn as_invalid_tx_err(&self) -> Option<&InvalidTransaction> {
-        match self {
-            Self::EthInvalidTransaction(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl<DBError> From<TempoInvalidTransaction> for EVMError<DBError, TempoInvalidTransaction> {
-    fn from(err: TempoInvalidTransaction) -> Self {
-        Self::Transaction(err)
     }
 }
 
@@ -386,8 +317,8 @@ pub enum FeePaymentError {
 
     /// Insufficient fee token balance to pay for transaction fees.
     ///
-    /// This is distinct from the Ethereum `LackOfFundForMaxFee` error because
-    /// it applies to custom fee tokens, not native balance.
+    /// This is distinct from the Ethereum lack-of-funds error because it applies to custom fee
+    /// tokens, not native balance.
     #[error("insufficient fee token balance: required {fee}, but only have {balance}")]
     InsufficientFeeTokenBalance {
         /// The required fee amount.
@@ -410,12 +341,6 @@ impl From<KeyAuthorizationChainIdError> for TempoInvalidTransaction {
     }
 }
 
-impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransaction> {
-    fn from(err: FeePaymentError) -> Self {
-        TempoInvalidTransaction::from(err).into()
-    }
-}
-
 fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Address>) -> String {
     if let (Some(user_token), Some(validator_token)) = (user_token, validator_token) {
         return format!(" for pair {user_token} -> {validator_token}");
@@ -428,6 +353,7 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm2::registry::HandlerError;
 
     #[test]
     fn test_error_display() {
@@ -465,11 +391,10 @@ mod tests {
 
     #[test]
     fn test_from_invalid_transaction() {
-        let eth_err = InvalidTransaction::PriorityFeeGreaterThanMaxFee;
-        let tempo_err: TempoInvalidTransaction = eth_err.into();
+        let error = HandlerError::external(TempoInvalidTransaction::InvalidFeePayerSignature);
         assert!(matches!(
-            tempo_err,
-            TempoInvalidTransaction::EthInvalidTransaction(_)
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::InvalidFeePayerSignature)
         ));
     }
 
@@ -492,30 +417,28 @@ mod tests {
     }
 
     #[test]
-    fn test_is_nonce_too_low() {
-        let err = TempoInvalidTransaction::EthInvalidTransaction(InvalidTransaction::NonceTooLow {
-            tx: 1,
-            state: 0,
-        });
-        assert!(err.is_nonce_too_low());
-        assert!(err.as_invalid_tx_err().is_some());
-
+    fn test_bad_transaction() {
         let err = TempoInvalidTransaction::InvalidFeePayerSignature;
-        assert!(!err.is_nonce_too_low());
-        assert!(err.as_invalid_tx_err().is_none());
+        assert!(err.is_bad_transaction());
 
         let err = TempoInvalidTransaction::SelfSponsoredFeePayer;
-        assert!(!err.is_nonce_too_low());
-        assert!(err.as_invalid_tx_err().is_none());
+        assert!(err.is_bad_transaction());
     }
 
     #[test]
     fn test_fee_payment_error() {
-        let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
-            user_token: None,
-            validator_token: None,
-            fee: U256::from(1000),
-        }
-        .into();
+        let error = HandlerError::external(TempoInvalidTransaction::from(
+            FeePaymentError::InsufficientAmmLiquidity {
+                user_token: None,
+                validator_token: None,
+                fee: U256::from(1000),
+            },
+        ));
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::CollectFeePreTx(
+                FeePaymentError::InsufficientAmmLiquidity { .. }
+            ))
+        ));
     }
 }

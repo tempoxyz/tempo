@@ -26,7 +26,6 @@ use tempo_precompiles::{
     tip20,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt};
-use tempo_revm::IntoAddress;
 
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
@@ -207,7 +206,7 @@ impl AmmLiquidityCache {
                     // Update validator fee token preferences
                     inner
                         .validator_preferences
-                        .insert(validator, value.present_value().into_address());
+                        .insert(validator, Address::from_word(value.present_value.into()));
                 }
             }
         }
@@ -260,12 +259,14 @@ impl AmmLiquidityCache {
                     state = Some(client.state_by_block_hash(latest_hash)?);
                 }
 
-                state
-                    .as_mut()
-                    .expect("initialized above")
-                    .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
-                    .unwrap_or_default()
-                    .into_address()
+                Address::from_word(
+                    state
+                        .as_mut()
+                        .expect("initialized above")
+                        .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
+                        .unwrap_or_default()
+                        .into(),
+                )
             };
 
             // Get the actual fee token, accounting for defaults.
