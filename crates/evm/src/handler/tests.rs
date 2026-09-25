@@ -882,9 +882,7 @@ fn test_aa_gas_value_transfer() {
     );
 
     assert!(matches!(
-        res.as_ref()
-            .err()
-            .and_then(|error| error.external_ref::<TempoInvalidTransaction>()),
+        res.as_ref().err(),
         Some(TempoInvalidTransaction::ValueTransferNotAllowedInAATx)
     ));
 }
@@ -2646,7 +2644,8 @@ mod keychain {
         chain_id: u64,
         spec: TempoHardfork,
     ) -> HandlerResult<()> {
-        validate_key_authorization(env.as_aa().unwrap(), chain_id, spec)
+        validate_key_authorization(env.as_aa().unwrap(), chain_id, spec)?;
+        Ok(())
     }
 
     pub(super) fn invalid_transaction(error: &HandlerError) -> Option<&TempoInvalidTransaction> {

@@ -7,7 +7,7 @@ pub use self::config::{
     TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
     tempo_tx_registry,
 };
-use self::config::{TempoFeeContext, TempoHandlerHooks, invalid};
+use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
     FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
     signature_gas::{
@@ -306,7 +306,10 @@ fn key_authorization_gas(
 ///   - Pre-T1B: 27k base + 3k ecrecover + 22k per spending limit
 ///   - T1B+: ecrecover + SLOAD + SSTORE × (1 + N limits)
 /// - Floor gas calculation (EIP-7623, Prague+)
-fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult<(u64, u64, u64)> {
+fn intrinsic_gas(
+    host: &Evm<'_, TempoEvmTypes>,
+    aa: &TempoAaTx,
+) -> Result<(u64, u64, u64), TempoInvalidTransaction> {
     let signed = aa.inner();
     let tx = signed.tx();
     let spec = host.config_spec_id();
@@ -356,9 +359,7 @@ fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult
         // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
         if !call.value.is_zero() {
-            return Err(invalid(
-                TempoInvalidTransaction::ValueTransferNotAllowedInAATx,
-            ));
+            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
         }
         // 4a. Calldata gas using EVM2's token pricing.
         tokens = tokens.saturating_add(calldata_tokens(&call.input));
@@ -442,49 +443,49 @@ fn validate_time_window(
     valid_after: Option<u64>,
     valid_before: Option<u64>,
     timestamp: u64,
-) -> HandlerResult<()> {
+) -> Result<(), TempoInvalidTransaction> {
     // Validate validAfter constraint
     if let Some(valid_after) = valid_after
         && timestamp < valid_after
     {
-        return Err(invalid(TempoInvalidTransaction::ValidAfter {
+        return Err(TempoInvalidTransaction::ValidAfter {
             current: timestamp,
             valid_after,
-        }));
+        });
     }
     // Validate validBefore constraint
     // Keep this aligned with transaction-pool expiry checks.
     if let Some(valid_before) = valid_before
         && timestamp >= valid_before
     {
-        return Err(invalid(TempoInvalidTransaction::ValidBefore {
+        return Err(TempoInvalidTransaction::ValidBefore {
             current: timestamp,
             valid_before,
-        }));
+        });
     }
     Ok(())
 }
 
-fn access_key_id(aa: &TempoAaTx) -> HandlerResult<Option<Address>> {
+fn access_key_id(aa: &TempoAaTx) -> Result<Option<Address>, TempoInvalidTransaction> {
     let signed = aa.inner();
     let Some(signature) = signed.signature().as_keychain() else {
         return Ok(None);
     };
-    aa.override_key_id()
-        .map(Ok)
-        .unwrap_or_else(|| {
-            signature
-                .key_id(&signed.signature_hash())
-                .map_err(|_| invalid(TempoInvalidTransaction::AccessKeyRecoveryFailed))
-        })
-        .map(Some)
+    let key_id = if let Some(key_id) = aa.override_key_id() {
+        key_id
+    } else {
+        signature
+            .key_id(&signed.signature_hash())
+            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+    };
+    Ok(Some(key_id))
 }
 
 fn validate_key_authorization(
     aa: &TempoAaTx,
     chain_id: u64,
     spec: TempoHardfork,
-) -> HandlerResult<()> {
+) -> Result<(), TempoInvalidTransaction> {
     let signed = aa.inner();
     let tx = signed.tx();
     let Some(key_auth) = tx.key_authorization.as_ref() else {
@@ -494,9 +495,7 @@ fn validate_key_authorization(
     let access_key = access_key_id(aa)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
     if access_key.is_some() && !same_tx_auth_use && !spec.is_t6() {
-        return Err(invalid(
-            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys,
-        ));
+        return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys);
     }
 
     if same_tx_auth_use
@@ -506,15 +505,15 @@ fn validate_key_authorization(
             .as_keychain()
             .is_some_and(|signature| key_auth.key_type != signature.signature.signature_type())
     {
-        return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "key authorization key_type does not match the keychain signature type".into(),
-        }));
+        });
     }
 
     if (key_auth.is_admin || key_auth.account.is_some()) && !spec.is_t6() {
-        return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "T6 key authorization fields are not active before T6".into(),
-        }));
+        });
     }
     if spec.is_t6()
         && key_auth
@@ -526,83 +525,78 @@ fn validate_key_authorization(
         } else {
             "key authorization account mismatch"
         };
-        return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: reason.into(),
-        }));
+        });
     }
     if key_auth.is_admin()
         && (key_auth.expiry.is_some()
             || key_auth.limits.is_some()
             || key_auth.allowed_calls.is_some())
     {
-        return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "admin key authorizations cannot carry expiry, limits, or call scopes".into(),
-        }));
+        });
     }
 
     let signer = key_auth
         .recover_signer()
-        .map_err(|_| invalid(TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed))?;
+        .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
     if !spec.is_t6() && signer != aa.signer() {
-        return Err(invalid(
-            TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                expected: aa.signer(),
-                actual: signer,
-            },
-        ));
+        return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+            expected: aa.signer(),
+            actual: signer,
+        });
     }
     key_auth
         .validate_chain_id(chain_id, spec.is_t1c())
-        .map_err(TempoInvalidTransaction::from)
-        .map_err(invalid)?;
+        .map_err(TempoInvalidTransaction::from)?;
 
     if key_auth.has_witness() && !spec.is_t5() {
-        return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "key authorization witnesses are not active before T5".into(),
-        }));
+        });
     }
     if !spec.is_t3() && key_auth.has_periodic_limits() {
-        return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "periodic token limits are not active before T3".into(),
-        }));
+        });
     }
     if !spec.is_t3() && key_auth.has_call_scopes() {
-        return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "call scopes are not active before T3".into(),
-        }));
+        });
     }
 
     if spec.is_t6() {
         if signer != aa.signer() && key_auth.account.is_none() {
-            return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
                 reason: "admin-signed key authorization account mismatch".into(),
-            }));
+            });
         }
         if signer == aa.signer() && access_key.is_some() && !same_tx_auth_use {
-            return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
                 reason: "root-signed key authorization must use root transaction signature".into(),
-            }));
+            });
         }
         if signer != aa.signer() {
             let Some(keychain_signature) = signed.signature().as_keychain() else {
-                return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization must be signed by transaction key"
                         .into(),
-                }));
+                });
             };
             if access_key != Some(signer) {
-                return Err(invalid(TempoInvalidTransaction::KeychainValidationFailed {
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization must be signed by transaction key"
                         .into(),
-                }));
+                });
             }
             if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
             {
-                return Err(invalid(
-                    TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
-                    },
-                ));
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
+                });
             }
         }
     }
@@ -628,9 +622,10 @@ fn keychain_error(error: TempoPrecompileError) -> HandlerError {
     match error {
         TempoPrecompileError::Database(error) => HandlerError::Database(error),
         TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
-        error => invalid(TempoInvalidTransaction::KeychainValidationFailed {
+        error => TempoInvalidTransaction::KeychainValidationFailed {
             reason: format!("{error:?}"),
-        }),
+        }
+        .into(),
     }
 }
 
@@ -649,12 +644,11 @@ fn prepare_keychain(
     // This should match tx.caller (which comes from recover_signer on the outer signature).
     // Sanity check: user_address should match tx.caller
     if keychain_signature.user_address != aa.signer() {
-        return Err(invalid(
-            TempoInvalidTransaction::KeychainUserAddressMismatch {
-                user_address: keychain_signature.user_address,
-                caller: aa.signer(),
-            },
-        ));
+        return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
+            user_address: keychain_signature.user_address,
+            caller: aa.signer(),
+        }
+        .into());
     }
 
     // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
@@ -682,9 +676,10 @@ fn prepare_keychain(
                 .map(|limit| limit.limit)
                 .unwrap_or_default();
             if fee.collected > remaining {
-                return Err(invalid(FeePaymentError::Other(
+                return Err(TempoInvalidTransaction::from(FeePaymentError::Other(
                     "SpendingLimitExceeded".into(),
-                )));
+                ))
+                .into());
             }
             Some(access_key)
         } else {
@@ -701,7 +696,7 @@ fn prepare_keychain(
         // - ordinary keychain txs must validate the acting access key before fees are paid
         // - T6 delegated key authorizations also validate the acting key here, then reuse
         //   the loaded admin/signature-type facts below when the sidecar signer is the same key
-        let timestamp = host.block().timestamp.to::<u64>();
+        let timestamp = host.block().timestamp.saturating_to::<u64>();
 
         // Extract the signature type from the inner signature to validate it matches
         // the key_type stored in the keychain. This prevents using a signature of one
@@ -724,9 +719,7 @@ fn prepare_keychain(
             if key_authorization.is_some() && !key.is_admin {
                 // T6 adds admin delegation: a keychain signer may authorize a different
                 // child key only if the acting transaction key is itself an active admin key.
-                return Err(invalid(
-                    TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys,
-                ));
+                return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into());
             }
             // Set the transaction key in the keychain precompile.
             // The TIP20 precompile will read this during fee collection and
@@ -755,9 +748,9 @@ fn prepare_keychain(
     if host.config_spec_id().is_t6()
         && let Some(key_authorization) = key_authorization
     {
-        let signer = key_authorization.recover_signer().map_err(|_| {
-            invalid(TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)
-        })?;
+        let signer = key_authorization
+            .recover_signer()
+            .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
             let signature_type: u8 = key_authorization.signature.signature_type().into();
             let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
@@ -766,12 +759,11 @@ fn prepare_keychain(
                     && loaded.key.is_admin
             });
             if !signer_is_admin {
-                return Err(invalid(
-                    TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                        expected: aa.signer(),
-                        actual: signer,
-                    },
-                ));
+                return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                    expected: aa.signer(),
+                    actual: signer,
+                }
+                .into());
             }
         }
     }
@@ -908,9 +900,10 @@ fn apply_key_authorization(
             return Err(match error {
                 TempoPrecompileError::Database(error) => HandlerError::Database(error),
                 TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
-                error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
+                error => TempoInvalidTransaction::KeychainPrecompileError {
                     reason: error.to_string(),
-                }),
+                }
+                .into(),
             });
         }
     };
@@ -931,7 +924,10 @@ fn apply_key_authorization(
                     .map_err(|error| match error {
                         TempoPrecompileError::Database(error) => HandlerError::Database(error),
                         TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
-                        error => invalid(FeePaymentError::Other(error.to_string())),
+                        error => {
+                            TempoInvalidTransaction::from(FeePaymentError::Other(error.to_string()))
+                                .into()
+                        }
                     })?;
             }
             Ok::<_, HandlerError>(())
@@ -1137,18 +1133,18 @@ fn apply_nonce(
         // At T12+, the nonce is an opaque discriminator committed to by the
         // signing and replay-protection hashes.
         if !spec.is_t12() && tx.nonce != 0 {
-            return Err(invalid(TempoInvalidTransaction::ExpiringNonceNonceNotZero));
+            return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
         }
         let valid_before = tx
             .valid_before
             .map(|value| value.get())
-            .ok_or_else(|| invalid(TempoInvalidTransaction::ExpiringNonceMissingValidBefore))?;
+            .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
         let replay_hash = if spec.is_t1b() {
             envelope.unique_tx_identifier()
         } else {
             envelope.tx_hash()
         };
-        let timestamp = host.block().timestamp.to::<u64>();
+        let timestamp = host.block().timestamp.saturating_to::<u64>();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
         let capacity = spec.expiring_nonce_set_capacity();
         return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
@@ -1170,13 +1166,13 @@ fn apply_nonce(
                     TempoPrecompileError::NonceError(NonceError::InvalidExpiringNonceExpiry(_)) => {
                         let max_allowed = timestamp.saturating_add(max_expiry_secs);
                         if valid_before <= timestamp {
-                            invalid(TempoInvalidTransaction::NonceManagerError(format!(
+                            TempoInvalidTransaction::NonceManagerError(format!(
                                 "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
-                            )))
+                            )).into()
                         } else {
-                            invalid(TempoInvalidTransaction::NonceManagerError(format!(
+                            TempoInvalidTransaction::NonceManagerError(format!(
                                 "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
-                            )))
+                            )).into()
                         }
                     }
                     error => nonce_error(error),
@@ -1319,11 +1315,9 @@ fn execute_batch(
     }
 
     // All calls succeeded - keep the checkpointed state changes and normalize batch gas.
-    let mut result = final_result.ok_or_else(|| {
-        invalid(TempoInvalidTransaction::CallsValidation(
-            "calls list cannot be empty",
-        ))
-    })?;
+    let mut result = final_result.ok_or(TempoInvalidTransaction::CallsValidation(
+        "calls list cannot be empty",
+    ))?;
     result.gas = GasTracker::from_parts(gas_limit, remaining, reservoir);
     result.gas.record_refund(refund);
     result.gas.add_state_gas_spent(state_gas);
@@ -1355,27 +1349,22 @@ fn prepare_aa(
     let spec = request.host.config_spec_id();
 
     if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&tx.nonce_key) {
-        return Err(invalid(
-            TempoInvalidTransaction::SubblockTransactionsDisabled,
-        ));
+        return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
     }
 
     // Validate AA transaction structure (calls list, CREATE rules)
     validate_calls(&tx.calls, !tx.tempo_authorization_list.is_empty())
-        .map_err(TempoInvalidTransaction::from)
-        .map_err(invalid)?;
+        .map_err(TempoInvalidTransaction::from)?;
     // Validate keychain signature version (outer + authorization list).
     signed
         .signature()
         .validate_version(spec.is_t1c())
-        .map_err(TempoInvalidTransaction::from)
-        .map_err(invalid)?;
+        .map_err(TempoInvalidTransaction::from)?;
     for authorization in &tx.tempo_authorization_list {
         authorization
             .signature()
             .validate_version(spec.is_t1c())
-            .map_err(TempoInvalidTransaction::from)
-            .map_err(invalid)?;
+            .map_err(TempoInvalidTransaction::from)?;
     }
     validate_key_authorization(request.tx.inner(), request.host.version().chain_id, spec)?;
     // Access-key CREATE is a cheap structural rejection that does not depend on any
@@ -1386,24 +1375,23 @@ fn prepare_aa(
         && signed.signature().is_keychain()
         && tx.calls.first().is_some_and(|call| call.to.is_create())
     {
-        return Err(invalid(TempoInvalidTransaction::CallsValidation(
+        return Err(TempoInvalidTransaction::CallsValidation(
             "access-key transactions cannot use CREATE as the first call",
-        )));
+        )
+        .into());
     }
     // All accounts have zero balance so transfer of value is not possible.
     // Check added in https://github.com/tempoxyz/tempo/pull/759
     if tx.calls.iter().any(|call| !call.value.is_zero()) {
-        return Err(invalid(
-            TempoInvalidTransaction::ValueTransferNotAllowedInAATx,
-        ));
+        return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx.into());
     }
     // Validate the fee payer signature
     let fee_payer = request
         .envelope
         .fee_payer()
-        .map_err(|_| invalid(TempoInvalidTransaction::InvalidFeePayerSignature))?;
+        .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
     if spec.is_t2() && tx.fee_payer_signature.is_some() && fee_payer == caller {
-        return Err(invalid(TempoInvalidTransaction::SelfSponsoredFeePayer));
+        return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
     }
 
     let max_fee = U256::from(tx.max_fee_per_gas);
@@ -1432,7 +1420,7 @@ fn prepare_aa(
         validate_create_initcode(request.host.version(), call.to, &call.input)?;
     }
     // Validate time window for AA transactions
-    let timestamp = request.host.block().timestamp.to::<u64>();
+    let timestamp = request.host.block().timestamp.saturating_to::<u64>();
     validate_time_window(
         tx.valid_after
             .map(|value| value.get())
@@ -1504,18 +1492,15 @@ fn prepare_aa(
     // already exists. Same-tx auth+use is the exception: that key is registered only after fees
     // are collected, so fee-limit validation uses the inline authorization payload instead.
     let keychain = prepare_keychain(request.host, request.tx.inner(), fee_context)?;
-    let fee_result = if request.host.feature(EvmFeatures::FEE_CHARGE) {
+    if request.host.feature(EvmFeatures::FEE_CHARGE) {
         TempoHandlerHooks::collect_fee(
             request.host,
             fee_context,
             (fee_context.fee_payer == caller)
                 .then_some(keychain.fee_key)
                 .flatten(),
-        )
-    } else {
-        Ok(())
-    };
-    fee_result?;
+        )?;
+    }
 
     let key_auth_gas = apply_key_authorization(
         request.host,
@@ -1648,8 +1633,6 @@ mod tests;
 fn nonce_error(error: TempoPrecompileError) -> HandlerError {
     match error {
         TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
-        error => invalid(TempoInvalidTransaction::NonceManagerError(
-            error.to_string(),
-        )),
+        error => TempoInvalidTransaction::NonceManagerError(error.to_string()).into(),
     }
 }

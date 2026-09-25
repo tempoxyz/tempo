@@ -1,6 +1,7 @@
 //! Tempo-specific transaction validation errors.
 
 use alloy_primitives::{Address, U256};
+use evm2::registry::HandlerError;
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
@@ -280,6 +281,12 @@ impl TempoInvalidTransaction {
     }
 }
 
+impl From<TempoInvalidTransaction> for HandlerError {
+    fn from(error: TempoInvalidTransaction) -> Self {
+        Self::external(error)
+    }
+}
+
 impl From<&'static str> for TempoInvalidTransaction {
     fn from(err: &'static str) -> Self {
         Self::CallsValidation(err)
@@ -353,7 +360,6 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evm2::registry::HandlerError;
 
     #[test]
     fn test_error_display() {
@@ -391,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_from_invalid_transaction() {
-        let error = HandlerError::external(TempoInvalidTransaction::InvalidFeePayerSignature);
+        let error = HandlerError::from(TempoInvalidTransaction::InvalidFeePayerSignature);
         assert!(matches!(
             error.external_ref::<TempoInvalidTransaction>(),
             Some(TempoInvalidTransaction::InvalidFeePayerSignature)

@@ -197,7 +197,7 @@ impl<'a> TempoBlockExecutor<'a> {
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
-        let block_gas_limit = evm.block().gas_limit.to::<u64>();
+        let block_gas_limit = evm.block().gas_limit.saturating_to::<u64>();
         Self {
             t13_active_at_genesis: chain_spec
                 .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),

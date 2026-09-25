@@ -258,7 +258,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
 
         let fee_payer = envelope
             .fee_payer()
-            .map_err(|_| invalid(TempoInvalidTransaction::InvalidFeePayerSignature))?;
+            .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
         let fee_token = host.ext().resolved_fee_token.ok_or_else(|| {
             HandlerError::Fatal("fee token was not resolved before settlement".into())
         })?;
@@ -291,7 +291,7 @@ impl TempoHandlerHooks {
         host.ext().non_creditable_slots.borrow_mut().clear();
         let fee_payer = envelope
             .fee_payer()
-            .map_err(|_| invalid(TempoInvalidTransaction::InvalidFeePayerSignature))?;
+            .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
         let base_fee = u64::try_from(host.block().basefee)
             .map_err(|_| HandlerError::Fatal("block base fee does not fit u64".into()))?;
         let gas_price = envelope.evm_tx().effective_gas_price(Some(base_fee));
@@ -314,9 +314,7 @@ impl TempoHandlerHooks {
         let fee_token = fee_manager.get_fee_token(host, envelope, fee_payer, spec)?;
         host.ext_mut().resolved_fee_token = Some(fee_token);
         if !fee_token.is_tip20() {
-            return Err(invalid(TempoInvalidTransaction::FeeTokenNotTip20 {
-                address: fee_token,
-            }));
+            return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
         if !max_fee.is_zero() {
             fee_manager.validate_fee_token(host, fee_token, spec)?;
@@ -324,10 +322,13 @@ impl TempoHandlerHooks {
         let balance =
             host.get_token_balance(fee_token, fee_payer, spec, StorageActions::disabled())?;
         if balance < max_fee {
-            return Err(invalid(FeePaymentError::InsufficientFeeTokenBalance {
-                fee: max_fee,
-                balance,
-            }));
+            return Err(TempoInvalidTransaction::from(
+                FeePaymentError::InsufficientFeeTokenBalance {
+                    fee: max_fee,
+                    balance,
+                },
+            )
+            .into());
         }
 
         Ok(TempoFeeContext {
@@ -361,26 +362,31 @@ impl TempoHandlerHooks {
             return Err(match error {
                 TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
                     let validator_token = fee_manager.get_validator_token(host, beneficiary).ok();
-                    invalid(FeePaymentError::InsufficientAmmLiquidity {
+                    TempoInvalidTransaction::from(FeePaymentError::InsufficientAmmLiquidity {
                         user_token: validator_token.map(|_| context.fee_token),
                         validator_token,
                         fee: context.collected,
                     })
+                    .into()
                 }
                 TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
-                    invalid(FeePaymentError::InsufficientFeeTokenBalance {
+                    TempoInvalidTransaction::from(FeePaymentError::InsufficientFeeTokenBalance {
                         fee: context.collected,
                         balance: error.available,
                     })
+                    .into()
                 }
                 TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                    invalid(TempoInvalidTransaction::FeeTokenPaused {
+                    TempoInvalidTransaction::FeeTokenPaused {
                         address: context.fee_token,
-                    })
+                    }
+                    .into()
                 }
                 TempoPrecompileError::Database(error) => HandlerError::Database(error),
                 TempoPrecompileError::Fatal(error) => HandlerError::Fatal(error.into()),
-                error => invalid(FeePaymentError::Other(error.to_string())),
+                error => {
+                    TempoInvalidTransaction::from(FeePaymentError::Other(error.to_string())).into()
+                }
             });
         }
 
@@ -394,10 +400,6 @@ impl TempoHandlerHooks {
 
         Ok(())
     }
-}
-
-pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError {
-    HandlerError::external(error.into())
 }
 
 fn settle_storage_credit_refunds(
@@ -456,9 +458,7 @@ fn prepare_legacy(
     validate_no_native_value(request.envelope)?;
     if request.envelope.evm_tx().is_system_tx() {
         if !matches!(request.tx.to, TxKind::Call(_)) {
-            return Err(invalid(
-                TempoInvalidTransaction::SystemTransactionMustBeCall,
-            ));
+            return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
         }
         return Ok(PreparedLegacy::System);
     }
@@ -485,9 +485,11 @@ fn execute_legacy(
                     .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
             )?;
             if !result.status {
-                return Err(invalid(TempoInvalidTransaction::SystemTransactionFailed(
-                    format!("{:?}", result.stop),
-                )));
+                return Err(TempoInvalidTransaction::SystemTransactionFailed(format!(
+                    "{:?}",
+                    result.stop
+                ))
+                .into());
             }
             result.total_gas_spent = 0;
             result.state_gas_spent = 0;
@@ -518,11 +520,11 @@ fn prepare_eip7702(
     eip7702::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }
 
-fn validate_no_native_value(envelope: &TempoTxEnv) -> HandlerResult<()> {
+fn validate_no_native_value(envelope: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
     if envelope.transaction().value().is_zero() {
         Ok(())
     } else {
-        Err(invalid(TempoInvalidTransaction::ValueTransferNotAllowed))
+        Err(TempoInvalidTransaction::ValueTransferNotAllowed)
     }
 }
 
