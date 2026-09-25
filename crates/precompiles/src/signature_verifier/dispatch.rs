@@ -61,13 +61,15 @@ mod tests {
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         ISignatureVerifier, ISignatureVerifier::ISignatureVerifierCalls as ISVCalls,
         UnknownFunctionSelector,
     };
     use tempo_primitives::transaction::tt_signature::{
-        KeychainSignature, PrimitiveSignature, TempoSignature,
+        KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+        derive_p256_address,
     };
 
     fn call_verify_keychain(
@@ -352,28 +354,55 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_keychain_rejects_stored_type_mismatch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-        StorageCtx::enter(&mut storage, || {
-            let account = Address::random();
-            let admin = PrivateKeySigner::random();
+    fn test_verify_keychain_stored_type_check_starts_at_t14() -> eyre::Result<()> {
+        let account = Address::random();
+        let hash = B256::from([0x69; 32]);
+        let signing_key = SigningKey::random(&mut OsRng);
+        let point = signing_key.verifying_key().to_encoded_point(false);
+        let pub_key_x = B256::from_slice(point.x().unwrap());
+        let pub_key_y = B256::from_slice(point.y().unwrap());
+        let key_id = derive_p256_address(&pub_key_x, &pub_key_y);
+        let signing_hash = KeychainSignature::signing_hash(hash, account);
+        let (signature, _) = signing_key.sign_prehash_recoverable(signing_hash.as_slice())?;
+        let signature = signature.normalize_s().unwrap_or(signature);
+        let signature = TempoSignature::Keychain(KeychainSignature::new(
+            account,
+            PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r: B256::from_slice(&signature.r().to_bytes()),
+                s: B256::from_slice(&signature.s().to_bytes()),
+                pub_key_x,
+                pub_key_y,
+                pre_hash: false,
+            }),
+        ))
+        .to_bytes()
+        .to_vec();
 
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_admin_key(
-                account,
-                admin.address(),
-                SignatureType::Multisig,
-                None,
-            )?;
+        // P256 and WebAuthn derive the same key address from the same public key.
+        for (spec, stored_type, expected) in [
+            (TempoHardfork::T13, SignatureType::P256, true),
+            (TempoHardfork::T13, SignatureType::WebAuthn, true),
+            (TempoHardfork::T14, SignatureType::P256, true),
+            (TempoHardfork::T14, SignatureType::WebAuthn, false),
+            (TempoHardfork::T14, SignatureType::Multisig, false),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize()?;
+                keychain.set_tx_origin(account)?;
+                keychain.authorize_admin_key(account, key_id, stored_type, None)?;
 
-            let hash = B256::from([0x69; 32]);
-            let signature = keychain_signature(account, &admin, hash)?;
-            assert!(!call_verify_keychain(account, hash, signature.clone())?);
-            assert!(!call_verify_keychain_admin(account, hash, signature)?);
-            Ok(())
-        })
+                for actual in [
+                    call_verify_keychain(account, hash, signature.clone())?,
+                    call_verify_keychain_admin(account, hash, signature.clone())?,
+                ] {
+                    assert_eq!(actual, expected, "{spec:?}, {stored_type:?}");
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
