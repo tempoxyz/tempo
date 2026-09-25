@@ -11,7 +11,8 @@ use tempo_primitives::{
     TempoBlockEnv,
     account::decode_config_commitment,
     transaction::{
-        KeychainSignature, MultisigQuorumError, MultisigSignature, SignatureType, TempoSignature,
+        KeychainSignature, MultisigQuorumError, MultisigSignature, MultisigStateError,
+        SignatureType, TempoSignature,
     },
 };
 
@@ -225,23 +226,17 @@ pub fn validate_state<J: JournalTr>(
             extra_gas += account_access_gas(gas, loaded.is_cold);
         }
         accounts.push(address);
-        let actual = signature.config_commitment();
-        if actual.is_zero() || (!commitment.is_zero() && commitment != actual) {
-            return Err(invalid(
-                NativeMultisigError::ConfigurationCommitmentMismatch {
-                    expected: commitment,
-                    actual,
-                },
-            ));
-        }
+        signature
+            .validate_account_commitment(commitment, Some(factory))
+            .map_err(|error| {
+                invalid(match error {
+                    MultisigStateError::CommitmentMismatch { expected, actual } => {
+                        NativeMultisigError::ConfigurationCommitmentMismatch { expected, actual }
+                    }
+                    _ => NativeMultisigError::InvalidAccount { account: address },
+                })
+            })?;
         if commitment.is_zero() {
-            if signature.config().version != 0
-                || signature.config().derive_account(factory).ok() != Some(address)
-            {
-                return Err(invalid(NativeMultisigError::InvalidAccount {
-                    account: address,
-                }));
-            }
             extra_gas += initial_account_proof_gas(signature.config());
             if first {
                 extra_gas += 20_000;
