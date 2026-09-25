@@ -573,7 +573,8 @@ fn verifies_weighted_owner_signatures_in_sorted_order() {
     let (signer_b, owner_b) = generate_secp256k1_keypair();
     let config = sorted_secp_config(&[(owner_a, 1), (owner_b, 1)], 2);
     let account = config.derive_account(TEST_FACTORY).unwrap();
-    let digest = multisig_digest(B256::repeat_byte(0x42), account, 0);
+    let inner_digest = B256::repeat_byte(0x42);
+    let digest = multisig_digest(inner_digest, account, 0);
 
     let mut signed = [
         (owner_a, sign_hash(&signer_a, &digest)),
@@ -581,24 +582,41 @@ fn verifies_weighted_owner_signatures_in_sorted_order() {
     ];
     signed.sort_by_key(|(owner, _)| *owner);
 
-    // Feed the recovered owners through the shared accumulator, as the verifier does.
-    let quorum_weight = |approvals: &[&PrimitiveSignature]| -> Result<(), MultisigQuorumError> {
-        let mut accumulator = MultisigWeightAccumulator::new(config.threshold)?;
-        for approval in approvals {
-            let owner = approval.recover_signer(&digest).unwrap();
-            let weight = config
-                .owner_weight(owner)
-                .ok_or(MultisigQuorumError::SignerNotOwner)?;
-            accumulator.record_owner(owner, weight)?;
-        }
-        accumulator.finish()
+    let verify = |config: MultisigConfig, approvals: Vec<PrimitiveSignature>| {
+        MultisigSignature::try_new(account, config, approvals)
+            .unwrap()
+            .verify_approvals(inner_digest)
     };
-
-    let both = [&signed[0].1, &signed[1].1];
-    assert_eq!(quorum_weight(&both), Ok(()));
-
-    // A single owner falls short of the threshold of 2.
-    assert!(quorum_weight(&[&signed[0].1]).is_err());
+    let both = vec![signed[0].1.clone(), signed[1].1.clone()];
+    assert_eq!(verify(config.clone(), both.clone()), Ok(()));
+    assert_eq!(
+        verify(config.clone(), vec![both[0].clone()]),
+        Err(MultisigQuorumError::WeightBelowThreshold)
+    );
+    assert_eq!(
+        verify(config.clone(), vec![both[1].clone(), both[0].clone()]),
+        Err(MultisigQuorumError::SignersNotAscending)
+    );
+    assert_eq!(
+        verify(
+            config.clone(),
+            vec![
+                both[0].clone(),
+                PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ],
+        ),
+        Err(MultisigQuorumError::OwnerSignatureRecoveryFailed { approval_index: 1 })
+    );
+    assert_eq!(
+        verify(
+            MultisigConfig {
+                threshold: 1,
+                ..config
+            },
+            both
+        ),
+        Err(MultisigQuorumError::ExcessSignatures)
+    );
 }
 
 #[test]
