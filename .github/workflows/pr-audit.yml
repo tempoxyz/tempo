@@ -25,7 +25,7 @@ jobs:
       pull-requests: read
       statuses: write
       id-token: write
-    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@9714ff353c4199ff9f498205ef7b3319869dd51d
     with:
       required-labels: |
         cyclops
