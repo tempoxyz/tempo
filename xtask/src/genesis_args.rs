@@ -670,11 +670,7 @@ impl GenesisArgs {
             if self.no_dkg_in_genesis {
                 println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
             } else {
-                extra_data = consensus_config
-                    .to_genesis_dkg_outcome()
-                    .encode()
-                    .to_vec()
-                    .into();
+                extra_data = consensus_config.to_genesis_dkg_outcome().encode().into();
             }
         }
 
@@ -1163,7 +1159,7 @@ fn initialize_validator_config_v2(
                         ingress: config.ingress.to_string(),
                         egress: config.egress.to_string(),
                         feeRecipient: validator_address,
-                        signature: signature.encode().to_vec().into(),
+                        signature: signature.encode().into(),
                     },
                 )
                 .wrap_err("failed to add validator to V2")?;

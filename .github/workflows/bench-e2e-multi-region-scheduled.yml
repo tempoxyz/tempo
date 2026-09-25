@@ -88,7 +88,7 @@ jobs:
       should-run: ${{ steps.refs.outputs.should-run }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Checkout Tempo main
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -202,7 +202,7 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Write successful Tempo main ref
         env:
@@ -218,3 +218,57 @@ jobs:
           path: nightly-state/tempo-main-ref
           retention-days: 90
           if-no-files-found: error
+
+  notify-failure:
+    needs: [resolve-refs, bench-e2e-multi-region, save-state]
+    if: >-
+      failure() && !cancelled() &&
+      github.event_name == 'schedule' &&
+      github.repository == 'tempoxyz/tempo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+
+      - name: Alert reth on-call
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          BENCH_JOB_RESULTS: ${{ toJSON(needs) }}
+        with:
+          retries: 0
+          script: |
+            if (context.eventName !== 'schedule' ||
+                `${context.repo.owner}/${context.repo.repo}` !== 'tempoxyz/tempo') return;
+            const failedJobs = Object.entries(JSON.parse(process.env.BENCH_JOB_RESULTS))
+              .filter(([, job]) => job.result === 'failure').map(([name]) => name);
+            if (!failedJobs.length) return;
+
+            const token = process.env.SLACK_BENCH_BOT_TOKEN;
+            if (!token) throw new Error('SLACK_BENCH_BOT_TOKEN is required for nightly failure alerts');
+            const attempt = process.env.GITHUB_RUN_ATTEMPT;
+            const url = `https://github.com/tempoxyz/tempo/actions/runs/${context.runId}/attempts/${attempt}`;
+            const text = [
+              ':x: *Nightly multi-region benchmark failed* <!subteam^S0C0784UDQF|oncall-reth>',
+              `*Failed jobs:* ${failedJobs.join(', ')} · *Attempt:* ${attempt}`,
+              `<${url}|View failed benchmark run>`,
+            ].join('\n');
+            // Do not automatically retry an ambiguous POST: it may already have delivered.
+            const response = await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                channel: 'C09KA1JNJ02',
+                text,
+                unfurl_links: false,
+                unfurl_media: false,
+              }),
+              signal: AbortSignal.timeout(15000),
+            });
+            if (!response.ok) throw new Error(`Slack alert failed: HTTP ${response.status}`);
+            const result = await response.json();
+            if (!result.ok) throw new Error(`Slack alert failed: ${result.error || 'unknown error'}`);
+            core.info(`Nightly failure alert posted to ${result.channel} at ${result.ts}`);

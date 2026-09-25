@@ -52,7 +52,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Resolve build source
         id: source
@@ -106,7 +106,7 @@ jobs:
           ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Determine Docker labels
         id: docker-labels
@@ -129,7 +129,7 @@ jobs:
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
@@ -154,7 +154,7 @@ jobs:
 
       - name: Docker metadata for tempo-localnet
         id: meta-tempo-localnet
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-localnet
@@ -179,7 +179,7 @@ jobs:
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
@@ -204,7 +204,7 @@ jobs:
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
@@ -228,21 +228,21 @@ jobs:
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: Build and push Docker images
         id: build-and-push
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           files: |
             docker-bake.hcl
@@ -295,7 +295,7 @@ jobs:
           retention-days: 7
 
       - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - name: Sign Docker images
         id: sign-images

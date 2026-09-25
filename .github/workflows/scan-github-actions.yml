@@ -23,7 +23,7 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -34,10 +34,12 @@ jobs:
           bash .github/scripts/bench-upload-charts-test.sh
           node --test .github/scripts/docker-pr.test.js
           node --test .github/scripts/docker-pr-status.test.js
+          node --test .github/scripts/bench-nightly-failure.test.js
 
   scan:
+    name: Scan GitHub Actions
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@68851d67c611dc0050e9f3fcd5bd47f3f899a00e
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
     permissions:
       id-token: write
       actions: read

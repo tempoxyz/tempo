@@ -1,27 +1,13 @@
 //! Gas-metered AWS Nitro attestation verification for the Zone verifier.
 
-use aws_lc_rs::{
-    digest::{Digest as AwsLcDigest, SHA384 as AWS_LC_SHA384, digest as aws_lc_digest},
-    signature::{
-        ECDSA_P384_SHA384_ASN1, ECDSA_P384_SHA384_FIXED, ParsedPublicKey as AwsLcParsedPublicKey,
-    },
-};
 use tempo_nitro_attestation::{
-    MAX_DOCUMENT_SIZE, NitroAttestation, P384_FIXED_SIGNATURE_SIZE, P384_PUBLIC_KEY_SIZE,
-    P384Verifier, SHA384_SIZE, Sha384Hasher, parse_attestation, verify_parsed,
+    AwsLcP384, MAX_DOCUMENT_SIZE, NitroAttestation, parse_attestation, verify_parsed,
 };
 
 use crate::storage::StorageCtx;
 
 pub(super) const BASE_GAS: u64 = 40_000;
 pub(super) const SIGNATURE_GAS: u64 = 150_000;
-
-/// AWS Nitro Enclaves commercial-partition root certificate (G1), in DER form.
-///
-/// SHA-256: `641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b`.
-pub(super) const AWS_NITRO_ROOT_DER: &[u8; 533] = &alloy::primitives::hex!(
-    "3082021130820196a003020102021100f93175681b90afe11d46ccb4e4e7f856300a06082a8648ce3d0403033049310b3009060355040613025553310f300d060355040a0c06416d617a6f6e310c300a060355040b0c03415753311b301906035504030c126177732e6e6974726f2d656e636c61766573301e170d3139313032383133323830355a170d3439313032383134323830355a3049310b3009060355040613025553310f300d060355040a0c06416d617a6f6e310c300a060355040b0c03415753311b301906035504030c126177732e6e6974726f2d656e636c617665733076301006072a8648ce3d020106052b8104002203620004fc0254eba608c1f36870e29ada90be46383292736e894bfff672d989444b5051e534a4b1f6dbe3c0bc581a32b7b176070ede12d69a3fea211b66e752cf7dd1dd095f6f1370f4170843d9dc100121e4cf63012809664487c9796284304dc53ff4a3423040300f0603551d130101ff040530030101ff301d0603551d0e041604149025b50dd90547e796c396fa729dcf99a9df4b96300e0603551d0f0101ff040403020186300a06082a8648ce3d0403030369003066023100a37f2f91a1c9bd5ee7b8627c1698d255038e1f0343f95b63a9628c3d39809545a11ebcbf2e3b55d8aeee71b4c3d6adf3023100a2f39b1605b27028a5dd4ba069b5016e65b4fbde8fe0061d6a53197f9cdaf5d943bc61fc2beb03cb6fee8d2302f3dff6"
-);
 
 /// Parses and verifies a Nitro attestation against `root_der` at the given block timestamp.
 /// Base gas is charged before parsing, and signature gas before cryptographic verification.
@@ -49,56 +35,6 @@ pub(super) fn verify_attestation_with_root(
     Ok(verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384).ok())
 }
 
-struct AwsLcP384;
-
-impl Sha384Hasher for AwsLcP384 {
-    fn sha384(&self, input: &[u8]) -> [u8; SHA384_SIZE] {
-        aws_lc_digest(&AWS_LC_SHA384, input)
-            .as_ref()
-            .try_into()
-            .expect("SHA-384 has a fixed 48-byte output")
-    }
-}
-
-impl P384Verifier for AwsLcP384 {
-    fn validate_public_key(&self, public_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> bool {
-        AwsLcParsedPublicKey::new(&ECDSA_P384_SHA384_ASN1, public_key).is_ok()
-    }
-
-    fn verify_der(
-        &self,
-        public_key: &[u8; P384_PUBLIC_KEY_SIZE],
-        digest: &[u8; SHA384_SIZE],
-        signature_der: &[u8],
-    ) -> bool {
-        verify_digest(&ECDSA_P384_SHA384_ASN1, public_key, digest, signature_der)
-    }
-
-    fn verify_fixed(
-        &self,
-        public_key: &[u8; P384_PUBLIC_KEY_SIZE],
-        digest: &[u8; SHA384_SIZE],
-        signature: &[u8; P384_FIXED_SIGNATURE_SIZE],
-    ) -> bool {
-        verify_digest(&ECDSA_P384_SHA384_FIXED, public_key, digest, signature)
-    }
-}
-
-fn verify_digest(
-    algorithm: &'static aws_lc_rs::signature::EcdsaVerificationAlgorithm,
-    public_key: &[u8; P384_PUBLIC_KEY_SIZE],
-    digest: &[u8; SHA384_SIZE],
-    signature: &[u8],
-) -> bool {
-    let Ok(public_key) = AwsLcParsedPublicKey::new(algorithm, public_key) else {
-        return false;
-    };
-    let Ok(digest) = AwsLcDigest::import_less_safe(digest, &AWS_LC_SHA384) else {
-        return false;
-    };
-    public_key.verify_digest_sig(&digest, signature).is_ok()
-}
-
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -106,11 +42,13 @@ pub(super) mod tests {
     use base64::Engine;
     use minicbor::Encoder;
     use p384::ecdsa::{DerSignature, Signature, SigningKey, signature::Signer};
+    use sha2::{Digest, Sha256};
     use std::{
         str::FromStr,
         time::{Duration, UNIX_EPOCH},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
     use x509_cert::{
         Certificate,
         builder::{Builder, CertificateBuilder, Profile},
@@ -291,7 +229,7 @@ pub(super) mod tests {
         let parsed = parse_attestation(&document).expect("production fixture parses");
         assert!(parsed.signature[48..] > P384_HALF_ORDER[..]);
         assert_eq!(
-            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &parsed.certificate).as_ref(),
+            Sha256::digest(&parsed.certificate)[..],
             alloy::primitives::hex!(
                 "37dbbf810aba51d3423c84f6999b6bd0fcf008d9af094ae419134647bd41aa07"
             )
@@ -311,16 +249,6 @@ pub(super) mod tests {
             assert!(verified.public_key.is_empty());
             assert!(verified.nonce.is_empty());
         });
-    }
-
-    #[test]
-    fn pinned_root_has_expected_sha256() {
-        assert_eq!(
-            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, AWS_NITRO_ROOT_DER).as_ref(),
-            alloy::primitives::hex!(
-                "641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b"
-            )
-        );
     }
 
     #[test]

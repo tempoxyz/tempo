@@ -13,7 +13,6 @@ use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
-use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
@@ -25,7 +24,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::precompiles::PaymentSlots;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -164,6 +163,11 @@ impl TempoPooledTransaction {
     /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
     pub fn nonce_key(&self) -> Option<U256> {
         self.inner.transaction.nonce_key()
+    }
+
+    /// Returns a reference to the nonce key if this is an [`AASigned`](tempo_primitives::AASigned) transaction.
+    pub fn nonce_key_ref(&self) -> Option<&U256> {
+        self.inner.transaction.nonce_key_ref()
     }
 
     /// Returns the storage slot for the nonce key of this transaction.
@@ -481,49 +485,68 @@ impl TempoPooledTransaction {
     /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
     /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
+    ///
+    /// See `warm_payment_keccak_slots` for the exact set of slots this warms.
     pub fn precalculate_keccak_slots(&self) {
         if !self.is_payment {
             return;
         }
 
         let sender = self.sender();
-        let fee_payer = self.fee_payer().unwrap_or(sender);
-        let fee_collection_warms_fee_payer_rewards = !self.fee_token_cost.is_zero();
+        warm_payment_keccak_slots(
+            self.inner().calls().map(|(_kind, input)| input.as_ref()),
+            sender,
+            self.fee_payer().unwrap_or(sender),
+            |_slot| {},
+        );
+    }
+}
 
-        // For payment transactions, warm sender + recipient balance and allowance slots.
-        if fee_payer != sender {
-            sender.mapping_slot(tip20_slots::BALANCES);
-        }
-        for (_kind, input) in self.inner().calls() {
-            if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
-                for addr in call.balance_addresses().into_iter().flatten() {
-                    if addr != fee_payer {
-                        addr.mapping_slot(tip20_slots::BALANCES);
-                    }
-                }
-                for addr in call.reward_addresses(sender).into_iter().flatten() {
-                    if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
-                        continue;
-                    }
-                    addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
-                }
-                if let Some(slot) = call
-                    .to()
-                    .map(|addr| addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES))
-                {
-                    let _ = keccak256(slot.to_be_bytes::<32>());
-                }
+/// Computes, and thereby warms the global keccak cache with, the storage slots a payment
+/// transaction's `calls` will touch during execution.
+///
+/// Per TIP-20 payment call this warms `balances[to]` (plus `balances[from]` for the
+/// `transferFrom` variants), `receive_policies[to]` in the TIP-403 registry together with
+/// its second-level hash, and `allowances[from][sender]` for the `transferFrom` variants.
+/// `balances[fee_payer]`, which the fee path has already warmed, is skipped.
+///
+/// Calls are classified by selector and exact ABI-encoded length via [`PaymentSlots`], so
+/// non-payment calldata is skipped without decoding. All nine payment calls have fully
+/// static parameters, so their addresses are read straight from the ABI head.
+///
+/// `warmed` observes every computed slot; production passes a no-op and the transaction-pool
+/// tests use it to assert the warmed set.
+fn warm_payment_keccak_slots<'a>(
+    calls: impl Iterator<Item = &'a [u8]>,
+    sender: Address,
+    fee_payer: Address,
+    mut warmed: impl FnMut(U256),
+) {
+    // For payment transactions, warm sender + recipient balance and allowance slots.
+    if fee_payer != sender {
+        warmed(sender.mapping_slot(tip20_slots::BALANCES));
+    }
+    for input in calls {
+        let Some(payment) = PaymentSlots::classify(input) else {
+            continue;
+        };
 
-                // Allowance slots for transferFrom variants: allowances[from][sender]
-                let from = match &call {
-                    ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
-                    ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),
-                    _ => None,
-                };
-                if let Some(from) = from {
-                    sender.mapping_slot(from.mapping_slot(tip20_slots::ALLOWANCES));
-                }
+        for &addr in payment.addresses() {
+            if addr != fee_payer {
+                warmed(addr.mapping_slot(tip20_slots::BALANCES));
             }
+        }
+        if let Some(addr) = payment.to() {
+            let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+            warmed(slot);
+            warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
+        }
+
+        // Allowance slots for transferFrom variants: allowances[from][sender]
+        if let Some(from) = payment.from() {
+            let owner_slot = from.mapping_slot(tip20_slots::ALLOWANCES);
+            warmed(owner_slot);
+            warmed(sender.mapping_slot(owner_slot));
         }
     }
 }
@@ -1463,6 +1486,161 @@ mod tests {
 
         // PoolTransaction::cost() returns &U256::ZERO for Tempo
         assert_eq!(*tx.cost(), U256::ZERO);
+    }
+
+    /// Collects the slots [`warm_payment_keccak_slots`] warms for `calls`.
+    fn warmed_keccak_slots<'a>(
+        calls: impl Iterator<Item = &'a [u8]>,
+        sender: Address,
+        fee_payer: Address,
+    ) -> Vec<U256> {
+        let mut slots = Vec::new();
+        warm_payment_keccak_slots(calls, sender, fee_payer, |slot| slots.push(slot));
+        slots
+    }
+
+    /// ABI-encoded calldata for every TIP-20 payment call, using `from` as the `transferFrom`
+    /// owner and `to` as the recipient (and as `approve`'s spender), so callers can overlap
+    /// those addresses with the sender and the fee payer.
+    fn payment_calldatas(from: Address, to: Address) -> Vec<Bytes> {
+        let (amount, memo) = (U256::from(7u64), B256::repeat_byte(0xab));
+
+        vec![
+            ITIP20::transferCall { to, amount }.abi_encode().into(),
+            ITIP20::transferWithMemoCall { to, amount, memo }
+                .abi_encode()
+                .into(),
+            ITIP20::transferFromCall { from, to, amount }
+                .abi_encode()
+                .into(),
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount,
+                memo,
+            }
+            .abi_encode()
+            .into(),
+            ITIP20::approveCall {
+                spender: to,
+                amount,
+            }
+            .abi_encode()
+            .into(),
+            ITIP20::mintCall { to, amount }.abi_encode().into(),
+            ITIP20::mintWithMemoCall { to, amount, memo }
+                .abi_encode()
+                .into(),
+            ITIP20::burnCall { amount }.abi_encode().into(),
+            ITIP20::burnWithMemoCall { amount, memo }
+                .abi_encode()
+                .into(),
+        ]
+    }
+
+    #[test]
+    fn warmed_keccak_slots_for_payment_shapes() {
+        let [sender, fee_payer, from, to] = [0x11, 0x22, 0x33, 0x44].map(Address::repeat_byte);
+        let amount = U256::random();
+        let balance = |addr: Address| addr.mapping_slot(tip20_slots::BALANCES);
+        let allowance = |addr: Address| addr.mapping_slot(tip20_slots::ALLOWANCES);
+        let policy = |addr: Address| {
+            let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+            [slot, keccak256(slot.to_be_bytes::<32>()).into()]
+        };
+
+        let cases = [
+            (
+                &ITIP20::transferCall { to, amount }.abi_encode(),
+                fee_payer,
+                vec![balance(sender), balance(to), policy(to)[0], policy(to)[1]],
+            ),
+            (
+                &ITIP20::transferCall {
+                    to: fee_payer,
+                    amount,
+                }
+                .abi_encode(),
+                fee_payer,
+                vec![balance(sender), policy(fee_payer)[0], policy(fee_payer)[1]],
+            ),
+            (
+                &ITIP20::transferCall { to, amount }.abi_encode(),
+                sender,
+                vec![balance(to), policy(to)[0], policy(to)[1]],
+            ),
+            (
+                &ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+                fee_payer,
+                vec![
+                    balance(sender),
+                    balance(from),
+                    balance(to),
+                    policy(to)[0],
+                    policy(to)[1],
+                    allowance(from),
+                    sender.mapping_slot(allowance(from)),
+                ],
+            ),
+            (
+                &ITIP20::approveCall {
+                    spender: to,
+                    amount,
+                }
+                .abi_encode(),
+                fee_payer,
+                vec![balance(sender)],
+            ),
+        ];
+        for (input, payer, expected) in cases {
+            assert_eq!(
+                warmed_keccak_slots(core::iter::once(input.as_slice()), sender, payer),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn warmed_keccak_slots_skip_non_payment_and_truncated_calldata() {
+        let (sender, fee_payer) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+
+        let mut unknown_selector = ITIP20::transferCall {
+            to: Address::repeat_byte(0x33),
+            amount: U256::from(1u64),
+        }
+        .abi_encode();
+        unknown_selector[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+
+        let mut inputs: Vec<Bytes> = vec![
+            Bytes::new(),
+            unknown_selector.into(),
+            ITIP20::claimRewardsCall {}.abi_encode().into(),
+            ITIP20::setRewardRecipientCall {
+                recipient: Address::repeat_byte(0x33),
+            }
+            .abi_encode()
+            .into(),
+        ];
+
+        // truncations of otherwise valid payment calldata must be ignored, not panic
+        for calldata in payment_calldatas(Address::repeat_byte(0x44), Address::repeat_byte(0x55)) {
+            for len in [0, 3, 4, 5, calldata.len() - 1] {
+                inputs.push(calldata.slice(..len));
+            }
+        }
+
+        for input in &inputs {
+            let once = || core::iter::once(input.as_ref());
+
+            // same sender and fee payer: nothing at all is warmed
+            assert!(warmed_keccak_slots(once(), sender, sender).is_empty());
+
+            // separate fee payer: only the unconditional `balances[sender]` slot
+            assert_eq!(
+                warmed_keccak_slots(once(), sender, fee_payer),
+                vec![sender.mapping_slot(tip20_slots::BALANCES)],
+            );
+        }
     }
 }
 
