@@ -674,6 +674,8 @@ fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
 }
 
 fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChainSpec {
+    // Production replay starts after T10; mainnet genesis is at timestamp 0.
+    // Activate candidate rules at timestamp 1 so candidate fork is not mistaken for a genesis.
     let mut spec = canonical.clone();
     for &fork in TempoHardfork::VARIANTS
         .iter()
@@ -681,7 +683,7 @@ fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChai
     {
         spec.inner
             .hardforks
-            .insert(fork, ForkCondition::Timestamp(0));
+            .insert(fork, ForkCondition::Timestamp(1));
     }
     spec
 }
