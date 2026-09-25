@@ -1867,7 +1867,7 @@ where
             if aa_env
                 .tempo_authorization_list
                 .iter()
-                .any(|auth| auth.signature().as_multisig().is_some())
+                .any(|auth| auth.signature().primitive_signature_type().is_none())
             {
                 return Err(TempoInvalidTransaction::NativeMultisig(
                     NativeMultisigError::InvalidSignatureContext,

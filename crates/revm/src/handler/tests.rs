@@ -2950,6 +2950,67 @@ mod keychain {
         PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature())
     }
 
+    #[test]
+    fn multisig_authorization_list_entries_are_rejected() {
+        use tempo_primitives::transaction::{MultisigConfig, MultisigOwner, MultisigSignature};
+
+        let parent = Address::repeat_byte(1);
+        let multisig = MultisigSignature::try_new(
+            Address::repeat_byte(2),
+            MultisigConfig {
+                salt: B256::ZERO,
+                version: 0,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: Address::repeat_byte(3),
+                    weight: 1,
+                }],
+            },
+            vec![test_sig()],
+        )
+        .unwrap();
+
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for signature in [
+                TempoSignature::Multisig(multisig.clone()),
+                TempoSignature::Keychain(KeychainSignature::new(parent, multisig.clone())),
+            ] {
+                let (mut evm, handler) = make_evm(
+                    parent,
+                    Address::repeat_byte(4),
+                    None,
+                    spec,
+                    Some(TempoSignature::Primitive(test_sig())),
+                    false,
+                );
+                evm.inner
+                    .tx
+                    .tempo_tx_env
+                    .as_mut()
+                    .unwrap()
+                    .tempo_authorization_list
+                    .push(RecoveredTempoAuthorization::new(
+                        TempoSignedAuthorization::new_unchecked(
+                            alloy_eips::eip7702::Authorization {
+                                chain_id: U256::ONE,
+                                address: Address::repeat_byte(5),
+                                nonce: 0,
+                            },
+                            signature,
+                        ),
+                    ));
+                assert!(matches!(
+                    handler.validate_env(&mut evm),
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::NativeMultisig(
+                            NativeMultisigError::InvalidSignatureContext
+                        )
+                    ))
+                ));
+            }
+        }
+    }
+
     /// Build EVM + handler with a keychain-signature AA tx.
     ///
     /// - `signature`: outer keychain signature; when `None` a default V2
