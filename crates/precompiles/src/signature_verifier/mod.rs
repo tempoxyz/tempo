@@ -49,12 +49,13 @@ impl SignatureVerifier {
         hash: B256,
         signature: Bytes,
     ) -> Result<bool> {
-        let (embedded_account, key_id) = self.recover_keychain_key(hash, signature)?;
+        let (embedded_account, key_id, signature_type) =
+            self.recover_keychain_key(hash, signature)?;
         if embedded_account != account {
             return Ok(false);
         }
 
-        AccountKeychain::new().is_active_key(account, key_id)
+        self.verify_registered_key(account, key_id, signature_type, false)
     }
 
     pub fn verify_keychain_admin(
@@ -63,15 +64,44 @@ impl SignatureVerifier {
         hash: B256,
         signature: Bytes,
     ) -> Result<bool> {
-        let (embedded_account, key_id) = self.recover_keychain_key(hash, signature)?;
+        let (embedded_account, key_id, signature_type) =
+            self.recover_keychain_key(hash, signature)?;
         if embedded_account != account {
             return Ok(false);
         }
 
-        AccountKeychain::new().is_admin_key(account, key_id)
+        self.verify_registered_key(account, key_id, signature_type, true)
     }
 
-    fn recover_keychain_key(&mut self, hash: B256, signature: Bytes) -> Result<(Address, Address)> {
+    fn verify_registered_key(
+        &self,
+        account: Address,
+        key_id: Address,
+        signature_type: u8,
+        require_admin: bool,
+    ) -> Result<bool> {
+        if require_admin && key_id == account {
+            return Ok(true);
+        }
+
+        let timestamp = self.storage.timestamp().saturating_to::<u64>();
+        match AccountKeychain::new().validate_keychain_authorization(
+            account,
+            key_id,
+            timestamp,
+            Some(signature_type),
+        ) {
+            Ok(key) => Ok(!require_admin || key.is_admin),
+            Err(err) if err.is_system_error() => Err(err),
+            Err(_) => Ok(false),
+        }
+    }
+
+    fn recover_keychain_key(
+        &mut self,
+        hash: B256,
+        signature: Bytes,
+    ) -> Result<(Address, Address, u8)> {
         let sig = TempoSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
         let keychain_sig = sig
@@ -87,7 +117,11 @@ impl SignatureVerifier {
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
         let key_id = self.recover(signing_hash, signature.to_bytes())?;
-        Ok((keychain_sig.user_address, key_id))
+        Ok((
+            keychain_sig.user_address,
+            key_id,
+            signature.signature_type().into(),
+        ))
     }
 }
 
