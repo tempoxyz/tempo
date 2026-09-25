@@ -488,7 +488,7 @@ mod tests {
     use rand::SeedableRng as _;
     use reth_evm::{ConfigureEvm as _, database::StateProviderDatabase};
     use reth_provider::{
-        StateProviderBox,
+        EvmStateProviderAdapter, StateProviderBox,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
     use tempo_node::evm::{TempoEvm, TempoEvmConfig};
@@ -524,7 +524,7 @@ mod tests {
 
         fn evm_for_block(
             &self,
-            db: StateProviderDatabase<StateProviderBox>,
+            db: StateProviderDatabase<EvmStateProviderAdapter<StateProviderBox>>,
             header: &TempoHeader,
         ) -> eyre::Result<TempoEvm<'static>> {
             TempoEvmConfig::moderato()

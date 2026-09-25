@@ -11,7 +11,10 @@ use commonware_p2p::Ingress;
 use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_evm::{ConfigureEvm as _, database::StateProviderDatabase};
-use reth_provider::{BlockReader as _, BlockSource, StateProviderBox, StateProviderFactory as _};
+use reth_provider::{
+    BlockReader as _, BlockSource, EvmStateProviderAdapter, StateProvider as _, StateProviderBox,
+    StateProviderFactory as _,
+};
 use tempo_node::{TempoFullNode, evm::TempoEvm};
 use tempo_precompiles::{
     storage::StorageCtx,
@@ -36,7 +39,7 @@ pub(crate) trait ExecutionNode {
 
     fn evm_for_block(
         &self,
-        db: StateProviderDatabase<StateProviderBox>,
+        db: StateProviderDatabase<EvmStateProviderAdapter<StateProviderBox>>,
         header: &TempoHeader,
     ) -> eyre::Result<TempoEvm<'static>>;
 }
@@ -59,7 +62,7 @@ impl ExecutionNode for TempoFullNode {
 
     fn evm_for_block(
         &self,
-        db: StateProviderDatabase<StateProviderBox>,
+        db: StateProviderDatabase<EvmStateProviderAdapter<StateProviderBox>>,
         header: &TempoHeader,
     ) -> eyre::Result<TempoEvm<'static>> {
         self.evm_config
@@ -82,7 +85,7 @@ where
 
     fn evm_for_block(
         &self,
-        db: StateProviderDatabase<StateProviderBox>,
+        db: StateProviderDatabase<EvmStateProviderAdapter<StateProviderBox>>,
         header: &TempoHeader,
     ) -> eyre::Result<TempoEvm<'static>> {
         (*self).evm_for_block(db, header)
@@ -155,10 +158,13 @@ where
 
     debug!(height = header.number(), "header found");
 
-    let db =
-        StateProviderDatabase::new(node.state_by_block_hash(block_hash).wrap_err_with(|| {
-            format!("failed to get state from node provider for hash `{block_hash}`")
-        })?);
+    let db = StateProviderDatabase::new(
+        node.state_by_block_hash(block_hash)
+            .wrap_err_with(|| {
+                format!("failed to get state from node provider for hash `{block_hash}`")
+            })?
+            .into_evm_state_provider(),
+    );
     let mut evm = node
         .evm_for_block(db, &header)
         .wrap_err("failed instantiating evm for block")?;
