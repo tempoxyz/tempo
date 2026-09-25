@@ -63,7 +63,7 @@ use state::{Dealer, Player, Round, ShareState, State};
 
 use super::{
     Command, EpochManager, ExecutionLayer, Marshal,
-    ingress::{SubscribeDkgOutcome, VerifyDealerLog},
+    ingress::{SubscribeDkgCeremony, VerifyDealerLog},
 };
 
 /// Wire message type for DKG protocol communication.
@@ -348,8 +348,6 @@ where
         let fetch_ctx = Arc::new(self.context.child("ancestor_fetch"));
         let mut outcome_requests = BTreeMap::<Digest, PendingOutcome>::new();
         let mut fetches = AbortablePool::default();
-        // Subscribe before reading state so a concurrent FCU cannot leave a request asleep.
-        let mut state_updates = self.config.execution_node.state_updates();
 
         info_span!("start_dkg", epoch = %state.epoch).in_scope(|| {
             info!(
@@ -482,7 +480,7 @@ where
                             });
                         }
 
-                        Command::SubscribeDkgOutcome(request) => {
+                        Command::SubscribeDkgCeremony(request) => {
                             let epoch = self
                                 .config
                                 .epoch_strategy
@@ -524,21 +522,6 @@ where
                             }
                         }
                     }
-                }
-
-                update = state_updates.next() => {
-                    // This branch only wakes the loop, so that the next pass
-                    // tries the pending outcome requests again.
-                    //
-                    // A request stays pending while its parent's state is
-                    // missing. In practice, this happens to a leader whose
-                    // parent the engine has not executed yet, for example
-                    // after a restart. The executor then executes the parent
-                    // and makes it the head, and that head change lands here.
-                    //
-                    // A verifier does not need this branch. It asks only after
-                    // the engine has executed the proposal, and so its parent.
-                    update.ok_or_eyre("execution state notification stream closed")?;
                 }
             )
         }
@@ -1044,7 +1027,7 @@ where
                 continue;
             };
             match self
-                .handle_subscribe_dkg_outcome(
+                .handle_subscribe_dkg_ceremony(
                     &pending.cause,
                     storage,
                     player_state,
@@ -1054,9 +1037,9 @@ where
                 )
                 .await
             {
-                Ok(Outcome::Ready(outcome)) => {
+                Ok(Outcome::Ready(output)) => {
                     for request in pending.requests.drain(..) {
-                        let _ = request.response.send(outcome.clone());
+                        let _ = request.response.send(output.clone());
                     }
                 }
                 Ok(Outcome::NeedsAncestor(height, hole, round)) => {
@@ -1090,25 +1073,24 @@ where
                         }));
                     }
                 }
-                // The handler logs the unavailable execution state. Keep the
-                // request pending and retry after the next actor event.
-                Err(_) => {}
+                // The handler logs the error. The request is for another
+                // epoch and cannot succeed later, so drop it to close the
+                // channel.
+                Err(_) => pending.requests.clear(),
             }
         }
         outcome_requests.retain(|_, pending| !pending.requests.is_empty());
     }
 
-    /// Attempts to serve a `SubscribeDkgOutcome` request by finalizing the DKG outcome.
+    /// Attempts to serve a `SubscribeDkgCeremony` request by concluding the DKG ceremony.
     ///
-    /// A DKG outcome can be finalized in one of the following cases:
+    /// A DKG ceremony can be concluded in one of the following cases:
     ///
     /// 1. if the DKG actor has observed as many dealer logs as there are dealers.
     /// 2. if all blocks in an epoch were observed (finalized + notarized leading
     /// up to `request.parent`).
     ///
-    /// Returns the outcome once both the ceremony and the parent's execution
-    /// state are available, or identifies the next missing ancestor. Execution
-    /// read errors leave the registered request pending.
+    /// Returns the ceremony output, or identifies the next missing ancestor.
     #[instrument(
         parent = cause,
         skip_all,
@@ -1119,14 +1101,14 @@ where
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_subscribe_dkg_outcome<TStorageContext>(
+    async fn handle_subscribe_dkg_ceremony<TStorageContext>(
         &mut self,
         cause: &Span,
         storage: &mut state::Storage<TStorageContext>,
         player_state: &Option<Player>,
         round: &Round,
         state: &State,
-        request: &SubscribeDkgOutcome,
+        request: &SubscribeDkgCeremony,
     ) -> eyre::Result<Outcome>
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
@@ -1209,32 +1191,7 @@ where
             output
         };
 
-        // Check if next ceremony should be full.
-        let next_epoch = state.epoch.next();
-        let will_be_re_dkg = self
-            .config
-            .execution_node
-            .next_full_dkg_epoch(&request.parent)
-            .wrap_err("could not determine the next full DKG epoch")?
-            == next_epoch.get();
-        info!(
-            will_be_re_dkg,
-            %next_epoch,
-            "determined if the next epoch will be a reshare or full re-dkg process",
-        );
-
-        let next_players = self
-            .config
-            .execution_node
-            .next_players(&request.parent)
-            .wrap_err("could not determine who the next players are supposed to be")?;
-
-        Ok(Outcome::Ready(OnchainDkgOutcome {
-            epoch: next_epoch.get(),
-            output,
-            next_players,
-            is_next_full_dkg: will_be_re_dkg,
-        }))
+        Ok(Outcome::Ready(output))
     }
 
     /// Creates a player for `round` if this node is a player in it.
@@ -1776,12 +1733,12 @@ impl Metrics {
 
 struct PendingOutcome {
     cause: Span,
-    requests: Vec<SubscribeDkgOutcome>,
+    requests: Vec<SubscribeDkgCeremony>,
     fetch: Option<Aborter>,
 }
 
 enum Outcome {
-    Ready(OnchainDkgOutcome),
+    Ready(Output<MinSig, PublicKey>),
     NeedsAncestor(Height, Digest, commonware_consensus::types::Round),
 }
 

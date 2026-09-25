@@ -574,24 +574,16 @@ impl CheckedSender for RecordingCheckedSender {
 #[derive(Clone)]
 pub(super) struct StubExecutionProvider {
     pub(super) chain_spec: Arc<TempoChainSpec>,
-    state_updates: Arc<Mutex<Vec<mpsc::UnboundedSender<()>>>>,
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
-    next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
-    fail_next_players: Arc<AtomicBool>,
-    fail_next_full_dkg_epoch: Arc<AtomicBool>,
 }
 
 impl Default for StubExecutionProvider {
     fn default() -> Self {
         Self {
             chain_spec: DEV.clone(),
-            state_updates: Default::default(),
             headers: Default::default(),
             reads: Default::default(),
-            next_players: Default::default(),
-            fail_next_players: Default::default(),
-            fail_next_full_dkg_epoch: Default::default(),
         }
     }
 }
@@ -625,27 +617,6 @@ impl StubExecutionProvider {
     pub(super) fn reads(&self) -> Vec<Height> {
         self.reads.lock().unwrap().clone()
     }
-
-    pub(super) fn set_next_players(&self, players: ordered::Set<PublicKey>) {
-        *self.next_players.lock().unwrap() = players;
-    }
-
-    pub(super) fn fail_next_players(&self) {
-        self.fail_next_players.store(true, Ordering::SeqCst);
-    }
-
-    pub(super) fn fail_next_full_dkg_epoch(&self) {
-        self.fail_next_full_dkg_epoch.store(true, Ordering::SeqCst);
-    }
-
-    pub(super) fn restore_state(&self) {
-        self.fail_next_players.store(false, Ordering::SeqCst);
-        self.fail_next_full_dkg_epoch.store(false, Ordering::SeqCst);
-        self.state_updates
-            .lock()
-            .unwrap()
-            .retain(|sender| sender.unbounded_send(()).is_ok());
-    }
 }
 
 impl ExecutionLayer for StubExecutionProvider {
@@ -653,29 +624,9 @@ impl ExecutionLayer for StubExecutionProvider {
         self.chain_spec.clone()
     }
 
-    fn state_updates(&self) -> impl futures::Stream<Item = ()> + Send + Unpin + 'static {
-        let (sender, receiver) = mpsc::unbounded();
-        self.state_updates.lock().unwrap().push(sender);
-        receiver
-    }
-
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
         self.reads.lock().unwrap().push(height);
         Ok(self.headers.lock().unwrap().get(&height).cloned())
-    }
-
-    fn next_players(&self, _parent: &Block) -> eyre::Result<ordered::Set<PublicKey>> {
-        if self.fail_next_players.load(Ordering::SeqCst) {
-            eyre::bail!("next players unavailable");
-        }
-        Ok(self.next_players.lock().unwrap().clone())
-    }
-
-    fn next_full_dkg_epoch(&self, _parent: &Block) -> eyre::Result<u64> {
-        if self.fail_next_full_dkg_epoch.load(Ordering::SeqCst) {
-            eyre::bail!("full DKG schedule unavailable");
-        }
-        Ok(0)
     }
 }
 

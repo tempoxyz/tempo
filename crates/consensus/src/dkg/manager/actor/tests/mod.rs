@@ -24,6 +24,23 @@ use harness::{
     outcome_header, parent_block, revealed_recovery_fixture, signed_dealer_logs,
 };
 
+/// Returns the DKG outcome of a boundary block that ends `epoch`, with the
+/// ceremony `output`. The application reads `next_players` and the full DKG
+/// schedule from the state of the boundary block's parent. Here the next
+/// ceremony reshares.
+fn boundary_outcome(
+    epoch: Epoch,
+    output: Output<MinSig, PublicKey>,
+    next_players: &ordered::Set<PublicKey>,
+) -> OnchainDkgOutcome {
+    OnchainDkgOutcome {
+        epoch: epoch.next().get(),
+        output,
+        next_players: next_players.clone(),
+        is_next_full_dkg: false,
+    }
+}
+
 #[test]
 fn network_storage_failures_panic_and_allow_recovery() {
     use commonware_runtime::deterministic::FaultConfig;
@@ -294,7 +311,6 @@ fn actor_drops_outcome_request_when_block_subscription_closes() {
             .epoch_length(10)
             .build()
             .await;
-        harness.execution.set_next_players(state.players().clone());
         harness
             .execution
             .add_header(outcome_header(Height::new(9), &state));
@@ -314,7 +330,7 @@ fn actor_drops_outcome_request_when_block_subscription_closes() {
         let response = context
             .timeout(Duration::from_secs(1), async move {
                 request_mailbox
-                    .subscribe_dkg_outcome(parent_block(
+                    .subscribe_dkg_ceremony(parent_block(
                         ConsensusRound::new(state.epoch, View::new(11)),
                         Height::new(11),
                         1,
@@ -502,7 +518,6 @@ fn failed_dkg_outcomes_carry_share_forward() {
             .identity(identity)
             .build()
             .await;
-        harness.execution.set_next_players(state.players.clone());
 
         harness.start().await;
         assert!(!harness.has_dealer_log(state.epoch).await);
@@ -520,13 +535,13 @@ fn failed_dkg_outcomes_carry_share_forward() {
             1,
         );
         let first_digest = first_parent.digest();
-        let first_outcome = harness
+        let first_output = harness
             .mailbox()
-            .subscribe_dkg_outcome(first_parent.clone())
+            .subscribe_dkg_ceremony(first_parent.clone())
             .await
             .unwrap();
-        assert_eq!(first_outcome.epoch(), state.epoch.next());
-        assert_eq!(first_outcome.output, state.output);
+        assert_eq!(first_output, state.output);
+        let first_outcome = boundary_outcome(state.epoch, first_output, state.players());
 
         let mut first_boundary = header(Height::new(19));
         first_boundary.inner.parent_hash = first_digest.0;
@@ -547,13 +562,14 @@ fn failed_dkg_outcomes_carry_share_forward() {
             2,
         );
         let second_digest = second_parent.digest();
-        let second_outcome = harness
+        let second_output = harness
             .mailbox()
-            .subscribe_dkg_outcome(second_parent.clone())
+            .subscribe_dkg_ceremony(second_parent.clone())
             .await
             .unwrap();
-        assert_eq!(second_outcome.epoch(), first_outcome.epoch().next());
-        assert_eq!(second_outcome.output, state.output);
+        assert_eq!(second_output, state.output);
+        let second_outcome =
+            boundary_outcome(first_outcome.epoch(), second_output, state.players());
 
         let mut second_boundary = header(Height::new(29));
         second_boundary.inner.parent_hash = second_digest.0;
@@ -758,7 +774,6 @@ fn epoch_shares_only_distributed_in_the_first_half() {
             .epoch_length(10)
             .build()
             .await;
-        harness.execution.set_next_players(state.players().clone());
 
         harness
             .execution
@@ -808,15 +823,17 @@ fn epoch_shares_only_distributed_in_the_first_half() {
             1,
         );
         let digest = parent.digest();
-        let outcome = harness
+        let output = harness
             .mailbox()
-            .subscribe_dkg_outcome(parent.clone())
+            .subscribe_dkg_ceremony(parent.clone())
             .await
             .unwrap();
 
         let mut boundary = header(Height::new(19));
         boundary.inner.parent_hash = digest.0;
-        boundary.inner.extra_data = outcome.encode().into();
+        boundary.inner.extra_data = boundary_outcome(state.epoch, output, state.players())
+            .encode()
+            .into();
 
         harness.report_finalized_header(boundary).await;
 
@@ -926,34 +943,22 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
                 logs.record(dealer, log);
             }
             let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
-            let outcome = OnchainDkgOutcome {
-                epoch: state.epoch.next().get(),
-                output,
-                next_players: state.players().clone(),
-                is_next_full_dkg: false,
-            };
-            (signed, outcome)
+            (signed, output)
         };
-        let (new_logs, new_outcome) = reference(dkg::Reveal::V1);
+        let (new_logs, new_output) = reference(dkg::Reveal::V1);
         #[expect(deprecated, reason = "pin the pre-upgrade revealed-share calculation")]
-        let (legacy_logs, legacy_outcome) = reference(dkg::Reveal::V0);
+        let (legacy_logs, legacy_output) = reference(dkg::Reveal::V0);
 
-        assert!(legacy_outcome.output.revealed().is_empty());
+        assert!(legacy_output.revealed().is_empty());
         assert_eq!(
-            new_outcome.output.revealed(),
+            new_output.revealed(),
             &ordered::Set::try_from_iter([revealed_player]).unwrap()
         );
-        assert_eq!(legacy_outcome.output.public(), new_outcome.output.public());
+        assert_eq!(legacy_output.public(), new_output.public());
+        assert_eq!(legacy_output.players(), new_output.players());
+        assert_eq!(legacy_output.dealers(), new_output.dealers());
         assert_eq!(
-            legacy_outcome.output.players(),
-            new_outcome.output.players()
-        );
-        assert_eq!(
-            legacy_outcome.output.dealers(),
-            new_outcome.output.dealers()
-        );
-        assert_eq!(
-            legacy_outcome.output.dealers(),
+            legacy_output.dealers(),
             &ordered::Set::try_from_iter(dealers.iter().take(3).map(|(k, _)| k.public_key()))
                 .unwrap()
         );
@@ -965,7 +970,6 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
             .build()
             .await;
         harness.execution.set_t12_activation(activation);
-        harness.execution.set_next_players(state.players().clone());
         let mut previous = outcome_header(Height::new(9), &state);
         previous.inner.timestamp = boundary_timestamp;
         harness.execution.add_header(previous.clone());
@@ -988,18 +992,18 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         assert!(selected_logs.next().is_none());
         let actual = harness
             .mailbox()
-            .subscribe_dkg_outcome(Arc::new(block(previous.clone())))
+            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
             .await
             .unwrap();
 
         // Full equality pins the transcript as well as the revealed set.
         let (expected, other) = if use_v1 {
-            (&new_outcome, &legacy_outcome)
+            (&new_output, &legacy_output)
         } else {
-            (&legacy_outcome, &new_outcome)
+            (&legacy_output, &new_output)
         };
         assert_eq!(&actual, expected);
-        assert_ne!(actual.output.revealed(), other.output.revealed());
+        assert_ne!(actual.revealed(), other.revealed());
         assert_ne!(actual.encode(), other.encode());
         assert!(harness.marshal.subscriptions().is_empty());
         harness.stop().await;
@@ -1008,7 +1012,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         harness.start().await;
         let restarted = harness
             .mailbox()
-            .subscribe_dkg_outcome(Arc::new(block(previous.clone())))
+            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
             .await
             .unwrap();
         assert_eq!(restarted, actual);
@@ -1022,7 +1026,6 @@ fn two_actors_produce_the_same_new_dkg_output() {
         let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
         let execution = StubExecutionProvider::default();
         execution.add_header(outcome_header(Height::new(9), &state));
-        execution.set_next_players(state.players().clone());
 
         let network = TestNetwork::default();
         let mut first_harness = Harness::builder(context.child("first"), "new_output_first")
@@ -1098,19 +1101,19 @@ fn two_actors_produce_the_same_new_dkg_output() {
             Height::new(17),
             1,
         );
-        let first_outcome = first_harness
+        let first_output = first_harness
             .mailbox()
-            .subscribe_dkg_outcome(parent.clone())
+            .subscribe_dkg_ceremony(parent.clone())
             .await
             .unwrap();
-        let second_outcome = second_harness
+        let second_output = second_harness
             .mailbox()
-            .subscribe_dkg_outcome(parent.clone())
+            .subscribe_dkg_ceremony(parent.clone())
             .await
             .unwrap();
 
-        assert_eq!(first_outcome, second_outcome);
-        assert_ne!(first_outcome.output, state.output);
+        assert_eq!(first_output, second_output);
+        assert_ne!(first_output, state.output);
     });
 }
 
@@ -1127,7 +1130,6 @@ fn reshare_produces_new_shares() {
         second_state.share = ShareState::Plaintext(Some(second_share.clone()));
 
         let execution = StubExecutionProvider::default();
-        execution.set_next_players(state.players().clone());
 
         let network = TestNetwork::default();
         let mut first_harness = Harness::builder(context.child("first"), "reshare_first")
@@ -1209,33 +1211,34 @@ fn reshare_produces_new_shares() {
             1,
         );
         let digest = parent.digest();
-        let first_outcome = first_harness
+        let first_output = first_harness
             .mailbox()
-            .subscribe_dkg_outcome(parent.clone())
+            .subscribe_dkg_ceremony(parent.clone())
             .await
             .unwrap();
-        let second_outcome = second_harness
+        let second_output = second_harness
             .mailbox()
-            .subscribe_dkg_outcome(parent.clone())
+            .subscribe_dkg_ceremony(parent.clone())
             .await
             .unwrap();
 
-        assert_eq!(first_outcome, second_outcome);
+        assert_eq!(first_output, second_output);
         assert_eq!(
-            first_outcome.output.public().public(),
+            first_output.public().public(),
             state.output.public().public()
         );
+        let outcome = boundary_outcome(state.epoch, first_output, state.players());
 
         let mut boundary = header(Height::new(19));
         boundary.inner.parent_hash = digest.0;
-        boundary.inner.extra_data = first_outcome.encode().into();
+        boundary.inner.extra_data = outcome.encode().into();
         first_harness
             .report_finalized_header(boundary.clone())
             .await;
 
         second_harness.report_finalized_header(boundary).await;
-        assert!(!first_harness.has_dealer_log(first_outcome.epoch()).await);
-        assert!(!second_harness.has_dealer_log(first_outcome.epoch()).await);
+        assert!(!first_harness.has_dealer_log(outcome.epoch()).await);
+        assert!(!second_harness.has_dealer_log(outcome.epoch()).await);
 
         let first_events = first_harness.epoch_manager.events();
         let EpochEvent::Enter {
@@ -1258,7 +1261,7 @@ fn reshare_produces_new_shares() {
         assert_ne!(new_second_share, &second_share);
         assert_eq!(
             new_first_share.public::<MinSig>(),
-            first_outcome
+            outcome
                 .output
                 .public()
                 .partial_public(new_first_share.index)
@@ -1266,7 +1269,7 @@ fn reshare_produces_new_shares() {
         );
         assert_eq!(
             new_second_share.public::<MinSig>(),
-            first_outcome
+            outcome
                 .output
                 .public()
                 .partial_public(new_second_share.index)
@@ -1403,56 +1406,6 @@ fn acked_dealer_messages_not_re_exchanged_after_restart() {
 }
 
 #[test]
-fn outcome_requests_wait_for_execution_state() {
-    for fail_schedule in [true, false] {
-        Runner::default().start(move |mut context| async move {
-            let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
-            let mut harness =
-                Harness::builder(context.child("test"), "outcome_execution_dependencies")
-                    .epoch_length(10)
-                    .build()
-                    .await;
-            harness.execution.set_next_players(state.players().clone());
-            harness
-                .execution
-                .add_header(outcome_header(Height::new(9), &state));
-            harness.start().await;
-            harness
-                .report_finalized_header(header(Height::new(10)))
-                .await;
-            harness
-                .report_finalized_header(header(Height::new(11)))
-                .await;
-
-            if fail_schedule {
-                harness.execution.fail_next_full_dkg_epoch();
-            } else {
-                harness.execution.fail_next_players();
-            }
-            let mailbox = harness.mailbox().clone();
-            let mut request = mailbox.subscribe_dkg_outcome(parent_block(
-                ConsensusRound::new(state.epoch, View::new(10)),
-                Height::new(10),
-                1,
-            ));
-            // Registration is immediate, without polling the receiver. The
-            // actor remains responsive while retaining the outcome request.
-            assert!(!harness.has_dealer_log(state.epoch).await);
-            assert!(futures::poll!(&mut request).is_pending());
-
-            // No new request or finalized block is needed: execution's state
-            // notification resumes the original request.
-            harness.execution.restore_state();
-            let outcome = request.await.unwrap();
-            assert_eq!(outcome.epoch(), state.epoch.next());
-            assert_eq!(outcome.output, state.output);
-            assert_eq!(outcome.next_players, state.players);
-            assert!(!outcome.is_next_full_dkg);
-        });
-    }
-}
-
-#[test]
 fn duplicate_outcome_requests_keep_all_live_waiters() {
     Runner::default().start(|mut context| async move {
         let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
@@ -1460,32 +1413,27 @@ fn duplicate_outcome_requests_keep_all_live_waiters() {
             .epoch_length(10)
             .build()
             .await;
-        harness.execution.set_next_players(state.players().clone());
         harness
             .execution
             .add_header(outcome_header(Height::new(9), &state));
         harness.start().await;
-        harness
-            .report_finalized_header(header(Height::new(10)))
-            .await;
-        harness
-            .report_finalized_header(header(Height::new(11)))
-            .await;
-        harness.execution.fail_next_players();
+        let finalized = header(Height::new(10));
+        harness.marshal.add_block(block(finalized.clone()));
+        harness.report_finalized_header(finalized.clone()).await;
+
+        // Marshal does not have the parent yet, so the requests wait for it.
+        let mut parent = header(Height::new(11));
+        parent.inner.parent_hash = finalized.hash_slow();
+        let parent = block(parent);
         let mailbox = harness.mailbox().clone();
-        let parent = parent_block(
-            ConsensusRound::new(state.epoch, View::new(10)),
-            Height::new(10),
-            1,
-        );
-        let mut first = mailbox.subscribe_dkg_outcome(parent.clone());
-        let mut second = mailbox.subscribe_dkg_outcome(parent.clone());
-        let canceled = mailbox.subscribe_dkg_outcome(parent.clone());
+        let mut first = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
+        let mut second = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
+        let canceled = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
         assert!(!harness.has_dealer_log(state.epoch).await);
         drop(canceled);
         assert!(futures::poll!(&mut first).is_pending());
         assert!(futures::poll!(&mut second).is_pending());
-        harness.execution.restore_state();
+        harness.marshal.add_block(parent);
         let (first, second) = futures::join!(first, second);
         assert_eq!(first.unwrap(), second.unwrap());
     });
@@ -1530,7 +1478,6 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
             .build()
             .await;
         let state = harness.initial_state().clone();
-        harness.execution.set_next_players(state.players().clone());
 
         // Finalized Blocks
         let mut anchor = None;
@@ -1555,13 +1502,13 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
 
         harness.start().await;
 
-        let outcome = harness
+        let output = harness
             .mailbox()
-            .subscribe_dkg_outcome(Arc::new(block(tip.clone())))
+            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())))
             .await
             .unwrap();
 
-        assert_eq!(outcome.output, state.output);
+        assert_eq!(output, state.output);
         assert_eq!(
             harness.marshal.reads(),
             vec![
@@ -1584,7 +1531,6 @@ fn outcome_request_waits_for_blocks_without_stalling_actor() {
             .build()
             .await;
         let state = harness.initial_state().clone();
-        harness.execution.set_next_players(state.players().clone());
         for height in 0..=5 {
             harness.execution.add_header(header(Height::new(height)));
         }
@@ -1601,7 +1547,7 @@ fn outcome_request_waits_for_blocks_without_stalling_actor() {
         harness.start().await;
         let mut response = harness
             .mailbox()
-            .subscribe_dkg_outcome(Arc::new(block(tip.clone())));
+            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())));
 
         // Both the starting block and its ancestors can arrive after the
         // request. Waiting for either must leave the actor responsive.
@@ -1630,12 +1576,12 @@ fn outcome_request_waits_for_blocks_without_stalling_actor() {
 
         // Block delivery alone wakes the actor; no further DKG messages or
         // execution-state notifications are needed to complete the outcome.
-        let outcome = context
+        let output = context
             .timeout(Duration::from_secs(1), response)
             .await
             .expect("block delivery must resume the request")
             .unwrap();
-        assert_eq!(outcome.output, state.output);
+        assert_eq!(output, state.output);
     });
 }
 
@@ -1649,7 +1595,6 @@ fn outcome_request_drops_ancestry_with_wrong_parent_height() {
             .build()
             .await;
         let state = harness.initial_state().clone();
-        harness.execution.set_next_players(state.players().clone());
         for height in 0..=5 {
             harness.execution.add_header(header(Height::new(height)));
         }
@@ -1665,7 +1610,7 @@ fn outcome_request_drops_ancestry_with_wrong_parent_height() {
                 Duration::from_secs(1),
                 harness
                     .mailbox()
-                    .subscribe_dkg_outcome(Arc::new(block(tip.clone()))),
+                    .subscribe_dkg_ceremony(Arc::new(block(tip.clone()))),
             )
             .await
             .expect("a mismatched ancestor must close the outcome subscription");
@@ -1684,7 +1629,6 @@ fn outcome_request_switches_notarized_ancestry_branches() {
             .build()
             .await;
         let state = harness.initial_state().clone();
-        harness.execution.set_next_players(state.players().clone());
         let proposer =
             crate::utils::public_key_to_tempo_primitive(state.players().iter().next().unwrap());
 
@@ -1735,9 +1679,9 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         }
         let first_tip = first_tip.unwrap();
 
-        let first_outcome = harness
+        let first_output = harness
             .mailbox()
-            .subscribe_dkg_outcome(Arc::new(block(first_tip.clone())))
+            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
             .await
             .unwrap();
 
@@ -1767,14 +1711,14 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         }
         let second_tip = second_tip.unwrap();
 
-        let second_outcome = harness
+        let second_output = harness
             .mailbox()
-            .subscribe_dkg_outcome(Arc::new(block(second_tip.clone())))
+            .subscribe_dkg_ceremony(Arc::new(block(second_tip.clone())))
             .await
             .unwrap();
 
-        assert_eq!(first_outcome.output, state.output);
-        assert_eq!(second_outcome.output, state.output);
+        assert_eq!(first_output, state.output);
+        assert_eq!(second_output, state.output);
         let fetch_round = |view| DigestFallback::FetchByRound {
             round: ConsensusRound::new(Epoch::new(0), View::new(view)),
         };
@@ -1793,13 +1737,13 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         assert_eq!(harness.marshal.subscriptions(), subscriptions);
 
         // DKG Outcomes are cached, thus we can request the outcome without re-reading state
-        let cached_first_outcome = harness
+        let cached_first_output = harness
             .mailbox()
-            .subscribe_dkg_outcome(Arc::new(block(first_tip.clone())))
+            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
             .await
             .unwrap();
 
-        assert_eq!(cached_first_outcome, first_outcome);
+        assert_eq!(cached_first_output, first_output);
         assert_eq!(harness.marshal.subscriptions(), subscriptions);
     });
 }

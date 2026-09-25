@@ -4,13 +4,15 @@ use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
 use commonware_cryptography::{
-    bls12381::{dkg::feldman_desmedt::SignedDealerLog, primitives::variant::MinSig},
+    bls12381::{
+        dkg::feldman_desmedt::{Output, SignedDealerLog},
+        primitives::variant::MinSig,
+    },
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tracing::{Span, warn};
 
 use crate::consensus::block::Block;
@@ -45,23 +47,26 @@ impl Mailbox {
             .wrap_err("actor dropped channel before responding with signed dealer log")
     }
 
-    /// Registers a subscription for the outcome that a boundary block on top
-    /// of `parent` must contain, returning its receiver immediately.
+    /// Registers a subscription for the ceremony output that the DKG outcome
+    /// of a boundary block on top of `parent` must contain, returning its
+    /// receiver immediately.
     ///
     /// If the actor must fetch `parent` from peers, it uses the round in the
-    /// consensus context of `parent`. The actor responds once ancestry and
-    /// execution state are available. Dropping the receiver cancels the
-    /// subscription. The channel closes without a value if the actor cannot
-    /// serve the request or shuts down.
-    pub(crate) fn subscribe_dkg_outcome(
+    /// consensus context of `parent`. The actor responds once it has the
+    /// blocks that it needs from the ancestry of `parent`. It does not read
+    /// chain state, so a caller can subscribe before the engine has executed
+    /// `parent`. Dropping the receiver cancels the subscription. The channel
+    /// closes without a value if the actor cannot serve the request or shuts
+    /// down.
+    pub(crate) fn subscribe_dkg_ceremony(
         &self,
         parent: Arc<Block>,
-    ) -> oneshot::Receiver<OnchainDkgOutcome> {
+    ) -> oneshot::Receiver<Output<MinSig, PublicKey>> {
         let (response, rx) = oneshot::channel();
         // A closed mailbox drops the sender, so the receiver reports cancellation.
         let _ = self
             .inner
-            .unbounded_send(Message::in_current_span(SubscribeDkgOutcome {
+            .unbounded_send(Message::in_current_span(SubscribeDkgCeremony {
                 parent,
                 response,
             }));
@@ -110,7 +115,7 @@ pub(super) enum Command {
 
     // From application
     GetDealerLog(GetDealerLog),
-    SubscribeDkgOutcome(SubscribeDkgOutcome),
+    SubscribeDkgCeremony(SubscribeDkgCeremony),
     VerifyDealerLog(VerifyDealerLog),
 }
 
@@ -132,9 +137,9 @@ impl From<VerifyDealerLog> for Command {
     }
 }
 
-impl From<SubscribeDkgOutcome> for Command {
-    fn from(value: SubscribeDkgOutcome) -> Self {
-        Self::SubscribeDkgOutcome(value)
+impl From<SubscribeDkgCeremony> for Command {
+    fn from(value: SubscribeDkgCeremony) -> Self {
+        Self::SubscribeDkgCeremony(value)
     }
 }
 
@@ -143,9 +148,9 @@ pub(super) struct GetDealerLog {
     pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PrivateKey>>>,
 }
 
-pub(super) struct SubscribeDkgOutcome {
+pub(super) struct SubscribeDkgCeremony {
     pub(super) parent: Arc<Block>,
-    pub(super) response: oneshot::Sender<OnchainDkgOutcome>,
+    pub(super) response: oneshot::Sender<Output<MinSig, PublicKey>>,
 }
 
 pub(super) struct VerifyDealerLog {

@@ -262,7 +262,6 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node: dkg::manager::TempoExecutionLayer {
                     node: execution_node.clone(),
-                    executed_state: self.executed_state.clone(),
                 },
                 initial_share: self.share.clone(),
                 finalized_tip: finalized_tip_certificate
@@ -285,6 +284,10 @@ where
             public_key: self.signer.public_key(),
             executor: executor_mailbox.clone(),
             dkg_manager: dkg_manager_mailbox.clone(),
+            parent_state: application::TempoParentState {
+                node: execution_node.clone(),
+                executed_state: self.executed_state.clone(),
+            },
             proposal_return_budget: self.proposal_return_budget,
             epoch_strategy: epoch_strategy.clone(),
         });

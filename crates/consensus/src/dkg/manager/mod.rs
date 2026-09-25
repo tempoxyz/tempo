@@ -1,7 +1,6 @@
 use std::{future::Future, num::NonZeroUsize, sync::Arc};
 
 use commonware_consensus::{
-    Heightable as _,
     marshal::core::DigestFallback,
     types::{Epoch, FixedEpocher, Height},
 };
@@ -12,14 +11,12 @@ use commonware_cryptography::{
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
-use futures::{Stream, StreamExt as _, channel::mpsc};
+use futures::channel::mpsc;
 use rand_core::CryptoRng;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
-use tempo_node::{ExecutedState, TempoFullNode};
-use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
+use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
 use tokio::sync::oneshot;
-use tracing::Level;
 
 mod actor;
 mod ingress;
@@ -31,7 +28,6 @@ use crate::{
     consensus::{Block, Digest},
     epoch::SchemeProvider,
     gossip::Certificate,
-    validators::{read_active_peers, read_validator_config_with_state},
 };
 
 use ingress::{Command, Message};
@@ -98,39 +94,13 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
 /// Execution-layer reads used by the DKG manager.
 ///
 /// During initialization, these reads provide the initial validator set and
-/// public polynomial. During normal operation, they provide the validator
-/// configuration used at the end of each epoch.
+/// public polynomial.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Chain specification used to select the ceremony transcript version.
     fn chain_spec(&self) -> Arc<TempoChainSpec>;
 
-    /// Returns a stream that yields after each change of the canonical chain.
-    ///
-    /// Items carry no data. Several changes can produce one item, but at least
-    /// one item must follow each change. Changes before the call are not
-    /// reported. The stream must not end while the node runs, because the DKG
-    /// manager stops when it ends.
-    fn state_updates(&self) -> impl Stream<Item = ()> + Send + Unpin + 'static;
-
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
-
-    /// Determines the validator set selected for the epoch after the block
-    /// `parent`.
-    ///
-    /// This is used while constructing or verifying a proposal, so `parent`
-    /// must be that proposal's parent. The read uses the state of `parent`
-    /// as executed by the engine, also when `parent` is on a fork that is not
-    /// canonical. It fails until the engine has executed `parent`.
-    fn next_players(&self, parent: &Block) -> eyre::Result<ordered::Set<PublicKey>>;
-
-    /// Reads the epoch scheduled for the next full DKG ceremony from the
-    /// validator configuration at `parent`.
-    ///
-    /// This determines whether the next ceremony creates a new polynomial
-    /// instead of resharing the current one. The same rules as for
-    /// [`ExecutionLayer::next_players`] apply.
-    fn next_full_dkg_epoch(&self, parent: &Block) -> eyre::Result<u64>;
 }
 
 /// Marshal operations used by the DKG manager.
@@ -171,30 +141,11 @@ pub(crate) trait EpochManager: Send + Sync + 'static {
 #[derive(Clone)]
 pub(crate) struct TempoExecutionLayer {
     pub(crate) node: Arc<TempoFullNode>,
-    pub(crate) executed_state: ExecutedState,
-}
-
-impl TempoExecutionLayer {
-    fn read_validator_config<T>(
-        &self,
-        parent: &Block,
-        read_fn: impl FnOnce(&ValidatorConfigV2) -> eyre::Result<T>,
-    ) -> eyre::Result<T> {
-        let state = self
-            .executed_state
-            .state_by_block_hash(self.node.provider.clone(), parent.digest().0)?;
-        read_validator_config_with_state(self.node.as_ref(), state, parent.header(), read_fn)
-    }
 }
 
 impl ExecutionLayer for TempoExecutionLayer {
     fn chain_spec(&self) -> Arc<TempoChainSpec> {
         self.node.chain_spec()
-    }
-
-    fn state_updates(&self) -> impl Stream<Item = ()> + Send + Unpin + 'static {
-        use reth_provider::CanonStateSubscriptions as _;
-        self.node.provider.canonical_state_stream().map(|_| ())
     }
 
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
@@ -215,35 +166,6 @@ impl ExecutionLayer for TempoExecutionLayer {
             .provider
             .header_by_number(height.get())
             .map_err(Report::new)
-    }
-
-    #[tracing::instrument(
-        skip_all,
-        fields(parent.height = %parent.height()),
-        err(level = Level::WARN),
-    )]
-    fn next_players(&self, parent: &Block) -> eyre::Result<ordered::Set<PublicKey>> {
-        let next_players = self
-            .read_validator_config(parent, read_active_peers)
-            .wrap_err("failed reading peers from validator config v2")?
-            .into_keys();
-
-        tracing::debug!(?next_players, "determined next players");
-        Ok(next_players)
-    }
-
-    #[tracing::instrument(
-        skip_all,
-        fields(parent.height = %parent.height()),
-        err(level = Level::WARN),
-        ret
-    )]
-    fn next_full_dkg_epoch(&self, parent: &Block) -> eyre::Result<u64> {
-        self.read_validator_config(parent, |config| {
-            config
-                .get_next_network_identity_rotation_epoch()
-                .map_err(Report::new)
-        })
     }
 }
 

@@ -33,6 +33,7 @@ use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
 
+use super::parent_state::TempoParentState;
 use crate::{
     consensus::{Digest, block::Block},
     executor::DeferredExtraData,
@@ -49,6 +50,10 @@ pub(in crate::consensus) struct Config<TContext> {
     pub(in crate::consensus) executor: crate::executor::Mailbox,
 
     pub(in crate::consensus) dkg_manager: crate::dkg::manager::Mailbox,
+
+    /// Reads the part of a boundary block's DKG outcome that comes from the
+    /// post-state of its parent.
+    pub(in crate::consensus) parent_state: TempoParentState,
 
     /// Local proposal return budget, excluding the network propagation allowance.
     ///
@@ -72,6 +77,7 @@ pub(crate) struct Inner {
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
+    parent_state: TempoParentState,
     validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
     metrics: Metrics,
@@ -87,6 +93,7 @@ impl Inner {
             proposal_return_budget: config.proposal_return_budget,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
+            parent_state: config.parent_state,
             validation_latency_estimator: Default::default(),
             metrics: Metrics::init(&config.context),
         }
@@ -127,10 +134,14 @@ impl Inner {
 
         let (extra_data, deferred_extra_data) =
             if parent_epoch_info.last() == parent.height().next() {
-                // The boundary block carries the DKG outcome. The DKG actor reads
-                // part of it from the post-state of the parent, so the executor
-                // asks for it only after the parent returned VALID.
-                (Bytes::default(), Some(self.dkg_outcome(round.epoch())))
+                // The boundary block carries the DKG outcome.
+                //
+                // Part of it is read from the post-state of the parent,
+                // so the executor resolves it only after the parent returned VALID.
+                (
+                    Bytes::default(),
+                    Some(self.boundary_dkg_outcome(round.epoch())),
+                )
             } else {
                 // Regular block: try to include DKG dealer log.
                 let extra_data = match self.dkg_manager.get_dealer_log(round.epoch()).await {
@@ -247,15 +258,18 @@ impl Inner {
 
     /// Returns the DKG outcome of a boundary block in `epoch` as deferred
     /// extra data. The executor resolves it with the parent once the parent
-    /// returned VALID.
-    fn dkg_outcome(&self, epoch: Epoch) -> DeferredExtraData {
+    /// returned VALID, so the post-state of the parent is available.
+    fn boundary_dkg_outcome(&self, epoch: Epoch) -> DeferredExtraData {
         let dkg_manager = self.dkg_manager.clone();
+        let parent_state = self.parent_state.clone();
+        let epoch_strategy = self.epoch_strategy.clone();
         DeferredExtraData::new(move |parent| {
             async move {
-                let outcome = dkg_manager
-                    .subscribe_dkg_outcome(parent)
+                let output = dkg_manager
+                    .subscribe_dkg_ceremony(Arc::clone(&parent))
                     .await
                     .wrap_err("failed getting public dkg ceremony outcome")?;
+                let outcome = parent_state.boundary_outcome(&epoch_strategy, &parent, output)?;
                 ensure!(
                     epoch.next() == outcome.epoch(),
                     "outcome is for epoch `{}`, but we are trying to include the \
@@ -350,11 +364,13 @@ impl Inner {
     /// Checks that a boundary block contains the DKG outcome that this node
     /// calculates for the block's `parent`.
     ///
-    /// Part of the outcome is read from the parent's state. The engine has
-    /// that state once it has executed the boundary block, also when the
-    /// parent is on a fork that is not canonical. So call this only after the
-    /// executor has accepted the boundary block. If the outcome is not
-    /// available, the future stays pending and the vote is not cast.
+    /// The DKG actor gives the ceremony output, and the rest of the outcome is
+    /// read from the parent's state. The engine has that state once it has
+    /// executed the boundary block, also when the parent is on a fork that is
+    /// not canonical. So call this only after the executor has accepted the
+    /// boundary block. If this node cannot calculate the outcome, that says
+    /// nothing about the block. The future then stays pending and the vote is
+    /// not cast.
     #[instrument(skip_all, err(Display))]
     async fn verify_boundary_outcome(
         &self,
@@ -362,13 +378,28 @@ impl Inner {
         proposed_outcome: &OnchainDkgOutcome,
     ) -> eyre::Result<()> {
         info!("verifying that the boundary block contains the correct DKG outcome");
-        let our_outcome = match self.dkg_manager.subscribe_dkg_outcome(parent).await {
-            Ok(outcome) => outcome,
+        let output = match self
+            .dkg_manager
+            .subscribe_dkg_ceremony(Arc::clone(&parent))
+            .await
+        {
+            Ok(output) => output,
             Err(reason) => {
-                warn!(%reason, "DKG outcome unavailable; abstaining");
+                warn!(%reason, "DKG ceremony output unavailable; abstaining");
                 return std::future::pending().await;
             }
         };
+        let our_outcome =
+            match self
+                .parent_state
+                .boundary_outcome(&self.epoch_strategy, &parent, output)
+            {
+                Ok(outcome) => outcome,
+                Err(reason) => {
+                    warn!(%reason, "DKG outcome unavailable; abstaining");
+                    return std::future::pending().await;
+                }
+            };
         if &our_outcome != proposed_outcome {
             // Emit the log here so that it's structured. The error would be annoying to read.
             warn!(
