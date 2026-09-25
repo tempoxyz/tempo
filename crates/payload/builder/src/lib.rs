@@ -7,6 +7,7 @@ mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
+mod zone_timing;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
@@ -20,6 +21,7 @@ use crate::{
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
+    zone_timing::zone_timing_kind,
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -658,6 +660,14 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
+            let zone_kind = zone_timing_kind(
+                tx.transaction
+                    .inner()
+                    .calls()
+                    .map(|(_, input)| input.as_ref()),
+            );
+            let gas_before_execution = cumulative_gas_used;
+            let used_replay = pool_tx.replay.is_some();
             let result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
@@ -673,6 +683,7 @@ where
                 best_txs.on_new_result(result);
             };
 
+            let zone_execution_start = zone_kind.map(|_| Instant::now());
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
@@ -690,6 +701,28 @@ where
                     )
                     .map(|_| ())
             };
+
+            if let Some(kind) = zone_kind
+                && let Some(start) = zone_execution_start
+            {
+                let elapsed_ns = start.elapsed().as_nanos() as u64;
+                info!(
+                    target: "zone_tx_timing",
+                    phase = "payload",
+                    kind,
+                    tx_hash = %tx.hash(),
+                    parent_hash = %parent_header.hash(),
+                    block_number = parent_header.number() + 1,
+                    block_timestamp_ms = attributes.timestamp_millis(),
+                    elapsed_ns,
+                    gas_used = cumulative_gas_used - gas_before_execution,
+                    gas_limit = tx.gas_limit(),
+                    used_replay,
+                    execution_ok = execution_result.is_ok(),
+                    success = execution_result.is_ok() && executor.receipts().last().is_some_and(|r| r.success),
+                    "Zone transaction timing"
+                );
+            }
 
             if let Err(err) = execution_result {
                 match err {

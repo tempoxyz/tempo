@@ -1,9 +1,13 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    time::Instant,
 };
 
+use crate::zone_timing::zone_timing_kind;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
@@ -15,7 +19,7 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
-use tracing::{instrument, trace};
+use tracing::{info, instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -193,7 +197,33 @@ impl BestTransactionsPrewarming {
                 tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
             }
 
-            let result = match evm.transact_raw(tx_env) {
+            let zone_kind = zone_timing_kind(
+                tx.transaction
+                    .inner()
+                    .calls()
+                    .map(|(_, input)| input.as_ref()),
+            );
+            let zone_execution_start = zone_kind.map(|_| Instant::now());
+            let execution_result = evm.transact_raw(tx_env);
+            if let Some(kind) = zone_kind
+                && let Some(start) = zone_execution_start
+            {
+                let elapsed_ns = start.elapsed().as_nanos() as u64;
+                info!(
+                    target: "zone_tx_timing",
+                    phase = "prewarm",
+                    kind,
+                    tx_hash = %tx.hash(),
+                    parent_hash = %prewarm.parent_hash,
+                    elapsed_ns,
+                    gas_used = execution_result.as_ref().map_or(0, |r| r.result.tx_gas_used()),
+                    gas_limit = tx.gas_limit(),
+                    execution_ok = execution_result.is_ok(),
+                    success = execution_result.as_ref().is_ok_and(|r| r.result.is_success()),
+                    "Zone transaction timing"
+                );
+            }
+            let result = match execution_result {
                 Ok(result) => result.result,
                 Err(err) => {
                     // Discard actions recorded by the failed transaction before reusing this worker.
