@@ -33,22 +33,23 @@ use tracing::{debug, error};
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
 
-/// Account-leaf changes that can invalidate native signers or code-free accounts.
-fn configurable_account_changes(state: &AddressMap<BundleAccount>) -> (AddressSet, AddressSet) {
-    let mut signer_changes = AddressSet::default();
-    let mut code_changes = AddressSet::default();
+/// Accounts whose native configuration commitment changed in this block.
+fn changed_commitments(state: &AddressMap<BundleAccount>) -> AddressSet {
+    let mut changed = AddressSet::default();
     for (address, account) in state {
-        let previous = account.original_info.as_ref();
-        let current = account.info.as_ref();
-        if previous.map(|info| &info.extension) != current.map(|info| &info.extension) {
-            signer_changes.insert(*address);
-        }
-        if previous.map(|info| info.code_hash) != current.map(|info| info.code_hash) {
-            signer_changes.insert(*address);
-            code_changes.insert(*address);
+        let previous = account
+            .original_info
+            .as_ref()
+            .map_or(&[][..], |info| info.extension.as_ref());
+        let current = account
+            .info
+            .as_ref()
+            .map_or(&[][..], |info| info.extension.as_ref());
+        if previous != current {
+            changed.insert(*address);
         }
     }
-    (signer_changes, code_changes)
+    changed
 }
 
 /// Aggregated block-level invalidation events for the transaction pool.
@@ -613,19 +614,16 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
             });
         };
 
-        let (signer_changes, code_changes) = configurable_account_changes(bundle_state);
-        if reorg || !signer_changes.is_empty() {
+        let changed = changed_commitments(bundle_state);
+        if reorg || !changed.is_empty() {
             let hashes: Vec<TxHash> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                 all_txs
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash()))
                     .filter(|tx| {
-                        tx.transaction.needs_configurable_revalidation(
-                            &signer_changes,
-                            &code_changes,
-                            reorg,
-                        )
+                        tx.transaction
+                            .needs_configurable_revalidation(&changed, reorg)
                     })
                     .map(|tx| *tx.hash())
                     .collect()
@@ -764,10 +762,12 @@ mod tests {
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
     #[test]
-    fn configurable_account_changes_include_eventless_registration_and_code() {
+    fn changed_commitments_include_registration_but_ignore_other_account_changes() {
         let registration = Address::repeat_byte(1);
         let code = Address::repeat_byte(2);
         let balance_only = Address::repeat_byte(3);
+        let rotation = Address::repeat_byte(4);
+        let new_empty = Address::repeat_byte(5);
         let original = AccountInfo::default();
         let mut state = AddressMap::default();
         let mut insert = |address, current: AccountInfo| {
@@ -802,10 +802,35 @@ mod tests {
                 ..original.clone()
             },
         );
+        state.insert(
+            rotation,
+            BundleAccount {
+                original_info: Some(AccountInfo {
+                    extension: AccountExtension::copy_from_slice(&[1]),
+                    ..original.clone()
+                }),
+                info: Some(AccountInfo {
+                    extension: AccountExtension::copy_from_slice(&[2]),
+                    ..original.clone()
+                }),
+                storage: Default::default(),
+                status: Default::default(),
+            },
+        );
+        state.insert(
+            new_empty,
+            BundleAccount {
+                original_info: None,
+                info: Some(original),
+                storage: Default::default(),
+                status: Default::default(),
+            },
+        );
 
-        let (signer_changes, code_changes) = configurable_account_changes(&state);
-        assert_eq!(signer_changes, [registration, code].into_iter().collect());
-        assert_eq!(code_changes, [code].into_iter().collect());
+        assert_eq!(
+            changed_commitments(&state),
+            [registration, rotation].into_iter().collect()
+        );
     }
 
     mod pending_staleness_tracker_tests {
