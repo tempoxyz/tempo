@@ -670,7 +670,7 @@ where
             let used_replay = pool_tx.replay.is_some();
             let mut zone_failure = None;
             let result_closure = |result: &TempoTxResult| {
-                if zone_kind.is_some() && !result.result().result.is_success() {
+                if !result.result().result.is_success() {
                     zone_failure = Some(format!("{:?}", result.result().result));
                 }
                 cumulative_gas_used += result.block_gas_used();
@@ -687,7 +687,7 @@ where
                 best_txs.on_new_result(result);
             };
 
-            let zone_execution_start = zone_kind.map(|_| Instant::now());
+            let execution_start = Instant::now();
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
@@ -706,14 +706,14 @@ where
                     .map(|_| ())
             };
 
-            if let Some(kind) = zone_kind
-                && let Some(start) = zone_execution_start
             {
-                let elapsed_ns = start.elapsed().as_nanos() as u64;
+                let elapsed_ns = execution_start.elapsed().as_nanos() as u64;
+                let kind = zone_kind.unwrap_or(if is_payment { "payment" } else { "general" });
                 info!(
-                    target: "zone_tx_timing",
+                    target: "payload_tx_timing",
                     phase = "payload",
                     kind,
+                    lane = if is_payment { "payment" } else { "general" },
                     tx_hash = %tx.hash(),
                     parent_hash = %parent_header.hash(),
                     block_number = parent_header.number() + 1,
@@ -726,8 +726,8 @@ where
                     success = execution_result.is_ok() && executor.receipts().last().is_some_and(|r| r.success),
                     failure = ?zone_failure,
                     execution_error = ?execution_result.as_ref().err(),
-                    receipt_logs = ?executor.receipts().last().filter(|_| execution_result.is_ok()).map(|r| &r.logs),
-                    "Zone transaction timing"
+                    receipt_logs = ?executor.receipts().last().filter(|_| execution_result.is_ok() && zone_kind.is_some()).map(|r| &r.logs),
+                    "Payload transaction timing"
                 );
             }
 
