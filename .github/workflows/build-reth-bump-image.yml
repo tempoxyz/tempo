@@ -52,10 +52,12 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
 
           EXPECTED_CHECKS='["lint success","specs success","test success"]'
+          RUN_URL="${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${RUN_ID}/"
           DEADLINE=$((SECONDS + 3600))
 
           while [ "$SECONDS" -lt "$DEADLINE" ]; do
@@ -95,9 +97,10 @@ jobs:
               continue
             fi
 
-            CHECKS="$(jq -c --argjson expected "$EXPECTED_CHECKS" '
+            CHECKS="$(jq -c --arg run_url "$RUN_URL" '
               [ .[]
-                | select(.name as $name | $expected | index($name))
+                | select(.name != "Review")
+                | select(((.link // "") | startswith($run_url)) | not)
               ]
             ' <<< "$STATUS")"
             MISSING="$(jq -r --argjson expected "$EXPECTED_CHECKS" '
