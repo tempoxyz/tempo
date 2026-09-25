@@ -10,8 +10,8 @@ pub mod tt_signed;
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
-    KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature, TempoSignature,
-    derive_p256_address,
+    AccountSignature, KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature,
+    TempoSignature, derive_p256_address,
 };
 
 pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;

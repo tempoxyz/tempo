@@ -281,7 +281,8 @@ mod tests {
         // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
         let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes().to_vec());
         let sig =
-            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data))
+                .unwrap();
 
         // Extract webauthn_data and verify it's clamped to MAX_WEBAUTHN_SIZE (8192)
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
@@ -300,7 +301,8 @@ mod tests {
     fn test_webauthn_size_respects_minimum() {
         // Attempt to create a signature with size 0
         let key_data = Bytes::from(vec![0u8]);
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let sig =
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data)).unwrap();
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");
@@ -317,7 +319,7 @@ mod tests {
     #[test]
     fn test_webauthn_default_size() {
         // No key_data should use default size (800)
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None);
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None).unwrap();
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");

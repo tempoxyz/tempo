@@ -64,7 +64,7 @@ use crate::{
     error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
-    signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
+    signature_gas::{account_signature_verification_gas, tempo_signature_verification_gas},
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -300,7 +300,7 @@ fn calculate_key_authorization_gas(
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
 
     let num_limits = key_auth
         .authorization
@@ -1318,7 +1318,7 @@ where
                         // type to authenticate as a key registered with a different type.
                         // Only validate signature type on T1+ to maintain backward compatibility
                         // with historical blocks during re-execution.
-                        let tx_sig_type = keychain_sig.signature.signature_type().into();
+                        let tx_sig_type = keychain_sig.signature.key_type().into();
                         let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
 
                         let key = keychain
@@ -1371,7 +1371,7 @@ where
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
-                let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
+                let key_auth_sig_type: u8 = key_auth.signature.key_type().into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
                         if loaded_key.key_id == auth_signer
@@ -1552,6 +1552,7 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::Multisig => PrecompileSignatureType::Multisig,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)
@@ -1816,6 +1817,7 @@ where
             if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&aa_env.nonce_key) {
                 return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
             }
+            // TODO: Stateful multisig authentication is implemented in #7578.
             // Validate AA transaction structure (calls list, CREATE rules)
             validate_calls(
                 &aa_env.aa_calls,
@@ -1875,7 +1877,7 @@ where
 
                     if same_tx_auth_use
                         && cfg.spec.is_t3()
-                        && key_auth.key_type != keychain_sig.signature.signature_type()
+                        && key_auth.key_type != keychain_sig.signature.key_type()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: "key authorization key_type does not match the keychain signature type"
@@ -2020,9 +2022,7 @@ where
                             .into());
                         }
 
-                        if key_auth.signature.signature_type()
-                            != keychain_sig.signature.signature_type()
-                        {
+                        if key_auth.signature.key_type() != keychain_sig.signature.key_type() {
                             return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason:
                                     "admin-signed key authorization signature type does not match transaction key signature type"

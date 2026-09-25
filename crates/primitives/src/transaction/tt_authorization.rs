@@ -77,6 +77,9 @@ impl TempoSignedAuthorization {
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.primitive_signature_type().is_none() {
+            return Err(alloy_consensus::crypto::RecoveryError::new());
+        }
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }
@@ -305,7 +308,10 @@ impl AuthorizationTr for RecoveredTempoAuthorization {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::TempoSignature;
+    use crate::transaction::{
+        KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature, PrimitiveSignature,
+        TempoSignature,
+    };
     use alloc::vec::Vec;
     use alloy_primitives::{U256, address, keccak256};
     use alloy_signer::SignerSync;
@@ -445,5 +451,40 @@ pub mod tests {
         let bad_lazy = RecoveredTempoAuthorization::new(bad_signed);
         assert!(bad_lazy.authority().is_some());
         assert_ne!(bad_lazy.authority().unwrap(), expected_address);
+
+        // Neither direct nor delegated multisig may supply an authorization-list authority.
+        let multisig = MultisigSignature::try_new(
+            Address::repeat_byte(0x22),
+            MultisigConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: expected_address,
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        for signature in [
+            TempoSignature::Multisig(multisig.clone()),
+            TempoSignature::Keychain(KeychainSignature::new(expected_address, multisig)),
+        ] {
+            let signed =
+                TempoSignedAuthorization::new_unchecked(bad_lazy.inner().clone(), signature);
+            assert!(signed.recover_authority().is_err());
+            assert!(signed.clone().into_recovered().authority().is_none());
+            assert!(
+                RecoveredTempoAuthorization::new(signed.clone())
+                    .authority()
+                    .is_none()
+            );
+            assert!(
+                RecoveredTempoAuthorization::recover(signed)
+                    .authority()
+                    .is_none()
+            );
+        }
     }
 }
