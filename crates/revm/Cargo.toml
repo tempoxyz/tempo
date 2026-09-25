@@ -30,7 +30,6 @@ alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
-alloy-rlp.workspace = true
 
 auto_impl.workspace = true
 derive_more.workspace = true
@@ -39,6 +38,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 eyre.workspace = true
+alloy-rlp.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-eips.workspace = true
 alloy-signer.workspace = true
