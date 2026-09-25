@@ -424,7 +424,7 @@ fn authenticated_tip_allows_healing_from_an_older_floor() {
         harness.stop().await;
         assert_eq!(harness.storage().current().epoch, current_state.epoch);
         assert_eq!(harness.storage().current().output, current_state.output);
-        assert_eq!(harness.execution.reads(), vec![Height::new(19)]);
+        assert_eq!(harness.execution.reads(), vec![Height::new(19); 3]);
     });
 }
 
@@ -465,7 +465,7 @@ fn missing_tip_is_authenticated_and_registered_before_actors_start() {
         harness.start().await;
         assert!(!harness.has_dealer_log(current_state.epoch).await);
         assert!(!harness.epoch_manager.events().is_empty());
-        assert_eq!(harness.execution.reads(), vec![Height::new(29)]);
+        assert_eq!(harness.execution.reads(), vec![Height::new(29); 3]);
         assert!(harness.marshal.reads().is_empty());
         harness.stop().await;
         assert_eq!(harness.storage().current().output, current_state.output);

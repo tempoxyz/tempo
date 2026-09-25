@@ -1,5 +1,3 @@
-#[cfg(feature = "serde")]
-use crate::transaction::key_authorization::serde_nonzero_quantity_opt;
 use crate::{
     subblock::has_sub_block_nonce_key_prefix,
     transaction::{
@@ -110,7 +108,7 @@ fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
@@ -129,31 +127,8 @@ pub struct Call {
 }
 
 impl Call {
-    /// Returns the RLP header for this call, encapsulating both length calculation and header creation
-    #[inline]
-    fn rlp_header(&self) -> alloy_rlp::Header {
-        let payload_length = self.to.length() + self.value.length() + self.input.length();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-    }
-
     fn size(&self) -> usize {
         size_of::<Self>() + self.input.len()
-    }
-}
-
-impl Encodable for Call {
-    fn encode(&self, out: &mut dyn BufMut) {
-        self.rlp_header().encode(out);
-        self.to.encode(out);
-        self.value.encode(out);
-        self.input.encode(out);
-    }
-
-    fn length(&self) -> usize {
-        self.rlp_header().length_with_payload()
     }
 }
 
@@ -246,7 +221,7 @@ pub struct TempoTransaction {
     /// `validBefore` bound defined by [TIP-1009].
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
-    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub valid_before: Option<NonZeroU64>,
 
     /// Lower bound for the transaction validity window, as a Unix timestamp in seconds.
@@ -256,7 +231,7 @@ pub struct TempoTransaction {
     /// `validAfter` bound defined by [TIP-1009].
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
-    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub valid_after: Option<NonZeroU64>,
 
     /// Optional key authorization for provisioning a new access key
@@ -324,6 +299,14 @@ impl TempoTransaction {
     #[inline]
     pub fn is_expiring_nonce_tx(&self) -> bool {
         self.nonce_key == TEMPO_EXPIRING_NONCE_KEY
+    }
+
+    /// Returns whether `timestamp` falls within the transaction's validity window.
+    ///
+    /// `valid_after` is inclusive and `valid_before` is exclusive. Missing bounds are
+    /// unrestricted. This only checks time bounds, not other transaction validity rules.
+    pub fn is_valid_at(&self, timestamp: u64) -> bool {
+        self.ensure_valid_after(timestamp).is_ok() && self.ensure_valid_before(timestamp).is_ok()
     }
 
     /// Ensures `valid_before`, when present, is strictly greater than `min_allowed`.
@@ -400,9 +383,7 @@ impl TempoTransaction {
     /// Calculate the signing hash for this transaction
     /// This is the hash that should be signed by the sender
     pub fn signature_hash(&self) -> B256 {
-        let mut buf = Vec::with_capacity(self.payload_len_for_signature());
-        self.encode_for_signing(&mut buf);
-        keccak256(&buf)
+        <Self as SignableTransaction<Signature>>::signature_hash(self)
     }
 
     /// Calculate the fee payer signature hash.
@@ -1033,6 +1014,28 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
 
+    proptest::proptest! {
+        #[test]
+        fn call_encoding_matches_field_encoding(call in proptest_arbitrary_interop::arb::<Call>()) {
+            let mut fields = Vec::new();
+            call.to.encode(&mut fields);
+            call.value.encode(&mut fields);
+            call.input.encode(&mut fields);
+            let mut expected = Vec::new();
+            RlpHeader { list: true, payload_length: fields.len() }.encode(&mut expected);
+            expected.extend_from_slice(&fields);
+            proptest::prop_assert_eq!(call.length(), expected.len());
+            proptest::prop_assert_eq!(alloy_rlp::encode(&call), expected);
+        }
+
+        #[test]
+        fn signing_hash_matches_signing_payload(tx in proptest_arbitrary_interop::arb::<TempoTransaction>()) {
+            let mut payload = Vec::new();
+            tx.encode_for_signing(&mut payload);
+            proptest::prop_assert_eq!(tx.signature_hash(), keccak256(payload));
+        }
+    }
+
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test timestamp must be non-zero")
     }
@@ -1154,6 +1157,39 @@ mod tests {
             ..Default::default()
         };
         assert!(tx5.validate().is_err());
+    }
+
+    #[test]
+    fn test_is_valid_at() {
+        for (after, before, timestamp, expected) in [
+            (0, 0, 0, true),
+            (0, 0, u64::MAX, true),
+            (50, 0, 49, false),
+            (50, 0, 50, true),
+            (50, 0, u64::MAX, true),
+            (0, 100, 0, true),
+            (0, 100, 99, true),
+            (0, 100, 100, false),
+            (50, 100, 49, false),
+            (50, 100, 50, true),
+            (50, 100, 99, true),
+            (50, 100, 100, false),
+            (50, 50, 50, false),
+            (100, 50, 75, false),
+            (u64::MAX, 0, u64::MAX, true),
+            (0, u64::MAX, u64::MAX, false),
+        ] {
+            let tx = TempoTransaction {
+                valid_after: NonZeroU64::new(after),
+                valid_before: NonZeroU64::new(before),
+                ..Default::default()
+            };
+            assert_eq!(
+                tx.is_valid_at(timestamp),
+                expected,
+                "after={after}, before={before}, timestamp={timestamp}"
+            );
+        }
     }
 
     #[test]

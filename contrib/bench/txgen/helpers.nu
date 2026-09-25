@@ -463,12 +463,17 @@ def txgen-validate-bench-args [bench_args: string] {
 def txgen-spec-effective-text [spec_path: string] {
     let path = ($spec_path | path expand)
     let raw = (open --raw $path)
-    let doc = (try { $raw | from yaml } catch { null })
-    if $doc == null or not (($doc | describe) | str starts-with "record") {
-        return $raw
+    # Nushell's YAML parser panics on integers above i64::MAX (e.g. nonce bounds).
+    # Use the same pinned Python yq as workload metadata and only pass include
+    # paths back to Nushell. Keep the original spec text and numeric values intact.
+    let result = (^uv run --no-project --with yq==3.4.3 yq -c '
+        if type == "object" then (.include // .includes // []) else [] end
+    ' $path | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to read txgen spec includes: ($result.stderr)"}
     }
 
-    let include_value = ($doc | get -o include | default ($doc | get -o includes))
+    let include_value = ($result.stdout | from json)
     let includes = if $include_value == null {
         []
     } else if (($include_value | describe) == "string") {
