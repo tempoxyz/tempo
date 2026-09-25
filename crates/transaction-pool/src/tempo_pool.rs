@@ -5,7 +5,6 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
-    maintain::MaintenancePermit,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
@@ -14,9 +13,8 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, B256Set, Entry, HashMap},
+    map::{AddressMap, AddressSet, Entry, HashMap},
 };
-use futures::StreamExt;
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
@@ -25,19 +23,15 @@ use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
-    PoolSize, PoolTransaction, PropagatedTransactions, SubPool, TransactionEvents,
-    TransactionOrigin, TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
+    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
+    TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
     TransactionValidationTaskExecutor, TransactionValidator, ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
-    pool::{AddedTransaction, QueuedReason},
 };
 use revm::database::BundleAccount;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
@@ -51,11 +45,6 @@ use tempo_precompiles::{
 use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
 
-use tokio::sync::Notify;
-
-const ADMISSION_BATCH_SIZE: usize = 16;
-const ADMISSION_ATTEMPTS: usize = 3;
-
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
     /// Returns pending transactions in the address's sequential 2D nonce lane.
@@ -65,6 +54,7 @@ pub trait TempoTransactionPoolExt: TransactionPool {
         nonce_key: U256,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
 }
+
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
@@ -75,9 +65,6 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
-    /// Published after Reth has applied the canonical update, not just refreshed its validator.
-    canonical_head: Arc<RwLock<B256>>,
-    canonical_update: Arc<Notify>,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -96,12 +83,9 @@ where
         mut aa_2d_pool: AA2dPool,
     ) -> Self {
         aa_2d_pool.set_base_fee(protocol_pool.inner().block_info().pending_basefee);
-        let canonical_head = protocol_pool.validator().validator().processed_head();
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
-            canonical_head: Arc::new(RwLock::new(canonical_head)),
-            canonical_update: Arc::new(Notify::new()),
         }
     }
 }
@@ -123,112 +107,6 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.protocol_pool.validator().validator().client()
-    }
-
-    /// Whether both validation and canonical pool updates have caught up to the provider.
-    pub(crate) fn processed_head_is_current(
-        &self,
-    ) -> reth_storage_api::errors::ProviderResult<bool> {
-        let head = self.canonical_head.read();
-        Ok(
-            *head == self.protocol_pool.validator().validator().processed_head()
-                && *head == self.client().chain_info()?.best_hash,
-        )
-    }
-
-    pub(crate) async fn canonical_update_completed(&self) {
-        self.canonical_update.notified().await;
-    }
-
-    /// Retains candidates until a fresh validation conclusively rejects them.
-    /// Valid transactions keep their original pool entry and listeners; provider errors retry later.
-    pub(crate) async fn revalidate_pending_transactions(
-        &self,
-        hashes: &mut B256Set,
-        permit: Option<&MaintenancePermit>,
-    ) {
-        let validator = self.protocol_pool.validator().validator();
-        let candidates = self.get_all(hashes.iter().copied().collect());
-        for tx in candidates {
-            let attempt = tx.transaction.with_discarded_caches();
-            let outcome = self
-                .protocol_pool
-                .validator()
-                .validate_transaction(tx.origin, attempt.clone())
-                .await;
-            let _head = self.canonical_head.read();
-            let current = validator.generation.read();
-            if permit.is_some_and(|permit| !permit.is_valid()) {
-                hashes.remove(tx.hash());
-                continue;
-            }
-            if Some(*current) != attempt.validation_generation()
-                || tx.transaction.invalidation_revision() != attempt.invalidation_revision()
-            {
-                continue;
-            }
-            if self
-                .get(tx.hash())
-                .is_none_or(|entry| !Arc::ptr_eq(&entry, &tx))
-            {
-                continue;
-            }
-            match outcome {
-                TransactionValidationOutcome::Invalid(_, _) => {
-                    self.remove_transactions(vec![*tx.hash()]);
-                    hashes.remove(tx.hash());
-                }
-                TransactionValidationOutcome::Valid {
-                    transaction,
-                    state_nonce,
-                    ..
-                } => {
-                    if tx.transaction.is_aa_2d() && !tx.transaction.is_expiring_nonce() {
-                        let mut pool = self.aa_2d_pool.write();
-                        if pool
-                            .get(tx.hash())
-                            .is_none_or(|entry| !Arc::ptr_eq(&entry, &tx))
-                        {
-                            continue;
-                        }
-                        let id = tx
-                            .transaction
-                            .aa_transaction_id()
-                            .expect("regular AA-2D transaction");
-                        if !tx
-                            .transaction
-                            .refresh_validation_metadata(transaction.transaction())
-                        {
-                            continue;
-                        }
-                        let updates = pool.reconcile_nonce(id.seq_id, state_nonce);
-                        drop(pool);
-                        for demoted in updates.demoted {
-                            self.protocol_pool.inner().notify_event_listeners(
-                                &AddedTransaction::Parked {
-                                    transaction: demoted,
-                                    replaced: None,
-                                    subpool: SubPool::Queued,
-                                    queued_reason: Some(QueuedReason::NonceGap),
-                                    promoted: Vec::new(),
-                                },
-                            );
-                        }
-                        self.protocol_pool
-                            .inner()
-                            .notify_on_transaction_updates(updates.promoted, updates.discarded);
-                    } else if !tx
-                        .transaction
-                        .refresh_validation_metadata(transaction.transaction())
-                    {
-                        continue;
-                    }
-                    hashes.remove(tx.hash());
-                }
-                TransactionValidationOutcome::Error(_, _) => {}
-            }
-        }
-        hashes.retain(|hash| self.contains(hash));
     }
 
     /// Updates the 2d nonce pool with the given state changes.
@@ -663,131 +541,11 @@ where
         self.remove_transactions(to_remove)
     }
 
-    /// Retries admission when a processed canonical callback invalidates its validation snapshot.
-    /// The insertion guard is synchronous and never covers signature work or an await.
-    async fn add_fresh_transaction(
-        &self,
-        origin: TransactionOrigin,
-        transaction: TempoPooledTransaction,
-    ) -> PoolResult<AddedTransactionOutcome> {
-        self.add_fresh_transaction_with_permit(origin, transaction, None)
-            .await
-    }
-
-    pub(crate) async fn add_fresh_transaction_with_permit(
-        &self,
-        origin: TransactionOrigin,
-        transaction: TempoPooledTransaction,
-        permit: Option<&MaintenancePermit>,
-    ) -> PoolResult<AddedTransactionOutcome> {
-        self.add_fresh_batch(vec![(origin, transaction)], permit)
-            .await
-            .pop()
-            .expect("one admission result")
-    }
-
-    /// Bounded batches share an EVM without making admission wait for an unbounded tail.
-    async fn add_fresh_transactions(
-        &self,
-        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
-    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        let mut results = Vec::with_capacity(transactions.len());
-        let mut batches = futures::stream::iter(transactions).chunks(ADMISSION_BATCH_SIZE);
-        while let Some(batch) = batches.next().await {
-            results.extend(self.add_fresh_batch(batch, None).await);
-        }
-        results
-    }
-
-    async fn add_fresh_batch(
-        &self,
-        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
-        permit: Option<&MaintenancePermit>,
-    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        for attempt_number in 0..ADMISSION_ATTEMPTS {
-            // Subscribe before validation so a callback cannot be lost while acquiring state.
-            let completed = self.canonical_update.notified();
-            tokio::pin!(completed);
-            completed.as_mut().enable();
-            let started_at = *self.protocol_pool.validator().validator().generation.read();
-            let attempts: Vec<_> = transactions
-                .iter()
-                .map(|(origin, tx)| (*origin, tx.with_discarded_caches()))
-                .collect();
-            // Every item in this batch acquires the same snapshot, including invalid outcomes.
-            let attempt = attempts[0].1.clone();
-            let outcomes = self
-                .protocol_pool
-                .validator()
-                .validate_transactions(attempts)
-                .await;
-            let generation = attempt.validation_generation();
-            // An orphaned snapshot may disappear before the callback arrives. Wait briefly for
-            // its replacement; never pair latest state with the old environment or cache.
-            if generation.is_none() && attempt_number + 1 < ADMISSION_ATTEMPTS {
-                let caught_up = self.processed_head_is_current().unwrap_or(false);
-                if *self.protocol_pool.validator().validator().generation.read() != started_at {
-                    continue;
-                }
-                if !caught_up {
-                    let _ = tokio::time::timeout(Duration::from_millis(100), completed).await;
-                    continue;
-                }
-            }
-            if let Some(results) = self.add_validated_batch_at_generation(
-                generation,
-                transactions.iter().map(|(origin, _)| *origin).zip(outcomes),
-                permit,
-            ) {
-                return results;
-            }
-        }
-        transactions
-            .into_iter()
-            .map(|(_, tx)| {
-                Err(PoolError::other(
-                    *tx.hash(),
-                    "canonical head changed during validation; retry transaction",
-                ))
-            })
-            .collect()
-    }
-
-    /// Applies results under the same barrier as the entire canonical pool update.
-    fn add_validated_batch_at_generation(
-        &self,
-        generation: Option<u64>,
-        outcomes: impl IntoIterator<
-            Item = (
-                TransactionOrigin,
-                TransactionValidationOutcome<TempoPooledTransaction>,
-            ),
-        >,
-        permit: Option<&MaintenancePermit>,
-    ) -> Option<Vec<PoolResult<AddedTransactionOutcome>>> {
-        let _head = self.canonical_head.read();
-        let current = self.protocol_pool.validator().validator().generation.read();
-        if generation.is_some_and(|generation| *current != generation) {
-            return None;
-        }
-        Some(
-            outcomes
-                .into_iter()
-                .map(|(origin, outcome)| {
-                    if permit.is_some_and(|permit| !permit.is_valid()) {
-                        Err(PoolError::other(
-                            outcome.tx_hash(),
-                            "canonical maintenance request expired or was mined",
-                        ))
-                    } else {
-                        self.add_validated_transaction(origin, outcome)
-                    }
-                })
-                .collect(),
-        )
-    }
-
-    /// Routes validated non-zero AA nonce keys to the 2D pool and everything else to Reth.
+    /// Adds a validated transaction to the subpool derived from its type and nonce key.
+    ///
+    /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
+    /// nonce keys, including expiring nonces, to the 2D nonce pool. Everything else
+    /// stays in the protocol pool.
     fn add_validated_transaction(
         &self,
         origin: TransactionOrigin,
@@ -881,8 +639,6 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
-            canonical_head: Arc::clone(&self.canonical_head),
-            canonical_update: Arc::clone(&self.canonical_update),
         }
     }
 }
@@ -932,7 +688,12 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let res = self.add_fresh_transaction(origin, transaction).await?;
+        let tx = self
+            .protocol_pool
+            .validator()
+            .validate_transaction(origin, transaction)
+            .await;
+        let res = self.add_validated_transaction(origin, tx)?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
@@ -942,7 +703,12 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        self.add_fresh_transaction(origin, transaction).await
+        let tx = self
+            .protocol_pool
+            .validator()
+            .validate_transaction(origin, transaction)
+            .await;
+        self.add_validated_transaction(origin, tx)
     }
 
     async fn add_transactions(
@@ -950,15 +716,56 @@ where
         origin: TransactionOrigin,
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        self.add_fresh_transactions(transactions.into_iter().map(|tx| (origin, tx)).collect())
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions(origin, transactions)
+                .await;
+        }
+
+        self.protocol_pool
+            .validator()
+            .validate_transactions_with_origin(origin, transactions)
             .await
+            .into_iter()
+            .map(|outcome| self.add_validated_transaction(origin, outcome))
+            .collect()
     }
 
     async fn add_transactions_with_origins(
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        self.add_fresh_transactions(transactions).await
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions_with_origins(transactions)
+                .await;
+        }
+
+        let origins = transactions
+            .iter()
+            .map(|(origin, _)| *origin)
+            .collect::<Vec<_>>();
+
+        self.protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await
+            .into_iter()
+            .zip(origins)
+            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
+            .collect()
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -1514,12 +1321,7 @@ where
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        let mut head = self.canonical_head.write();
-        let hash = update.new_tip.hash();
-        self.protocol_pool.on_canonical_state_change(update);
-        *head = hash;
-        drop(head);
-        self.canonical_update.notify_waiters();
+        self.protocol_pool.on_canonical_state_change(update)
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
@@ -1660,8 +1462,6 @@ fn get_recipient_policy_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_primitives_traits::SealedBlock;
-    use reth_transaction_pool::PoolUpdateKind;
     /// Returns the hashes of the evicted transactions.
     fn tx_hashes(txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) -> Vec<TxHash> {
         txs.iter().map(|tx| *tx.hash()).collect()
@@ -1861,126 +1661,6 @@ mod tests {
         };
         pool.add_validated_transaction(TransactionOrigin::External, validated)
             .expect("transaction should be admitted");
-    }
-
-    #[tokio::test]
-    async fn canonical_advance_rejects_stale_validated_insertion() {
-        let pool = create_test_pool(create_provider_with_tip());
-        let tx = crate::test_utils::TxBuilder::aa(Address::random())
-            .key_authorization(
-                KeyAuthorization::unrestricted(
-                    42431,
-                    SignatureType::Multisig,
-                    Address::repeat_byte(0x33),
-                )
-                .into_signed(Signature::test_signature()),
-            )
-            .build();
-        assert!(
-            tx.has_configurable_dependencies(),
-            "grant-only batch admission must use the freshness barrier"
-        );
-        assert!(tx.configurable_signers().next().is_none());
-        let hash = *tx.hash();
-        let generation = *pool.protocol_pool.validator().validator().generation.read();
-        let block = SealedBlock::seal_slow(Block::default());
-        pool.on_canonical_state_change(CanonicalStateUpdate {
-            new_tip: &block,
-            pending_block_base_fee: 0,
-            pending_block_blob_fee: None,
-            changed_accounts: Vec::new(),
-            mined_transactions: Vec::new(),
-            update_kind: PoolUpdateKind::Commit,
-        });
-        let outcome = TransactionValidationOutcome::Valid {
-            balance: U256::MAX,
-            state_nonce: tx.nonce(),
-            bytecode_hash: None,
-            transaction: ValidTransaction::new(tx, None),
-            propagate: true,
-            authorities: None,
-        };
-        assert!(
-            pool.add_validated_batch_at_generation(
-                Some(generation),
-                [(TransactionOrigin::External, outcome)],
-                None
-            )
-            .is_none()
-        );
-        assert!(!pool.contains(&hash));
-    }
-
-    #[tokio::test]
-    async fn revalidation_service_error_preserves_candidate_and_retry() {
-        // This fixture intentionally drops its validation service, producing a transient error.
-        let pool = create_test_pool(create_provider_with_tip());
-        let tx = crate::test_utils::TxBuilder::aa(Address::random()).build();
-        let hash = *tx.hash();
-        add_validated(&pool, tx);
-        let entry = pool.get(&hash).unwrap();
-        entry.transaction.quarantine();
-        let mut pending = B256Set::from_iter([hash]);
-        pool.revalidate_pending_transactions(&mut pending, None)
-            .await;
-        assert!(pool.contains(&hash));
-        assert!(pending.contains(&hash));
-        assert!(entry.transaction.is_quarantined());
-        assert!(pool.best_transactions().next().is_none());
-    }
-
-    #[test]
-    fn processed_head_predicate_tracks_callback() {
-        let provider = create_provider_with_tip();
-        let pool = create_test_pool(provider.clone());
-        let mut block = Block::default();
-        block.header.inner.number = 1;
-        let block = SealedBlock::seal_slow(block);
-        provider.add_block(block.hash(), block.clone_block());
-        assert!(!pool.processed_head_is_current().unwrap());
-        pool.protocol_pool
-            .validator()
-            .validator()
-            .on_new_head_block(&block);
-        assert!(
-            !pool.processed_head_is_current().unwrap(),
-            "validator readiness is not pool readiness"
-        );
-        pool.on_canonical_state_change(CanonicalStateUpdate {
-            new_tip: &block,
-            pending_block_base_fee: 0,
-            pending_block_blob_fee: None,
-            changed_accounts: Vec::new(),
-            mined_transactions: Vec::new(),
-            update_kind: PoolUpdateKind::Commit,
-        });
-        assert!(pool.processed_head_is_current().unwrap());
-    }
-
-    #[test]
-    fn processed_head_predicate_follows_superseding_callback() {
-        let provider = create_provider_with_tip();
-        let pool = create_test_pool(provider.clone());
-        let mut intermediate = Block::default();
-        intermediate.header.inner.number = 1;
-        let intermediate = SealedBlock::seal_slow(intermediate);
-        provider.add_block(intermediate.hash(), intermediate.clone_block());
-        let mut latest = intermediate.clone_block();
-        latest.header.inner.number = 2;
-        let latest = SealedBlock::seal_slow(latest);
-
-        assert!(!pool.processed_head_is_current().unwrap());
-        provider.add_block(latest.hash(), latest.clone_block());
-        assert!(!pool.processed_head_is_current().unwrap());
-        pool.on_canonical_state_change(CanonicalStateUpdate {
-            new_tip: &latest,
-            pending_block_base_fee: 0,
-            pending_block_blob_fee: None,
-            changed_accounts: Vec::new(),
-            mined_transactions: Vec::new(),
-            update_kind: PoolUpdateKind::Commit,
-        });
-        assert!(pool.processed_head_is_current().unwrap());
     }
 
     fn create_provider_with_tip() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
