@@ -352,6 +352,31 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_keychain_rejects_stored_type_mismatch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let admin = PrivateKeySigner::random();
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_admin_key(
+                account,
+                admin.address(),
+                SignatureType::Multisig,
+                None,
+            )?;
+
+            let hash = B256::from([0x69; 32]);
+            let signature = keychain_signature(account, &admin, hash)?;
+            assert!(!call_verify_keychain(account, hash, signature.clone())?);
+            assert!(!call_verify_keychain_admin(account, hash, signature)?);
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_verify_keychain_admin_returns_true_for_root_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
