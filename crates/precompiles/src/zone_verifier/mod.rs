@@ -40,13 +40,10 @@ impl ZoneVerifier {
             return Ok(false);
         }
 
-        let mode = call.verifierConfig.as_ref();
-        // Allow temporary rollout fallback. A later hardfork will remove `NoProof` mode.
-        if matches!(mode, MODE_NO_PROOF) && call.proof.is_empty() {
-            return Ok(true);
-        }
-        if !matches!(mode, MODE_NITRO_V1) || call.proof.is_empty() {
-            return Ok(false);
+        match call.verifierConfig.as_ref() {
+            MODE_NITRO_V1 if !call.proof.is_empty() => {}
+            // Allow temporary rollout fallback. A later hardfork will remove `NoProof` mode.
+            mode => return Ok(matches!(mode, MODE_NO_PROOF) && call.proof.is_empty()),
         }
 
         let block_timestamp = self.storage.timestamp().saturating_to::<u64>();
