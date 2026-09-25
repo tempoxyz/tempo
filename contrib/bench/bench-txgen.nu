@@ -202,7 +202,7 @@ def run-txgen-bench-single [
 
 def "main run" [
     --mode: string = "e2e"
-    --preset: string = ""
+    --preset: string = "default"
     --tps: int = 10000
     --duration: int = 30
     --accounts: int = 1000
@@ -219,7 +219,7 @@ def "main run" [
     --baseline-env: string = ""
     --feature-env: string = ""
     --bench-env: string = ""
-    --bloat: int = 0
+    --bloat: int = 1024
     --no-infra
     --baseline: string = ""
     --feature: string = ""
@@ -417,7 +417,7 @@ def "main run" [
             cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
             rm -rf $feature_genesis_dir
 
-            if $bloat > 0 and not ($bloat_file | path exists) {
+            if $bloat > 0 {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
                     cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
@@ -478,7 +478,7 @@ def "main run" [
                 }
             }
 
-            if $bloat > 0 and not ($bloat_file | path exists) {
+            if $bloat > 0 {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
                     cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args

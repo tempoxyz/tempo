@@ -51,10 +51,6 @@ def txgen-tip20-scenario-alias [name: string] {
         return (txgen-tip20-public-scenario)
     }
 
-    if $name == "default" {
-        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
-    }
-
     # Legacy preset names remain accepted, but active workflows should use scenario strings.
     if $name == "tip20" {
         return (txgen-tip20-base-scenario)
@@ -412,7 +408,10 @@ def txgen-static-preset-path [preset: string] {
 }
 
 def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
-    let preset_name = ($preset | str trim)
+    # Shared with the multi-region runner; keep workload selection in the assets.
+    let name = ($preset | str trim)
+    let aliases = (open ([ (txgen-presets-dir) "aliases.json" ] | path join))
+    let preset_name = ($aliases | get -o $name | default $name)
     let tip20_scenario = (txgen-parse-tip20-scenario $preset_name)
     if $tip20_scenario != null {
         return (txgen-render-tip20-spec $tip20_scenario $out_dir)
@@ -432,6 +431,15 @@ def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
 
 def txgen-preset-path [preset: string] {
     (txgen-resolve-bench-spec $preset).spec_path
+}
+
+# Store concrete workload identities; a moving CLI alias must not relabel history.
+def txgen-scenario-metadata-args [scenario: string, spec_path: string] {
+    let aliases = (open ([ (txgen-presets-dir) "aliases.json" ] | path join))
+    let resolved = ($aliases | get -o $scenario | default $scenario)
+    ["-m" $"preset=($spec_path | path basename | str replace --regex '\.yml$' '')"]
+        | append (if $resolved != "" { ["-m" $"scenario=($resolved)"] } else { [] })
+        | append (if $resolved != $scenario { ["-m" $"requested_preset=($scenario)"] } else { [] })
 }
 
 def txgen-account-mnemonic [] {
@@ -866,7 +874,7 @@ def txgen-run-preset-pipeline [
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
         | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
         | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
-        | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
+        | append (txgen-scenario-metadata-args $scenario $spec_path)
         | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
         | append (if $initial_db_size_bytes > 0 { ["-m" $"initial_db_size_bytes=($initial_db_size_bytes)"] } else { [] })
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args

@@ -1344,7 +1344,7 @@ def "main summarize" [
 }
 
 def "main render-txgen-spec" [
-    --preset: string = ""                              # Txgen preset name or scenario expression
+    --preset: string = "default"                       # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
@@ -1355,7 +1355,7 @@ def "main render-txgen-spec" [
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Txgen preset name
+    --preset: string = "default"                        # Txgen preset name
     --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds

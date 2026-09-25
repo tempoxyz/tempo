@@ -71,8 +71,7 @@ jobs:
         run: |
           scenarios=(
             # Keep a distinct state key for each benchmark series.
-            '{"preset":"public","state_key":"default","token_count":"1"}'
-            '{"preset":"tip20:recipient=existing,fee-token=any_tip20","state_key":"tip20-existing-any","token_count":"4"}'
+            '{"preset":"default","state_key":"default","token_count":"4"}'
           )
           bench_entries=()
           save_entries=()
