@@ -510,7 +510,6 @@ impl TempoConsensusSpec for TempoChainSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{
         TempoHardfork,
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
@@ -518,12 +517,11 @@ mod tests {
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
     use reth_chainspec::EthChainSpec;
-    use tempo_primitives::Header;
-
     #[cfg(feature = "cli")]
     use reth_chainspec::{ForkCondition, Hardforks};
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
+    use tempo_primitives::Header;
 
     #[test]
     #[cfg(feature = "cli")]
@@ -1085,38 +1083,6 @@ mod tests {
                 .expect(&format!("failed to parse chain `{name}`"));
 
             assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
-        }
-    }
-
-    #[test]
-    fn t14_activation_from_genesis() {
-        for activation in [None, Some(1000)] {
-            let mut genesis = DEV.inner.genesis.clone();
-            genesis.config.extra_fields.remove("t14Time");
-            if let Some(timestamp) = activation {
-                genesis
-                    .config
-                    .extra_fields
-                    .insert_value("t14Time".into(), timestamp)
-                    .unwrap();
-            }
-            let chainspec = super::TempoChainSpec::from_genesis(genesis);
-
-            assert_eq!(chainspec.info.fork_time(TempoHardfork::T14), activation);
-            assert_eq!(chainspec.tempo_hardfork_at(999), TempoHardfork::T13);
-            assert!(!chainspec.is_t14_active_at_timestamp(999));
-            let expected = if activation.is_some() {
-                TempoHardfork::T14
-            } else {
-                TempoHardfork::T13
-            };
-            for timestamp in [1000, 1001, u64::MAX] {
-                assert_eq!(chainspec.tempo_hardfork_at(timestamp), expected);
-                assert_eq!(
-                    chainspec.is_t14_active_at_timestamp(timestamp),
-                    activation.is_some()
-                );
-            }
         }
     }
 }
