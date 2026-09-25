@@ -1,6 +1,7 @@
 use super::*;
 use crate::tempo_transaction::helpers::{create_transfer_call, parse_filled_tx, sign_fee_payer};
 use alloy_eips::Decodable2718;
+use reth_primitives_traits::transaction::TxHashRef;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, IAccountKeychain, ITIP20,
 };
@@ -9,6 +10,60 @@ use tempo_primitives::{
     transaction::{KeyAuthorization, MultisigQuorumError, TokenLimit},
 };
 use tempo_revm::native_multisig::NativeMultisigError;
+
+/// Exercise first-use registration and a subsequent signed transaction on a live devnet.
+#[tokio::test(flavor = "multi_thread")]
+async fn native_multisig_devnet_registration_and_transaction() -> eyre::Result<()> {
+    let Some(mut env) = super::super::rpc::RpcEnv::devnet().await? else {
+        eprintln!("TEMPO_DEVNET_RPC_URL not set, skipping");
+        return Ok(());
+    };
+    let mut account = NativeAccount::new(0x41, 2);
+    account.config.salt = B256::random();
+    account.address = account
+        .config
+        .derive_account(FACTORY)
+        .expect("valid multisig fixture");
+    eprintln!("multisig account: {}", account.address);
+    assert_eq!(
+        env.provider().get_code_at(FACTORY).await?,
+        Bytes::from_static(&[0xef])
+    );
+    env.fund_account(account.address).await?;
+    let provider = env.provider().clone();
+    let multisig = INativeMultisig::new(NATIVE_MULTISIG_ADDRESS, provider);
+    assert_eq!(
+        multisig.getConfigCommitment(account.address).call().await?,
+        B256::ZERO
+    );
+
+    for nonce in 0..2 {
+        let tx = create_basic_aa_tx(env.chain_id(), nonce, vec![noop()], GAS_LIMIT);
+        let signature = account.sign(&tx)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        let receipt = env
+            .submit_tx(envelope.encoded_2718(), *envelope.tx_hash())
+            .await?;
+        eprintln!(
+            "multisig tx {nonce}: {} in block {}",
+            envelope.tx_hash(),
+            receipt["blockNumber"]
+        );
+        assert_eq!(receipt["status"], "0x1");
+        account.nonce += 1;
+        assert_eq!(
+            env.provider()
+                .get_transaction_count(account.address)
+                .await?,
+            nonce + 1
+        );
+        assert_eq!(
+            multisig.getConfigCommitment(account.address).call().await?,
+            account.config.commitment().expect("valid multisig fixture")
+        );
+    }
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn native_rpc_registration_revert_retry_and_rotation() -> eyre::Result<()> {
