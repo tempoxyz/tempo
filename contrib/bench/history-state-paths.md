@@ -122,9 +122,13 @@ attempt; the run was stopped and rejected. Priming evidence is archived per case
 At least eight distributed blocks' receipts reconcile canonical gas and success. Three
 non-first transactions (when available) have actual prestate/call/diff traces
 compared with parent-state replay and cursor-overridden opcode replay. The audit
-checks populated code/values, 128 code accesses or 1,024 writes, cold gas charges, changed nonzero
-storage, and access-set agreement. The replay models prewarming's state; it is
-not direct instrumentation of speculative worker accesses.
+checks populated code/values, 128 storage reads, 128 code accesses or 1,024 writes,
+cold gas charges, changed nonzero storage, and access-set agreement. The saved
+SLOAD case also requires at least 90% of measured transactions to have a preceding
+transaction in their block, so mostly single-transaction blocks cannot silently
+pass as a history-bypass workload. This fraction measures bypass eligibility;
+the sampled replay validates access-set divergence. The replay models prewarming's
+state; it is not direct instrumentation of speculative worker accesses.
 
 Reports separate canonical wall gas/s, execution-only gas/s, application-cache
 misses, follower payload-thread major faults, whole-node cgroup major faults/file

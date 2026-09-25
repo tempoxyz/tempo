@@ -1,0 +1,1296 @@
+{
+  "status": "complete",
+  "suite": "bench-results/state-access-bloat-20260925-153713-128",
+  "results": "bench-results/20260925-153713-270",
+  "analysis": {
+    "from_unix_ms": 1790351737516,
+    "to_unix_ms": 1790352337516,
+    "duration_seconds": 600,
+    "attempts_started": 655,
+    "attempts_unfinished": 0,
+    "valid_attempt_execution": {
+      "count": 655,
+      "p50_ms": 484.937,
+      "p90_ms": 492.991,
+      "p95_ms": 494.869,
+      "p99_ms": 500.033,
+      "max_ms": 508.361,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "invalid_attempt_execution": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_attempts_on_cancelled_jobs": 0,
+    "cancelled_valid_execution": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_before_execution": {
+      "count": 655,
+      "p50_ms": 430.207,
+      "p90_ms": 456.162,
+      "p95_ms": 460.785,
+      "p99_ms": 466.196,
+      "max_ms": 475.689,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_build_elapsed_at_tx_finish": {
+      "count": 655,
+      "p50_ms": 914.04,
+      "p90_ms": 941.299,
+      "p95_ms": 945.704,
+      "p99_ms": 954.774,
+      "max_ms": 961.235,
+      "above_900ms": 395,
+      "above_1200ms": 0
+    },
+    "proposal_jobs": 654,
+    "cancelled_jobs": 0,
+    "completed_jobs": 654,
+    "jobs_without_terminal_event": 0,
+    "cancellation_after_job_creation": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "completed_builds": 654,
+    "completed_nonempty_build_elapsed": {
+      "count": 654,
+      "p50_ms": 914.704826,
+      "p90_ms": 941.914854,
+      "p95_ms": 946.366881,
+      "p99_ms": 955.621711,
+      "max_ms": 961.906247,
+      "above_900ms": 400,
+      "above_1200ms": 0
+    },
+    "completed_build_execution_mgas_per_second": 6.8788380598804055,
+    "warmup": {
+      "from_unix_ms": 1790351137516,
+      "to_unix_ms": 1790351737516,
+      "duration_seconds": 600,
+      "attempts_started": 654,
+      "attempts_unfinished": 0,
+      "valid_attempt_execution": {
+        "count": 654,
+        "p50_ms": 483.662,
+        "p90_ms": 493.129,
+        "p95_ms": 495.924,
+        "p99_ms": 518.554,
+        "max_ms": 728.574,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "invalid_attempt_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_attempts_on_cancelled_jobs": 0,
+      "cancelled_valid_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_before_execution": {
+        "count": 654,
+        "p50_ms": 429.716,
+        "p90_ms": 457.882,
+        "p95_ms": 461.991,
+        "p99_ms": 479.796,
+        "max_ms": 565.152,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_build_elapsed_at_tx_finish": {
+        "count": 654,
+        "p50_ms": 913.014,
+        "p90_ms": 941.565,
+        "p95_ms": 946.619,
+        "p99_ms": 1001.241,
+        "max_ms": 1162.01,
+        "above_900ms": 398,
+        "above_1200ms": 0
+      },
+      "proposal_jobs": 654,
+      "cancelled_jobs": 0,
+      "completed_jobs": 654,
+      "jobs_without_terminal_event": 0,
+      "cancellation_after_job_creation": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_builds": 654,
+      "completed_nonempty_build_elapsed": {
+        "count": 654,
+        "p50_ms": 913.950112,
+        "p90_ms": 942.224822,
+        "p95_ms": 947.368927,
+        "p99_ms": 1001.831044,
+        "max_ms": 1162.572993,
+        "above_900ms": 400,
+        "above_1200ms": 0
+      },
+      "completed_build_execution_mgas_per_second": 6.879137565383133
+    },
+    "trend": [
+      {
+        "from_unix_ms": 1790351737516,
+        "to_unix_ms": 1790351857516,
+        "duration_seconds": 120,
+        "attempts_started": 131,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 131,
+          "p50_ms": 485.321,
+          "p90_ms": 493.649,
+          "p95_ms": 496.899,
+          "p99_ms": 504.523,
+          "max_ms": 508.361,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 131,
+          "p50_ms": 428.581,
+          "p90_ms": 458.101,
+          "p95_ms": 460.925,
+          "p99_ms": 464.976,
+          "max_ms": 467.245,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 131,
+          "p50_ms": 913.887,
+          "p90_ms": 941.978,
+          "p95_ms": 945.892,
+          "p99_ms": 957.042,
+          "max_ms": 961.235,
+          "above_900ms": 78,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 131,
+        "cancelled_jobs": 0,
+        "completed_jobs": 131,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 131,
+        "completed_nonempty_build_elapsed": {
+          "count": 131,
+          "p50_ms": 914.59365,
+          "p90_ms": 942.638387,
+          "p95_ms": 946.585748,
+          "p99_ms": 957.687739,
+          "max_ms": 961.906247,
+          "above_900ms": 78,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 6.881338968284707
+      },
+      {
+        "from_unix_ms": 1790351857516,
+        "to_unix_ms": 1790351977516,
+        "duration_seconds": 120,
+        "attempts_started": 131,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 131,
+          "p50_ms": 486.127,
+          "p90_ms": 493.833,
+          "p95_ms": 495.563,
+          "p99_ms": 498.986,
+          "max_ms": 499.87,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 131,
+          "p50_ms": 427.862,
+          "p90_ms": 454.652,
+          "p95_ms": 462.881,
+          "p99_ms": 466.196,
+          "max_ms": 467.182,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 131,
+          "p50_ms": 913.236,
+          "p90_ms": 942.011,
+          "p95_ms": 945.259,
+          "p99_ms": 954.774,
+          "max_ms": 955.633,
+          "above_900ms": 81,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 131,
+        "cancelled_jobs": 0,
+        "completed_jobs": 131,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 131,
+        "completed_nonempty_build_elapsed": {
+          "count": 131,
+          "p50_ms": 913.889411,
+          "p90_ms": 942.643934,
+          "p95_ms": 945.918661,
+          "p99_ms": 955.77203,
+          "max_ms": 956.441336,
+          "above_900ms": 82,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 6.877586032166198
+      },
+      {
+        "from_unix_ms": 1790351977516,
+        "to_unix_ms": 1790352097516,
+        "duration_seconds": 120,
+        "attempts_started": 131,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 131,
+          "p50_ms": 484.768,
+          "p90_ms": 492.894,
+          "p95_ms": 494.571,
+          "p99_ms": 499.195,
+          "max_ms": 505.923,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 131,
+          "p50_ms": 430.682,
+          "p90_ms": 455.331,
+          "p95_ms": 460.785,
+          "p99_ms": 470.625,
+          "max_ms": 475.689,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 131,
+          "p50_ms": 910.845,
+          "p90_ms": 940.542,
+          "p95_ms": 946.613,
+          "p99_ms": 955.802,
+          "max_ms": 955.937,
+          "above_900ms": 79,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 130,
+        "cancelled_jobs": 0,
+        "completed_jobs": 130,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 130,
+        "completed_nonempty_build_elapsed": {
+          "count": 130,
+          "p50_ms": 911.523734,
+          "p90_ms": 941.176364,
+          "p95_ms": 947.309628,
+          "p99_ms": 956.629223,
+          "max_ms": 956.711511,
+          "above_900ms": 81,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 6.883826604262236
+      },
+      {
+        "from_unix_ms": 1790352097516,
+        "to_unix_ms": 1790352217516,
+        "duration_seconds": 120,
+        "attempts_started": 131,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 131,
+          "p50_ms": 484.258,
+          "p90_ms": 492.788,
+          "p95_ms": 495.244,
+          "p99_ms": 497.816,
+          "max_ms": 502.288,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 131,
+          "p50_ms": 433.411,
+          "p90_ms": 456.449,
+          "p95_ms": 460.975,
+          "p99_ms": 465.862,
+          "max_ms": 466.078,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 131,
+          "p50_ms": 915.749,
+          "p90_ms": 939.536,
+          "p95_ms": 945.823,
+          "p99_ms": 952.193,
+          "max_ms": 954.997,
+          "above_900ms": 80,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 131,
+        "cancelled_jobs": 0,
+        "completed_jobs": 131,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 131,
+        "completed_nonempty_build_elapsed": {
+          "count": 131,
+          "p50_ms": 914.981092,
+          "p90_ms": 940.19144,
+          "p95_ms": 946.500214,
+          "p99_ms": 952.879148,
+          "max_ms": 955.621711,
+          "above_900ms": 81,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 6.878777408705754
+      },
+      {
+        "from_unix_ms": 1790352217516,
+        "to_unix_ms": 1790352337516,
+        "duration_seconds": 120,
+        "attempts_started": 131,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 131,
+          "p50_ms": 484.464,
+          "p90_ms": 491.214,
+          "p95_ms": 492.378,
+          "p99_ms": 498.6,
+          "max_ms": 499.12,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 131,
+          "p50_ms": 435.889,
+          "p90_ms": 455.856,
+          "p95_ms": 458.057,
+          "p99_ms": 461.326,
+          "max_ms": 470.056,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 131,
+          "p50_ms": 914.181,
+          "p90_ms": 941.289,
+          "p95_ms": 943.121,
+          "p99_ms": 951.156,
+          "max_ms": 951.672,
+          "above_900ms": 77,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 131,
+        "cancelled_jobs": 0,
+        "completed_jobs": 131,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 131,
+        "completed_nonempty_build_elapsed": {
+          "count": 131,
+          "p50_ms": 917.661136,
+          "p90_ms": 941.914841,
+          "p95_ms": 943.752585,
+          "p99_ms": 951.832228,
+          "max_ms": 952.321728,
+          "above_900ms": 78,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 6.872709321254428
+      }
+    ],
+    "origin_unix_ms": 1790351137516,
+    "scenario": "history_code_sized",
+    "accesses_per_transaction": 2250,
+    "chain": {
+      "gas": 4085288905,
+      "transactions": 653,
+      "blocks": 653,
+      "gas_per_transaction": 6256185.1531393565,
+      "mgas_per_second": 6.808814841666667,
+      "history_advanced_fraction": 0
+    },
+    "follower": {
+      "blocks": 654,
+      "execution_mgas_per_second": 16.629793890964706,
+      "nonempty_block_execution": {
+        "count": 654,
+        "p50_ms": 377.793774,
+        "p90_ms": 388.124758,
+        "p95_ms": 390.454081,
+        "p99_ms": 396.532821,
+        "max_ms": 407.065068,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      }
+    },
+    "io": {
+      "a": {
+        "from_unix_ms": 1790351742345,
+        "to_unix_ms": 1790352332595,
+        "read_mb_per_second": 1947.1411716120288,
+        "file_cache_start_gib": 16.665775299072266,
+        "file_cache_end_gib": 16.3175048828125
+      },
+      "b": {
+        "from_unix_ms": 1790351742364,
+        "to_unix_ms": 1790352332613,
+        "read_mb_per_second": 63.89103944945269,
+        "file_cache_start_gib": 16.33853530883789,
+        "file_cache_end_gib": 14.42694091796875
+      }
+    },
+    "caveats": [
+      "Attempt cohort is selected by START time, including completions after the window and canceled payloads. Unfinished attempts are explicitly counted, not silently discarded.",
+      "Transaction execution does not include all proposal overhead; the 1200ms deadline covers more than EVM execution. Completed-build throughput excludes canceled work.",
+      "Exact submission-relative wall window, not a trimmed metric endpoint or first inclusion timestamp. A single calibration run is not a worst-case latency guarantee."
+    ]
+  },
+  "audit": {
+    "ok": true,
+    "scenario": "history_code_sized",
+    "contract": "0x535441544541434345535342454e434800000000",
+    "fixture": {
+      "code_base": "0x6000000000000000000000000000000000000000",
+      "code_bytes": 24576,
+      "code_count": 4266667,
+      "elapsed_seconds": 331.609740242,
+      "hashed_storage_entries": 1638400975,
+      "previous_router_code_hash": "0xc873c5da36daabf1387f53be63389a4683c5fa0d656bb856712bca5735ce661d",
+      "router": "0x535441544541434345535342454e434800000000",
+      "router_code_hash": "0x586fe8d8d1cbd243fdce7aae1e50234f00971104ade6085582a8836c109f43d5",
+      "state_root": "0xeadd4af0f7496704984e9187c7565838a78ad5c47fa171873e2908e90c6aec03",
+      "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+      "total_code_bytes": 104857608192,
+      "version": 1,
+      "page_count": 399999,
+      "sized_accesses": 2250
+    },
+    "timing": {
+      "duration_seconds": 1200,
+      "warmup_seconds": 600,
+      "from_ms": 600000,
+      "to_ms": 1200000,
+      "slice_ms": 120000
+    },
+    "cursor_check": {
+      "first_block": 96,
+      "last_block": 1403,
+      "before": "1",
+      "after": "1309",
+      "transactions": "1308",
+      "ok": true,
+      "transactions_with_prior_workload_in_block": 0,
+      "history_advanced_fraction": 0
+    },
+    "measured_history_coverage": {
+      "blocks": 653,
+      "transactions": 653,
+      "non_first_transactions": 0,
+      "fraction": 0,
+      "minimum_required": 0,
+      "transactions_per_block": {
+        "1": 653
+      }
+    },
+    "trace_sampling": {
+      "policy": "sized-first-allowed",
+      "non_first_samples": 0
+    },
+    "runtime_code_bytes": 2321,
+    "receipts": [
+      {
+        "block": 751,
+        "count": 1,
+        "gas": "6255157"
+      },
+      {
+        "block": 844,
+        "count": 1,
+        "gas": "6257645"
+      },
+      {
+        "block": 937,
+        "count": 1,
+        "gas": "6250157"
+      },
+      {
+        "block": 1030,
+        "count": 1,
+        "gas": "6250157"
+      },
+      {
+        "block": 1123,
+        "count": 1,
+        "gas": "6255157"
+      },
+      {
+        "block": 1216,
+        "count": 1,
+        "gas": "6257657"
+      },
+      {
+        "block": 1309,
+        "count": 1,
+        "gas": "6255157"
+      },
+      {
+        "block": 1403,
+        "count": 1,
+        "gas": "6257657"
+      },
+      {
+        "block": 1077,
+        "count": 1,
+        "gas": "6255145"
+      }
+    ],
+    "traces": [
+      {
+        "hash": "0x5bc31808fd917e0ad4ccaf9ac93db7c67850d6f6198e166ad6e8f80b537c3c98",
+        "cursor_before": "656",
+        "parent_cursor": "656",
+        "replay_sender_nonce_override": true,
+        "history_advanced": false,
+        "actual_unique": 2249,
+        "parent_state_unique": 2249,
+        "overlap": 2249,
+        "parent_state_mismatch_fraction": 0,
+        "accesses": 2250,
+        "gas_cost_histogram": {
+          "103": 1,
+          "2603": 2249
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260925-153713-270/history-trace-0x5bc31808fd917e0ad4ccaf9ac93db7c67850d6f6198e166ad6e8f80b537c3c98.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      },
+      {
+        "hash": "0xcb282218f35ab0a5fb80b7347ab8c1b3ae10943bb808eea0f5b62075da5042b1",
+        "cursor_before": "1308",
+        "parent_cursor": "1308",
+        "replay_sender_nonce_override": true,
+        "history_advanced": false,
+        "actual_unique": 2250,
+        "parent_state_unique": 2250,
+        "overlap": 2250,
+        "parent_state_mismatch_fraction": 0,
+        "accesses": 2250,
+        "gas_cost_histogram": {
+          "2603": 2250
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260925-153713-270/history-trace-0xcb282218f35ab0a5fb80b7347ab8c1b3ae10943bb808eea0f5b62075da5042b1.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      },
+      {
+        "hash": "0xe164a647328ae11efbacc9b76cf319fa80b2ea196b575276e40bd523a213ed1a",
+        "cursor_before": "982",
+        "parent_cursor": "982",
+        "replay_sender_nonce_override": true,
+        "history_advanced": false,
+        "actual_unique": 2249,
+        "parent_state_unique": 2249,
+        "overlap": 2249,
+        "parent_state_mismatch_fraction": 0,
+        "accesses": 2250,
+        "gas_cost_histogram": {
+          "103": 1,
+          "2603": 2249
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260925-153713-270/history-trace-0xe164a647328ae11efbacc9b76cf319fa80b2ea196b575276e40bd523a213ed1a.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      }
+    ],
+    "sampled_receipts": 9,
+    "workload_end_block": 1403,
+    "quiet_target_block": 1429,
+    "persisted_through_workload": true,
+    "drain": [
+      {
+        "unix_ms": 1790352377796,
+        "nodes": {
+          "a": {
+            "head": 1465,
+            "metrics": {
+              "reth_sync_execution_gas_processed_total": 0,
+              "reth_db_bytecode_prefetch_requests": 95328484,
+              "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 1465,
+              "reth_db_bytecode_prefetch_bytes": 2733258293248,
+              "reth_db_bytecode_prefetch_errors": 0,
+              "reth_db_bytecode_prefetch_requests_rw": 0,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 365237,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 19220,
+              "reth_transaction_pool_aa_2d_pending_transactions": 378,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 25575,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_consensus_engine_beacon_executed_blocks": 41,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 2663360,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 2932228,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 69022,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 1269.839533364001,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 1465,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.8516921410000003,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 1465,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 1274.5185793289997,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 1465,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.429397071000001,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 1465,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 0.45576454499999997,
+              "reth_tempo_payload_builder_total_transactions_sum": 5334,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 1269.839533364001,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 1465,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.8459070429999997,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 1465,
+              "reth_tempo_payload_builder_gas_used_sum": 8576333430
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 0,
+                "wbytes": 89636864,
+                "rios": 0,
+                "wios": 480,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 2380077969408,
+                "wbytes": 280829952,
+                "rios": 184980146,
+                "wios": 53496,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 8192,
+                "wbytes": 89636864,
+                "rios": 2,
+                "wios": 480,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 8192,
+                "wbytes": 89636864,
+                "rios": 2,
+                "wios": 480,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:0",
+            "memory": {
+              "file": 17644556288,
+              "file_mapped": 17637933056,
+              "file_dirty": 57344,
+              "file_writeback": 0,
+              "workingset_refault_file": 551002071,
+              "pgfault": 314343995,
+              "pgmajfault": 104401069
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "21017726976",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 515432,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 1454,
+              "state": 1424
+            },
+            "unix_ms": 1790352377825
+          },
+          "b": {
+            "head": 1465,
+            "metrics": {
+              "reth_db_bytecode_prefetch_bytes": 86745071616,
+              "reth_sync_execution_gas_processed_total": 8576333430,
+              "reth_db_bytecode_prefetch_requests_rw": 0,
+              "reth_db_bytecode_prefetch_errors": 0,
+              "reth_db_bytecode_prefetch_requests": 3025428,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 6790,
+              "reth_transaction_pool_aa_2d_pending_transactions": 0,
+              "reth_consensus_engine_beacon_executed_blocks": 41,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 3001226,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 24,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 3015885,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 12712,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 26285,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_transactions_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_gas_used_sum": 0,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 0.27480917399999993,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 131072,
+                "wbytes": 52711424,
+                "rios": 1,
+                "wios": 490,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 380928,
+                "wbytes": 52711424,
+                "rios": 3,
+                "wios": 490,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 512000,
+                "wbytes": 52711424,
+                "rios": 4,
+                "wios": 490,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:1": {
+                "rbytes": 79545671680,
+                "wbytes": 197111808,
+                "rios": 6180725,
+                "wios": 33861,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 544768,
+                "wbytes": 0,
+                "rios": 2,
+                "wios": 0,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:1",
+            "memory": {
+              "file": 15625539584,
+              "file_mapped": 15582650368,
+              "file_dirty": 155648,
+              "file_writeback": 0,
+              "workingset_refault_file": 4144701,
+              "pgfault": 14023050,
+              "pgmajfault": 3526972
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "16749391872",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 0,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 1454,
+              "state": 1424
+            },
+            "unix_ms": 1790352377851
+          }
+        }
+      },
+      {
+        "unix_ms": 1790352382851,
+        "nodes": {
+          "a": {
+            "head": 1475,
+            "metrics": {
+              "reth_sync_execution_gas_processed_total": 0,
+              "reth_db_bytecode_prefetch_bytes": 2733258293248,
+              "reth_db_bytecode_prefetch_requests": 95328484,
+              "reth_db_bytecode_prefetch_requests_rw": 0,
+              "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 1475,
+              "reth_db_bytecode_prefetch_errors": 0,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 69022,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 25575,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+              "reth_transaction_pool_aa_2d_pending_transactions": 378,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 365247,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 2932238,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 19320,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 2663500,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+              "reth_consensus_engine_beacon_executed_blocks": 35,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 1274.584395293001,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 1475,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.8526313690000001,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 1475,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 1279.265953886,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 1475,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.4297409080000009,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 1475,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 0.46277104999999996,
+              "reth_tempo_payload_builder_total_transactions_sum": 5334,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 1274.584395293001,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 1475,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.8468203819999998,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 1475,
+              "reth_tempo_payload_builder_gas_used_sum": 8576333430
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 0,
+                "wbytes": 90198016,
+                "rios": 0,
+                "wios": 483,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 2380078272512,
+                "wbytes": 283074560,
+                "rios": 184980220,
+                "wios": 53880,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 8192,
+                "wbytes": 90198016,
+                "rios": 2,
+                "wios": 483,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 8192,
+                "wbytes": 90198016,
+                "rios": 2,
+                "wios": 483,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:0",
+            "memory": {
+              "file": 17645547520,
+              "file_mapped": 17638162432,
+              "file_dirty": 61440,
+              "file_writeback": 0,
+              "workingset_refault_file": 551002144,
+              "pgfault": 314361551,
+              "pgmajfault": 104401142
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "21027389440",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 515432,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 1470,
+              "state": 1440
+            },
+            "unix_ms": 1790352382920
+          },
+          "b": {
+            "head": 1476,
+            "metrics": {
+              "reth_sync_execution_gas_processed_total": 8576333430,
+              "reth_db_bytecode_prefetch_errors": 0,
+              "reth_db_bytecode_prefetch_requests": 3025428,
+              "reth_db_bytecode_prefetch_requests_rw": 0,
+              "reth_db_bytecode_prefetch_bytes": 86745071616,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 3001236,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 3015995,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 12752,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+              "reth_transaction_pool_aa_2d_pending_transactions": 0,
+              "reth_consensus_engine_beacon_executed_blocks": 35,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 24,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 6810,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 26285,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_transactions_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_gas_used_sum": 0,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 0.2817674049999999,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 131072,
+                "wbytes": 53039104,
+                "rios": 1,
+                "wios": 492,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 380928,
+                "wbytes": 53039104,
+                "rios": 3,
+                "wios": 492,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 512000,
+                "wbytes": 53039104,
+                "rios": 4,
+                "wios": 492,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:1": {
+                "rbytes": 79545962496,
+                "wbytes": 198881280,
+                "rios": 6180796,
+                "wios": 34138,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 544768,
+                "wbytes": 0,
+                "rios": 2,
+                "wios": 0,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:1",
+            "memory": {
+              "file": 15626272768,
+              "file_mapped": 15582953472,
+              "file_dirty": 204800,
+              "file_writeback": 0,
+              "workingset_refault_file": 4144771,
+              "pgfault": 14042194,
+              "pgmajfault": 3527042
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "16765521920",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 0,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 1470,
+              "state": 1440
+            },
+            "unix_ms": 1790352382947
+          }
+        }
+      }
+    ],
+    "audited_at": "2026-09-25T16:06:22.947Z",
+    "caveat": "Sized transactions may be the first or only transaction in a block. Report measured history coverage; do not infer prewarming bypass from the router design alone."
+  },
+  "configuration": {
+    "id": "state-access-sized",
+    "schema_version": 1,
+    "duration": 1200,
+    "warmup": 600,
+    "tps": 1000,
+    "accounts": 1000,
+    "gas_limit": "1000000000000",
+    "node_args": "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128",
+    "fixture_requirements": {
+      "snapshot_suffix": "history_paths",
+      "bloat_mib": 100000,
+      "code_count": 4266667,
+      "code_bytes": 24576
+    },
+    "transaction_cap": null,
+    "prewarming": "unchanged/default enabled",
+    "whole_node_memory_required": true,
+    "persistence_priming_required": true,
+    "cache_policy": "fresh snapshot restore and new node processes per case; no global page-cache drop; exclude warmup",
+    "cases": [
+      {
+        "id": "bytecode",
+        "scenario": "history_code_sized",
+        "description": "2250 history-dependent bytecode accesses; latency requires calibration",
+        "operations_per_transaction": 2250,
+        "minimum_history_advanced_fraction": 0
+      }
+    ],
+    "dry_run": false
+  },
+  "binary": {
+    "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/state-access-latency-20260925/tempo",
+    "sha256": "3cf755ffee2de9d5dc90fbcc327f2dd7a54b40e0fcf821b4d9943cd663bcf19b",
+    "version": "Tempo Version: 1.14.0-dev\nCommit SHA: 84dd0be10d38a0d3e2670c7371a16f028a8bcaf0\nBuild Timestamp: 2026-09-24T15:35:00.000000000Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n",
+    "local_override": true
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "kind": "native-e2e-state-access-suite",
+  "benchmark_id": "max-state-access-20260925-v4-1-bytecode-10800-on",
+  "configuration": {
+    "id": "state-access-max-tx",
+    "schema_version": 1,
+    "duration": 1200,
+    "warmup": 600,
+    "tps": 1000,
+    "accounts": 1000,
+    "gas_limit": "1000000000000",
+    "node_args": "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128",
+    "fixture_requirements": {
+      "snapshot_suffix": "history_paths",
+      "bloat_mib": 100000,
+      "code_count": 4266667,
+      "code_bytes": 24576
+    },
+    "transaction_cap": null,
+    "prewarming": "builder and engine enabled",
+    "whole_node_memory_required": true,
+    "persistence_priming_required": true,
+    "cache_policy": "fresh snapshot restore and new node processes per case; no global page-cache drop; exclude warmup",
+    "cases": [
+      {
+        "id": "bytecode",
+        "scenario": "history_code_max",
+        "description": "10800 EXTCODECOPY accesses, approximately 29.85M gas, unique 24 KiB code corpus",
+        "operations_per_transaction": 10800,
+        "minimum_history_advanced_fraction": 0
+      }
+    ],
+    "dry_run": false
+  },
+  "options": {
+    "baseline": "HEAD",
+    "feature": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+    "baseline_label": "HEAD",
+    "feature_label": "max-state-access-20260925-v4-1-bytecode-10800-on",
+    "feature_binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924-v2/tempo",
+    "run_pairs": 1,
+    "run_side": "feature",
+    "profile": "profiling",
+    "baseline_args": "",
+    "feature_args": "",
+    "baseline_env": "RETH_BYTECODE_PREFETCH=1",
+    "feature_env": "RETH_BYTECODE_PREFETCH=1",
+    "bench_env": "RUST_LOG=error",
+    "no_cache": false,
+    "node_memory": "20G",
+    "node_swap_limit": "0",
+    "cache_evict_tool": "/tmp/tempo-evict-benchmark-file-cache-20260924",
+    "allow_first_sload_samples": false
+  },
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0x42790d8356689e6b8f2eca61839c53ecb0de3ffefe0949835d024ddf5592208a",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0xc873c5da36daabf1387f53be63389a4683c5fa0d656bb856712bca5735ce661d",
+    "state_root": "0x8440accb8cbcabe16279e2978c303d9194cc56ad224978dd16a46c2bb9a1a513",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1
+  },
+  "checkpoint_tool": {
+    "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+    "sha256": "85981c8404fe54104ab082c2b3f288aeea1e847185c1a08948bbbff86b1096f6"
+  }
+}

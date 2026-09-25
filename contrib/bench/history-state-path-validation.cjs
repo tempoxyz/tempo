@@ -36,7 +36,7 @@ function checkWriteDiff(diff) {
   return slots.length;
 }
 
-function inspectOpcodes(trace, writing, reading = false) {
+function inspectOpcodes(trace, writing, reading = false, readCount = 4096, codeCount = 128) {
   assert.equal(trace.failed,false,'router replay reverted');
   const targets = new Set(), costs = {};
   let accesses = 0, cursorWrites = 0, dataWrites = 0;
@@ -54,7 +54,12 @@ function inspectOpcodes(trace, writing, reading = false) {
       else assert.ok([2603,103].includes(Number(log.gasCost)),'unexpected EXTCODECOPY gas');
     }
   }
-  assert.equal(accesses,reading ? 4096 : writing ? 1024 : 128);
+  assert.equal(accesses,reading ? readCount : writing ? 1024 : codeCount);
+  if (reading) assert.equal(targets.size, readCount, 'data SLOAD targets are not unique');
+  if (!reading && !writing && codeCount > 128) {
+    assert.ok(targets.size >= codeCount * 0.99, 'too many repeated bytecode targets');
+    assert.ok((costs[2603] || 0) >= codeCount * 0.99, 'bytecode accesses are not predominantly cold');
+  }
   assert.equal(cursorWrites,1);
   assert.equal(dataWrites,writing ? 1024 : 0);
   return {targets,accesses,costs,data_writes:dataWrites};
@@ -65,34 +70,72 @@ function routerCall(trace) {
   for (const child of trace.calls || []) { const found = routerCall(child); if (found) return found; }
 }
 
+function measuredHistoryCoverage(blocks, timing, minimum = 0, origin) {
+  const start = origin ?? Math.min(...blocks.map(block => block.timestamp_ms));
+  const measured = blocks.filter(block => block.timestamp_ms >= start + timing.from_ms &&
+    block.timestamp_ms <= start + timing.to_ms);
+  const transactions = measured.reduce((sum, block) => sum + block.tx_count, 0);
+  assert.ok(transactions > 0, 'no measured workload transactions');
+  const afterFirst = measured.reduce((sum, block) => sum + Math.max(0, block.tx_count - 1), 0);
+  const histogram = {};
+  for (const block of measured) histogram[block.tx_count] = (histogram[block.tx_count] || 0) + 1;
+  const result = {blocks: measured.length, transactions, non_first_transactions: afterFirst,
+    fraction: afterFirst / transactions, minimum_required: minimum, transactions_per_block: histogram};
+  assert.ok(result.fraction >= minimum,
+    `insufficient measured history coverage: ${(100 * result.fraction).toFixed(2)}% < ${100 * minimum}%`);
+  return result;
+}
+
+function replayStateOverrides(scenario, sender, cursor) {
+  const overrides = {};
+  if (['history_read_max','history_code_max','history_read_sized','history_code_sized'].includes(scenario)) {
+    assert.notEqual(sender.toLowerCase(), ROUTER, 'router cannot be the replay sender');
+    // These AA transactions do not create a legacy EOA nonce. A legacy RPC
+    // replay otherwise charges new-account gas and spuriously exceeds 30M.
+    // The router ignores sender nonce; actual receipts/prestate stay authoritative.
+    overrides[sender] = {nonce:'0x1'};
+  }
+  if (cursor !== undefined) overrides[ROUTER] = {stateDiff:{[CURSOR]:word(cursor)}};
+  return overrides;
+}
+
 async function auditTransaction(rpc, hash, number, scenario, fixture, outputDirectory) {
-  assert.ok(['state_access_dependent','history_write','history_code'].includes(scenario));
-  const writing = scenario === 'history_write', reading = scenario === 'state_access_dependent';
+  assert.ok(['state_access_dependent','history_read','history_write','history_code','history_read_max','history_code_max','history_read_sized','history_code_sized'].includes(scenario));
+  const legacyRead = scenario === 'state_access_dependent';
+  const sized = scenario.endsWith('_sized');
+  const maxRead = scenario === 'history_read_max', maxCode = scenario === 'history_code_max';
+  const writing = scenario === 'history_write', reading = legacyRead || scenario === 'history_read' || maxRead || scenario === 'history_read_sized';
   const storage = writing || reading;
   const callTrace = await rpc('b','debug_traceTransaction',[hash,{tracer:'callTracer'}]);
   const call = routerCall(callTrace);
   assert.ok(call && !call.error,'missing/successless router call');
-  const signature = reading ? 'touchStateDependent(bytes32,uint256)' : writing ? 'touchWrites(bytes32,uint256,bool)' : 'touchCode(bytes32,uint256,bool)';
+  const signature = sized ? `${reading ? 'touchSizedReads' : 'touchSizedCode'}(bytes32,uint256,bool,uint256)` : maxRead ? 'touchMaxReads(bytes32,uint256,bool)' : maxCode ? 'touchMaxCode(bytes32,uint256,bool)' : legacyRead ? 'touchStateDependent(bytes32,uint256)' : reading ? 'touchReads(bytes32,uint256,bool)' : writing ? 'touchWrites(bytes32,uint256,bool)' : 'touchCode(bytes32,uint256,bool)';
   const selector = (await rpc('b','web3_sha3',['0x'+Buffer.from(signature).toString('hex')])).slice(0,10);
   assert.equal(call.input.slice(0,10),selector);
-  assert.equal(call.input.length,reading ? 138 : 202,'wrong calldata length');
+  assert.equal(call.input.length,sized ? 266 : legacyRead ? 138 : 202,'wrong calldata length');
+  const accesses = sized ? Number(BigInt('0x' + call.input.slice(202,266))) : undefined;
+  if (sized) {
+    assert.ok(accesses > 0 && accesses <= (reading ? 13800 : 10800), 'bad sized count');
+    assert.equal(accesses, fixture.sized_accesses, 'calldata differs from recorded preflight access count');
+  }
   const count = BigInt('0x'+call.input.slice(74,138));
   assert.equal(count,BigInt(storage ? fixture.page_count : fixture.code_count));
-  if (!reading) assert.equal(BigInt('0x'+call.input.slice(138,202)),1n,'dependent mode required');
+  if (!legacyRead) assert.equal(BigInt('0x'+call.input.slice(138,202)),1n,'dependent mode required');
   const prestateOptions = {tracer:'prestateTracer',tracerConfig:{disableCode:true}};
   const actual = await rpc('b','debug_traceTransaction',[hash,prestateOptions]);
   const cursor = actual[ROUTER]?.storage?.[CURSOR] || '0x0';
   const parent = '0x'+(number-1).toString(16);
   const parentCursor = await rpc('b','eth_getStorageAt',[ROUTER,CURSOR,parent]);
-  const request = {from:call.from,to:ROUTER,data:call.input,gas:'0x989680'};
-  const speculative = await rpc('b','debug_traceCall',[request,parent,prestateOptions]);
+  const request = {from:call.from,to:ROUTER,data:call.input,gas:maxRead || maxCode || sized ? '0x1c9c380' : '0x989680'};
+  const speculative = await rpc('b','debug_traceCall',[request,parent,{...prestateOptions,
+    stateOverrides:replayStateOverrides(scenario,call.from)}]);
   const actualTargets = targetSet(actual,storage,fixture.code_count);
   const mismatch = overlap(actualTargets,targetSet(speculative,storage,fixture.code_count));
   // Reproduce the actual transaction's cursor in a parent-state replay. The
   // real transaction's prestate and diff remain authoritative for stored values.
   const replay = await rpc('b','debug_traceCall',[request,parent,{disableStorage:true,disableMemory:true,
-    disableStack:false,stateOverrides:{[ROUTER]:{stateDiff:{[CURSOR]:word(cursor)}}}}]);
-  const opcodes = inspectOpcodes(replay,writing,reading);
+    disableStack:false,stateOverrides:replayStateOverrides(scenario,call.from,cursor)}]);
+  const opcodes = inspectOpcodes(replay,writing,reading,sized ? accesses : maxRead ? 13800 : legacyRead ? 4096 : 128,sized ? accesses : maxCode ? 10800 : 128);
   assert.deepEqual([...opcodes.targets].sort(),[...actualTargets].sort(),'replay differs from actual access set');
   let changed = 0, diff;
   if (writing) {
@@ -122,9 +165,10 @@ async function auditTransaction(rpc, hash, number, scenario, fixture, outputDire
   const traceFile = path.join(outputDirectory,`history-trace-${hash}.json.gz`);
   fs.writeFileSync(traceFile,zlib.gzipSync(JSON.stringify({callTrace,actual,speculative,replay,diff})));
   return {hash,cursor_before:BigInt(cursor).toString(),parent_cursor:BigInt(parentCursor).toString(),
+    replay_sender_nonce_override:maxRead || maxCode || sized,
     history_advanced:BigInt(cursor)>BigInt(parentCursor),...mismatch,accesses:opcodes.accesses,
     gas_cost_histogram:opcodes.costs,changed_contract_slots:changed,trace_file:traceFile,
     caveat:'Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets.'};
 }
 
-module.exports = {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes,auditTransaction};
+module.exports = {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes,auditTransaction,measuredHistoryCoverage,replayStateOverrides};

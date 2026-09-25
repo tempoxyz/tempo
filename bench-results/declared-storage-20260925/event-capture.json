@@ -1,0 +1,5 @@
+{
+  "pid": 2868207,
+  "started_at": "2026-09-25T19:13:23.961Z",
+  "scope": "Live JSON timing events, started before the measured read window; follows file rotation and the write-case node restart."
+}

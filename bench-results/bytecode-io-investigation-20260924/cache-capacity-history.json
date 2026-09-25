@@ -1,0 +1,164 @@
+{
+  "sload": {
+    "cache_sizes": [
+      {
+        "name": "reth_sync_caching_storage_cache_capacity",
+        "node": "b",
+        "min": 16777216,
+        "max": 16777216
+      },
+      {
+        "name": "reth_sync_caching_code_cache_capacity",
+        "node": "b",
+        "min": 16384,
+        "max": 16384
+      },
+      {
+        "name": "reth_sync_caching_code_cache_size",
+        "node": "b",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "reth_sync_caching_account_cache_size",
+        "node": "b",
+        "min": 13,
+        "max": 13
+      },
+      {
+        "name": "reth_sync_caching_account_cache_capacity",
+        "node": "b",
+        "min": 1048576,
+        "max": 1048576
+      },
+      {
+        "name": "reth_sync_caching_storage_cache_size",
+        "node": "b",
+        "min": 18011,
+        "max": 21860
+      },
+      {
+        "name": "reth_sync_caching_code_cache_capacity",
+        "node": "a",
+        "min": 16384,
+        "max": 16384
+      },
+      {
+        "name": "reth_sync_caching_storage_cache_capacity",
+        "node": "a",
+        "min": 16777216,
+        "max": 16777216
+      },
+      {
+        "name": "reth_sync_caching_storage_cache_size",
+        "node": "a",
+        "min": 7,
+        "max": 7
+      },
+      {
+        "name": "reth_sync_caching_code_cache_size",
+        "node": "a",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "reth_sync_caching_account_cache_size",
+        "node": "a",
+        "min": 0,
+        "max": 0
+      },
+      {
+        "name": "reth_sync_caching_account_cache_capacity",
+        "node": "a",
+        "min": 1048576,
+        "max": 1048576
+      }
+    ],
+    "measured_history": {
+      "transactions": 1297,
+      "advanced": 5,
+      "fraction": 0.0038550501156515036
+    }
+  },
+  "bytecode": {
+    "cache_sizes": [
+      {
+        "name": "reth_sync_caching_account_cache_size",
+        "node": "a",
+        "min": 0,
+        "max": 0
+      },
+      {
+        "name": "reth_sync_caching_storage_cache_capacity",
+        "node": "a",
+        "min": 16777216,
+        "max": 16777216
+      },
+      {
+        "name": "reth_sync_caching_code_cache_capacity",
+        "node": "a",
+        "min": 16384,
+        "max": 16384
+      },
+      {
+        "name": "reth_sync_caching_storage_cache_size",
+        "node": "a",
+        "min": 6,
+        "max": 6
+      },
+      {
+        "name": "reth_sync_caching_code_cache_size",
+        "node": "a",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "reth_sync_caching_account_cache_capacity",
+        "node": "a",
+        "min": 1048576,
+        "max": 1048576
+      },
+      {
+        "name": "reth_sync_caching_code_cache_capacity",
+        "node": "b",
+        "min": 16384,
+        "max": 16384
+      },
+      {
+        "name": "reth_sync_caching_storage_cache_capacity",
+        "node": "b",
+        "min": 16777216,
+        "max": 16777216
+      },
+      {
+        "name": "reth_sync_caching_account_cache_size",
+        "node": "b",
+        "min": 1840,
+        "max": 85478
+      },
+      {
+        "name": "reth_sync_caching_storage_cache_size",
+        "node": "b",
+        "min": 37,
+        "max": 14623
+      },
+      {
+        "name": "reth_sync_caching_code_cache_size",
+        "node": "b",
+        "min": 16111,
+        "max": 16383
+      },
+      {
+        "name": "reth_sync_caching_account_cache_capacity",
+        "node": "b",
+        "min": 1048576,
+        "max": 1048576
+      }
+    ],
+    "measured_history": {
+      "transactions": 9117,
+      "advanced": 6971,
+      "fraction": 0.7646155533618515
+    }
+  }
+}

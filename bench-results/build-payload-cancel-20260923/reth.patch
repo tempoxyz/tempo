@@ -1,0 +1,145 @@
+diff --git a/crates/payload/basic/src/lib.rs b/crates/payload/basic/src/lib.rs
+index fb6701292..0257f8c17 100644
+--- a/crates/payload/basic/src/lib.rs
++++ b/crates/payload/basic/src/lib.rs
+@@ -414,7 +414,7 @@ where
+     /// Spawns a new payload build task.
+     fn spawn_build_job(&mut self) {
+         trace!(target: "payload_builder", id = %self.config.payload_id(), "spawn new payload build task");
+-        let (tx, rx) = oneshot::channel();
++        let (mut tx, rx) = oneshot::channel();
+         let cancel = CancelOnDrop::default();
+         let pending_cancel = cancel.clone();
+         let guard = self.payload_task_guard.clone();
+@@ -428,10 +428,13 @@ where
+         let builder = self.builder.clone();
+         let executor = self.executor.clone();
+         self.executor.spawn_task(async move {
+-            // acquire the permit for executing the task
+-            let permit = guard.acquire_owned().await;
++            // Abandoned queued jobs must release their trie handles and leases without a permit.
++            let Some(permit) = acquire_payload_permit(&guard, &mut tx).await else { return };
+             executor.spawn_blocking_named_or_tokio(PAYLOAD_BUILDER_THREAD_NAME, move || {
+                 let _permit = permit;
++                if tx.is_closed() {
++                    return
++                }
+                 let args = BuildArguments {
+                     cached_reads,
+                     execution_cache,
+@@ -1053,3 +1056,63 @@ fn duration_until(unix_timestamp_secs: u64) -> Duration {
+     let timestamp = Duration::from_secs(unix_timestamp_secs);
+     timestamp.saturating_sub(unix_now)
+ }
++
++async fn acquire_payload_permit<T>(
++    guard: &PayloadTaskGuard,
++    result: &mut oneshot::Sender<T>,
++) -> Option<tokio::sync::OwnedSemaphorePermit> {
++    tokio::select! {
++        biased;
++        () = result.closed() => None,
++        permit = guard.acquire_owned() => Some(permit),
++    }
++}
++
++#[cfg(test)]
++mod cancellation_tests {
++    use super::*;
++
++    #[test]
++    fn live_consumer_gets_permit() {
++        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
++            let guard = PayloadTaskGuard::new(1);
++            let (mut tx, _rx) = oneshot::channel::<()>();
++            let permit = acquire_payload_permit(&guard, &mut tx).await.unwrap();
++            assert_eq!(guard.available_permits(), 0);
++            drop(permit);
++            assert_eq!(guard.available_permits(), 1);
++        });
++    }
++
++    #[test]
++    fn abandoned_consumer_does_not_take_permit() {
++        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
++            let guard = PayloadTaskGuard::new(1);
++            let (mut tx, rx) = oneshot::channel::<()>();
++            drop(rx);
++            assert!(acquire_payload_permit(&guard, &mut tx).await.is_none());
++            assert_eq!(guard.available_permits(), 1);
++        });
++    }
++
++    #[test]
++    fn queued_consumer_cancellation_releases_resources() {
++        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(
++            async {
++                let guard = PayloadTaskGuard::new(1);
++                let _occupied = guard.acquire_owned().await;
++                let (mut result_tx, result_rx) = oneshot::channel::<()>();
++                let resource = Arc::new(());
++                let queued_resource = resource.clone();
++                let task = tokio::spawn(async move {
++                    let _resource = queued_resource;
++                    assert!(acquire_payload_permit(&guard, &mut result_tx).await.is_none());
++                });
++                tokio::task::yield_now().await;
++                drop(result_rx);
++                tokio::time::timeout(Duration::from_secs(1), task).await.unwrap().unwrap();
++                assert_eq!(Arc::strong_count(&resource), 1);
++            },
++        );
++    }
++}
+diff --git a/crates/payload/builder/src/service.rs b/crates/payload/builder/src/service.rs
+index b9e2abac3..c4e750496 100644
+--- a/crates/payload/builder/src/service.rs
++++ b/crates/payload/builder/src/service.rs
+@@ -55,7 +55,7 @@ where
+         &self,
+         id: PayloadId,
+         kind: PayloadKind,
+-    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> {
++    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> + use<T> {
+         self.inner.resolve_kind(id, kind)
+     }
+ 
+@@ -156,7 +156,7 @@ impl<T: PayloadTypes> PayloadBuilderHandle<T> {
+         &self,
+         id: PayloadId,
+         kind: PayloadKind,
+-    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> {
++    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> + use<T> {
+         let (tx, rx) = oneshot::channel();
+         let sent = self.to_service.send(PayloadServiceCommand::Resolve(id, kind, tx)).is_ok();
+         async move {
+@@ -678,6 +678,29 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn unpolled_resolution_is_owned_and_releases_lease() {
++        fn assert_static<T: 'static>(_: &T) {}
++        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
++            let (service, handle) = test_payload_service::<EthEngineTypes>();
++            let service = tokio::spawn(service);
++            let dropped = Arc::new(AtomicBool::new(false));
++            let input = BuildNewPayload {
++                attributes: EthPayloadAttributes { timestamp: 1, ..Default::default() },
++                parent_hash: B256::ZERO,
++                resources: PayloadBuilderResources::default()
++                    .with_lease(PayloadBuilderLease::new(DropProbe(dropped.clone()))),
++            };
++            let id = handle.send_new_payload(input).await.unwrap().unwrap();
++            let resolution = handle.resolve_kind(id, PayloadKind::Earliest);
++            assert_static(&resolution);
++            drop(resolution);
++            assert!(handle.payload_timestamp(id).await.is_none());
++            assert!(dropped.load(Ordering::Acquire));
++            service.abort();
++        });
++    }
++
+     #[test]
+     fn payload_builder_lease_is_held_until_resolve_finishes() {
+         tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {

@@ -1,0 +1,26 @@
+{
+  "a": {
+    "read_mb_s": 465.55715398421154,
+    "write_mb_s": 13.830833115174414,
+    "read_iops": 113658.91471560622,
+    "execution_mgas_s": 201.27210097348714,
+    "gas": 113862837350,
+    "seconds": 594.999,
+    "storage_misses": 620070,
+    "storage_hits": 48792732,
+    "reverts": 0,
+    "invalid": 0
+  },
+  "b": {
+    "read_mb_s": 276.7649208959781,
+    "write_mb_s": 13.614150880442354,
+    "read_iops": 67567.36450937626,
+    "execution_mgas_s": 542.6710791707902,
+    "gas": 113817547862,
+    "seconds": 594.999,
+    "storage_misses": 3054284,
+    "storage_hits": 46320921,
+    "reverts": null,
+    "invalid": null
+  }
+}

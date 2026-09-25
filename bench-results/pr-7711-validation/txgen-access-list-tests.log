@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (target/debug/deps/txgen_tempo-c3b0554d36e57c82)
+
+running 3 tests
+test tests::access_list_explicit_keys_and_deferred_request_are_preserved ... ok
+test tests::access_lists_survive_signing_for_supported_transaction_types ... ok
+test tests::access_list_rejects_legacy_and_invalid_ranges ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 1.15s
+

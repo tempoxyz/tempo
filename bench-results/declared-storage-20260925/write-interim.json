@@ -1,0 +1,325 @@
+{
+  "audit_status": "pending",
+  "origin": 1790364852379,
+  "canonical": {
+    "from_unix_ms": 1790365452379,
+    "to_unix_ms": 1790366052379,
+    "duration_seconds": 600,
+    "gas": "12824452962",
+    "blocks": 140,
+    "transactions": 18846,
+    "mgas_per_second": 21.374088269999998,
+    "source": "Canonical reported blocks with timestamps in (start,end]; not submitted transactions or builder attempts."
+  },
+  "slots": {
+    "slots": 2412288,
+    "seconds": 600,
+    "slots_per_second": 4020.48,
+    "amortized_wall_ns_per_slot": 248726.52021649157
+  },
+  "nodes": {
+    "a": {
+      "durability": {
+        "from_unix_ms": 1790365475912,
+        "to_unix_ms": 1790366049593,
+        "duration_seconds": 573.681,
+        "first_state": 236,
+        "last_state": 376,
+        "persisted_gas": 12287548995,
+        "produced_gas": 12824452962,
+        "persisted_mgas_per_second": 21.41878325236499,
+        "produced_mgas_per_second": 22.354676138829767,
+        "producer_backlog_blocks": {
+          "first": 105,
+          "last": 105,
+          "max": 105
+        },
+        "producer_backlog_gas": {
+          "first": 9091983459,
+          "last": 9628887426,
+          "max": 9628887426
+        },
+        "backlog": [
+          {
+            "unix_ms": 1790365475912,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365506078,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365536245,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365566445,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365596695,
+            "blocks": 81,
+            "gas": 7265556675
+          },
+          {
+            "unix_ms": 1790365626891,
+            "blocks": 105,
+            "gas": 9210387717
+          },
+          {
+            "unix_ms": 1790365657059,
+            "blocks": 105,
+            "gas": 9210387717
+          },
+          {
+            "unix_ms": 1790365687330,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365717524,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365747800,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365777980,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365808126,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365838304,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365868435,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365898584,
+            "blocks": 81,
+            "gas": 7510531947
+          },
+          {
+            "unix_ms": 1790365928755,
+            "blocks": 105,
+            "gas": 9598265259
+          },
+          {
+            "unix_ms": 1790365958990,
+            "blocks": 105,
+            "gas": 9598265259
+          },
+          {
+            "unix_ms": 1790365989190,
+            "blocks": 98,
+            "gas": 8885115303
+          },
+          {
+            "unix_ms": 1790366019397,
+            "blocks": 105,
+            "gas": 9628887426
+          },
+          {
+            "unix_ms": 1790366049593,
+            "blocks": 105,
+            "gas": 9628887426
+          }
+        ],
+        "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+      },
+      "slots": {
+        "slots": 2311296,
+        "seconds": 573.681,
+        "slots_per_second": 4028.8871341390072,
+        "amortized_wall_ns_per_slot": 248207.49916929725
+      },
+      "backpressure": {
+        "observed_seconds": 593.786,
+        "estimated_active_seconds": 553.507,
+        "active_fraction": 0.9321657971053544,
+        "source": "Time-weighted left-endpoint backpressure gauge; transitions have observer-sampling uncertainty."
+      }
+    },
+    "b": {
+      "durability": {
+        "from_unix_ms": 1790365475927,
+        "to_unix_ms": 1790366049605,
+        "duration_seconds": 573.678,
+        "first_state": 236,
+        "last_state": 336,
+        "persisted_gas": 8557120953,
+        "produced_gas": 12824452962,
+        "persisted_mgas_per_second": 14.916243873741017,
+        "produced_mgas_per_second": 22.354793040695302,
+        "producer_backlog_blocks": {
+          "first": 105,
+          "last": 145,
+          "max": 145
+        },
+        "producer_backlog_gas": {
+          "first": 9091983459,
+          "last": 13359315468,
+          "max": 13359315468
+        },
+        "backlog": [
+          {
+            "unix_ms": 1790365475927,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365506092,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365536260,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365566499,
+            "blocks": 105,
+            "gas": 9091983459
+          },
+          {
+            "unix_ms": 1790365596713,
+            "blocks": 132,
+            "gas": 11681235342
+          },
+          {
+            "unix_ms": 1790365626906,
+            "blocks": 107,
+            "gas": 9383911830
+          },
+          {
+            "unix_ms": 1790365657074,
+            "blocks": 107,
+            "gas": 9383911830
+          },
+          {
+            "unix_ms": 1790365687382,
+            "blocks": 126,
+            "gas": 11271581976
+          },
+          {
+            "unix_ms": 1790365717537,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365747812,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365777992,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365808138,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365838318,
+            "blocks": 105,
+            "gas": 9502316400
+          },
+          {
+            "unix_ms": 1790365868446,
+            "blocks": 75,
+            "gas": 6956615577
+          },
+          {
+            "unix_ms": 1790365898601,
+            "blocks": 102,
+            "gas": 9501635985
+          },
+          {
+            "unix_ms": 1790365928767,
+            "blocks": 126,
+            "gas": 11589369297
+          },
+          {
+            "unix_ms": 1790365959002,
+            "blocks": 126,
+            "gas": 11589369297
+          },
+          {
+            "unix_ms": 1790365989207,
+            "blocks": 138,
+            "gas": 12615543345
+          },
+          {
+            "unix_ms": 1790366019409,
+            "blocks": 145,
+            "gas": 13359315468
+          },
+          {
+            "unix_ms": 1790366049605,
+            "blocks": 145,
+            "gas": 13359315468
+          }
+        ],
+        "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+      },
+      "slots": {
+        "slots": 1609600,
+        "seconds": 573.678,
+        "slots_per_second": 2805.7551448722106,
+        "amortized_wall_ns_per_slot": 356410.2882703777
+      },
+      "backpressure": {
+        "observed_seconds": 593.786,
+        "estimated_active_seconds": 145.936,
+        "active_fraction": 0.24577204582122178,
+        "source": "Time-weighted left-endpoint backpressure gauge; transitions have observer-sampling uncertainty."
+      }
+    }
+  },
+  "slices": [
+    {
+      "minutes": "10-12",
+      "slots_per_second": 0,
+      "transactions": 0
+    },
+    {
+      "minutes": "12-14",
+      "slots_per_second": 10066.133333333333,
+      "transactions": 9437
+    },
+    {
+      "minutes": "14-16",
+      "slots_per_second": 0,
+      "transactions": 0
+    },
+    {
+      "minutes": "16-18",
+      "slots_per_second": 7261.866666666667,
+      "transactions": 6808
+    },
+    {
+      "minutes": "18-20",
+      "slots_per_second": 2774.4,
+      "transactions": 2601
+    }
+  ]
+}

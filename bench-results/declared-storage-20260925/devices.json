@@ -1,0 +1,159 @@
+{
+   "blockdevices": [
+      {
+         "name": "nvme1n1",
+         "model": "MTFDKCC3T8TGP-1BK1DABYY",
+         "size": "3.5T",
+         "type": "disk",
+         "mountpoints": [
+             "/mnt"
+         ]
+      },{
+         "name": "nvme2n1",
+         "model": "MTFDKCC3T8TGP-1BK1DABYY",
+         "size": "3.5T",
+         "type": "disk",
+         "mountpoints": [
+             "/mnt2"
+         ]
+      },{
+         "name": "nvme0n1",
+         "model": "SAMSUNG MZQL2960HCJR-00A07",
+         "size": "894.3G",
+         "type": "disk",
+         "mountpoints": [
+             null
+         ],
+         "children": [
+            {
+               "name": "nvme0n1p1",
+               "model": null,
+               "size": "511M",
+               "type": "part",
+               "mountpoints": [
+                   "/boot/efi"
+               ]
+            },{
+               "name": "nvme0n1p2",
+               "model": null,
+               "size": "1G",
+               "type": "part",
+               "mountpoints": [
+                   null
+               ],
+               "children": [
+                  {
+                     "name": "md2",
+                     "model": null,
+                     "size": "1022M",
+                     "type": "raid1",
+                     "mountpoints": [
+                         "/boot"
+                     ]
+                  }
+               ]
+            },{
+               "name": "nvme0n1p3",
+               "model": null,
+               "size": "892.3G",
+               "type": "part",
+               "mountpoints": [
+                   null
+               ],
+               "children": [
+                  {
+                     "name": "md3",
+                     "model": null,
+                     "size": "892.1G",
+                     "type": "raid1",
+                     "mountpoints": [
+                         "/"
+                     ]
+                  }
+               ]
+            },{
+               "name": "nvme0n1p4",
+               "model": null,
+               "size": "512M",
+               "type": "part",
+               "mountpoints": [
+                   "[SWAP]"
+               ]
+            }
+         ]
+      },{
+         "name": "nvme3n1",
+         "model": "SAMSUNG MZQL2960HCJR-00A07",
+         "size": "894.3G",
+         "type": "disk",
+         "mountpoints": [
+             null
+         ],
+         "children": [
+            {
+               "name": "nvme3n1p1",
+               "model": null,
+               "size": "511M",
+               "type": "part",
+               "mountpoints": [
+                   null
+               ]
+            },{
+               "name": "nvme3n1p2",
+               "model": null,
+               "size": "1G",
+               "type": "part",
+               "mountpoints": [
+                   null
+               ],
+               "children": [
+                  {
+                     "name": "md2",
+                     "model": null,
+                     "size": "1022M",
+                     "type": "raid1",
+                     "mountpoints": [
+                         "/boot"
+                     ]
+                  }
+               ]
+            },{
+               "name": "nvme3n1p3",
+               "model": null,
+               "size": "892.3G",
+               "type": "part",
+               "mountpoints": [
+                   null
+               ],
+               "children": [
+                  {
+                     "name": "md3",
+                     "model": null,
+                     "size": "892.1G",
+                     "type": "raid1",
+                     "mountpoints": [
+                         "/"
+                     ]
+                  }
+               ]
+            },{
+               "name": "nvme3n1p4",
+               "model": null,
+               "size": "512M",
+               "type": "part",
+               "mountpoints": [
+                   "[SWAP]"
+               ]
+            },{
+               "name": "nvme3n1p5",
+               "model": null,
+               "size": "2M",
+               "type": "part",
+               "mountpoints": [
+                   null
+               ]
+            }
+         ]
+      }
+   ]
+}

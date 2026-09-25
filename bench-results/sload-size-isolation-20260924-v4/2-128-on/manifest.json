@@ -1,0 +1,83 @@
+{
+  "configuration": {
+    "id": "sload-size-isolation",
+    "schema_version": 1,
+    "duration": 1200,
+    "warmup": 600,
+    "tps": 1000,
+    "accounts": 1000,
+    "gas_limit": "1000000000000",
+    "node_args": "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128",
+    "fixture_requirements": {
+      "snapshot_suffix": "history_paths",
+      "bloat_mib": 100000,
+      "code_count": 4266667,
+      "code_bytes": 24576
+    },
+    "transaction_cap": null,
+    "prewarming": "builder and engine enabled",
+    "whole_node_memory_required": true,
+    "persistence_priming_required": true,
+    "cache_policy": "fresh snapshot restore and new node processes per case; no global page-cache drop; exclude warmup",
+    "cases": [
+      {
+        "id": "sload",
+        "scenario": "history_read",
+        "description": "128 cold history-selected SLOADs",
+        "operations_per_transaction": 128,
+        "minimum_history_advanced_fraction": 0.9
+      }
+    ],
+    "dry_run": false
+  },
+  "options": {
+    "baseline": "HEAD",
+    "feature": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+    "baseline_label": "HEAD",
+    "feature_label": "sload-size-isolation-20260924-v4-2-128-on",
+    "feature_binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924-v2/tempo",
+    "run_pairs": 1,
+    "run_side": "feature",
+    "profile": "profiling",
+    "baseline_args": "",
+    "feature_args": "",
+    "baseline_env": "",
+    "feature_env": "RETH_BYTECODE_PREFETCH=1",
+    "bench_env": "RUST_LOG=error",
+    "no_cache": false,
+    "node_memory": "20G",
+    "node_swap_limit": "0",
+    "allow_first_sload_samples": false,
+    "cache_evict_tool": "/tmp/tempo-evict-benchmark-file-cache-20260924"
+  },
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0x0d19bc8583f4967a4db228eacd171756375f049c34d53527f0a33cc5ca7c3a1c",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0x42790d8356689e6b8f2eca61839c53ecb0de3ffefe0949835d024ddf5592208a",
+    "state_root": "0x35b455ab5ebd982f1516eb9cd5660e4a652e1bbbe78de642b1f0f59eb5cc9784",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1
+  },
+  "builds": {
+    "feature": {
+      "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924-v2/tempo",
+      "sha256": "5e4752f9d04cf152486487c6d4a33c91fa31011e6df9e7fa3760d0acd39b9f2d",
+      "version": "Tempo Version: 1.14.0-dev\nCommit SHA: 84dd0be10d38a0d3e2670c7371a16f028a8bcaf0\nBuild Timestamp: 2026-09-24T15:35:00.000000000Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n",
+      "local_override": true
+    }
+  },
+  "cases": [
+    {
+      "id": "sload",
+      "scenario": "history_read",
+      "results_dir": "bench-results/20260924-210949-638"
+    }
+  ],
+  "status": "complete"
+}

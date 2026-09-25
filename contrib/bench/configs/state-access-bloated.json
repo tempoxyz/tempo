@@ -19,9 +19,10 @@
   "cases": [
     {
       "id": "sload",
-      "scenario": "state_access_dependent",
-      "description": "Original 4096 cold SLOADs from a history-selected populated logical page",
-      "operations_per_transaction": 4096
+      "scenario": "history_read",
+      "description": "128 cold SLOADs from a history-selected chunk across the full populated storage corpus",
+      "operations_per_transaction": 128,
+      "minimum_history_advanced_fraction": 0.9
     },
     {
       "id": "bytecode",

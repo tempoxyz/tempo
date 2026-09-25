@@ -6,10 +6,10 @@ const path = require('node:path');
 const {analyzeRun} = require('./analyze-state-access.cjs');
 const {summarizeMemory} = require('./state-path-memory.cjs');
 
-function canonicalWindow(blocks, from, to) {
+function canonicalWindow(blocks, from, to, {allowSparse = false} = {}) {
   assert.ok(to > from);
   const selected = blocks.filter(block => block.timestamp_ms > from && block.timestamp_ms <= to);
-  assert.ok(selected.length > 1, 'insufficient canonical blocks');
+  if (!allowSparse) assert.ok(selected.length > 1, 'insufficient canonical blocks');
   for (let i = 1; i < selected.length; ++i) assert.equal(selected[i].number, selected[i - 1].number + 1, 'non-contiguous canonical report');
   const gas = selected.reduce((sum, block) => sum + BigInt(block.gas_used), 0n);
   assert.ok(gas <= BigInt(Number.MAX_SAFE_INTEGER));

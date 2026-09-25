@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-09-23T18:36:18.255Z",
+  "configuration": {
+    "bloat_mib": 0,
+    "accounts": 1000,
+    "duration_seconds": 360,
+    "warmup_seconds": 60,
+    "target_tps": 5000,
+    "max_transactions": 900,
+    "snapshot_mode": "copy",
+    "fresh_genesis": true
+  },
+  "build": {
+    "tempo_base": "f62969a95e8a787d2956f3509d25c533bdaac746",
+    "binary_sha256": "57169b32c8d0867ce3768af7f9c0cc7d36146fe7dcadecaed45064ee1479d4f6"
+  },
+  "binaries": {
+    "TEMPO_BIN": {
+      "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/tempo",
+      "sha256": "57169b32c8d0867ce3768af7f9c0cc7d36146fe7dcadecaed45064ee1479d4f6",
+      "version": "Tempo Version: 1.14.0-dev\nCommit SHA: f62969a95e8a787d2956f3509d25c533bdaac746\nBuild Timestamp: 2026-09-23T13:47:19Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n"
+    },
+    "XTASK_BIN": {
+      "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/tempo-xtask",
+      "sha256": "8cb48f61db5fa110679cb06263c3690e66ad944ada09f6d20180d1349871d4da"
+    },
+    "STATE_PATH_CHECKPOINT_TOOL": {
+      "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+      "sha256": "85981c8404fe54104ab082c2b3f288aeea1e847185c1a08948bbbff86b1096f6"
+    },
+    "TXGEN_TEMPO_BIN": {
+      "path": "/home/ubuntu/repos/txgen/target/release/txgen-tempo",
+      "sha256": "cfd237552aa6fa8210cdfdc3b6089a80e620f097fb857abfbef2b9f573307d6a"
+    },
+    "TXGEN_BENCH_BIN": {
+      "path": "/home/ubuntu/.cargo/bin/bench",
+      "sha256": "ae47ab9631c6aa59c5435b087d19a40e083fa78b61b4f5fdda98b18391c39d5c"
+    }
+  },
+  "cases": [
+    {
+      "scenario": "state_paths_read",
+      "benchmark_id": "resident-state-paths-clean-smoke-20260923-state_paths_read",
+      "results_dir": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260923-183618-339",
+      "exit_code": 0,
+      "finished_at": "2026-09-23T18:43:22.943Z"
+    },
+    {
+      "scenario": "state_paths_write",
+      "benchmark_id": "resident-state-paths-clean-smoke-20260923-state_paths_write",
+      "results_dir": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260923-184323-005",
+      "exit_code": 0,
+      "finished_at": "2026-09-23T18:50:18.724Z"
+    }
+  ]
+}

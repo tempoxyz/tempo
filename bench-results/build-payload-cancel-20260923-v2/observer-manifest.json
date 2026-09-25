@@ -1,0 +1,15 @@
+{
+  "created_at": "2026-09-23T13:26:48.220Z",
+  "helper_sha256": "85981c8404fe54104ab082c2b3f288aeea1e847185c1a08948bbbff86b1096f6",
+  "helper_source_base": "dfcb10454cabf4ce778e0dedfe79c512b37f2c8c",
+  "read_only": true,
+  "build_command": "cargo build -p reth-db --example read_finish_checkpoint --target-dir /home/ubuntu/repos/tempo-payments-bloat-pr/target -j2",
+  "node_binary_unchanged": true,
+  "read_observer_restarted_during_excluded_warmup": true,
+  "reason": "Full tempo db CLI fails transient static-file consistency checks; helper opens only existing MDBX read-only and returns the typed committed Finish checkpoint.",
+  "sources": {
+    "read_finish_checkpoint.rs": "57edae5c131759de5316d5f3665ef5f97db424582a6a9eefe11bebbe87f581b7",
+    "state-path-observer.cjs": "d4d0d7d040ca7c1b0e1d6a1fe546ddd6de4b03898b77f9b1f61276818b268845",
+    "state-path-observer.test.cjs": "737737aa1da79cfe11afb473dbad73a39997c08be873459553a35555cb5fb2b3"
+  }
+}

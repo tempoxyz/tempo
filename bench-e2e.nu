@@ -633,13 +633,14 @@ def derive-tracing-otlp [tracing_otlp: string] {
     $tracing_otlp
 }
 
-def systemd-scope-command [unit: string, cpus: string, memory: string, script: string] {
+def systemd-scope-command [unit: string, cpus: string, memory: string, swap: string, script: string] {
     let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and ($cpus != "" or $memory != "")
     if not $can_scope {
         return ["bash" "-lc" $script]
     }
 
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
+    let swap_args = if $swap != "" { ["-p" $"MemorySwapMax=($swap)"] } else { [] }
     mut telemetry_env_names = []
     if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
         $telemetry_env_names = ($telemetry_env_names | append "TEMPO_TELEMETRY_URL")
@@ -662,6 +663,7 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--unit" $unit
         ...$telemetry_env
         ...$memory_args
+        ...$swap_args
         "bash"
         "-lc"
         $script
@@ -689,6 +691,7 @@ def start-e2e-local-node [
     results_dir: string,
     cpus: string,
     memory: string,
+    swap: string,
 ] {
     let profile_label = $"($phase)-($role)"
     let full_samply_args = if $samply {
@@ -699,7 +702,7 @@ def start-e2e-local-node [
     let node_cmd_str = ($node_cmd | str join " ")
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
-    let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
+    let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $swap $script)
     print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
     job spawn {
         run-external ($runner | first) ...($runner | skip 1)
@@ -1181,6 +1184,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
+    if $ctx.cache_evict_tool != "" {
+        for node in [a b] {
+            let file = ($ctx | get $node | get datadir | path join "db" "mdbx.dat")
+            if ($file | str contains ".virgin") { error make {msg: "Refusing to evict a source snapshot"} }
+            let result = (^sudo -n $ctx.cache_evict_tool $file | complete)
+            if $result.exit_code != 0 { error make {msg: $"Scratch cache eviction failed: ($result.stderr) ($result.stdout)"} }
+            {file: $file, measurement: ($result.stdout | from json)} | to json
+                | save -f $"($ctx.results_dir)/cache-eviction-($phase)-($node).json"
+        }
+    }
     let a_role_args = if $ctx.isolated_roles { ["--disable-tx-gossip"] } else { [] }
     let b_role_args = if $ctx.isolated_roles {
         [
@@ -1230,8 +1243,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $ctx.node_swap_limit
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $ctx.node_swap_limit
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1247,9 +1260,15 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
 
-    if $phase_exit == 0 and $ctx.observe_state_paths and $ctx.preset in ["state_access_dependent" "history_code" "history_write"] {
+    if $phase_exit == 0 and $ctx.observe_state_paths and $ctx.preset in ["state_access_dependent" "history_read" "history_code" "history_write" "history_read_max" "history_code_max" "history_read_sized" "history_code_sized" "declared_read" "declared_write"] {
         print "  Persisting ordinary blocks before the history workload (avoids genesis Merkle rebuild)..."
         ^node contrib/bench/state-path-observer.cjs prime --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --output $"($ctx.results_dir)/state-path-priming-($phase).json"
+        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
+    }
+
+    if $phase_exit == 0 and $ctx.preset in ["history_read_max" "history_code_max" "history_read_sized" "history_code_sized"] {
+        print "  Checking state-access calls on the populated fixture before timed load..."
+        ^node contrib/bench/max-state-access-preflight.cjs $ctx.preset $ctx.a.datadir $"($ctx.results_dir)/max-tx-preflight-($phase).json"
         if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
     }
 
@@ -1369,7 +1388,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     if $phase_exit == 0 and $observe_state_paths {
         print "  Auditing contract access paths and waiting for durable state/trie persistence..."
-        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --warmup-seconds ($ctx.summary_warmup_seconds | into string) --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
+        let diagnostic_args = if $ctx.allow_first_sload_samples { ["--allow-first-sload-samples"] } else { [] }
+        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --warmup-seconds ($ctx.summary_warmup_seconds | into string) --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json" ...$diagnostic_args
         if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
     }
     if $observe_state_paths { "stop" | save -f $observer_stop }
@@ -1550,6 +1570,10 @@ def "main e2e" [
     --validate-state-access                               # Audit sampled receipts and traces after the measured load
     --observe-state-paths                                 # Audit ordinary read/write controls and observe durable persistence
     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
+    --node-memory: string = ""                          # Override both nodes' systemd MemoryMax; empty preserves defaults
+    --node-swap-limit: string = ""                      # Override both nodes' MemorySwapMax; 0 disables swap
+    --cache-evict-tool: string = ""                     # Optional targeted cold-start helper, after restore and before nodes start
+    --allow-first-sload-samples                         # Diagnostic 4096-SLOAD control only: allow first-transaction cold-read samples
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --general-gas-limit: string = $E2E_GAS_LIMIT        # General (non-payment) gas limit override
@@ -1592,6 +1616,21 @@ def "main e2e" [
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
     let feature_binary = if $feature_binary == "" { "" } else { $feature_binary | path expand }
+    if $allow_first_sload_samples and ($preset != "state_access_dependent" or not $observe_state_paths or not $isolated_roles) {
+        error make {msg: "First-transaction samples require the isolated observed 4096-SLOAD diagnostic control"}
+    }
+    let cache_evict_tool = if $cache_evict_tool == "" { "" } else { $cache_evict_tool | path expand }
+    if $cache_evict_tool != "" and (not $single_restore or not ($cache_evict_tool | path exists)) {
+        error make {msg: "Targeted cache eviction requires a helper and one dedicated single-restore phase"}
+    }
+    if ($node_memory != "" or $node_swap_limit != "") and ((^uname | str trim) != "Linux" or ((which systemd-run | length) == 0)) {
+        error make {msg: "Explicit node memory controls require Linux systemd scopes"}
+    }
+    for limit in [$node_memory $node_swap_limit] {
+        if $limit != "" and not ($limit =~ '^[0-9]+[KMGT]?$') {
+            error make {msg: "Memory controls must be integer bytes or use K/M/G/T suffixes"}
+        }
+    }
     let xtask_binary = if $xtask_binary == "" { "" } else { $xtask_binary | path expand }
     if $snapshot_suffix != "" and not ($snapshot_suffix =~ '^[a-zA-Z0-9_-]+$') {
         error make { msg: "--snapshot-suffix requires a simple filename suffix" }
@@ -1619,10 +1658,10 @@ def "main e2e" [
         }
     }
     let preset_path = $preset_spec.spec_path
-    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write" "state_access_dependent" "history_code" "history_write"]) {
+    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write" "state_access_dependent" "history_read" "history_code" "history_write" "history_read_max" "history_code_max" "history_read_sized" "history_code_sized" "declared_read" "declared_write"]) {
         error make { msg: "--observe-state-paths requires an isolated supported state-path preset" }
     }
-    if ($preset in ["history_code" "history_write"] or ($preset == "state_access_dependent" and $observe_state_paths)) and (not $state_access_bloat or $snapshot_suffix != "history_paths" or not $observe_state_paths) {
+    if ($preset in ["history_read" "history_code" "history_write" "history_read_max" "history_code_max" "history_read_sized" "history_code_sized" "declared_read" "declared_write"] or ($preset == "state_access_dependent" and $observe_state_paths)) and (not $state_access_bloat or $snapshot_suffix != "history_paths" or not $observe_state_paths) {
         error make { msg: "History presets require the dedicated history_paths state-access fixture and observer" }
     }
     if not ($preset_path | path exists) {
@@ -1955,7 +1994,7 @@ def "main e2e" [
             ip: $a_ip
             consensus_port: $a_consensus_port
             cpus: $E2E_A_CPUS
-            memory: $E2E_A_MEMORY
+            memory: (if $node_memory == "" { $E2E_A_MEMORY } else { $node_memory })
         }
         b: {
             state_path: $E2E_B_STATE_PATH
@@ -1965,8 +2004,11 @@ def "main e2e" [
             ip: $b_ip
             consensus_port: $b_consensus_port
             cpus: $E2E_B_CPUS
-            memory: $E2E_B_MEMORY
+            memory: (if $node_memory == "" { $E2E_B_MEMORY } else { $node_memory })
         }
+        node_swap_limit: $node_swap_limit
+        cache_evict_tool: $cache_evict_tool
+        allow_first_sload_samples: $allow_first_sload_samples
         preset: $preset
         preset_path: $preset_path
         tps: $tps
@@ -2128,6 +2170,10 @@ def run-state-access-case [options: record, config: record, workload: record] {
         --bloat ($config.fixture_requirements.bloat_mib // 1000)
         --state-access-bloat --snapshot-suffix $config.fixture_requirements.snapshot_suffix
         --isolated-roles --observe-state-paths --token-count 1
+        --node-memory ($options.node_memory? | default "")
+        --node-swap-limit ($options.node_swap_limit? | default "")
+        --cache-evict-tool ($options.cache_evict_tool? | default "")
+        --allow-first-sload-samples=($options.allow_first_sload_samples? | default false)
         --gas-limit $config.gas_limit --general-gas-limit $config.gas_limit
         --run-pairs $options.run_pairs --run-side $options.run_side
         --baseline-args $baseline_args --feature-args $feature_args
@@ -2170,6 +2216,7 @@ def run-state-access-suite [plan_path: string] {
     $env.BENCH_DISABLE_SCHELK = "1"
     $env.TXGEN_HISTORY_CODE_COUNT = ($plan.fixture.code_count | into string)
     for workload in $plan.configuration.cases {
+        $env.TXGEN_STATE_ACCESSES = ($workload.operations_per_transaction | into string)
         let fixture_check = (^node contrib/bench/state-access-config.cjs --ignore-env --check-fixtures | complete)
         if $fixture_check.exit_code != 0 { error make {msg: $fixture_check.stderr} }
         if ($fixture_check.stdout | from json) != $plan.fixture { error make {msg: "Fixture changed during suite"} }
@@ -2200,6 +2247,10 @@ def "main state-access-bloat-worst-case" [
     --baseline: string = "HEAD"                         # Baseline git SHA/ref
     --feature: string = "HEAD"                          # Feature git SHA/ref
     --case: string = "all"                              # all, sload, bytecode, or writes
+    --max-transaction-size                              # Near-30M-gas SLOAD/bytecode variants, with 20GiB/no-swap cold-start controls
+    --sized-transactions                                # Adjustable access counts with the same cold-start controls
+    --declared-storage                                  # Read/write workloads with signed EIP-2930 storage access lists
+    --accesses: int                                      # Override access count for one sized or declared case
     --list                                              # List saved workloads without touching databases
     --dry-run                                           # Print the resolved suite plan without building or running
     --tps: int                                          # Offered TPS; defaults to the saved configuration (1000)
@@ -2217,6 +2268,11 @@ def "main state-access-bloat-worst-case" [
     --no-cache                                          # Skip binary cache
 ] {
     mut config_args = ["--resolve" "--ignore-env"]
+    if ([$max_transaction_size $sized_transactions $declared_storage] | where { |x| $x } | length) > 1 { error make {msg: "Choose one of max-size, sized, or declared-storage"} }
+    if $max_transaction_size { $config_args = ($config_args | append ["--config" "contrib/bench/configs/state-access-max-tx.json"]) }
+    if $sized_transactions { $config_args = ($config_args | append ["--config" "contrib/bench/configs/state-access-sized.json"]) }
+    if $declared_storage { $config_args = ($config_args | append ["--config" "contrib/bench/configs/state-access-declared.json"]) }
+    if $accesses != null { $config_args = ($config_args | append ["--accesses" ($accesses | into string)]) }
     if $case != "all" { $config_args = ($config_args | append ["--case" $case]) }
     if $tps != null { $config_args = ($config_args | append ["--tps" ($tps | into string)]) }
     if $duration != null { $config_args = ($config_args | append ["--duration" ($duration | into string)]) }
@@ -2231,10 +2287,19 @@ def "main state-access-bloat-worst-case" [
     if $feature_binary != "" and $run_side != "feature" {
         error make {msg: "--feature-binary requires --run-side feature"}
     }
-    let options = {baseline: $baseline, feature: $feature, baseline_label: $baseline, feature_label: $feature,
+    mut options = {baseline: $baseline, feature: $feature, baseline_label: $baseline, feature_label: $feature,
         feature_binary: $feature_binary, run_pairs: $run_pairs, run_side: $run_side, profile: $profile,
         baseline_args: $baseline_args, feature_args: $feature_args, baseline_env: $baseline_env,
         feature_env: $feature_env, bench_env: $bench_env, no_cache: $no_cache}
+    if $max_transaction_size or $sized_transactions or $declared_storage {
+        let eviction = ($env.STATE_PATH_CACHE_EVICT_TOOL? | default "")
+        if not $dry_run and ($eviction == "" or not ($eviction | path exists)) {
+            error make {msg: "Isolated state-access runs require STATE_PATH_CACHE_EVICT_TOOL; see contrib/bench/declared-state-paths.md or max-state-access.md"}
+        }
+        $options = ($options | merge {node_memory: "20G", node_swap_limit: "0", cache_evict_tool: $eviction,
+            baseline_env: (if $declared_storage { $baseline_env } else { $"($baseline_env) RETH_BYTECODE_PREFETCH=1" | str trim }),
+            feature_env: (if $declared_storage { $feature_env } else { $"($feature_env) RETH_BYTECODE_PREFETCH=1" | str trim })})
+    }
     let timestamp = (date now | format date "%Y%m%d-%H%M%S-%3f")
     let benchmark_id = $"state-access-bloat-($timestamp)"
     let plan = {kind: native-e2e-state-access-suite, benchmark_id: $benchmark_id, configuration: $config, options: $options}

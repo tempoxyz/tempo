@@ -1,0 +1,269 @@
+warning: patch `custom-hardforks v0.1.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-hardforks)` was not used in the crate graph
+warning: patch `ef-test-runner v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/testing/runner)` was not used in the crate graph
+warning: patch `ef-tests v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/testing/ef-tests)` was not used in the crate graph
+warning: patch `example-beacon-api-sidecar-fetcher v0.1.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/beacon-api-sidecar-fetcher)` was not used in the crate graph
+warning: patch `example-beacon-api-sse v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/beacon-api-sse)` was not used in the crate graph
+warning: patch `example-bsc-p2p v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/bsc-p2p)` was not used in the crate graph
+warning: patch `example-custom-auth-http-middleware v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-auth-http-middleware)` was not used in the crate graph
+warning: patch `example-custom-beacon-withdrawals v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-beacon-withdrawals)` was not used in the crate graph
+warning: patch `example-custom-dev-node v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-dev-node)` was not used in the crate graph
+warning: patch `example-custom-engine-types v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-engine-types)` was not used in the crate graph
+warning: patch `example-custom-evm v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-evm)` was not used in the crate graph
+warning: patch `example-custom-inspector v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-inspector)` was not used in the crate graph
+warning: patch `example-custom-node-components v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-node-components)` was not used in the crate graph
+warning: patch `example-custom-payload-builder v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-payload-builder)` was not used in the crate graph
+warning: patch `example-custom-rlpx-subprotocol v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-rlpx-subprotocol)` was not used in the crate graph
+warning: patch `example-custom-rpc-middleware v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-rpc-middleware)` was not used in the crate graph
+warning: patch `example-custom-state-root v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-state-root)` was not used in the crate graph
+warning: patch `example-db-access v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/db-access)` was not used in the crate graph
+warning: patch `example-exex-test v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/exex-test)` was not used in the crate graph
+warning: patch `example-full-contract-state v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/full-contract-state)` was not used in the crate graph
+warning: patch `example-manual-p2p v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/manual-p2p)` was not used in the crate graph
+warning: patch `example-network v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/network)` was not used in the crate graph
+warning: patch `example-network-proxy v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/network-proxy)` was not used in the crate graph
+warning: patch `example-network-txpool v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/network-txpool)` was not used in the crate graph
+warning: patch `example-node-builder-api v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/node-builder-api)` was not used in the crate graph
+warning: patch `example-node-custom-rpc v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/node-custom-rpc)` was not used in the crate graph
+warning: patch `example-node-event-hooks v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/node-event-hooks)` was not used in the crate graph
+warning: patch `example-polygon-p2p v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/polygon-p2p)` was not used in the crate graph
+warning: patch `example-rpc-db v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/rpc-db)` was not used in the crate graph
+warning: patch `example-txpool-tracing v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/txpool-tracing)` was not used in the crate graph
+warning: patch `exex-subscription v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/exex-subscription)` was not used in the crate graph
+warning: patch `reth v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/bin/reth)` was not used in the crate graph
+warning: patch `reth-bb v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/bin/reth-bb)` was not used in the crate graph
+warning: patch `reth-exex-test-utils v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/exex/test-utils)` was not used in the crate graph
+warning: patch `reth-payload-util v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/util)` was not used in the crate graph
+warning: patch `reth-rpc-e2e-tests v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/rpc/rpc-e2e-tests)` was not used in the crate graph
+warning: patch `reth-snap-sync v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/snap-sync)` was not used in the crate graph
+warning: patch `reth-storage-rpc-provider v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/rpc-provider)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+ Downloading crates ...
+  Downloaded colored v2.2.0
+  Downloaded rtoolbox v0.0.5
+  Downloaded ct-codecs v1.1.6
+  Downloaded rpassword v7.5.2
+  Downloaded nix v0.31.3
+  Downloaded minisign v0.8.0
+  Downloaded statrs v0.18.0
+  Downloaded codspeed v4.6.0
+  Downloaded codspeed-criterion-compat-walltime v4.6.0
+  Downloaded codspeed-criterion-compat v4.6.0
+   Compiling crypto-common v0.1.7
+   Compiling rand_core v0.9.5
+   Compiling crypto-bigint v0.5.5
+   Compiling der v0.7.10
+   Compiling hybrid-array v0.4.13
+   Compiling derive_more v2.1.1
+   Compiling rand_chacha v0.3.1
+   Compiling parking_lot_core v0.9.12
+   Compiling digest v0.10.7
+   Compiling serde_with v3.20.0
+   Compiling rand_chacha v0.9.0
+   Compiling signature v2.2.0
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.10.9
+   Compiling rfc6979 v0.4.0
+   Compiling rand v0.9.4
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.0
+   Compiling rand_xorshift v0.4.0
+   Compiling keccak-asm v0.1.7
+   Compiling rand v0.8.6
+   Compiling blst v0.3.16
+   Compiling aws-lc-rs v1.18.1
+   Compiling spki v0.7.3
+   Compiling pkcs8 v0.10.2
+   Compiling proptest v1.11.0
+   Compiling digest v0.11.3
+   Compiling rapidhash v4.4.1
+   Compiling sec1 v0.7.3
+   Compiling secp256k1 v0.31.1
+   Compiling sha3 v0.11.0
+   Compiling elliptic-curve v0.13.8
+   Compiling c-kzg v2.1.8
+   Compiling secp256k1 v0.30.0
+   Compiling ethereum_ssz_derive v0.10.4
+   Compiling ecdsa v0.16.9
+   Compiling parking_lot v0.12.5
+   Compiling num-bigint v0.4.8
+   Compiling alloy-sol-type-parser v1.7.3
+   Compiling tokio v1.52.3
+   Compiling k256 v0.13.4
+   Compiling ark-std v0.6.0
+   Compiling ahash v0.8.12
+   Compiling futures-util v0.3.32
+   Compiling dashmap v6.2.1
+   Compiling primeorder v0.13.6
+   Compiling sha2 v0.11.0
+   Compiling p256 v0.13.2
+   Compiling ripemd v0.2.0
+   Compiling sha3 v0.10.9
+   Compiling ark-serialize v0.6.0
+   Compiling num-rational v0.4.2
+   Compiling curve25519-dalek v4.1.3
+   Compiling metrics v0.24.6
+   Compiling ark-ff v0.6.0
+   Compiling ruint v1.20.0
+   Compiling num v0.4.3
+   Compiling aurora-engine-modexp v1.2.0
+   Compiling proptest-arbitrary-interop v0.1.0
+   Compiling ed25519 v2.2.3
+   Compiling rustls-webpki v0.103.15
+   Compiling simple_asn1 v0.6.4
+   Compiling alloy-primitives v1.7.3
+   Compiling nybbles v0.4.8
+   Compiling ed25519-dalek v2.2.0
+   Compiling futures-executor v0.3.32
+   Compiling jsonwebtoken v10.4.0
+   Compiling enr v0.13.0
+   Compiling rustls v0.23.45
+   Compiling http-body-util v0.1.3
+   Compiling futures v0.3.32
+   Compiling tracing-subscriber v0.3.23
+   Compiling bindgen v0.72.1
+   Compiling alloy-eip7928 v0.4.10
+   Compiling alloy-eip7702 v0.6.3
+   Compiling alloy-eip2930 v0.2.3
+   Compiling alloy-eip2124 v0.2.0
+   Compiling ethereum_serde_utils v0.8.0
+   Compiling alloy-serde v2.4.2
+   Compiling ethereum_ssz v0.10.4
+   Compiling alloy-trie v0.9.5
+   Compiling alloy-eips v2.4.2
+   Compiling revm-primitives v43.0.0
+   Compiling alloy-json-abi v1.7.3
+   Compiling revm-bytecode v43.0.0
+   Compiling revm-state v43.0.0
+   Compiling tokio-util v0.7.18
+   Compiling alloy-sol-types v1.7.3
+   Compiling ark-poly v0.6.0
+   Compiling revm-database-interface v43.0.0
+   Compiling alloy-chains v0.2.34
+   Compiling tokio-stream v0.1.18
+   Compiling alloy-consensus v2.4.2
+   Compiling alloy-genesis v2.4.2
+   Compiling revm-context-interface v43.0.1
+   Compiling ark-ec v0.6.0
+   Compiling revm-database v43.0.0
+   Compiling alloy-hardforks v0.4.8
+   Compiling h2 v0.4.16
+   Compiling reth-ethereum-forks v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/hardforks)
+   Compiling tower v0.5.3
+   Compiling revm-context v43.0.2
+   Compiling revm-interpreter v43.0.1
+   Compiling reth-network-peers v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/net/peers)
+   Compiling tokio-rustls v0.26.4
+   Compiling ark-bn254 v0.6.0
+   Compiling ark-bls12-381 v0.6.0
+   Compiling reth-tokio-util v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tokio-util)
+   Compiling alloy-network-primitives v2.4.2
+   Compiling alloy-consensus-any v2.4.2
+   Compiling reth-codecs v0.7.1
+   Compiling alloy-rpc-types-engine v2.4.2
+   Compiling rlp v0.5.2
+   Compiling alloy-rpc-types-eth v2.4.2
+   Compiling revm-precompile v43.0.2
+   Compiling axum-core v0.5.6
+   Compiling opentelemetry v0.32.0
+   Compiling bs58 v0.5.1
+   Compiling ripemd v0.1.3
+   Compiling revm-handler v43.0.2
+   Compiling reth-prune-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/prune/types)
+   Compiling coins-core v0.12.0
+   Compiling triehash v0.8.4
+   Compiling hyper v1.9.0
+   Compiling revm-inspector v43.0.2
+   Compiling webpki-roots v1.0.7
+   Compiling coins-bip32 v0.12.0
+   Compiling revm v43.0.2
+   Compiling async-compression v0.4.42
+   Compiling alloy-json-rpc v2.4.2
+   Compiling alloy-signer v2.4.2
+   Compiling reth-primitives-traits v0.7.1
+   Compiling alloy-evm v0.39.0
+   Compiling alloy-rpc-types-any v2.4.2
+   Compiling pbkdf2 v0.12.2
+   Compiling tower-http v0.6.11
+   Compiling coins-bip39 v0.12.0
+   Compiling alloy-network v2.4.2
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling hyper-util v0.1.20
+   Compiling reth-mdbx-sys v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/libmdbx-rs/mdbx-sys)
+   Compiling reth-trie-common v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/common)
+   Compiling reth-ethereum-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/primitives)
+   Compiling reth-metrics v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/metrics)
+   Compiling reth-chainspec v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/chainspec)
+   Compiling reth-db-models v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db-models)
+   Compiling alloy-signer-local v2.4.2
+   Compiling chrono v0.4.44
+   Compiling opentelemetry-appender-tracing v0.32.0
+   Compiling tracing-opentelemetry v0.33.0
+   Compiling axum v0.8.9
+   Compiling hyper-timeout v0.5.2
+   Compiling hyper-rustls v0.27.9
+   Compiling librocksdb-sys v0.17.3+10.4.2
+   Compiling tracing-appender v0.2.5
+   Compiling reqwest v0.13.3
+   Compiling rolling-file v0.2.0
+   Compiling tracing-samply v0.1.5
+   Compiling reth-stages-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/stages/types)
+   Compiling reth-execution-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/execution-types)
+   Compiling reth-static-file-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/static-file/types)
+   Compiling reth-consensus v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/consensus/consensus)
+   Compiling opentelemetry-http v0.32.0
+   Compiling reth-storage-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/errors)
+   Compiling tracing-journald v0.3.2
+   Compiling tracing-chrome v0.7.2
+   Compiling tracing-logfmt v0.3.7
+   Compiling reth-nippy-jar v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/nippy-jar)
+   Compiling reth-execution-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/execution-errors)
+   Compiling reth-db-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db-api)
+   Compiling reth-tasks v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tasks)
+   Compiling reth-trie-sparse v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/sparse)
+   Compiling tonic v0.14.6
+   Compiling reth-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/errors)
+   Compiling reth-payload-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/primitives)
+   Compiling reth-storage-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/storage-api)
+   Compiling reth-payload-builder-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/builder-primitives)
+   Compiling alloy-rpc-types-debug v2.4.2
+   Compiling alloy-rpc-types-txpool v2.4.2
+   Compiling alloy-rpc-types-trace v2.4.2
+   Compiling reth-trie v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/trie)
+   Compiling alloy-rpc-types-anvil v2.4.2
+   Compiling tonic-prost v0.14.6
+   Compiling opentelemetry-proto v0.32.0
+   Compiling tonic-types v0.14.6
+   Compiling reth-evm v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/evm)
+   Compiling reth-libmdbx v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/libmdbx-rs)
+   Compiling opentelemetry-otlp v0.32.0
+   Compiling alloy-rpc-types v2.4.2
+   Compiling reth-chain-state v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/chain-state)
+   Compiling reth-trie-db v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/db)
+   Compiling reth-revm v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/revm)
+   Compiling reth-tracing-otlp v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tracing-otlp)
+   Compiling reth-tracing v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tracing)
+   Compiling reth-engine-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/primitives)
+   Compiling reth-storage-overlay v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/storage-overlay)
+   Compiling reth-ethereum-engine-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/engine-primitives)
+   Compiling reth-node-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/node/types)
+   Compiling reth-db v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db)
+   Compiling rocksdb v0.24.0
+   Compiling reth-provider v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/provider)
+   Compiling reth-trie-parallel v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/parallel)
+   Compiling reth-execution-cache v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/execution-cache)
+   Compiling reth-payload-builder v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/builder)
+   Compiling reth-basic-payload-builder v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/basic)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 32s
+     Running unittests src/lib.rs (target/debug/deps/reth_basic_payload_builder-1183283e670e5192)
+
+running 3 tests
+test cancellation_tests::abandoned_consumer_does_not_take_permit ... ok
+test cancellation_tests::queued_consumer_cancellation_releases_resources ... ok
+test cancellation_tests::live_consumer_gets_permit ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

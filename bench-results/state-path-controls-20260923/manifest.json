@@ -1,0 +1,34 @@
+{
+  "reference_results": "bench-results/20260922-152637-070",
+  "cases": [
+    {
+      "scenario": "state_paths_read",
+      "benchmark_id": "local-ordinary-state_paths_read-20260923",
+      "results_dir": "bench-results/20260923-115556-249",
+      "exit_code": 1,
+      "finished_at": "2026-09-23T12:17:10.812Z"
+    }
+  ],
+  "attempts": [
+    {
+      "scenario": "state_paths_read",
+      "benchmark_id": "local-ordinary-state_paths_read-20260923",
+      "exit_code": 1,
+      "finished_at": "2026-09-23T11:38:28.521Z"
+    },
+    {
+      "scenario": "state_paths_read",
+      "benchmark_id": "local-ordinary-state_paths_read-20260923",
+      "results_dir": "bench-results/20260923-113939-414",
+      "exit_code": 1,
+      "finished_at": "2026-09-23T11:53:58.064Z"
+    },
+    {
+      "scenario": "state_paths_read",
+      "benchmark_id": "local-ordinary-state_paths_read-20260923",
+      "results_dir": "bench-results/20260923-115556-249",
+      "exit_code": 1,
+      "finished_at": "2026-09-23T12:17:10.812Z"
+    }
+  ]
+}

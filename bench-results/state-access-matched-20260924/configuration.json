@@ -1,0 +1,42 @@
+{
+  "id": "state-access-bloated",
+  "schema_version": 1,
+  "duration": 1200,
+  "warmup": 600,
+  "tps": 1000,
+  "accounts": 1000,
+  "gas_limit": "1000000000000",
+  "node_args": "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128",
+  "fixture_requirements": {
+    "snapshot_suffix": "history_paths",
+    "bloat_mib": 100000,
+    "code_count": 4266667,
+    "code_bytes": 24576
+  },
+  "transaction_cap": null,
+  "prewarming": "unchanged/default enabled",
+  "whole_node_memory_required": true,
+  "persistence_priming_required": true,
+  "cache_policy": "fresh snapshot restore and new node processes per case; no global page-cache drop; exclude warmup",
+  "cases": [
+    {
+      "id": "sload",
+      "scenario": "state_access_dependent",
+      "description": "Original 4096 cold SLOADs from a history-selected populated logical page",
+      "operations_per_transaction": 4096
+    },
+    {
+      "id": "bytecode",
+      "scenario": "history_code",
+      "description": "128 history-selected EXTCODECOPY accesses to unique 24 KiB contracts",
+      "operations_per_transaction": 128
+    },
+    {
+      "id": "writes",
+      "scenario": "history_write",
+      "description": "1024 cold reads and nonzero-to-nonzero writes in a history-selected populated logical page",
+      "operations_per_transaction": 1024
+    }
+  ],
+  "dry_run": false
+}

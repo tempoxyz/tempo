@@ -32,9 +32,30 @@ Use `--tps`, `--duration`, and `--summary-warmup-seconds` instead.
 
 | Name | Preset | Accesses per transaction |
 | --- | --- | --- |
-| `sload` | `state_access_dependent` | Original 4,096 cold SLOADs |
+| `sload` | `history_read` | 128 cold SLOADs, covering the full populated corpus |
 | `bytecode` | `history_code` | 128 EXTCODECOPYs over unique 24 KiB contracts |
 | `writes` | `history_write` | 1,024 populated-slot reads and nonzero-to-nonzero writes |
+
+For the separate near-30M-gas SLOAD and bytecode variants, add
+`--max-transaction-size`. The [max-size registry](state-access-max-tx.json)
+selects 13,800 SLOADs or 10,800 EXTCODECOPYs, with verified 20 GiB/no-swap
+cold-start controls. This requires the targeted eviction helper; see
+[preparation and reproduction](../max-state-access.md). The ordinary registry
+and defaults above are unchanged. Max-size cases report actual history coverage
+and explicitly permit first-transaction samples rather than claiming that
+mostly single-transaction blocks establish within-block prewarming bypass.
+
+For latency calibration, use `--sized-transactions --case bytecode --accesses 2250`
+(or select `sload` and its count). The [sized registry](state-access-sized.json)
+preserves the full corpus and the same memory/prefetch controls. Counts must be
+calibrated on the target machine, not assumed to guarantee a duration. See
+[cancellation-aware latency measurement](../state-access-latency.md).
+
+For declared reads and writes, use `--declared-storage`. The
+[declared registry](state-access-declared.json) uses native Tempo access lists,
+128 slots per transaction by default, and accepts `--case sload|writes --accesses
+1..256`. It retains the memory and verified cache controls without a bytecode
+workload. See [preparation, semantics, and analysis](../declared-state-paths.md).
 
 All cases use the same node binary per side, 1,000 offered TPS, 1,000
 signers, 1,200 seconds of load, and a 600-second excluded warmup. The same
@@ -58,9 +79,12 @@ bash contrib/bench/txgen/compile-history-state-paths.sh --test
 bash contrib/bench/update-history-router.sh
 ```
 
-This preserves both corpora and the original snapshots. The shared router
-inherits the original SLOAD implementation, so its access selection, 4,096-read
-loop, and cursor semantics are unchanged; router dispatch overhead can differ.
+This updates only the router in the dedicated history fixtures, preserving both
+corpora and the original source snapshots. The shared router retains the legacy
+4,096-read entry point, but the saved SLOAD case uses `touchReads`: 128-slot chunks
+selected across all 32 chunks of every original 4,096-slot logical page. Merely
+reading the first 128 slots of each old page would incorrectly shrink the working
+set by 32x.
 The runner verifies the installed router hash before starting expensive copies.
 It also requires the `read_finish_checkpoint` example under
 `target/PROFILE/examples/` (or `STATE_PATH_CHECKPOINT_TOOL`) and verifies both
@@ -82,8 +106,10 @@ Phase reports retain builder/follower/chain throughput counters and the observer
 evidence needed for durable throughput, backlog, I/O and major faults per gas.
 History audits record within-block history coverage and deliberately sample
 non-first transactions; their mismatch rate is not the fraction of all workload
-transactions that defeat prewarming. SLOAD's large transactions may substantially
-reduce the share of non-first transactions, which is reported rather than hidden.
+transactions that defeat prewarming. The small SLOAD case requires at least 90%
+of measured-window workload transactions to have a predecessor in their block;
+otherwise its audit fails. The original 4,096-read run achieved only 0.39% and
+must not be treated as a verified prewarming-resistant worst case.
 
 Different offered loads, durations, fixtures, or binaries must not be combined as
 a matched comparison. At least 270 measured seconds are required. One run per

@@ -1,0 +1,46 @@
+[
+  {
+    "sample_time": "2026-09-25T19:46:32.381000+00:00",
+    "count_increment": 1.0,
+    "total": 206.555293003,
+    "batch_size": 51.0,
+    "write_hashed_state": 69.774192121,
+    "write_trie_updates": 136.759458099,
+    "commit_mdbx": 1.3505e-05,
+    "rocksdb": 1.035385227,
+    "sf": 0.125097685
+  },
+  {
+    "sample_time": "2026-09-25T19:47:57.381000+00:00",
+    "count_increment": 1.0,
+    "total": 84.770977586,
+    "batch_size": 19.0,
+    "write_hashed_state": 28.913392171,
+    "write_trie_updates": 55.8458406,
+    "commit_mdbx": 1.58e-05,
+    "rocksdb": 0.390862365,
+    "sf": 0.04990805
+  },
+  {
+    "sample_time": "2026-09-25T19:51:32.382000+00:00",
+    "count_increment": 1.0,
+    "total": 216.039053825,
+    "batch_size": 51.0,
+    "write_hashed_state": 75.111642201,
+    "write_trie_updates": 140.905894085,
+    "commit_mdbx": 1.3845e-05,
+    "rocksdb": 1.03727839,
+    "sf": 0.137960369
+  },
+  {
+    "sample_time": "2026-09-25T19:53:07.382000+00:00",
+    "count_increment": 1.0,
+    "total": 93.875368028,
+    "batch_size": 19.0,
+    "write_hashed_state": 32.309623991,
+    "write_trie_updates": 61.553597966,
+    "commit_mdbx": 2.6209e-05,
+    "rocksdb": 0.40929779,
+    "sf": 0.062822451
+  }
+]

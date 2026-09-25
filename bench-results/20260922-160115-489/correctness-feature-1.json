@@ -1,0 +1,133 @@
+{
+  "ok": true,
+  "scenario": "state_access_predictable",
+  "expected_page_count": "399999",
+  "whole_report_cursor_check": {
+    "first_block": 22,
+    "last_block": 3010,
+    "before": "0",
+    "after": "3817",
+    "transactions": "3817",
+    "ok": true
+  },
+  "node": "follower",
+  "report": "bench-results/20260922-160115-489/report-feature-1.json",
+  "audited_at": "2026-09-22T16:30:55.883Z",
+  "receipt_blocks": [
+    {
+      "block": 1804,
+      "hash": "0x243019c2f8f85159f76c94ee8e151a1324928df763e6c23fb23cc3edfb0dc798",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916535"
+    },
+    {
+      "block": 1976,
+      "hash": "0x738c7a8019e5951e4dfbca0fb496e01b6df849e935465e96ef36067861e0957a",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916535"
+    },
+    {
+      "block": 2148,
+      "hash": "0x8c7ac992dbd333ccd5c86cf3c0efade30a8d88b2702c18c25ec27bb802ce98ca",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916535"
+    },
+    {
+      "block": 2320,
+      "hash": "0x30757298237fcebed7127ae20c4e1f74ec08f8c637fb6739079e79005304d925",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916523"
+    },
+    {
+      "block": 2493,
+      "hash": "0xa6ee9590bbbeddaed8aaaa6f493d6c867bb94ed5555027b3b9fda4e09e92cdf6",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916535"
+    },
+    {
+      "block": 2665,
+      "hash": "0x7419c9b2c51c2cf9631d881f863190420a306e185a41faa688812181e33f1f1a",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916535"
+    },
+    {
+      "block": 2837,
+      "hash": "0x24b4c474e01ed186ea65397087dfb0ed9aaf18f528e3d7f4136e7f0985494ab0",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916535"
+    },
+    {
+      "block": 3010,
+      "hash": "0xed54a3b826495e5649d24ed5d40be8bd0875bbfb0fa663fe130b571d6009145a",
+      "transactions": 1,
+      "successful": 1,
+      "gas": "8916535"
+    }
+  ],
+  "sampled_receipts": 8,
+  "traces": [
+    {
+      "hash": "0xc2de908670d96007b3f90d942320c98d7663b12b7aad4a1c29a5f269786d6ded",
+      "page_count": "399999",
+      "data_reads": 4096,
+      "unique_data_slots": 4096,
+      "cold_data_reads": 4096,
+      "start_slot": "383582208",
+      "page": "93648",
+      "cursor_before": "2497",
+      "populated_values_verified": true,
+      "failed": false,
+      "trace_gas": 9153535,
+      "trace_file": "trace-0xc2de908670d96007b3f90d942320c98d7663b12b7aad4a1c29a5f269786d6ded.json.gz",
+      "bytecode_verified": true,
+      "actual_transaction_access_set_verified": true,
+      "opcode_trace_kind": "parent-state debug_traceCall, cross-checked with actual transaction access set and output",
+      "transaction_gas": 8916535
+    },
+    {
+      "hash": "0xa07e36374395807a5b612ba4ba4dfe1f28ad342830e14d6c98238354ceb52da4",
+      "page_count": "399999",
+      "data_reads": 4096,
+      "unique_data_slots": 4096,
+      "cold_data_reads": 4096,
+      "start_slot": "86835200",
+      "page": "21200",
+      "cursor_before": "3126",
+      "populated_values_verified": true,
+      "failed": false,
+      "trace_gas": 9153523,
+      "trace_file": "trace-0xa07e36374395807a5b612ba4ba4dfe1f28ad342830e14d6c98238354ceb52da4.json.gz",
+      "bytecode_verified": true,
+      "actual_transaction_access_set_verified": true,
+      "opcode_trace_kind": "parent-state debug_traceCall, cross-checked with actual transaction access set and output",
+      "transaction_gas": 8916523
+    },
+    {
+      "hash": "0xc3f434d4f74f0f28d216506470a473724475fb43bae8751f49fb5024236c69e4",
+      "page_count": "399999",
+      "data_reads": 4096,
+      "unique_data_slots": 4096,
+      "cold_data_reads": 4096,
+      "start_slot": "1382010880",
+      "page": "337405",
+      "cursor_before": "3816",
+      "populated_values_verified": true,
+      "failed": false,
+      "trace_gas": 9153535,
+      "trace_file": "trace-0xc3f434d4f74f0f28d216506470a473724475fb43bae8751f49fb5024236c69e4.json.gz",
+      "bytecode_verified": true,
+      "actual_transaction_access_set_verified": true,
+      "opcode_trace_kind": "parent-state debug_traceCall, cross-checked with actual transaction access set and output",
+      "transaction_gas": 8916535
+    }
+  ],
+  "sampling_only": true,
+  "caveat": "Sampled receipts and transaction access/call traces verify real execution, not every transaction. Opcode counts use a parent-state call replay cross-checked against that transaction; its wrapper gas differs and is not used as the gas denominator. Traces run after load, outside archived metrics. The default AA transaction opcode logger is unsupported (no steps and an inconsistent failed flag)."
+}

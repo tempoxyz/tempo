@@ -1,0 +1,2566 @@
+{
+  "declared_read": [
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.0019071509999999995
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.003569884000000001
+      ],
+      "delta": 0.0016627330000000015
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_pipeline_stages_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.004131741999999998
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.008208428999999991
+      ],
+      "delta": 0.004076686999999993
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_hashed_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        1.4228589740000004
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        3.3556475680000024
+      ],
+      "delta": 1.932788594000002
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.213489611
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.42148450100000046
+      ],
+      "delta": 0.20799489000000046
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        1.5671792200000003
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        4.309281691999997
+      ],
+      "delta": 2.742102471999997
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_total_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        3.352236656999999
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        7.597942086999997
+      ],
+      "delta": 4.245705429999998
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.9213963159999999
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        2.193304657999999
+      ],
+      "delta": 1.2719083419999988
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_history_indices_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.00031708400000000003
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.0007013449999999995
+      ],
+      "delta": 0.00038426099999999946
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        2334.0
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        4574.0
+      ],
+      "delta": 2240.0
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_trie_updates_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        1.3486312169999997
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        3.615119687999999
+      ],
+      "delta": 2.2664884709999997
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        2334.0
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        4590.0
+      ],
+      "delta": 2256.0
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_insert_block_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.027213628999999993
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.058167186999999995
+      ],
+      "delta": 0.030953558000000003
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        3.1973780980000006
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        6.532190298000006
+      ],
+      "delta": 3.3348122000000053
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        2.807781767999999
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        7.048457026000003
+      ],
+      "delta": 4.240675258000004
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        6.822573105999998
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        15.910131529000003
+      ],
+      "delta": 9.087558423000004
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        1.6834969620000007
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        3.6023394070000063
+      ],
+      "delta": 1.9188424450000057
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.0021155170000000004
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.003916536000000003
+      ],
+      "delta": 0.0018010190000000022
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        5.956523001000001
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        13.79552860699999
+      ],
+      "delta": 7.83900560599999
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        2.996415131999999
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        6.068658792000005
+      ],
+      "delta": 3.072243660000006
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_hashed_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        1.4159486120000004
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        3.2842857189999988
+      ],
+      "delta": 1.8683371069999983
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.985368222
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        2.794358276
+      ],
+      "delta": 1.8089900540000001
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_history_indices_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.0007739480000000003
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.0018359880000000002
+      ],
+      "delta": 0.0010620399999999998
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        1.5820027000000005
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        3.4168877779999995
+      ],
+      "delta": 1.834885077999999
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_pipeline_stages_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.004295656
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.008904445000000006
+      ],
+      "delta": 0.0046087890000000055
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        2.736074100000001
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        6.723655815
+      ],
+      "delta": 3.987581714999999
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        2334.0
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        4574.0
+      ],
+      "delta": 2240.0
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_total_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        3.1866636429999984
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        7.177734725999998
+      ],
+      "delta": 3.9910710829999996
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_trie_updates_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        1.282395114
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        3.354975633000001
+      ],
+      "delta": 2.0725805190000006
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.8313352389999996
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        2.0348880029999994
+      ],
+      "delta": 1.2035527639999999
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        2334.0
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        4574.0
+      ],
+      "delta": 2240.0
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.19157246400000005
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.3838820480000002
+      ],
+      "delta": 0.19230958400000014
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_insert_block_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-sload",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530131",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_read",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600003,
+        1790363694775,
+        0.027370182000000007
+      ],
+      "last": [
+        1195002,
+        1790364289774,
+        0.060849371
+      ],
+      "delta": 0.03347918899999999
+    }
+  ],
+  "declared_write": [
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.7337066760000001
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        1.530491851
+      ],
+      "delta": 0.796785175
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_total_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        516.044573385
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        1117.2852658269999
+      ],
+      "delta": 601.2406924419998
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_trie_updates_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        305.52525550900003
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        700.590046259
+      ],
+      "delta": 395.06479075
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        266.0
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        406.0
+      ],
+      "delta": 140.0
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        3.6955298709999993
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        6.568353642999999
+      ],
+      "delta": 2.872823772
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.0005221529999999999
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.000619492
+      ],
+      "delta": 9.73390000000001e-05
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.5081871550000001
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.861411012
+      ],
+      "delta": 0.3532238569999999
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        515.6645230690001
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        1116.9045177540002
+      ],
+      "delta": 601.239994685
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        266.0
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        406.0
+      ],
+      "delta": 140.0
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_pipeline_stages_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.0009258140000000001
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.0015783390000000002
+      ],
+      "delta": 0.0006525250000000002
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_insert_block_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.009144105
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.018676608
+      ],
+      "delta": 0.009532503000000001
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        517.304561647
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        1119.700665334
+      ],
+      "delta": 602.3961036869999
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_hashed_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        210.06590139899998
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        416.174751883
+      ],
+      "delta": 206.10885048400002
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.016953718000000003
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.021898506
+      ],
+      "delta": 0.004944787999999999
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.5227365989999999
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.8985251539999999
+      ],
+      "delta": 0.37578855499999997
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_history_indices_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "a",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        3.0225999999999998e-05
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        5.0271999999999996e-05
+      ],
+      "delta": 2.0045999999999997e-05
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        266.0
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        336.0
+      ],
+      "delta": 70.0
+    },
+    {
+      "name": "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        525.8300594650001
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        996.4125920740001
+      ],
+      "delta": 470.58253260900005
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        524.302664657
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        994.223876133
+      ],
+      "delta": 469.92121147599994
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        4.194748476
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        6.394556835
+      ],
+      "delta": 2.1998083590000004
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_history_indices_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        8.785399999999999e-05
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.00011684899999999998
+      ],
+      "delta": 2.899499999999999e-05
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_insert_block_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.003307821
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.004399736999999999
+      ],
+      "delta": 0.0010919159999999992
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.015000421
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.021897736999999994
+      ],
+      "delta": 0.006897315999999994
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_batch_size_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        266.0
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        336.0
+      ],
+      "delta": 70.0
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_hashed_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        216.98647059099997
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        372.982728734
+      ],
+      "delta": 155.996258143
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_total_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        524.629255482
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        994.5507108539999
+      ],
+      "delta": 469.92145537199997
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_sf_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.555304403
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.735814761
+      ],
+      "delta": 0.18051035800000004
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_mdbx_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.691297792
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        1.1593877760000002
+      ],
+      "delta": 0.46808998400000024
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_commit_rocksdb_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.49355481900000003
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.683594787
+      ],
+      "delta": 0.19003996799999995
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_update_pipeline_stages_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.00109154
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.001544883
+      ],
+      "delta": 0.00045334299999999993
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_trie_updates_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        307.253414135
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        621.130042667
+      ],
+      "delta": 313.876628532
+    },
+    {
+      "name": "reth_storage_providers_database_save_blocks_write_state_sum",
+      "labels": {
+        "accounts": "1000",
+        "benchmark_id": "state-access-bloat-20260925-185631-646-writes",
+        "benchmark_run": "feature-1",
+        "bloat_mib": "100000",
+        "bloat_token_count": "4",
+        "build_profile": "profiling",
+        "chain_id": "1337",
+        "erc20_weight": "0.0",
+        "git-ref": "HEAD",
+        "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "initial_db_size_bytes": "330353530132",
+        "job": "github-tempo-bench-e2e",
+        "mode": "e2e",
+        "node": "b",
+        "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+        "place_order_weight": "0.0",
+        "platform": "tempo",
+        "run_duration_secs": "1200",
+        "scenario": "declared_write",
+        "swap_weight": "0.0",
+        "target_tps": "1000",
+        "tip20_token_count": "1",
+        "tip20_weight": "1.0",
+        "total_connections": "500"
+      },
+      "first": [
+        600002,
+        1790365452381,
+        0.000471948
+      ],
+      "last": [
+        1135003,
+        1790365987382,
+        0.0005314199999999999
+      ],
+      "delta": 5.947199999999992e-05
+    }
+  ]
+}

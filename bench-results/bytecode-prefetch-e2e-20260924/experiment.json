@@ -1,0 +1,56 @@
+{
+  "kind": "targeted-bytecode-prefetch-ab",
+  "started_at": "2026-09-24T14:51:14.671Z",
+  "binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924/tempo",
+  "sha256": "a323808c80a686927cbe127cde37549ac0c5471e31c9e891df5329c9ec583a7c",
+  "version": "Tempo Version: 1.14.0-dev\nCommit SHA: f62969a95e8a787d2956f3509d25c533bdaac746\nBuild Timestamp: 2026-09-23T18:51:37.358384818Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n",
+  "status": "failed",
+  "runs": [
+    {
+      "label": "baseline",
+      "enabled": 0,
+      "directory": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924/baseline",
+      "started_at": "2026-09-24T14:51:15.206Z",
+      "status": "complete",
+      "exit_code": 0,
+      "finished_at": "2026-09-24T15:20:21.986Z",
+      "results_dir": "bench-results/20260924-145115-351"
+    },
+    {
+      "label": "prefetch",
+      "enabled": 1,
+      "directory": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924/prefetch",
+      "started_at": "2026-09-24T15:20:22.644Z",
+      "status": "failed",
+      "exit_code": 1,
+      "finished_at": "2026-09-24T15:33:47.682Z"
+    }
+  ],
+  "order": [
+    0,
+    1
+  ],
+  "scope": "Same binary and restored fixture; only RETH_BYTECODE_PREFETCH differs. No global cache drop.",
+  "sources": {
+    "bench-e2e.nu": "d55507f7b05117f7fcd1feb5fb6e2ade68b5d56097f195c2e405a185b40ad669",
+    "contrib/bench/run-bytecode-prefetch.cjs": "1297bbc8db2f20fedf875a1d09d39f1abf585ea23c6716e0681185c6779c7590",
+    "contrib/bench/state-path-observer.cjs": "755c53f2dd8d580feca5a7d68912be8c678dd5ffeb088303de640b7cfdd54304",
+    "contrib/bench/configs/state-access-bloated.json": "4e043b2041fe63c81d7d7e414f07e6b5624d7973e4cad7869dd9ffa610a79dc3"
+  },
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0x150aa03ba0d89677caced10b6e64bcfefbbcfdc6d244a2503979730993e1d9d4",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0x0d19bc8583f4967a4db228eacd171756375f049c34d53527f0a33cc5ca7c3a1c",
+    "state_root": "0x3c021ea3b9644f5b792cc360fd411755310f441c3ccf9a7955ce9e29d6a0f196",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1
+  },
+  "error": "AssertionError [ERR_ASSERTION]: prefetch suite failed; see /home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924/prefetch/run.log\n\n1 !== 0\n",
+  "finished_at": "2026-09-24T15:33:47.690Z"
+}

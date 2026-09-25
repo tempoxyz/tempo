@@ -1,0 +1,203 @@
+   Compiling num-traits v0.2.19
+   Compiling indexmap v2.14.2
+   Compiling rand_core v0.9.5
+   Compiling smallvec v1.16.1
+   Compiling proptest-derive v0.8.0
+   Compiling rand_chacha v0.3.1
+   Compiling serde_json v1.0.151
+   Compiling proptest-derive v0.7.0
+   Compiling alloy-tx-macros v2.4.2
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.4
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.8.6
+   Compiling num-integer v0.1.46
+   Compiling tokio v1.53.1
+   Compiling parking_lot_core v0.9.12
+   Compiling num-complex v0.4.6
+   Compiling num-bigint v0.4.6
+   Compiling num-iter v0.1.45
+   Compiling dashmap v6.2.1
+   Compiling visibility v0.1.1
+   Compiling icu_normalizer v2.0.1
+   Compiling parking_lot v0.12.5
+   Compiling proptest v1.11.0
+   Compiling secp256k1 v0.30.0
+   Compiling ark-std v0.6.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling rlp v0.5.2
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling triehash v0.8.4
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling chrono v0.4.45
+   Compiling reth-fs-util v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/fs-util)
+   Compiling ark-serialize v0.6.0
+   Compiling num-rational v0.4.2
+   Compiling ark-ff v0.6.0
+   Compiling url v2.5.8
+   Compiling num v0.4.3
+   Compiling aurora-engine-modexp v1.2.0
+   Compiling tracing-opentelemetry v0.33.0
+   Compiling rolling-file v0.2.0
+   Compiling tracing-logfmt v0.3.7
+   Compiling tracing-journald v0.3.2
+   Compiling tracing-appender v0.2.5
+   Compiling tracing-chrome v0.7.2
+   Compiling tracing-samply v0.1.5
+   Compiling reth-nippy-jar v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/nippy-jar)
+   Compiling reth-libmdbx v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/libmdbx-rs)
+   Compiling ruint v1.20.0
+   Compiling proptest-arbitrary-interop v0.1.0
+   Compiling tokio-util v0.7.19
+   Compiling alloy-primitives v1.7.2
+   Compiling nybbles v0.4.8
+   Compiling tokio-stream v0.1.19
+   Compiling h2 v0.4.16
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.4
+   Compiling reth-tokio-util v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tokio-util)
+   Compiling reth-tasks v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tasks)
+   Compiling alloy-eip7928 v0.4.10
+   Compiling alloy-eip2930 v0.2.3
+   Compiling alloy-eip7702 v0.6.3
+   Compiling alloy-eip2124 v0.2.0
+   Compiling alloy-serde v2.4.2
+   Compiling alloy-trie v0.9.5
+   Compiling revm-primitives v43.0.0
+   Compiling ark-poly v0.6.0
+   Compiling alloy-eips v2.4.2
+   Compiling revm-bytecode v43.0.0
+   Compiling alloy-sol-types v1.7.2
+   Compiling alloy-chains v0.2.37
+   Compiling revm-state v43.0.0
+   Compiling ark-ec v0.6.0
+   Compiling alloy-hardforks v0.4.8
+   Compiling hyper v1.11.1
+   Compiling revm-database-interface v43.0.0
+   Compiling alloy-consensus v2.4.2
+   Compiling alloy-genesis v2.4.2
+   Compiling revm-context-interface v43.0.1
+   Compiling revm-database v43.0.0
+   Compiling hyper-util v0.1.20
+   Compiling reth-ethereum-forks v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/hardforks)
+   Compiling reth-network-peers v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/net/peers)
+   Compiling ark-bn254 v0.6.0
+   Compiling ark-bls12-381 v0.6.0
+   Compiling alloy-json-rpc v2.4.2
+   Compiling revm-context v43.0.2
+   Compiling revm-interpreter v43.0.1
+   Compiling hyper-timeout v0.5.2
+   Compiling revm-precompile v43.0.2
+   Compiling alloy-signer v2.4.2
+   Compiling tonic v0.14.5
+   Compiling reth-codecs v0.7.1
+   Compiling alloy-rpc-types-engine v2.4.2
+   Compiling alloy-network-primitives v2.4.2
+   Compiling alloy-consensus-any v2.4.2
+   Compiling hyper-rustls v0.27.9
+   Compiling alloy-rpc-types-eth v2.4.2
+   Compiling tower-http v0.6.11
+   Compiling revm-handler v43.0.2
+   Compiling reqwest v0.13.4
+   Compiling reth-primitives-traits v0.7.1
+   Compiling revm-inspector v43.0.2
+   Compiling reth-prune-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/prune/types)
+   Compiling tonic-prost v0.14.5
+   Compiling revm v43.0.2
+   Compiling opentelemetry-proto v0.32.0
+   Compiling alloy-evm v0.39.0
+   Compiling reth-trie-common v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/common)
+   Compiling reth-ethereum-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/primitives)
+   Compiling reth-db-models v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db-models)
+   Compiling tonic-types v0.14.5
+   Compiling opentelemetry-http v0.32.0
+   Compiling alloy-rpc-types-any v2.4.2
+   Compiling reth-testing-utils v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/testing/testing-utils)
+   Compiling reth-chainspec v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/chainspec)
+   Compiling alloy-network v2.4.2
+   Compiling opentelemetry-otlp v0.32.0
+   Compiling alloy-signer-local v2.4.2
+   Compiling reth-tracing-otlp v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tracing-otlp)
+   Compiling reth-tracing v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tracing)
+   Compiling reth-stages-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/stages/types)
+   Compiling reth-execution-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/execution-types)
+   Compiling reth-consensus v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/consensus/consensus)
+   Compiling reth-static-file-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/static-file/types)
+   Compiling reth-storage-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/errors)
+   Compiling reth-execution-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/execution-errors)
+   Compiling reth-db-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db-api)
+   Compiling reth-trie-sparse v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/sparse)
+   Compiling reth-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/errors)
+   Compiling reth-payload-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/primitives)
+   Compiling reth-payload-builder-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/builder-primitives)
+   Compiling reth-storage-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/storage-api)
+   Compiling reth-db v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db)
+   Compiling reth-trie v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/trie)
+   Compiling reth-evm v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/evm)
+   Compiling reth-chain-state v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/chain-state)
+   Compiling reth-trie-db v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/db)
+   Compiling reth-engine-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/primitives)
+   Compiling reth-storage-overlay v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/storage-overlay)
+   Compiling reth-node-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/node/types)
+   Compiling reth-ethereum-engine-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/engine-primitives)
+   Compiling reth-provider v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/provider)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.16s
+     Running unittests src/lib.rs (/home/ubuntu/repos/tempo-payments-bloat-pr/target/debug/deps/reth_provider-14b23c1e741e562a)
+
+running 52 tests
+test providers::rocksdb::provider::tests::max_open_files_adapts_to_file_descriptor_limit ... ok
+test providers::rocksdb::provider::tests::block_cache_sharding_respects_capacity ... ok
+test providers::rocksdb::provider::tests::test_basic_operations ... ok
+test providers::rocksdb::provider::tests::test_first_and_last_entry ... ok
+test providers::rocksdb::provider::tests::test_batch_operations ... ok
+test providers::rocksdb::provider::tests::test_account_history_info_only_stale_entries_use_fallback ... ok
+test providers::rocksdb::provider::tests::block_access_lists_store_large_payloads_in_blob_files ... ok
+test providers::rocksdb::provider::tests::test_prune_storage_history_batch_leaves_shards_above_target_untouched ... ok
+test providers::rocksdb::provider::tests::test_account_history_info_pruned_before_first_entry ... ok
+test providers::rocksdb::provider::tests::test_batch_manual_commit ... ok
+test providers::rocksdb::provider::tests::test_batch_auto_commit_on_threshold ... ok
+test providers::rocksdb::provider::tests::test_account_history_shard_split_at_boundary ... ok
+test providers::rocksdb::provider::tests::test_prune_storage_history_does_not_affect_other_slots ... ok
+test providers::rocksdb::provider::tests::test_data_persistence ... ok
+test providers::rocksdb::provider::tests::test_clear_table ... ok
+test providers::rocksdb::provider::tests::test_prune_account_history_batch_seeks_after_stopping_early ... ok
+test providers::rocksdb::provider::tests::test_prune_account_history_batch_multiple_sorted_targets ... ok
+test providers::rocksdb::provider::tests::test_account_history_info_mixed_shard_respects_visible_tip ... ok
+test providers::rocksdb::provider::tests::test_account_history_multiple_shard_splits ... ok
+test providers::rocksdb::provider::tests::test_prune_storage_history_batch_seeks_after_stopping_early ... ok
+test providers::rocksdb::provider::tests::test_prune_storage_history_batch_trims_sentinel_once_earlier_shards_expire ... ok
+test providers::rocksdb::provider::tests::test_prune_account_history_batch_leaves_shards_above_target_untouched ... ok
+test providers::rocksdb::provider::tests::test_clear_account_history ... ok
+test providers::rocksdb::provider::tests::test_account_history_shards_iterator ... ok
+test providers::rocksdb::provider::tests::test_clear_empty_table ... ok
+test providers::rocksdb::provider::tests::test_statistics_level_skips_timers ... ok
+test providers::rocksdb::provider::tests::test_prune_account_history_batch_target_with_no_shards ... ok
+test providers::rocksdb::provider::tests::test_account_history_info_ignores_blocks_above_visible_tip ... ok
+test providers::rocksdb::provider::tests::test_history_snapshot_cached_and_private_iterators_keep_same_view ... ok
+test providers::rocksdb::provider::tests::test_account_history_info_read_only_and_catch_up ... ok
+test providers::rocksdb::provider::tests::test_prune_storage_history_batch_multiple_sorted_targets ... ok
+test providers::rocksdb::provider::tests::test_owned_history_snapshot_outlives_provider ... ok
+test providers::rocksdb::provider::tests::test_transaction_rollback ... ok
+test providers::rocksdb::provider::tests::test_transaction_read_your_writes ... ok
+test providers::rocksdb::provider::tests::test_transaction_iterator ... ok
+test providers::rocksdb::provider::tests::test_storage_history_shard_split_at_boundary ... ok
+test providers::rocksdb::provider::tests::test_unwind_account_history_to_block_zero ... ok
+test providers::rocksdb::provider::tests::test_statistics_enabled ... ok
+test providers::rocksdb::provider::tests::test_with_real_table ... ok
+test providers::rocksdb::provider::tests::test_unwind_account_history_to_removes_all ... ok
+test providers::rocksdb::provider::tests::test_unwind_account_history_to_multi_shard_boundary_empty ... ok
+test providers::rocksdb::provider::tests::test_unwind_account_history_to_basic ... ok
+test providers::rocksdb::provider::tests::test_unwind_non_sentinel_boundary ... ok
+test providers::rocksdb::provider::tests::test_unwind_account_history_to_multi_shard ... ok
+test providers::rocksdb::provider::tests::test_unwind_account_history_to_no_op ... ok
+test providers::rocksdb::provider::tests::test_with_default_tables_registers_required_column_families ... ok
+test providers::rocksdb::provider::tests::test_storage_history_multiple_shard_splits ... ok
+test providers::rocksdb::provider::tests::test_reopens_with_unknown_column_family ... ok
+test providers::rocksdb::provider::tests::test_reopens_blob_column_family_with_legacy_table_set ... ok
+test providers::rocksdb::provider::tests::test_prune_invariants ... ok
+test providers::rocksdb::provider::tests::test_prune_storage_history_cases ... ok
+test providers::rocksdb::provider::tests::test_prune_account_history_cases ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 186 filtered out; finished in 0.53s
+

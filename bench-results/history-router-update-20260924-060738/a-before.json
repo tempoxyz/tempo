@@ -1,0 +1,13 @@
+{
+  "code_base": "0x6000000000000000000000000000000000000000",
+  "code_bytes": 24576,
+  "code_count": 4266667,
+  "elapsed_seconds": 331.609740242,
+  "hashed_storage_entries": 1638400975,
+  "router": "0x535441544541434345535342454e434800000000",
+  "router_code_hash": "0xad9cdf0b851818025be632f289c8bef319f6e757010d2f9f46a285e9036d2208",
+  "state_root": "0x74c68811b32882608b8902bd5c56d268ad1015183aebabc3f52a9adf5ee5c958",
+  "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+  "total_code_bytes": 104857608192,
+  "version": 1
+}

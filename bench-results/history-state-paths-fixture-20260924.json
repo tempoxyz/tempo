@@ -1,0 +1,45 @@
+{
+  "recorded_at": "2026-09-24T05:54:55.306Z",
+  "initializer_sha256": "5a3c834dc0b208ec6ffdef630ea7027ccde4161fadce86f322b39485d256f4ed",
+  "router_artifact_sha256": "42f348fe54c5e673509be6048b63215aba21ceda2a35e7b18fe31bbc5d17d6b5",
+  "node_sha256": "57169b32c8d0867ce3768af7f9c0cc7d36146fe7dcadecaed45064ee1479d4f6",
+  "preparation_log": "/tmp/tempo-history-paths-prepare-20260924.log",
+  "fixtures": {
+    "a": {
+      "path": "/reth-bench-a/tempo_e2e_100000mb_state_access_isolated_roles_history_paths.virgin",
+      "metadata": {
+        "code_base": "0x6000000000000000000000000000000000000000",
+        "code_bytes": 24576,
+        "code_count": 4266667,
+        "elapsed_seconds": 331.609740242,
+        "hashed_storage_entries": 1638400975,
+        "router": "0x535441544541434345535342454e434800000000",
+        "router_code_hash": "0xad9cdf0b851818025be632f289c8bef319f6e757010d2f9f46a285e9036d2208",
+        "state_root": "0x74c68811b32882608b8902bd5c56d268ad1015183aebabc3f52a9adf5ee5c958",
+        "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+        "total_code_bytes": 104857608192,
+        "version": 1
+      },
+      "allocated_bytes": 330718617600,
+      "mdbx_apparent_bytes": 231928233984
+    },
+    "b": {
+      "path": "/reth-bench-b/tempo_e2e_100000mb_state_access_isolated_roles_history_paths.virgin",
+      "metadata": {
+        "code_base": "0x6000000000000000000000000000000000000000",
+        "code_bytes": 24576,
+        "code_count": 4266667,
+        "elapsed_seconds": 331.609740242,
+        "hashed_storage_entries": 1638400975,
+        "router": "0x535441544541434345535342454e434800000000",
+        "router_code_hash": "0xad9cdf0b851818025be632f289c8bef319f6e757010d2f9f46a285e9036d2208",
+        "state_root": "0x74c68811b32882608b8902bd5c56d268ad1015183aebabc3f52a9adf5ee5c958",
+        "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+        "total_code_bytes": 104857608192,
+        "version": 1
+      },
+      "allocated_bytes": 330718588928,
+      "mdbx_apparent_bytes": 231928233984
+    }
+  }
+}

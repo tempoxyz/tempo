@@ -1,0 +1,304 @@
+diff --git a/crates/payload/basic/src/lib.rs b/crates/payload/basic/src/lib.rs
+index fb6701292..0257f8c17 100644
+--- a/crates/payload/basic/src/lib.rs
++++ b/crates/payload/basic/src/lib.rs
+@@ -414,7 +414,7 @@ where
+     /// Spawns a new payload build task.
+     fn spawn_build_job(&mut self) {
+         trace!(target: "payload_builder", id = %self.config.payload_id(), "spawn new payload build task");
+-        let (tx, rx) = oneshot::channel();
++        let (mut tx, rx) = oneshot::channel();
+         let cancel = CancelOnDrop::default();
+         let pending_cancel = cancel.clone();
+         let guard = self.payload_task_guard.clone();
+@@ -428,10 +428,13 @@ where
+         let builder = self.builder.clone();
+         let executor = self.executor.clone();
+         self.executor.spawn_task(async move {
+-            // acquire the permit for executing the task
+-            let permit = guard.acquire_owned().await;
++            // Abandoned queued jobs must release their trie handles and leases without a permit.
++            let Some(permit) = acquire_payload_permit(&guard, &mut tx).await else { return };
+             executor.spawn_blocking_named_or_tokio(PAYLOAD_BUILDER_THREAD_NAME, move || {
+                 let _permit = permit;
++                if tx.is_closed() {
++                    return
++                }
+                 let args = BuildArguments {
+                     cached_reads,
+                     execution_cache,
+@@ -1053,3 +1056,63 @@ fn duration_until(unix_timestamp_secs: u64) -> Duration {
+     let timestamp = Duration::from_secs(unix_timestamp_secs);
+     timestamp.saturating_sub(unix_now)
+ }
++
++async fn acquire_payload_permit<T>(
++    guard: &PayloadTaskGuard,
++    result: &mut oneshot::Sender<T>,
++) -> Option<tokio::sync::OwnedSemaphorePermit> {
++    tokio::select! {
++        biased;
++        () = result.closed() => None,
++        permit = guard.acquire_owned() => Some(permit),
++    }
++}
++
++#[cfg(test)]
++mod cancellation_tests {
++    use super::*;
++
++    #[test]
++    fn live_consumer_gets_permit() {
++        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
++            let guard = PayloadTaskGuard::new(1);
++            let (mut tx, _rx) = oneshot::channel::<()>();
++            let permit = acquire_payload_permit(&guard, &mut tx).await.unwrap();
++            assert_eq!(guard.available_permits(), 0);
++            drop(permit);
++            assert_eq!(guard.available_permits(), 1);
++        });
++    }
++
++    #[test]
++    fn abandoned_consumer_does_not_take_permit() {
++        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
++            let guard = PayloadTaskGuard::new(1);
++            let (mut tx, rx) = oneshot::channel::<()>();
++            drop(rx);
++            assert!(acquire_payload_permit(&guard, &mut tx).await.is_none());
++            assert_eq!(guard.available_permits(), 1);
++        });
++    }
++
++    #[test]
++    fn queued_consumer_cancellation_releases_resources() {
++        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(
++            async {
++                let guard = PayloadTaskGuard::new(1);
++                let _occupied = guard.acquire_owned().await;
++                let (mut result_tx, result_rx) = oneshot::channel::<()>();
++                let resource = Arc::new(());
++                let queued_resource = resource.clone();
++                let task = tokio::spawn(async move {
++                    let _resource = queued_resource;
++                    assert!(acquire_payload_permit(&guard, &mut result_tx).await.is_none());
++                });
++                tokio::task::yield_now().await;
++                drop(result_rx);
++                tokio::time::timeout(Duration::from_secs(1), task).await.unwrap().unwrap();
++                assert_eq!(Arc::strong_count(&resource), 1);
++            },
++        );
++    }
++}
+diff --git a/crates/payload/builder/src/service.rs b/crates/payload/builder/src/service.rs
+index b9e2abac3..c4e750496 100644
+--- a/crates/payload/builder/src/service.rs
++++ b/crates/payload/builder/src/service.rs
+@@ -55,7 +55,7 @@ where
+         &self,
+         id: PayloadId,
+         kind: PayloadKind,
+-    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> {
++    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> + use<T> {
+         self.inner.resolve_kind(id, kind)
+     }
+ 
+@@ -156,7 +156,7 @@ impl<T: PayloadTypes> PayloadBuilderHandle<T> {
+         &self,
+         id: PayloadId,
+         kind: PayloadKind,
+-    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> {
++    ) -> impl Future<Output = Option<Result<T::BuiltPayload, PayloadBuilderError>>> + use<T> {
+         let (tx, rx) = oneshot::channel();
+         let sent = self.to_service.send(PayloadServiceCommand::Resolve(id, kind, tx)).is_ok();
+         async move {
+@@ -678,6 +678,29 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn unpolled_resolution_is_owned_and_releases_lease() {
++        fn assert_static<T: 'static>(_: &T) {}
++        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
++            let (service, handle) = test_payload_service::<EthEngineTypes>();
++            let service = tokio::spawn(service);
++            let dropped = Arc::new(AtomicBool::new(false));
++            let input = BuildNewPayload {
++                attributes: EthPayloadAttributes { timestamp: 1, ..Default::default() },
++                parent_hash: B256::ZERO,
++                resources: PayloadBuilderResources::default()
++                    .with_lease(PayloadBuilderLease::new(DropProbe(dropped.clone()))),
++            };
++            let id = handle.send_new_payload(input).await.unwrap().unwrap();
++            let resolution = handle.resolve_kind(id, PayloadKind::Earliest);
++            assert_static(&resolution);
++            drop(resolution);
++            assert!(handle.payload_timestamp(id).await.is_none());
++            assert!(dropped.load(Ordering::Acquire));
++            service.abort();
++        });
++    }
++
+     #[test]
+     fn payload_builder_lease_is_held_until_resolve_finishes() {
+         tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+diff --git a/crates/storage/db/src/implementation/mdbx/mod.rs b/crates/storage/db/src/implementation/mdbx/mod.rs
+index 6585cd1f9..a7af6181d 100644
+--- a/crates/storage/db/src/implementation/mdbx/mod.rs
++++ b/crates/storage/db/src/implementation/mdbx/mod.rs
+@@ -36,6 +36,9 @@ pub mod tx;
+ 
+ mod utils;
+ 
++#[cfg(target_os = "linux")]
++mod bytecode_prefetch;
++
+ /// 1 KB in bytes
+ pub const KILOBYTE: usize = 1024;
+ /// 1 MB in bytes
+diff --git a/crates/storage/db/src/implementation/mdbx/tx.rs b/crates/storage/db/src/implementation/mdbx/tx.rs
+index 396233508..068e59631 100644
+--- a/crates/storage/db/src/implementation/mdbx/tx.rs
++++ b/crates/storage/db/src/implementation/mdbx/tx.rs
+@@ -301,10 +301,17 @@ impl<K: TransactionKind> DbTx for Tx<K> {
+         key: &<T::Key as Encode>::Encoded,
+     ) -> Result<Option<T::Value>, DatabaseError> {
+         self.execute_with_operation_metric::<T, _>(Operation::Get, None, |tx| {
+-            tx.get(self.get_dbi::<T>()?, key.as_ref())
+-                .map_err(|e| DatabaseError::Read(e.into()))?
+-                .map(decode_one::<T>)
+-                .transpose()
++            let dbi = self.get_dbi::<T>()?;
++            #[cfg(target_os = "linux")]
++            let value = if T::NAME == "Bytecodes" {
++                tx.get::<super::bytecode_prefetch::PrefetchValue<'_>>(dbi, key.as_ref())
++                    .map(|value| value.map(|value| value.0))
++            } else {
++                tx.get(dbi, key.as_ref())
++            };
++            #[cfg(not(target_os = "linux"))]
++            let value = tx.get(dbi, key.as_ref());
++            value.map_err(|e| DatabaseError::Read(e.into()))?.map(decode_one::<T>).transpose()
+         })
+     }
+ 
+@@ -456,6 +463,35 @@ mod tests {
+     use std::{sync::atomic::Ordering, thread::sleep, time::Duration};
+     use tempfile::tempdir;
+ 
++    #[test]
++    fn bytecode_prefetch_round_trip() {
++        use alloy_primitives::B256;
++        use reth_db_api::transaction::DbTxMut;
++        use reth_primitives_traits::Bytecode;
++
++        let dir = tempdir().unwrap();
++        let mut db = DatabaseEnv::open(
++            dir.path(),
++            DatabaseEnvKind::RW,
++            DatabaseArguments::new(ClientVersion::default()),
++        )
++        .unwrap();
++        db.create_tables().unwrap();
++        let code = Bytecode::new_raw(vec![0x5b; 24_576].into());
++        let key = B256::repeat_byte(1);
++        let tx = db.tx_mut().unwrap();
++        DbTxMut::put::<tables::Bytecodes>(&tx, key, code.clone()).unwrap();
++        assert_eq!(tx.get::<tables::Bytecodes>(key).unwrap(), Some(code.clone()));
++        tx.commit().unwrap();
++        // Pipeline catch-up reads unchanged, mapped code through a writable transaction.
++        let tx = db.tx_mut().unwrap();
++        assert_eq!(tx.get::<tables::Bytecodes>(key).unwrap(), Some(code.clone()));
++        tx.abort();
++        let tx = db.tx().unwrap();
++        assert_eq!(tx.get::<tables::Bytecodes>(key).unwrap(), Some(code));
++        assert_eq!(tx.get::<tables::Bytecodes>(B256::ZERO).unwrap(), None);
++    }
++
+     #[test]
+     fn long_read_transaction_safety_disabled() {
+         const MAX_DURATION: Duration = Duration::from_secs(1);
+diff --git a/crates/storage/provider/src/providers/rocksdb/provider.rs b/crates/storage/provider/src/providers/rocksdb/provider.rs
+index 3fd66f000..9e5ae43c7 100644
+--- a/crates/storage/provider/src/providers/rocksdb/provider.rs
++++ b/crates/storage/provider/src/providers/rocksdb/provider.rs
+@@ -27,9 +27,10 @@ use reth_storage_errors::{
+ };
+ use rocksdb::{
+     statistics::StatsLevel, BlockBasedOptions, Cache, ColumnFamilyDescriptor, CompactionPri,
+-    DBCompressionType, DBRawIteratorWithThreadMode, IteratorMode, OptimisticTransactionDB,
+-    OptimisticTransactionOptions, Options, ReadOptions, SnapshotWithThreadMode, Transaction,
+-    WriteBatchWithTransaction, WriteBufferManager, WriteOptions, DB, DEFAULT_COLUMN_FAMILY_NAME,
++    DBCompressionType, DBRawIteratorWithThreadMode, IteratorMode, LruCacheOptions,
++    OptimisticTransactionDB, OptimisticTransactionOptions, Options, ReadOptions,
++    SnapshotWithThreadMode, Transaction, WriteBatchWithTransaction, WriteBufferManager,
++    WriteOptions, DB, DEFAULT_COLUMN_FAMILY_NAME,
+ };
+ use std::{
+     collections::BTreeMap,
+@@ -109,6 +110,21 @@ impl fmt::Debug for RocksDBWriteCtx {
+ /// Default cache size for `RocksDB` block cache (128 MB).
+ const DEFAULT_CACHE_SIZE: usize = 128 << 20;
+ 
++/// Allow legacy multi-megabyte SST index blocks to reside within one cache shard.
++const MIN_BLOCK_CACHE_SHARD_SIZE: usize = 16 << 20;
++
++fn block_cache_shard_bits(capacity: usize) -> i32 {
++    (capacity / MIN_BLOCK_CACHE_SHARD_SIZE).max(1).ilog2().min(6) as i32
++}
++
++fn new_block_cache(capacity: usize) -> Cache {
++    let mut options = LruCacheOptions::default();
++    options.set_capacity(capacity);
++    // Default sharding can evict an index larger than one shard even with spare total capacity.
++    options.set_num_shard_bits(block_cache_shard_bits(capacity));
++    Cache::new_lru_cache_opts(&options)
++}
++
+ /// Default block size for `RocksDB` tables (16 KB).
+ const DEFAULT_BLOCK_SIZE: usize = 16 * 1024;
+ 
+@@ -193,7 +209,7 @@ impl fmt::Debug for RocksDBBuilder {
+ impl RocksDBBuilder {
+     /// Creates a new builder with optimized default options.
+     pub fn new(path: impl AsRef<Path>) -> Self {
+-        let cache = Cache::new_lru_cache(DEFAULT_CACHE_SIZE);
++        let cache = new_block_cache(DEFAULT_CACHE_SIZE);
+         Self {
+             path: path.as_ref().to_path_buf(),
+             column_families: Vec::new(),
+@@ -361,7 +377,7 @@ impl RocksDBBuilder {
+ 
+     /// Sets a custom block cache size.
+     pub fn with_block_cache_size(mut self, capacity_bytes: usize) -> Self {
+-        self.block_cache = Cache::new_lru_cache(capacity_bytes);
++        self.block_cache = new_block_cache(capacity_bytes);
+         self
+     }
+ 
+@@ -3133,6 +3149,24 @@ mod tests {
+     };
+     use tempfile::TempDir;
+ 
++    #[test]
++    fn block_cache_sharding_respects_capacity() {
++        for (capacity, bits) in [
++            (0, 0),
++            (1, 0),
++            (16 << 20, 0),
++            (128 << 20, 3),
++            (256 << 20, 4),
++            (1024 << 20, 6),
++            (2048 << 20, 6),
++        ] {
++            assert_eq!(block_cache_shard_bits(capacity), bits);
++            if capacity >= MIN_BLOCK_CACHE_SHARD_SIZE {
++                assert!(capacity / (1 << bits) >= MIN_BLOCK_CACHE_SHARD_SIZE);
++            }
++        }
++    }
++
+     #[test]
+     fn max_open_files_adapts_to_file_descriptor_limit() {
+         assert_eq!(max_open_files_for_limit(Some(HIGH_FILE_DESCRIPTOR_LIMIT)), KEEP_ALL_FILES_OPEN);

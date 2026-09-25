@@ -1,0 +1,4324 @@
+{
+  "label": "2-128-on",
+  "directory": "bench-results/20260924-210949-638",
+  "scenario": "history_read",
+  "metadata": {
+    "mode": "e2e",
+    "initial_db_size_bytes": "330353530131",
+    "chain_id": "1337",
+    "run_duration_secs": "1200",
+    "benchmark_run": "feature-1",
+    "total_connections": "500",
+    "bloat_token_count": "4",
+    "place_order_weight": "0.0",
+    "node_commit_sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+    "accounts": "1000",
+    "job": "github-tempo-bench-e2e",
+    "scenario": "history_read",
+    "swap_weight": "0.0",
+    "build_profile": "profiling",
+    "benchmark_id": "sload-size-isolation-20260924-v4-2-128-on-sload",
+    "erc20_weight": "0.0",
+    "git-ref": "sload-size-isolation-20260924-v4-2-128-on",
+    "git-sha": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+    "platform": "tempo",
+    "bloat_mib": "100000",
+    "tip20_token_count": "1",
+    "target_tps": "1000",
+    "tip20_weight": "1.0"
+  },
+  "timing": {
+    "duration_seconds": 1200,
+    "warmup_seconds": 600,
+    "from_ms": 600000,
+    "to_ms": 1200000,
+    "slice_ms": 120000
+  },
+  "correctness": {
+    "ok": true,
+    "scenario": "history_read",
+    "contract": "0x535441544541434345535342454e434800000000",
+    "fixture": {
+      "code_base": "0x6000000000000000000000000000000000000000",
+      "code_bytes": 24576,
+      "code_count": 4266667,
+      "elapsed_seconds": 331.609740242,
+      "hashed_storage_entries": 1638400975,
+      "previous_router_code_hash": "0x0d19bc8583f4967a4db228eacd171756375f049c34d53527f0a33cc5ca7c3a1c",
+      "router": "0x535441544541434345535342454e434800000000",
+      "router_code_hash": "0x42790d8356689e6b8f2eca61839c53ecb0de3ffefe0949835d024ddf5592208a",
+      "state_root": "0x35b455ab5ebd982f1516eb9cd5660e4a652e1bbbe78de642b1f0f59eb5cc9784",
+      "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+      "total_code_bytes": 104857608192,
+      "version": 1,
+      "page_count": 399999
+    },
+    "timing": {
+      "duration_seconds": 1200,
+      "warmup_seconds": 600,
+      "from_ms": 600000,
+      "to_ms": 1200000,
+      "slice_ms": 120000
+    },
+    "cursor_check": {
+      "first_block": 69,
+      "last_block": 4730,
+      "before": "0",
+      "after": "141951",
+      "transactions": "141951",
+      "ok": true,
+      "transactions_with_prior_workload_in_block": 137289,
+      "history_advanced_fraction": 0.9671576811716719
+    },
+    "measured_history_coverage": {
+      "blocks": 2331,
+      "transactions": 71009,
+      "non_first_transactions": 68678,
+      "fraction": 0.9671731752313087,
+      "minimum_required": 0.9,
+      "transactions_per_block": {
+        "26": 1,
+        "27": 10,
+        "28": 73,
+        "29": 277,
+        "30": 666,
+        "31": 1080,
+        "32": 216,
+        "33": 8
+      }
+    },
+    "trace_sampling": {
+      "policy": "non-first-required",
+      "non_first_samples": 3
+    },
+    "runtime_code_bytes": 1334,
+    "receipts": [
+      {
+        "block": 2400,
+        "count": 29,
+        "gas": "9233692"
+      },
+      {
+        "block": 2732,
+        "count": 30,
+        "gas": "9552084"
+      },
+      {
+        "block": 3065,
+        "count": 30,
+        "gas": "9552036"
+      },
+      {
+        "block": 3398,
+        "count": 30,
+        "gas": "9552072"
+      },
+      {
+        "block": 3731,
+        "count": 30,
+        "gas": "9552072"
+      },
+      {
+        "block": 4064,
+        "count": 30,
+        "gas": "9552072"
+      },
+      {
+        "block": 4397,
+        "count": 31,
+        "gas": "9870464"
+      },
+      {
+        "block": 4730,
+        "count": 30,
+        "gas": "9552084"
+      },
+      {
+        "block": 3565,
+        "count": 31,
+        "gas": "9870476"
+      }
+    ],
+    "traces": [
+      {
+        "hash": "0x489c7d5f4695977810924c0fbc33525f9204a231e2a2747f6e6f949d1c7a3e9a",
+        "cursor_before": "70970",
+        "parent_cursor": "70942",
+        "history_advanced": true,
+        "actual_unique": 128,
+        "parent_state_unique": 128,
+        "overlap": 0,
+        "parent_state_mismatch_fraction": 1,
+        "accesses": 128,
+        "gas_cost_histogram": {
+          "2100": 128
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260924-210949-638/history-trace-0x489c7d5f4695977810924c0fbc33525f9204a231e2a2747f6e6f949d1c7a3e9a.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      },
+      {
+        "hash": "0x396055a0d9eed86aa6f9c011c6f5f272ccab4fb8db6e35d1542686723b93ee96",
+        "cursor_before": "141950",
+        "parent_cursor": "141921",
+        "history_advanced": true,
+        "actual_unique": 128,
+        "parent_state_unique": 128,
+        "overlap": 0,
+        "parent_state_mismatch_fraction": 1,
+        "accesses": 128,
+        "gas_cost_histogram": {
+          "2100": 128
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260924-210949-638/history-trace-0x396055a0d9eed86aa6f9c011c6f5f272ccab4fb8db6e35d1542686723b93ee96.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      },
+      {
+        "hash": "0xea6462e656de0d1c269628e8dc6a8bc230c27b700ea581f11cc191c27b29ae4d",
+        "cursor_before": "106464",
+        "parent_cursor": "106434",
+        "history_advanced": true,
+        "actual_unique": 128,
+        "parent_state_unique": 128,
+        "overlap": 0,
+        "parent_state_mismatch_fraction": 1,
+        "accesses": 128,
+        "gas_cost_histogram": {
+          "2100": 128
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260924-210949-638/history-trace-0xea6462e656de0d1c269628e8dc6a8bc230c27b700ea581f11cc191c27b29ae4d.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      }
+    ],
+    "sampled_receipts": 271,
+    "workload_end_block": 4730,
+    "quiet_target_block": 4807,
+    "persisted_through_workload": true,
+    "drain": [
+      {
+        "unix_ms": 1790285920799,
+        "nodes": {
+          "a": {
+            "head": 4842,
+            "metrics": {
+              "reth_sync_execution_gas_processed_total": 0,
+              "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 4842,
+              "reth_consensus_engine_beacon_executed_blocks": 42,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 444864,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 2360,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 100562,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+              "reth_transaction_pool_aa_2d_pending_transactions": 191,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 137952,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 18558889,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 7222,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.8142362230000004,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 4842,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 3.9621619250000015,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 1242.3350203049988,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 4842,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 1242.3350203049988,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 4842,
+              "reth_tempo_payload_builder_gas_used_sum": 46178037928,
+              "reth_tempo_payload_builder_total_transactions_sum": 148288,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.8302195640000001,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 4842,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 1252.593497738995,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 4842,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.4805145079999988,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 4842
+            },
+            "io": {
+              "259:0": {
+                "rbytes": 1050683273216,
+                "wbytes": 2703814656,
+                "rios": 256497799,
+                "wios": 443205,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:2": {
+                "rbytes": 4096,
+                "wbytes": 251465728,
+                "rios": 1,
+                "wios": 820,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 12288,
+                "wbytes": 251465728,
+                "rios": 3,
+                "wios": 820,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 16384,
+                "wbytes": 251465728,
+                "rios": 4,
+                "wios": 820,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:0",
+            "memory": {
+              "file": 17940783104,
+              "file_mapped": 17865973760,
+              "file_dirty": 118784,
+              "file_writeback": 0,
+              "workingset_refault_file": 237671993,
+              "pgfault": 544153385,
+              "pgmajfault": 256861106
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "21457444864",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 227802,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 4830,
+              "state": 4800
+            },
+            "unix_ms": 1790285920869
+          },
+          "b": {
+            "head": 4842,
+            "metrics": {
+              "reth_sync_execution_gas_processed_total": 49594815316,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 16840436,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+              "reth_transaction_pool_aa_2d_pending_transactions": 0,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 156086,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 4486,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 486076,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 4282,
+              "reth_consensus_engine_beacon_executed_blocks": 44,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 62010,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 23.799771462999992,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_gas_used_sum": 0,
+              "reth_tempo_payload_builder_total_transactions_sum": 0
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 0,
+                "wbytes": 310509568,
+                "rios": 0,
+                "wios": 953,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 4096,
+                "wbytes": 310509568,
+                "rios": 1,
+                "wios": 953,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 4096,
+                "wbytes": 310509568,
+                "rios": 1,
+                "wios": 953,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:1": {
+                "rbytes": 119312912384,
+                "wbytes": 2425516032,
+                "rios": 29119669,
+                "wios": 380945,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 1323008,
+                "wbytes": 0,
+                "rios": 4,
+                "wios": 0,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:1",
+            "memory": {
+              "file": 18211704832,
+              "file_mapped": 18068758528,
+              "file_dirty": 61440,
+              "file_writeback": 0,
+              "workingset_refault_file": 13097850,
+              "pgfault": 36290653,
+              "pgmajfault": 29468346
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "21436436480",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 21581,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 4828,
+              "state": 4798
+            },
+            "unix_ms": 1790285920898
+          }
+        }
+      },
+      {
+        "unix_ms": 1790285925899,
+        "nodes": {
+          "a": {
+            "head": 4853,
+            "metrics": {
+              "reth_sync_execution_gas_processed_total": 0,
+              "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 4853,
+              "reth_consensus_engine_beacon_executed_blocks": 37,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 444864,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 2360,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 137963,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 100716,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+              "reth_transaction_pool_aa_2d_pending_transactions": 191,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 18558999,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 7233,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.8153112860000005,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 4853,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 3.9728134170000016,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 1247.5549526429986,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 4853,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 1247.5549526429986,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 4853,
+              "reth_tempo_payload_builder_gas_used_sum": 46178037928,
+              "reth_tempo_payload_builder_total_transactions_sum": 148288,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.8313254139999999,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 4853,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 1257.8161765289951,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 4853,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.4809613039999987,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 4853
+            },
+            "io": {
+              "259:0": {
+                "rbytes": 1050683539456,
+                "wbytes": 2711085056,
+                "rios": 256497864,
+                "wios": 444648,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:2": {
+                "rbytes": 4096,
+                "wbytes": 252076032,
+                "rios": 1,
+                "wios": 823,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 12288,
+                "wbytes": 252076032,
+                "rios": 3,
+                "wios": 823,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 16384,
+                "wbytes": 252076032,
+                "rios": 4,
+                "wios": 823,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:0",
+            "memory": {
+              "file": 17941757952,
+              "file_mapped": 17866227712,
+              "file_dirty": 57344,
+              "file_writeback": 0,
+              "workingset_refault_file": 237672056,
+              "pgfault": 544171142,
+              "pgmajfault": 256861170
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "21448966144",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 227802,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 4846,
+              "state": 4816
+            },
+            "unix_ms": 1790285925967
+          },
+          "b": {
+            "head": 4853,
+            "metrics": {
+              "reth_sync_execution_gas_processed_total": 49594815316,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 62164,
+              "reth_transaction_pool_aa_2d_pending_transactions": 0,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 486076,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 4497,
+              "reth_consensus_engine_beacon_executed_blocks": 39,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 156097,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 4282,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 16840458,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 23.806688205999993,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_gas_used_sum": 0,
+              "reth_tempo_payload_builder_total_transactions_sum": 0
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 0,
+                "wbytes": 310886400,
+                "rios": 0,
+                "wios": 955,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 4096,
+                "wbytes": 310886400,
+                "rios": 1,
+                "wios": 955,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 4096,
+                "wbytes": 310886400,
+                "rios": 1,
+                "wios": 955,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:1": {
+                "rbytes": 119312928768,
+                "wbytes": 2432925696,
+                "rios": 29119673,
+                "wios": 382379,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 1323008,
+                "wbytes": 0,
+                "rios": 4,
+                "wios": 0,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:1",
+            "memory": {
+              "file": 18212118528,
+              "file_mapped": 18068795392,
+              "file_dirty": 28672,
+              "file_writeback": 0,
+              "workingset_refault_file": 13097854,
+              "pgfault": 36314978,
+              "pgmajfault": 29468349
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "21436407808",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 21581,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+            "persisted": {
+              "block": 4844,
+              "state": 4814
+            },
+            "unix_ms": 1790285925997
+          }
+        }
+      }
+    ],
+    "audited_at": "2026-09-24T21:38:45.997Z",
+    "caveat": "History-dependent targets verified by actual transaction traces and parent-state replays. Not a direct log of prewarming worker accesses or proof of a universal worst case. Physical I/O is measured separately. Quiet-tail persistence includes post-load transactions."
+  },
+  "rpc_submissions": {
+    "sent": 1200000,
+    "accepted": 1200000,
+    "failed": 0,
+    "not_execution_success": true
+  },
+  "chain_stats_full_run": {
+    "start_block": 69,
+    "end_block": 4730,
+    "total_blocks": 4662,
+    "total_txs": 141951,
+    "total_gas": 45197798988,
+    "duration_ms": 1199976,
+    "avg_blocks_per_second": 3.8850777015540308,
+    "avg_tps": 118.29486589731793,
+    "avg_gas_per_second": 37665585.80171603,
+    "block_time_p50_ms": 257,
+    "block_time_p95_ms": 261,
+    "block_time_p99_ms": 264
+  },
+  "host_vm": {
+    "node_vmstat_pgmajfault": {
+      "first": {
+        "offset_ms": 600003,
+        "unix_ms": 1790285283962,
+        "value": 6962018832
+      },
+      "last": {
+        "offset_ms": 1195003,
+        "unix_ms": 1790285878962,
+        "value": 7102117387
+      },
+      "delta": 140098555,
+      "samples": 120
+    },
+    "node_vmstat_pswpin": {
+      "first": {
+        "offset_ms": 600003,
+        "unix_ms": 1790285283962,
+        "value": 1974347
+      },
+      "last": {
+        "offset_ms": 1195003,
+        "unix_ms": 1790285878962,
+        "value": 1974661
+      },
+      "delta": 314,
+      "samples": 120
+    }
+  },
+  "builder": {
+    "node": "a",
+    "source": "builder",
+    "from_offset_ms": 600003,
+    "to_offset_ms": 1195003,
+    "duration_seconds": 595,
+    "gas": 22424766092,
+    "gas_counter": {
+      "first": {
+        "offset_ms": 600003,
+        "unix_ms": 1790285283962,
+        "value": 22824491352
+      },
+      "last": {
+        "offset_ms": 1195003,
+        "unix_ms": 1790285878962,
+        "value": 45249257444
+      },
+      "delta": 22424766092,
+      "samples": 120
+    },
+    "wall_clock_mgas_per_second": 37.68868250756302,
+    "other_caches": {
+      "account": {
+        "misses": 48405,
+        "hits": 67267,
+        "misses_per_mgas": 2.1585509432478944
+      },
+      "code": {
+        "misses": 3475,
+        "hits": 1149,
+        "misses_per_mgas": 0.15496259741321008
+      }
+    },
+    "storage_misses": 9056647,
+    "storage_hits": 212483,
+    "storage_misses_per_mgas": 403.86806992073576,
+    "storage_miss_percent": 97.70762736092816,
+    "execution_seconds": 582.2229921819999,
+    "execution_ms_per_mgas": 25.96339198337088,
+    "aggregate_execution_mgas_per_second": 38.51576868848583,
+    "payload_build_seconds": 587.2937548699948,
+    "payload_build_ms_per_mgas": 26.189515309125607,
+    "major_faults": null,
+    "major_faults_per_mgas": null,
+    "minor_faults": null,
+    "execution_coverage": {
+      "pipeline_runs": null,
+      "pipeline_execution_seconds": null,
+      "syncing_payloads": null,
+      "mixed_paths": false,
+      "unknown_pipeline_coverage": false,
+      "engine_cache_ratio_suppressed": false,
+      "payload_fault_ratio_suppressed": false
+    },
+    "optional_metric_coverage": [],
+    "payload_thread_user_cpu_seconds": null,
+    "payload_thread_system_cpu_seconds": null,
+    "builder_faults_not_measured": true,
+    "builder_reverted_transactions": 0,
+    "invalid_execution_attempts": 0,
+    "parallel_transactions_replayed": 0,
+    "fill_idle_seconds": 0,
+    "stop_reasons": {
+      "build_budget": 2312
+    },
+    "pending_pool": {
+      "kind": "aa_2d",
+      "min": 19259,
+      "median": 19294,
+      "max": 19332
+    },
+    "prewarm": {
+      "transactions_histogram_sum": null,
+      "transaction_errors": null,
+      "execution_duration_sum": null,
+      "total_runtime_sum": null
+    },
+    "device_io": {
+      "reads_completed_total": 125184519,
+      "read_bytes_total": 512755888128,
+      "writes_completed_total": 306626,
+      "written_bytes_total": 2264395776,
+      "reads_per_mgas": 5582.422509399525,
+      "bytes_per_gas": 22.865606982225106,
+      "writes_per_mgas": 13.673542847315957,
+      "written_bytes_per_mgas": 100977.45353106804,
+      "scope": "device-wide, not execution-attributed"
+    },
+    "counters": {
+      "reth_sync_caching_storage_cache_misses:builder": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 9126774
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 18183421
+        },
+        "delta": 9056647,
+        "samples": 120
+      },
+      "reth_sync_caching_storage_cache_hits:builder": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 223597
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 436080
+        },
+        "delta": 212483,
+        "samples": 120
+      },
+      "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 619.0612446139994
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 1201.2842367959993
+        },
+        "delta": 582.2229921819999,
+        "samples": 120
+      },
+      "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 624.0945576249993
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 1211.3883124949941
+        },
+        "delta": 587.2937548699948,
+        "samples": 120
+      },
+      "reth_sync_caching_account_cache_misses:builder": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 49667
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 98072
+        },
+        "delta": 48405,
+        "samples": 120
+      },
+      "reth_sync_caching_account_cache_hits:builder": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 67858
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 135125
+        },
+        "delta": 67267,
+        "samples": 120
+      },
+      "reth_sync_caching_code_cache_misses:builder": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 3568
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 7043
+        },
+        "delta": 3475,
+        "samples": 120
+      },
+      "reth_sync_caching_code_cache_hits:builder": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 1164
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 2313
+        },
+        "delta": 1149,
+        "samples": 120
+      },
+      "reth_tempo_payload_builder_reverted_transactions_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 0
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 0
+        },
+        "delta": 0,
+        "samples": 120
+      },
+      "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 0
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 0
+        },
+        "delta": 0,
+        "samples": 120
+      },
+      "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 0
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 0
+        },
+        "delta": 0,
+        "samples": 120
+      },
+      "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 30.59999999999999
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 30.59999999999999
+        },
+        "delta": 0,
+        "samples": 120
+      }
+    }
+  },
+  "follower": {
+    "node": "b",
+    "source": "engine",
+    "from_offset_ms": 600003,
+    "to_offset_ms": 1195003,
+    "duration_seconds": 595,
+    "gas": 22424766128,
+    "gas_counter": {
+      "first": {
+        "offset_ms": 600003,
+        "unix_ms": 1790285283962,
+        "value": 26231398240
+      },
+      "last": {
+        "offset_ms": 1195003,
+        "unix_ms": 1790285878962,
+        "value": 48656164368
+      },
+      "delta": 22424766128,
+      "samples": 120
+    },
+    "wall_clock_mgas_per_second": 37.68868256806723,
+    "other_caches": {
+      "account": {
+        "misses": 32414,
+        "hits": 83257,
+        "misses_per_mgas": 1.4454554315073658
+      },
+      "code": {
+        "misses": 2342,
+        "hits": 2282,
+        "misses_per_mgas": 0.10443810145586015
+      }
+    },
+    "storage_misses": 8974504,
+    "storage_hits": 276129,
+    "storage_misses_per_mgas": 400.20502103673044,
+    "storage_miss_percent": 97.01502589066067,
+    "execution_seconds": 525.3905338040005,
+    "execution_ms_per_mgas": 23.429030688885874,
+    "aggregate_execution_mgas_per_second": 42.6820901504207,
+    "payload_build_seconds": null,
+    "payload_build_ms_per_mgas": null,
+    "major_faults": 6330010,
+    "major_faults_per_mgas": 282.27763731708336,
+    "minor_faults": 98263,
+    "execution_coverage": {
+      "pipeline_runs": 0,
+      "pipeline_execution_seconds": 0,
+      "syncing_payloads": 0,
+      "mixed_paths": false,
+      "unknown_pipeline_coverage": false,
+      "engine_cache_ratio_suppressed": false,
+      "payload_fault_ratio_suppressed": false
+    },
+    "optional_metric_coverage": [],
+    "payload_thread_user_cpu_seconds": 24.531068000000083,
+    "payload_thread_system_cpu_seconds": 26.117360000000005,
+    "builder_faults_not_measured": false,
+    "builder_reverted_transactions": null,
+    "invalid_execution_attempts": null,
+    "parallel_transactions_replayed": null,
+    "fill_idle_seconds": null,
+    "stop_reasons": {},
+    "pending_pool": {
+      "kind": "aa_2d",
+      "min": 0,
+      "median": 0,
+      "max": 0
+    },
+    "prewarm": {
+      "transactions_histogram_sum": 70428,
+      "transaction_errors": 0,
+      "execution_duration_sum": 593.5442568709936,
+      "total_runtime_sum": 594.0001733749928
+    },
+    "device_io": {
+      "reads_completed_total": 14552563,
+      "read_bytes_total": 59607429120,
+      "writes_completed_total": 260710,
+      "written_bytes_total": 1799426048,
+      "reads_per_mgas": 648.9504914760018,
+      "bytes_per_gas": 2.658107058051901,
+      "writes_per_mgas": 11.625985239349827,
+      "written_bytes_per_mgas": 80242.8010945096,
+      "scope": "device-wide, not execution-attributed"
+    },
+    "counters": {
+      "reth_sync_caching_storage_cache_misses:engine": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 7491144
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 16465648
+        },
+        "delta": 8974504,
+        "samples": 120
+      },
+      "reth_sync_caching_storage_cache_hits:engine": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 197459
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 473588
+        },
+        "delta": 276129,
+        "samples": 120
+      },
+      "reth_sync_execution_execution_histogram_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 554.4509295569998
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 1079.8414633610003
+        },
+        "delta": 525.3905338040005,
+        "samples": 120
+      },
+      "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 3629525
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 9959535
+        },
+        "delta": 6330010,
+        "samples": 120
+      },
+      "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 97902
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 196165
+        },
+        "delta": 98263,
+        "samples": 120
+      },
+      "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 14.257233999999997
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 38.78830200000008
+        },
+        "delta": 24.531068000000083,
+        "samples": 120
+      },
+      "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 14.70510499999999
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 40.822464999999994
+        },
+        "delta": 26.117360000000005,
+        "samples": 120
+      },
+      "reth_consensus_engine_beacon_pipeline_runs": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 21
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 21
+        },
+        "delta": 0,
+        "samples": 120
+      },
+      "reth_sync_total_elapsed": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 105.75442917
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 105.75442917
+        },
+        "delta": 0,
+        "samples": 120
+      },
+      "reth_consensus_engine_beacon_new_payload_syncing": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 738
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 738
+        },
+        "delta": 0,
+        "samples": 120
+      },
+      "reth_sync_prewarm_transactions_histogram_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 62463
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 132891
+        },
+        "delta": 70428,
+        "samples": 120
+      },
+      "reth_sync_prewarm_transaction_errors": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 0
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 0
+        },
+        "delta": 0,
+        "samples": 120
+      },
+      "reth_sync_prewarm_execution_duration_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 500.0732022570011
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 1093.6174591279948
+        },
+        "delta": 593.5442568709936,
+        "samples": 120
+      },
+      "reth_sync_prewarm_total_runtime_sum": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 500.45775397999665
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 1094.4579273549894
+        },
+        "delta": 594.0001733749928,
+        "samples": 120
+      },
+      "reth_sync_caching_account_cache_misses:engine": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 27747
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 60161
+        },
+        "delta": 32414,
+        "samples": 120
+      },
+      "reth_sync_caching_account_cache_hits:engine": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 69310
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 152567
+        },
+        "delta": 83257,
+        "samples": 120
+      },
+      "reth_sync_caching_code_cache_misses:engine": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 2011
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 4353
+        },
+        "delta": 2342,
+        "samples": 120
+      },
+      "reth_sync_caching_code_cache_hits:engine": {
+        "first": {
+          "offset_ms": 600003,
+          "unix_ms": 1790285283962,
+          "value": 1905
+        },
+        "last": {
+          "offset_ms": 1195003,
+          "unix_ms": 1790285878962,
+          "value": 4187
+        },
+        "delta": 2282,
+        "samples": 120
+      }
+    }
+  },
+  "trend": [
+    {
+      "from_seconds": 600,
+      "to_seconds": 720,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 600003,
+        "to_offset_ms": 715003,
+        "duration_seconds": 115,
+        "gas": 4330909920,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 600003,
+            "unix_ms": 1790285283962,
+            "value": 22824491352
+          },
+          "last": {
+            "offset_ms": 715003,
+            "unix_ms": 1790285398962,
+            "value": 27155401272
+          },
+          "delta": 4330909920,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.66008626086956,
+        "other_caches": {
+          "account": {
+            "misses": 9373,
+            "hits": 12944,
+            "misses_per_mgas": 2.164210332963933
+          },
+          "code": {
+            "misses": 674,
+            "hits": 220,
+            "misses_per_mgas": 0.1556254949768154
+          }
+        },
+        "storage_misses": 1749305,
+        "storage_hits": 40825,
+        "storage_misses_per_mgas": 403.9116565139734,
+        "storage_miss_percent": 97.71943937032506,
+        "execution_seconds": 112.66080815200087,
+        "execution_ms_per_mgas": 26.01319589487118,
+        "aggregate_execution_mgas_per_second": 38.442027809322816,
+        "payload_build_seconds": 113.64244297800019,
+        "payload_build_ms_per_mgas": 26.239853766803858,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 447
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 19282,
+          "median": 19299,
+          "max": 19331
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 24173937,
+          "read_bytes_total": 99016445952,
+          "writes_completed_total": 54231,
+          "written_bytes_total": 416067584,
+          "reads_per_mgas": 5581.722420123668,
+          "bytes_per_gas": 22.862735032826542,
+          "writes_per_mgas": 12.521848988260647,
+          "written_bytes_per_mgas": 96069.32300268208,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 9126774
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 10876079
+            },
+            "delta": 1749305,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 223597
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 264422
+            },
+            "delta": 40825,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 619.0612446139994
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 731.7220527660003
+            },
+            "delta": 112.66080815200087,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 624.0945576249993
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 737.7370006029995
+            },
+            "delta": 113.64244297800019,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 49667
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 59040
+            },
+            "delta": 9373,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 67858
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 80802
+            },
+            "delta": 12944,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 3568
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 4242
+            },
+            "delta": 674,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 1164
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 1384
+            },
+            "delta": 220,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 30.59999999999999
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 30.59999999999999
+            },
+            "delta": 0,
+            "samples": 24
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 600003,
+        "to_offset_ms": 715003,
+        "duration_seconds": 115,
+        "gas": 4331865144,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 600003,
+            "unix_ms": 1790285283962,
+            "value": 26231398240
+          },
+          "last": {
+            "offset_ms": 715003,
+            "unix_ms": 1790285398962,
+            "value": 30563263384
+          },
+          "delta": 4331865144,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.66839255652174,
+        "other_caches": {
+          "account": {
+            "misses": 6266,
+            "hits": 16054,
+            "misses_per_mgas": 1.4464900895354373
+          },
+          "code": {
+            "misses": 453,
+            "hits": 441,
+            "misses_per_mgas": 0.10457389252466535
+          }
+        },
+        "storage_misses": 1737894,
+        "storage_hits": 49053,
+        "storage_misses_per_mgas": 401.18838934936156,
+        "storage_miss_percent": 97.25492697880799,
+        "execution_seconds": 102.7051944380006,
+        "execution_ms_per_mgas": 23.709231710561443,
+        "aggregate_execution_mgas_per_second": 42.177663629418376,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 1184906,
+        "major_faults_per_mgas": 273.53252250735346,
+        "minor_faults": 19783,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 4.505174000000007,
+        "payload_thread_system_cpu_seconds": 5.034880999999986,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 13602,
+          "transaction_errors": 0,
+          "execution_duration_sum": 115.9355281830006,
+          "total_runtime_sum": 116.02275681299494
+        },
+        "device_io": {
+          "reads_completed_total": 2837968,
+          "read_bytes_total": 11624366080,
+          "writes_completed_total": 45575,
+          "written_bytes_total": 327462912,
+          "reads_per_mgas": 655.1376614137737,
+          "bytes_per_gas": 2.683455207764427,
+          "writes_per_mgas": 10.520872299804909,
+          "written_bytes_per_mgas": 75593.97652384537,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 7491144
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 9229038
+            },
+            "delta": 1737894,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 197459
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 246512
+            },
+            "delta": 49053,
+            "samples": 24
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 554.4509295569998
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 657.1561239950004
+            },
+            "delta": 102.7051944380006,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 3629525
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 4814431
+            },
+            "delta": 1184906,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 97902
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 117685
+            },
+            "delta": 19783,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 14.257233999999997
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 18.762408000000004
+            },
+            "delta": 4.505174000000007,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 14.70510499999999
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 19.739985999999977
+            },
+            "delta": 5.034880999999986,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 21
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 21
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 105.75442917
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 105.75442917
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 738
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 738
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 62463
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 76065
+            },
+            "delta": 13602,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 500.0732022570011
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 616.0087304400017
+            },
+            "delta": 115.9355281830006,
+            "samples": 24
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 500.45775397999665
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 616.4805107929916
+            },
+            "delta": 116.02275681299494,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 27747
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 34013
+            },
+            "delta": 6266,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 69310
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 85364
+            },
+            "delta": 16054,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 2011
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 2464
+            },
+            "delta": 453,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 600003,
+              "unix_ms": 1790285283962,
+              "value": 1905
+            },
+            "last": {
+              "offset_ms": 715003,
+              "unix_ms": 1790285398962,
+              "value": 2346
+            },
+            "delta": 441,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "from_seconds": 720,
+      "to_seconds": 840,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 720003,
+        "to_offset_ms": 835003,
+        "duration_seconds": 115,
+        "gas": 4339825244,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 720003,
+            "unix_ms": 1790285403962,
+            "value": 27338482648
+          },
+          "last": {
+            "offset_ms": 835003,
+            "unix_ms": 1790285518962,
+            "value": 31678307892
+          },
+          "delta": 4339825244,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.73761081739131,
+        "other_caches": {
+          "account": {
+            "misses": 9350,
+            "hits": 13033,
+            "misses_per_mgas": 2.1544646326316452
+          },
+          "code": {
+            "misses": 673,
+            "hits": 221,
+            "misses_per_mgas": 0.15507536874450237
+          }
+        },
+        "storage_misses": 1752654,
+        "storage_hits": 41182,
+        "storage_misses_per_mgas": 403.8535889027148,
+        "storage_miss_percent": 97.70424944086304,
+        "execution_seconds": 112.51636283799917,
+        "execution_ms_per_mgas": 25.926473190034095,
+        "aggregate_execution_mgas_per_second": 38.57061439364576,
+        "payload_build_seconds": 113.49323079399983,
+        "payload_build_ms_per_mgas": 26.151567036232446,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 447
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 19259,
+          "median": 19299,
+          "max": 19321
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 24212662,
+          "read_bytes_total": 99175063552,
+          "writes_completed_total": 56494,
+          "written_bytes_total": 426188800,
+          "reads_per_mgas": 5579.17903110847,
+          "bytes_per_gas": 22.852317311420293,
+          "writes_per_mgas": 13.017574861592745,
+          "written_bytes_per_mgas": 98204.1386549435,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 10950049
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 12702703
+            },
+            "delta": 1752654,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 266127
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 307309
+            },
+            "delta": 41182,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 736.5028064070003
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 849.0191692449995
+            },
+            "delta": 112.51636283799917,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 742.5589001189994
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 856.0521309129992
+            },
+            "delta": 113.49323079399983,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 59438
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 68788
+            },
+            "delta": 9350,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 81348
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 94381
+            },
+            "delta": 13033,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 4270
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 4943
+            },
+            "delta": 673,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 1394
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 1615
+            },
+            "delta": 221,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 30.59999999999999
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 30.59999999999999
+            },
+            "delta": 0,
+            "samples": 24
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 720003,
+        "to_offset_ms": 835003,
+        "duration_seconds": 115,
+        "gas": 4349695720,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 720003,
+            "unix_ms": 1790285403962,
+            "value": 30745389560
+          },
+          "last": {
+            "offset_ms": 835003,
+            "unix_ms": 1790285518962,
+            "value": 35095085280
+          },
+          "delta": 4349695720,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.823441043478255,
+        "other_caches": {
+          "account": {
+            "misses": 6279,
+            "hits": 16154,
+            "misses_per_mgas": 1.4435492513025716
+          },
+          "code": {
+            "misses": 453,
+            "hits": 443,
+            "misses_per_mgas": 0.10414521593248366
+          }
+        },
+        "storage_misses": 1740663,
+        "storage_hits": 53668,
+        "storage_misses_per_mgas": 400.1804061825272,
+        "storage_miss_percent": 97.00902453337763,
+        "execution_seconds": 103.5866473590005,
+        "execution_ms_per_mgas": 23.814688205132768,
+        "aggregate_execution_mgas_per_second": 41.990891981717,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 1295918,
+        "major_faults_per_mgas": 297.9330241518595,
+        "minor_faults": 19790,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 4.863510000000023,
+        "payload_thread_system_cpu_seconds": 5.396954000000033,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 13629,
+          "transaction_errors": 0,
+          "execution_duration_sum": 116.63416306699594,
+          "total_runtime_sum": 116.72205920199269
+        },
+        "device_io": {
+          "reads_completed_total": 2874267,
+          "read_bytes_total": 11773030400,
+          "writes_completed_total": 47959,
+          "written_bytes_total": 337530880,
+          "reads_per_mgas": 660.7972568711082,
+          "bytes_per_gas": 2.7066330975445796,
+          "writes_per_mgas": 11.025828721646764,
+          "written_bytes_per_mgas": 77598.73373395416,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 9302084
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 11042747
+            },
+            "delta": 1740663,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 248596
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 302264
+            },
+            "delta": 53668,
+            "samples": 24
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 661.4201023330004
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 765.0067496920009
+            },
+            "delta": 103.5866473590005,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 4868227
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 6164145
+            },
+            "delta": 1295918,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 118732
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 138522
+            },
+            "delta": 19790,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 18.98058300000001
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 23.844093000000033
+            },
+            "delta": 4.863510000000023,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 19.94834499999998
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 25.34529900000001
+            },
+            "delta": 5.396954000000033,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 21
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 21
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 105.75442917
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 105.75442917
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 738
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 738
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 76640
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 90269
+            },
+            "delta": 13629,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 620.614176858001
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 737.2483399249969
+            },
+            "delta": 116.63416306699594,
+            "samples": 24
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 621.089675407992
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 737.8117346099847
+            },
+            "delta": 116.72205920199269,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 34279
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 40558
+            },
+            "delta": 6279,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 86039
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 102193
+            },
+            "delta": 16154,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 2483
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 2936
+            },
+            "delta": 453,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 720003,
+              "unix_ms": 1790285403962,
+              "value": 2365
+            },
+            "last": {
+              "offset_ms": 835003,
+              "unix_ms": 1790285518962,
+              "value": 2808
+            },
+            "delta": 443,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "from_seconds": 840,
+      "to_seconds": 960,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 840003,
+        "to_offset_ms": 955003,
+        "duration_seconds": 115,
+        "gas": 4337277508,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 840003,
+            "unix_ms": 1790285523962,
+            "value": 31871578400
+          },
+          "last": {
+            "offset_ms": 955003,
+            "unix_ms": 1790285638962,
+            "value": 36208855908
+          },
+          "delta": 4337277508,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.715456591304346,
+        "other_caches": {
+          "account": {
+            "misses": 9356,
+            "hits": 13030,
+            "misses_per_mgas": 2.1571135309518685
+          },
+          "code": {
+            "misses": 669,
+            "hits": 225,
+            "misses_per_mgas": 0.15424422319439932
+          }
+        },
+        "storage_misses": 1750989,
+        "storage_hits": 41810,
+        "storage_misses_per_mgas": 403.706932925169,
+        "storage_miss_percent": 97.66789249659331,
+        "execution_seconds": 112.53948779099994,
+        "execution_ms_per_mgas": 25.947034189863036,
+        "aggregate_execution_mgas_per_second": 38.5400501915814,
+        "payload_build_seconds": 113.52458467699762,
+        "payload_build_ms_per_mgas": 26.17415751415591,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 447
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 19275,
+          "median": 19292,
+          "max": 19311
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 24203870,
+          "read_bytes_total": 99139047424,
+          "writes_completed_total": 59103,
+          "written_bytes_total": 436916224,
+          "reads_per_mgas": 5580.429187516032,
+          "bytes_per_gas": 22.857437007694458,
+          "writes_per_mgas": 13.626750857187716,
+          "written_bytes_per_mgas": 100735.13239448455,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 12780805
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 14531794
+            },
+            "delta": 1750989,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 309099
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 350909
+            },
+            "delta": 41810,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 854.0459568869995
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 966.5854446779995
+            },
+            "delta": 112.53948779099994,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 861.1233745399995
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 974.6479592169972
+            },
+            "delta": 113.52458467699762,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 69207
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 78563
+            },
+            "delta": 9356,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 94964
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 107994
+            },
+            "delta": 13030,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 4973
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 5642
+            },
+            "delta": 669,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 1625
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 1850
+            },
+            "delta": 225,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 30.59999999999999
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 30.59999999999999
+            },
+            "delta": 0,
+            "samples": 24
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 840003,
+        "to_offset_ms": 955003,
+        "duration_seconds": 115,
+        "gas": 4336640772,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 840003,
+            "unix_ms": 1790285523962,
+            "value": 35279122084
+          },
+          "last": {
+            "offset_ms": 955003,
+            "unix_ms": 1790285638962,
+            "value": 39615762856
+          },
+          "delta": 4336640772,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.70991975652174,
+        "other_caches": {
+          "account": {
+            "misses": 6271,
+            "hits": 16113,
+            "misses_per_mgas": 1.4460501410422102
+          },
+          "code": {
+            "misses": 454,
+            "hits": 440,
+            "misses_per_mgas": 0.10468932610957797
+          }
+        },
+        "storage_misses": 1733802,
+        "storage_hits": 55159,
+        "storage_misses_per_mgas": 399.8030021749747,
+        "storage_miss_percent": 96.91670192922037,
+        "execution_seconds": 96.91030653599978,
+        "execution_ms_per_mgas": 22.34686053816398,
+        "aggregate_execution_mgas_per_second": 44.74901511521941,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 1167092,
+        "major_faults_per_mgas": 269.1235131891621,
+        "minor_faults": 16097,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 4.752172999999992,
+        "payload_thread_system_cpu_seconds": 4.782668000000015,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 13622,
+          "transaction_errors": 0,
+          "execution_duration_sum": 109.761301802003,
+          "total_runtime_sum": 109.85012737200157
+        },
+        "device_io": {
+          "reads_completed_total": 2681269,
+          "read_bytes_total": 10982477824,
+          "writes_completed_total": 50531,
+          "written_bytes_total": 348446720,
+          "reads_per_mgas": 618.2824773755551,
+          "bytes_per_gas": 2.532485027330274,
+          "writes_per_mgas": 11.652106470579483,
+          "written_bytes_per_mgas": 80349.45440945553,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 11116410
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 12850212
+            },
+            "delta": 1733802,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 304523
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 359682
+            },
+            "delta": 55159,
+            "samples": 24
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 769.2413203180008
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 866.1516268540006
+            },
+            "delta": 96.91030653599978,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 6213989
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 7381081
+            },
+            "delta": 1167092,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 139045
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 155142
+            },
+            "delta": 16097,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 24.032978000000035
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 28.785151000000027
+            },
+            "delta": 4.752172999999992,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 25.56080800000001
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 30.343476000000024
+            },
+            "delta": 4.782668000000015,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 21
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 21
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 105.75442917
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 105.75442917
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 738
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 738
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 90876
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 104498
+            },
+            "delta": 13622,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 742.2728414639959
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 852.0341432659989
+            },
+            "delta": 109.761301802003,
+            "samples": 24
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 742.8401462879859
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 852.6902736599875
+            },
+            "delta": 109.85012737200157,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 40825
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 47096
+            },
+            "delta": 6271,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 102879
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 118992
+            },
+            "delta": 16113,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 2955
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 3409
+            },
+            "delta": 454,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 840003,
+              "unix_ms": 1790285523962,
+              "value": 2827
+            },
+            "last": {
+              "offset_ms": 955003,
+              "unix_ms": 1790285638962,
+              "value": 3267
+            },
+            "delta": 440,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "from_seconds": 960,
+      "to_seconds": 1080,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 960003,
+        "to_offset_ms": 1075004,
+        "duration_seconds": 115.001,
+        "gas": 4331547064,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 960003,
+            "unix_ms": 1790285643962,
+            "value": 36395439800
+          },
+          "last": {
+            "offset_ms": 1075004,
+            "unix_ms": 1790285758963,
+            "value": 40726986864
+          },
+          "delta": 4331547064,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.66529911913809,
+        "other_caches": {
+          "account": {
+            "misses": 9342,
+            "hits": 13016,
+            "misses_per_mgas": 2.1567351946011315
+          },
+          "code": {
+            "misses": 673,
+            "hits": 221,
+            "misses_per_mgas": 0.15537173902446602
+          }
+        },
+        "storage_misses": 1749555,
+        "storage_hits": 40876,
+        "storage_misses_per_mgas": 403.9099596864036,
+        "storage_miss_percent": 97.71697429278201,
+        "execution_seconds": 112.56127478400003,
+        "execution_ms_per_mgas": 25.986390802378693,
+        "aggregate_execution_mgas_per_second": 38.481680953880826,
+        "payload_build_seconds": 113.54207668199854,
+        "payload_build_ms_per_mgas": 26.212823040908447,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 447
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 19277,
+          "median": 19294,
+          "max": 19332
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 24188391,
+          "read_bytes_total": 99075743744,
+          "writes_completed_total": 61869,
+          "written_bytes_total": 449265664,
+          "reads_per_mgas": 5584.238296989216,
+          "bytes_per_gas": 22.87306181374092,
+          "writes_per_mgas": 14.283349363602806,
+          "written_bytes_per_mgas": 103719.4465076693,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 14607129
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 16356684
+            },
+            "delta": 1749555,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 352693
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 393569
+            },
+            "delta": 40876,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 971.3550425209994
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 1083.9163173049994
+            },
+            "delta": 112.56127478400003,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 979.4598059209972
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 1093.0018826029957
+            },
+            "delta": 113.54207668199854,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 78962
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 88304
+            },
+            "delta": 9342,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 108553
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 121569
+            },
+            "delta": 13016,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 5671
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 6344
+            },
+            "delta": 673,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 1859
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 2080
+            },
+            "delta": 221,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 30.59999999999999
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 30.59999999999999
+            },
+            "delta": 0,
+            "samples": 24
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 960003,
+        "to_offset_ms": 1075004,
+        "duration_seconds": 115.001,
+        "gas": 4331547076,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 960003,
+            "unix_ms": 1790285643962,
+            "value": 39802346688
+          },
+          "last": {
+            "offset_ms": 1075004,
+            "unix_ms": 1790285758963,
+            "value": 44133893764
+          },
+          "delta": 4331547076,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.665299223485015,
+        "other_caches": {
+          "account": {
+            "misses": 6266,
+            "hits": 16092,
+            "misses_per_mgas": 1.4465963061369715
+          },
+          "code": {
+            "misses": 454,
+            "hits": 440,
+            "misses_per_mgas": 0.10481243584203401
+          }
+        },
+        "storage_misses": 1732798,
+        "storage_hits": 54057,
+        "storage_misses_per_mgas": 400.0413638815085,
+        "storage_miss_percent": 96.97474053574577,
+        "execution_seconds": 103.4841733109995,
+        "execution_ms_per_mgas": 23.890811180231413,
+        "aggregate_execution_mgas_per_second": 41.8570969589955,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 1264325,
+        "major_faults_per_mgas": 291.8876276343164,
+        "minor_faults": 20055,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 4.786905000000026,
+        "payload_thread_system_cpu_seconds": 5.24547700000004,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 13604,
+          "transaction_errors": 0,
+          "execution_duration_sum": 117.009635509997,
+          "total_runtime_sum": 117.09760841099603
+        },
+        "device_io": {
+          "reads_completed_total": 2867104,
+          "read_bytes_total": 11743657984,
+          "writes_completed_total": 52581,
+          "written_bytes_total": 357920768,
+          "reads_per_mgas": 661.9122335956807,
+          "bytes_per_gas": 2.7111925088079083,
+          "writes_per_mgas": 12.139080812797335,
+          "written_bytes_per_mgas": 82631.16196592849,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 12924771
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 14657569
+            },
+            "delta": 1732798,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 362091
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 416148
+            },
+            "delta": 54057,
+            "samples": 24
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 870.4113629930006
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 973.8955363040001
+            },
+            "delta": 103.4841733109995,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 7434492
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 8698817
+            },
+            "delta": 1264325,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 156141
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 176196
+            },
+            "delta": 20055,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 29.018243000000027
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 33.80514800000005
+            },
+            "delta": 4.786905000000026,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 30.53355700000002
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 35.77903400000006
+            },
+            "delta": 5.24547700000004,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 21
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 21
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 105.75442917
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 105.75442917
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 738
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 738
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 105084
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 118688
+            },
+            "delta": 13604,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 856.8429664299991
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 973.8526019399961
+            },
+            "delta": 117.009635509997,
+            "samples": 24
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 857.5029372789875
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 974.6005456899835
+            },
+            "delta": 117.09760841099603,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 47363
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 53629
+            },
+            "delta": 6266,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 119684
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 135776
+            },
+            "delta": 16092,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 3428
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 3882
+            },
+            "delta": 454,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 960003,
+              "unix_ms": 1790285643962,
+              "value": 3286
+            },
+            "last": {
+              "offset_ms": 1075004,
+              "unix_ms": 1790285758963,
+              "value": 3726
+            },
+            "delta": 440,
+            "samples": 24
+          }
+        }
+      }
+    },
+    {
+      "from_seconds": 1080,
+      "to_seconds": 1200,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 1080003,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 115,
+        "gas": 4338552372,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 1080003,
+            "unix_ms": 1790285763962,
+            "value": 40910705072
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790285878962,
+            "value": 45249257444
+          },
+          "delta": 4338552372,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.72654236521739,
+        "other_caches": {
+          "account": {
+            "misses": 9369,
+            "hits": 13009,
+            "misses_per_mgas": 2.159476064058908
+          },
+          "code": {
+            "misses": 670,
+            "hits": 224,
+            "misses_per_mgas": 0.15442939085489044
+          }
+        },
+        "storage_misses": 1752492,
+        "storage_hits": 40819,
+        "storage_misses_per_mgas": 403.9347343851771,
+        "storage_miss_percent": 97.72381923715407,
+        "execution_seconds": 112.57227973099975,
+        "execution_ms_per_mgas": 25.946968038812866,
+        "aggregate_execution_mgas_per_second": 38.54014844833301,
+        "payload_build_seconds": 113.54912317599769,
+        "payload_build_ms_per_mgas": 26.17212227488992,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 447
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 19277,
+          "median": 19296,
+          "max": 19328
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 24198148,
+          "read_bytes_total": 99115614208,
+          "writes_completed_total": 64578,
+          "written_bytes_total": 459620352,
+          "reads_per_mgas": 5577.470530532068,
+          "bytes_per_gas": 22.845319293059347,
+          "writes_per_mgas": 14.88468836213002,
+          "written_bytes_per_mgas": 105938.64325950794,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 16430929
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 18183421
+            },
+            "delta": 1752492,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 395261
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 436080
+            },
+            "delta": 40819,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 1088.7119570649995
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1201.2842367959993
+            },
+            "delta": 112.57227973099975,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 1097.8391893189964
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1211.3883124949941
+            },
+            "delta": 113.54912317599769,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 88703
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 98072
+            },
+            "delta": 9369,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 122116
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 135125
+            },
+            "delta": 13009,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 6373
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 7043
+            },
+            "delta": 670,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 2089
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 2313
+            },
+            "delta": 224,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 30.59999999999999
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 30.59999999999999
+            },
+            "delta": 0,
+            "samples": 24
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 1080003,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 115,
+        "gas": 4338233968,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 1080003,
+            "unix_ms": 1790285763962,
+            "value": 44317930400
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790285878962,
+            "value": 48656164368
+          },
+          "delta": 4338233968,
+          "samples": 24
+        },
+        "wall_clock_mgas_per_second": 37.72377363478261,
+        "other_caches": {
+          "account": {
+            "misses": 6266,
+            "hits": 16110,
+            "misses_per_mgas": 1.4443665432108388
+          },
+          "code": {
+            "misses": 451,
+            "hits": 443,
+            "misses_per_mgas": 0.10395935381233454
+          }
+        },
+        "storage_misses": 1734256,
+        "storage_hits": 55347,
+        "storage_misses_per_mgas": 399.7608272841775,
+        "storage_miss_percent": 96.90730290461069,
+        "execution_seconds": 101.83155027600026,
+        "execution_ms_per_mgas": 23.473042493129146,
+        "aggregate_execution_mgas_per_second": 42.602061504924755,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 1215280,
+        "major_faults_per_mgas": 280.13242461431025,
+        "minor_faults": 19412,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 4.792442000000008,
+        "payload_thread_system_cpu_seconds": 4.866943999999954,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 13626,
+          "transaction_errors": 0,
+          "execution_duration_sum": 115.15640324599792,
+          "total_runtime_sum": 115.24512398800562
+        },
+        "device_io": {
+          "reads_completed_total": 2822883,
+          "read_bytes_total": 11562573824,
+          "writes_completed_total": 55234,
+          "written_bytes_total": 366862336,
+          "reads_per_mgas": 650.6986531437348,
+          "bytes_per_gas": 2.6652720690697427,
+          "writes_per_mgas": 12.731908976652962,
+          "written_bytes_per_mgas": 84564.90330076175,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 14731392
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 16465648
+            },
+            "delta": 1734256,
+            "samples": 24
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 418241
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 473588
+            },
+            "delta": 55347,
+            "samples": 24
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 978.009913085
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1079.8414633610003
+            },
+            "delta": 101.83155027600026,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 8744255
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 9959535
+            },
+            "delta": 1215280,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 176753
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 196165
+            },
+            "delta": 19412,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 33.99586000000007
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 38.78830200000008
+            },
+            "delta": 4.792442000000008,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 35.95552100000004
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 40.822464999999994
+            },
+            "delta": 4.866943999999954,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 21
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 21
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 105.75442917
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 105.75442917
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 738
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 738
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 119265
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 132891
+            },
+            "delta": 13626,
+            "samples": 24
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 24
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 978.4610558819969
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1093.6174591279948
+            },
+            "delta": 115.15640324599792,
+            "samples": 24
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 979.2128033669837
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1094.4579273549894
+            },
+            "delta": 115.24512398800562,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 53895
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 60161
+            },
+            "delta": 6266,
+            "samples": 24
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 136457
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 152567
+            },
+            "delta": 16110,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 3902
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 4353
+            },
+            "delta": 451,
+            "samples": 24
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 1080003,
+              "unix_ms": 1790285763962,
+              "value": 3744
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 4187
+            },
+            "delta": 443,
+            "samples": 24
+          }
+        }
+      }
+    }
+  ]
+}

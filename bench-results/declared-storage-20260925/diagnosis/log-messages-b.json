@@ -1,0 +1,217 @@
+[
+  {
+    "target": "trie::proof_task",
+    "message": "Spawning proof worker pools",
+    "count": 383
+  },
+  {
+    "target": "engine::root",
+    "message": "All proofs processed, ending calculation",
+    "count": 383
+  },
+  {
+    "target": "storage::db::mdbx",
+    "message": "Commit",
+    "count": 77
+  },
+  {
+    "target": "sync::stages::index_history",
+    "message": "Writing indices",
+    "count": 29
+  },
+  {
+    "target": "sync::stages::headers",
+    "message": "Writing headers",
+    "count": 23
+  },
+  {
+    "target": "sync::stages::headers",
+    "message": "Writing headers hash index",
+    "count": 23
+  },
+  {
+    "target": "sync::stages::transaction_lookup",
+    "message": "Inserting hashes",
+    "count": 20
+  },
+  {
+    "target": "sync::stages::execution",
+    "message": "Executed block range",
+    "count": 19
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Saved range of blocks",
+    "count": 14
+  },
+  {
+    "target": "trie::changeset_cache",
+    "message": "Starting cache eviction",
+    "count": 14
+  },
+  {
+    "target": "trie::changeset_cache",
+    "message": "Finished cache eviction",
+    "count": 14
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Saving range of blocks",
+    "count": 14
+  },
+  {
+    "target": "providers::db",
+    "message": "Writing blocks and execution data to storage",
+    "count": 14
+  },
+  {
+    "target": "providers::db",
+    "message": "Appended block data",
+    "count": 13
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Running pruner",
+    "count": 13
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Finished pruning after saving blocks",
+    "count": 13
+  },
+  {
+    "target": "trie::sparse",
+    "message": "SparseStateTrie::prune completed",
+    "count": 12
+  },
+  {
+    "target": "sync::stages::headers",
+    "message": "Commencing sync",
+    "count": 6
+  },
+  {
+    "target": "sync::stages",
+    "message": "",
+    "count": 6
+  },
+  {
+    "target": "sync::stages::bodies",
+    "message": "Commencing sync",
+    "count": 4
+  },
+  {
+    "target": "sync::stages::execution",
+    "message": "Calculating gas used from headers",
+    "count": 4
+  },
+  {
+    "target": "sync::stages::execution",
+    "message": "Finished calculating gas used from headers",
+    "count": 4
+  },
+  {
+    "target": "sync::stages::headers",
+    "message": "Received headers",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::execution",
+    "message": "Executing range",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::execution",
+    "message": "Finished executing block range",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::execution",
+    "message": "Execution time",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::merkle::unwind",
+    "message": "Stage is always skipped",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::merkle::exec",
+    "message": "Updating trie in chunks",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::merkle::exec",
+    "message": "Processing chunk",
+    "count": 3
+  },
+  {
+    "target": "trie::loader",
+    "message": "incremental state root",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::transaction_lookup",
+    "message": "Updating transaction lookup",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::index_storage_history::exec",
+    "message": "Collecting indices",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::index_storage_history::exec",
+    "message": "Loading indices into database",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::index_account_history::exec",
+    "message": "Collecting indices",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::index_account_history::exec",
+    "message": "Loading indices into database",
+    "count": 3
+  },
+  {
+    "target": "sync::stages::sender_recovery",
+    "message": "Recovering senders",
+    "count": 2
+  },
+  {
+    "target": "sync::stages::sender_recovery",
+    "message": "Calculated block numbers",
+    "count": 2
+  },
+  {
+    "target": "sync::stages::sender_recovery",
+    "message": "Sending batch for processing",
+    "count": 2
+  },
+  {
+    "target": "sync::stages::sender_recovery",
+    "message": "Appending recovered senders to the database",
+    "count": 2
+  },
+  {
+    "target": "sync::stages::sender_recovery",
+    "message": "Finished recovering senders batch",
+    "count": 2
+  },
+  {
+    "target": "sync::stages::transaction_lookup",
+    "message": "Calculating transaction hashes",
+    "count": 2
+  },
+  {
+    "target": "sync::stages::sender_recovery",
+    "message": "No transaction senders to recover",
+    "count": 1
+  },
+  {
+    "target": "storage::db::mdbx",
+    "message": "Targeted bytecode prefetch",
+    "count": 1
+  }
+]

@@ -1,13 +1,13 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path');
 const {execFileSync,spawnSync}=require('node:child_process');
-const {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes}=require('./history-state-path-validation.cjs');
+const {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes,measuredHistoryCoverage}=require('./history-state-path-validation.cjs');
 const root=path.resolve(__dirname,'../..'),runner=path.join(__dirname,'run-history-state-paths.sh');
 const word=n=>'0x'+BigInt(n).toString(16).padStart(64,'0');
 
 test('history presets share the valid public test signer pool',()=>{
   const fs=require('node:fs');
-  for(const name of ['history_code','history_write']) {
+  for(const name of ['history_read','history_code','history_write']) {
     const preset=fs.readFileSync(path.join(__dirname,'txgen/presets',name+'.yml'),'utf8');
     assert.equal(/mnemonic: "([^"]+)"/.exec(preset)?.[1],Array(11).fill('test').concat('junk').join(' '));
   }
@@ -21,14 +21,14 @@ test('history runner uses isolated populated fixtures and leaves prewarming/caps
   assert.match(output,/--state-access-bloat/);
   assert.match(output,/--preset history_code/);
   assert.match(output,/--preset history_write/);
-  assert.match(output,/--preset state_access_dependent/);
+  assert.match(output,/--preset history_read/);
   assert.doesNotMatch(output,/--builder\.max-transactions|--force-bloat|--disable.*prewarm/);
 });
 test('named configurations are discoverable and support a single-case dry run',()=>{
   const list=execFileSync('bash',[runner,'--list'],{cwd:root,encoding:'utf8'});
   for(const id of ['sload','bytecode','writes']) assert.match(list,new RegExp('^'+id+'\\t','m'));
   const output=execFileSync('bash',[runner,'--case','sload','--dry-run'],{cwd:root,encoding:'utf8'});
-  assert.match(output,/--preset state_access_dependent/);
+  assert.match(output,/--preset history_read/);
   assert.doesNotMatch(output,/--preset history_(code|write)/);
   assert.match(output,/--tps 1000 --duration 1200 --accounts 1000/);
 });
@@ -83,4 +83,33 @@ test('SLOAD audit requires all 4096 reads cold and only the cursor written',()=>
   const warm=structuredClone(logs); warm[1].gasCost=100;
   assert.throws(()=>inspectOpcodes({failed:false,structLogs:warm},false,true),/not cold/);
   assert.throws(()=>inspectOpcodes({failed:false,structLogs:[...logs,{op:'SSTORE',stack:['1','0']}]},false,true));
+});
+
+test('small SLOAD audit requires exactly 128 unique cold reads',()=>{
+  const preset=require('node:fs').readFileSync(path.join(__dirname,'txgen/presets/history_read.yml'),'utf8');
+  assert.match(preset,/gas_limit: 10000000/,'initial cursor allocation must not hit the gas limit');
+  const logs=[{op:'SSTORE',stack:['1',CURSOR.slice(2)]}];
+  for(let i=0;i<128;i++) logs.push({op:'SLOAD',gasCost:2100,stack:[i.toString(16)]});
+  assert.equal(inspectOpcodes({failed:false,structLogs:logs},false,true,128).targets.size,128);
+  assert.throws(()=>inspectOpcodes({failed:false,structLogs:logs.slice(0,-1)},false,true,128));
+  const repeated=structuredClone(logs);repeated.at(-1).stack=['0'];
+  assert.throws(()=>inspectOpcodes({failed:false,structLogs:repeated},false,true,128),/not unique/);
+  const warm=structuredClone(logs);warm[1].gasCost=100;
+  assert.throws(()=>inspectOpcodes({failed:false,structLogs:warm},false,true,128),/not cold/);
+});
+
+test('history coverage gate excludes warmup and rejects mostly single-transaction blocks',()=>{
+  const timing={from_ms:600000,to_ms:1200000};
+  const blocks=[{timestamp_ms:0,tx_count:1},{timestamp_ms:100000,tx_count:1},
+    {timestamp_ms:600000,tx_count:10},{timestamp_ms:900000,tx_count:10},
+    {timestamp_ms:1200001,tx_count:1}];
+  const result=measuredHistoryCoverage(blocks,timing,0.9);
+  assert.equal(result.transactions,20);
+  assert.equal(result.non_first_transactions,18);
+  assert.equal(result.fraction,0.9);
+  assert.deepEqual(result.transactions_per_block,{'10':2});
+  assert.throws(()=>measuredHistoryCoverage(blocks.map(b=>({...b,tx_count:1})),timing,0.9),/insufficient measured history/);
+  assert.throws(()=>measuredHistoryCoverage(blocks.map(b=>({...b,tx_count:0})),timing,0.9),/no measured/);
+  // Passing warmup must not hide failing steady-state packing.
+  assert.throws(()=>measuredHistoryCoverage(blocks.map(b=>({...b,tx_count:b.timestamp_ms<600000?1000:1})),timing,0.9),/insufficient measured history/);
 });

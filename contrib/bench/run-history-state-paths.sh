@@ -85,6 +85,7 @@ cp --parents bench-e2e.nu tempo.nu bin/tempo/examples/prepare_history_state_path
     contrib/bench/txgen/HistoryStatePaths.sol contrib/bench/txgen/HistoryStatePaths.t.sol \
     contrib/bench/txgen/StateAccessBenchmark.sol contrib/bench/txgen/state-access-benchmark.json \
     contrib/bench/txgen/presets/state_access_dependent.yml \
+    contrib/bench/txgen/presets/history_read.yml \
     contrib/bench/txgen/history-state-paths.json contrib/bench/txgen/presets/history_code.yml \
     contrib/bench/txgen/presets/history_write.yml "$suite/source/"
 node - "$suite" "$binary" "$revision" "$configuration" "$a.virgin" <<'JS'

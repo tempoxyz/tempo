@@ -1,0 +1,1408 @@
+[
+  {
+    "timestamp": "2026-09-25T19:53:11.693429Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Execution time",
+      "block_fetch": "38.235969ms",
+      "execution": "109.426734186s",
+      "write_preparation": "4.368441ms",
+      "write": "21.140084431s"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T19:53:12.197764Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Stage is always skipped"
+    },
+    "target": "sync::stages::merkle::unwind",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T19:53:12.198094Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Updating trie in chunks",
+      "current": "336",
+      "target": "411"
+    },
+    "target": "sync::stages::merkle::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T19:53:12.198098Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Processing chunk",
+      "current": "336",
+      "target": "411",
+      "incremental_threshold": 7000,
+      "chunk_range": "337..=411"
+    },
+    "target": "sync::stages::merkle::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.653490Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Updating transaction lookup",
+      "tx_range": "336..=411"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.653740Z",
+    "level": "DEBUG",
+    "fields": {
+      "return": "Ok(Some(TransactionRangeOutput { tx_range: 35671..45894, block_range: 337..=411, is_final_range: true }))"
+    },
+    "target": "sync::stages",
+    "span": {
+      "self": "ExecInput { target: Some(411), checkpoint: Some(StageCheckpoint { block_number: 336, stage_checkpoint: None }) }",
+      "tx_threshold": 5000000,
+      "name": "next_block_range_with_transaction_threshold"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      },
+      {
+        "self": "ExecInput { target: Some(411), checkpoint: Some(StageCheckpoint { block_number: 336, stage_checkpoint: None }) }",
+        "tx_threshold": 5000000,
+        "name": "next_block_range_with_transaction_threshold"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.653760Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Calculating transaction hashes",
+      "tx_range": "35671..45894"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.664967Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "10.00%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665047Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "19.99%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665120Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "29.99%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665189Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "39.99%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665263Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "49.99%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665332Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "59.98%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665401Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "69.98%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665470Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "79.98%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665551Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "89.97%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.665621Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Inserting hashes",
+      "append_only": "true",
+      "progress": "99.97%"
+    },
+    "target": "sync::stages::transaction_lookup",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:18.826422Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Collecting indices",
+      "first_sync": "false",
+      "use_rocksdb": "true"
+    },
+    "target": "sync::stages::index_storage_history::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:19.401089Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Loading indices into database"
+    },
+    "target": "sync::stages::index_storage_history::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:19.950195Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "10.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:20.414436Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "20.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:20.891084Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "30.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:21.380268Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "40.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:21.845249Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "50.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:22.316985Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "60.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:22.793025Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "70.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:23.262495Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "80.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:23.729751Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing indices",
+      "progress": "90.00%"
+    },
+    "target": "sync::stages::index_history",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.522058Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Collecting indices",
+      "first_sync": "false",
+      "use_rocksdb": "true"
+    },
+    "target": "sync::stages::index_account_history::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.522172Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Loading indices into database"
+    },
+    "target": "sync::stages::index_account_history::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.580813Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Commencing sync",
+      "tip": "Hash(0x419d67168a2b266eb3b70b5abb2f43656b56626977a71e30199fd8ab0faaf595)",
+      "head": "0xae86878dbe6d99e4a80c20efad1f0dea62497f8cf5be5162f302cb39c35b7147"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.586197Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Commencing sync",
+      "tip": "Hash(0x419d67168a2b266eb3b70b5abb2f43656b56626977a71e30199fd8ab0faaf595)",
+      "head": "0xae86878dbe6d99e4a80c20efad1f0dea62497f8cf5be5162f302cb39c35b7147"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.586213Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Received headers",
+      "total": 474,
+      "from_block": 885,
+      "to_block": 412
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.586410Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "total": 474
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.587045Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "9.92%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.587306Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "19.83%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.587543Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "29.75%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.587774Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "39.66%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.588002Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "49.58%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.588244Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "59.49%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.588473Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "69.41%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.588709Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "79.32%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.588937Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "89.24%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589178Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers",
+      "progress": "99.16%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589203Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "total": 474
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589407Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "9.92%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589495Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "19.83%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589511Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "29.75%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589605Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "39.66%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589687Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "49.58%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589698Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "59.49%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589774Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "69.41%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589849Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "79.32%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589929Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "89.24%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.589941Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Writing headers hash index",
+      "progress": "99.16%"
+    },
+    "target": "sync::stages::headers",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.788459Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Commencing sync",
+      "stage_progress": 412,
+      "target": 885
+    },
+    "target": "sync::stages::bodies",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.851759Z",
+    "level": "DEBUG",
+    "fields": {
+      "return": "Ok(Some(TransactionRangeOutput { tx_range: 45894..55303, block_range: 412..=885, is_final_range: true }))"
+    },
+    "target": "sync::stages",
+    "span": {
+      "self": "ExecInput { target: Some(885), checkpoint: Some(StageCheckpoint { block_number: 411, stage_checkpoint: Some(Entities(EntitiesCheckpoint { processed: 35671, total: 45894 })) }) }",
+      "tx_threshold": 5000000,
+      "name": "next_block_range_with_transaction_threshold"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      },
+      {
+        "self": "ExecInput { target: Some(885), checkpoint: Some(StageCheckpoint { block_number: 411, stage_checkpoint: Some(Entities(EntitiesCheckpoint { processed: 35671, total: 45894 })) }) }",
+        "tx_threshold": 5000000,
+        "name": "next_block_range_with_transaction_threshold"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.851777Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Recovering senders",
+      "tx_range": "45894..55303"
+    },
+    "target": "sync::stages::sender_recovery",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.851882Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Calculated block numbers",
+      "block_body_indices_elapsed": "21.57\u00b5s",
+      "fold_elapsed": "24.986\u00b5s",
+      "len": 9409
+    },
+    "target": "sync::stages::sender_recovery",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.851887Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Sending batch for processing",
+      "tx_range": "45894..55303"
+    },
+    "target": "sync::stages::sender_recovery",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.851934Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Appending recovered senders to the database",
+      "tx_range": "45894..55303"
+    },
+    "target": "sync::stages::sender_recovery",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.889571Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Finished recovering senders batch",
+      "tx_range": "45894..55303"
+    },
+    "target": "sync::stages::sender_recovery",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.890766Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Calculating gas used from headers",
+      "range": "412..=885"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.892152Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Finished calculating gas used from headers",
+      "range": "412..=885",
+      "duration": "1.382081ms"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:24.892156Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Executing range",
+      "start": 412,
+      "end": 885
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:36.571227Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 412,
+      "end": 417,
+      "throughput": "39.98Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:47.502217Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 418,
+      "end": 423,
+      "throughput": "46.27Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:04:57.736669Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 424,
+      "end": 428,
+      "throughput": "50.81Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:05:08.733795Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 429,
+      "end": 434,
+      "throughput": "55.65Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:05:18.860715Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 435,
+      "end": 440,
+      "throughput": "59.96Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:05:29.424862Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 441,
+      "end": 448,
+      "throughput": "64.44Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:05:39.757412Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 449,
+      "end": 456,
+      "throughput": "68.25Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:05:50.206217Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 457,
+      "end": 465,
+      "throughput": "71.54Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:06:01.305603Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Executed block range",
+      "start": 466,
+      "end": 474,
+      "throughput": "73.48Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:06:11.098240Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Finished executing block range",
+      "start": 412,
+      "end": 885,
+      "throughput": "60.31Mgas/second"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:06:25.757336Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Execution time",
+      "block_fetch": "33.752694ms",
+      "execution": "106.163605489s",
+      "write_preparation": "4.823311ms",
+      "write": "14.659074241s"
+    },
+    "target": "sync::stages::execution",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:06:26.039443Z",
+    "level": "INFO",
+    "fields": {
+      "message": "Stage is always skipped"
+    },
+    "target": "sync::stages::merkle::unwind",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:06:26.039878Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Updating trie in chunks",
+      "current": "411",
+      "target": "885"
+    },
+    "target": "sync::stages::merkle::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-09-25T20:06:26.039883Z",
+    "level": "DEBUG",
+    "fields": {
+      "message": "Processing chunk",
+      "current": "411",
+      "target": "885",
+      "incremental_threshold": 7000,
+      "chunk_range": "412..=885"
+    },
+    "target": "sync::stages::merkle::exec",
+    "span": {
+      "name": "poll_next_event"
+    },
+    "spans": [
+      {
+        "name": "poll_next_event"
+      }
+    ]
+  }
+]

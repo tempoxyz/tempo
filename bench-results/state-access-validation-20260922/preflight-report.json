@@ -1,0 +1,104 @@
+{
+  "metadata": {
+    "scenario": "state_access_dependent",
+    "bloat_mib": "100000"
+  },
+  "blocks": [
+    {
+      "number": 140,
+      "tx_count": 1,
+      "gas_used": 8916510,
+      "timestamp_ms": 1790091440000
+    },
+    {
+      "number": 141,
+      "tx_count": 1,
+      "gas_used": 8916510,
+      "timestamp_ms": 1790091441000
+    },
+    {
+      "number": 142,
+      "tx_count": 1,
+      "gas_used": 8916510,
+      "timestamp_ms": 1790091441000
+    },
+    {
+      "number": 143,
+      "tx_count": 1,
+      "gas_used": 8916510,
+      "timestamp_ms": 1790091442000
+    },
+    {
+      "number": 144,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091442000
+    },
+    {
+      "number": 145,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091442000
+    },
+    {
+      "number": 146,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091443000
+    },
+    {
+      "number": 147,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091443000
+    },
+    {
+      "number": 148,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091444000
+    },
+    {
+      "number": 149,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091444000
+    },
+    {
+      "number": 150,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091445000
+    },
+    {
+      "number": 151,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091445000
+    },
+    {
+      "number": 152,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091445000
+    },
+    {
+      "number": 153,
+      "tx_count": 2,
+      "gas_used": 17833032,
+      "timestamp_ms": 1790091446000
+    },
+    {
+      "number": 154,
+      "tx_count": 1,
+      "gas_used": 8916522,
+      "timestamp_ms": 1790091446000
+    },
+    {
+      "number": 155,
+      "tx_count": 2,
+      "gas_used": 17833032,
+      "timestamp_ms": 1790091447000
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "status": "aborted-during-warmup",
+  "reason": "About 1130ms total build latency is too close to 1200ms deadline; retune to 7200 reads",
+  "planned_seconds": 1200,
+  "planned_warmup": 600,
+  "measurement_completed": false,
+  "results": "bench-results/20260925-160635-853",
+  "analysis": {
+    "from_unix_ms": 1790352910000,
+    "to_unix_ms": 1790353035122,
+    "duration_seconds": 125.122,
+    "attempts_started": 110,
+    "attempts_unfinished": 0,
+    "valid_attempt_execution": {
+      "count": 110,
+      "p50_ms": 563.532,
+      "p90_ms": 633.53,
+      "p95_ms": 677.889,
+      "p99_ms": 707.513,
+      "max_ms": 740.896,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "invalid_attempt_execution": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_attempts_on_cancelled_jobs": 21,
+    "cancelled_valid_execution": {
+      "count": 21,
+      "p50_ms": 619.93,
+      "p90_ms": 680.442,
+      "p95_ms": 686.89,
+      "p99_ms": 707.513,
+      "max_ms": 707.513,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_before_execution": {
+      "count": 110,
+      "p50_ms": 556.157,
+      "p90_ms": 607.305,
+      "p95_ms": 645.028,
+      "p99_ms": 670.759,
+      "max_ms": 692.141,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_build_elapsed_at_tx_finish": {
+      "count": 110,
+      "p50_ms": 1120.893,
+      "p90_ms": 1226.993,
+      "p95_ms": 1302.947,
+      "p99_ms": 1351.201,
+      "max_ms": 1399.654,
+      "above_900ms": 107,
+      "above_1200ms": 13
+    },
+    "proposal_jobs": 111,
+    "cancelled_jobs": 22,
+    "completed_jobs": 89,
+    "jobs_without_terminal_event": 0,
+    "cancellation_after_job_creation": {
+      "count": 22,
+      "p50_ms": 1202,
+      "p90_ms": 1203,
+      "p95_ms": 1203,
+      "p99_ms": 1203,
+      "max_ms": 1203,
+      "above_900ms": 22,
+      "above_1200ms": 22
+    },
+    "completed_builds": 88,
+    "completed_nonempty_build_elapsed": {
+      "count": 88,
+      "p50_ms": 1116.582376,
+      "p90_ms": 1141.849746,
+      "p95_ms": 1147.708277,
+      "p99_ms": 1158.5723759999998,
+      "max_ms": 1158.5723759999998,
+      "above_900ms": 85,
+      "above_1200ms": 0
+    },
+    "completed_build_execution_mgas_per_second": 17.758707464665548
+  },
+  "stopped_at": "2026-09-25T16:18:43.219Z",
+  "note": "Generator deliberately terminated to retune; interruption left a partial NDJSON transaction line and the sender exited. This is not a completed or correctness-audited benchmark."
+}

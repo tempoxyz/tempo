@@ -1,0 +1,1636 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index fb02f5c..b8b31b4 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -9088,7 +9088,6 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
+ [[package]]
+ name = "reth-basic-payload-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9115,7 +9114,6 @@ dependencies = [
+ [[package]]
+ name = "reth-chain-state"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9146,7 +9144,6 @@ dependencies = [
+ [[package]]
+ name = "reth-chainspec"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -9166,7 +9163,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-genesis",
+  "clap",
+@@ -9179,7 +9175,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli-commands"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -9264,7 +9259,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli-runner"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "reth-tasks",
+  "tokio",
+@@ -9274,7 +9268,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -9327,7 +9320,6 @@ dependencies = [
+ [[package]]
+ name = "reth-config"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "eyre",
+  "humantime-serde",
+@@ -9344,7 +9336,6 @@ dependencies = [
+ [[package]]
+ name = "reth-consensus"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -9358,7 +9349,6 @@ dependencies = [
+ [[package]]
+ name = "reth-consensus-common"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9371,7 +9361,6 @@ dependencies = [
+ [[package]]
+ name = "reth-consensus-debug-client"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9396,7 +9385,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "derive_more",
+@@ -9425,7 +9413,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9452,7 +9439,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db-common"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-genesis",
+@@ -9482,7 +9468,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db-models"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -9497,7 +9482,6 @@ dependencies = [
+ [[package]]
+ name = "reth-discv4"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -9522,7 +9506,6 @@ dependencies = [
+ [[package]]
+ name = "reth-discv5"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -9546,7 +9529,6 @@ dependencies = [
+ [[package]]
+ name = "reth-dns-discovery"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "dashmap",
+@@ -9570,7 +9552,6 @@ dependencies = [
+ [[package]]
+ name = "reth-downloaders"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9607,7 +9588,6 @@ dependencies = [
+ [[package]]
+ name = "reth-e2e-test-utils"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9666,7 +9646,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ecies"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "aes",
+  "alloy-primitives",
+@@ -9693,7 +9672,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-local"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -9716,7 +9694,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9743,7 +9720,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-tree"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -9799,7 +9775,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -9829,7 +9804,6 @@ dependencies = [
+ [[package]]
+ name = "reth-era"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9847,7 +9821,6 @@ dependencies = [
+ [[package]]
+ name = "reth-era-downloader"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "bytes",
+@@ -9863,7 +9836,6 @@ dependencies = [
+ [[package]]
+ name = "reth-era-utils"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -9887,7 +9859,6 @@ dependencies = [
+ [[package]]
+ name = "reth-errors"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "reth-consensus",
+  "reth-execution-errors",
+@@ -9898,7 +9869,6 @@ dependencies = [
+ [[package]]
+ name = "reth-eth-wire"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-primitives",
+@@ -9926,7 +9896,6 @@ dependencies = [
+ [[package]]
+ name = "reth-eth-wire-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -9949,7 +9918,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-rpc-types-engine",
+  "alloy-rpc-types-eth",
+@@ -9990,7 +9958,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-cli"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "clap",
+  "eyre",
+@@ -10013,7 +9980,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-consensus"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10029,7 +9995,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-engine-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -10045,7 +10010,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-forks"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eip2124",
+  "alloy-hardforks",
+@@ -10058,7 +10022,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-payload-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10088,7 +10051,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10101,7 +10063,6 @@ dependencies = [
+ [[package]]
+ name = "reth-etl"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "rayon",
+  "reth-db-api",
+@@ -10111,7 +10072,6 @@ dependencies = [
+ [[package]]
+ name = "reth-evm"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -10137,7 +10097,6 @@ dependencies = [
+ [[package]]
+ name = "reth-evm-ethereum"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10157,7 +10116,6 @@ dependencies = [
+ [[package]]
+ name = "reth-execution-cache"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "fixed-cache",
+@@ -10175,7 +10133,6 @@ dependencies = [
+ [[package]]
+ name = "reth-execution-errors"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-evm",
+  "alloy-primitives",
+@@ -10188,7 +10145,6 @@ dependencies = [
+ [[package]]
+ name = "reth-execution-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10207,7 +10163,6 @@ dependencies = [
+ [[package]]
+ name = "reth-exex"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10245,7 +10200,6 @@ dependencies = [
+ [[package]]
+ name = "reth-exex-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -10259,7 +10213,6 @@ dependencies = [
+ [[package]]
+ name = "reth-fs-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "serde",
+  "serde_json",
+@@ -10269,7 +10222,6 @@ dependencies = [
+ [[package]]
+ name = "reth-invalid-block-hooks"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10295,7 +10247,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ipc"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bytes",
+  "futures",
+@@ -10315,7 +10266,6 @@ dependencies = [
+ [[package]]
+ name = "reth-libmdbx"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bitflags 2.11.1",
+  "byteorder",
+@@ -10332,7 +10282,6 @@ dependencies = [
+ [[package]]
+ name = "reth-mdbx-sys"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bindgen",
+  "cc",
+@@ -10341,7 +10290,6 @@ dependencies = [
+ [[package]]
+ name = "reth-metrics"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "futures",
+  "libc",
+@@ -10355,7 +10303,6 @@ dependencies = [
+ [[package]]
+ name = "reth-net-banlist"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "ipnet",
+@@ -10364,7 +10311,6 @@ dependencies = [
+ [[package]]
+ name = "reth-net-nat"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "futures-util",
+  "if-addrs",
+@@ -10378,7 +10324,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10437,7 +10382,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10462,7 +10406,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-p2p"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -10486,7 +10429,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-peers"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -10501,7 +10443,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eip2124",
+  "humantime-serde",
+@@ -10515,7 +10456,6 @@ dependencies = [
+ [[package]]
+ name = "reth-nippy-jar"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "anyhow",
+  "bincode",
+@@ -10533,7 +10473,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-rpc-types-engine",
+  "eyre",
+@@ -10557,7 +10496,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10625,7 +10563,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-core"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10680,7 +10617,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-ethereum"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10733,7 +10669,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-ethstats"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10757,7 +10692,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-events"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10781,7 +10715,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-metrics"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bytes",
+  "eyre",
+@@ -10811,7 +10744,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "reth-chainspec",
+  "reth-db-api",
+@@ -10823,7 +10755,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10847,7 +10778,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-builder-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "pin-project",
+  "reth-payload-primitives",
+@@ -10859,7 +10789,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10882,7 +10811,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-validator"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-rpc-types-engine",
+@@ -10926,7 +10854,6 @@ dependencies = [
+ [[package]]
+ name = "reth-provider"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -10976,7 +10903,6 @@ dependencies = [
+ [[package]]
+ name = "reth-prune"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -11003,7 +10929,6 @@ dependencies = [
+ [[package]]
+ name = "reth-prune-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "arbitrary",
+@@ -11019,7 +10944,6 @@ dependencies = [
+ [[package]]
+ name = "reth-revm"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -11034,7 +10958,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-dyn-abi",
+@@ -11110,7 +11033,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-genesis",
+@@ -11140,7 +11062,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-network",
+  "alloy-provider",
+@@ -11183,7 +11104,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-convert"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-evm",
+@@ -11203,7 +11123,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-engine-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11234,7 +11153,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-eth-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-dyn-abi",
+@@ -11281,7 +11199,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-eth-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -11331,7 +11248,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-layer"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-rpc-types-engine",
+  "http 1.4.0",
+@@ -11347,7 +11263,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-server-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rpc-types-engine",
+@@ -11377,7 +11292,6 @@ dependencies = [
+ [[package]]
+ name = "reth-stages"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -11429,7 +11343,6 @@ dependencies = [
+ [[package]]
+ name = "reth-stages-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11457,7 +11370,6 @@ dependencies = [
+ [[package]]
+ name = "reth-stages-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "arbitrary",
+@@ -11471,7 +11383,6 @@ dependencies = [
+ [[package]]
+ name = "reth-static-file"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "parking_lot",
+@@ -11491,7 +11402,6 @@ dependencies = [
+ [[package]]
+ name = "reth-static-file-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "clap",
+@@ -11506,7 +11416,6 @@ dependencies = [
+ [[package]]
+ name = "reth-storage-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -11532,7 +11441,6 @@ dependencies = [
+ [[package]]
+ name = "reth-storage-errors"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11549,7 +11457,6 @@ dependencies = [
+ [[package]]
+ name = "reth-storage-overlay"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11577,7 +11484,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tasks"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "crossbeam-utils",
+  "dashmap",
+@@ -11598,7 +11504,6 @@ dependencies = [
+ [[package]]
+ name = "reth-testing-utils"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -11614,7 +11519,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tokio-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "tokio",
+  "tokio-stream",
+@@ -11624,7 +11528,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tracing"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "clap",
+  "eyre",
+@@ -11644,7 +11547,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tracing-otlp"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "base64 0.22.1",
+  "clap",
+@@ -11663,7 +11565,6 @@ dependencies = [
+ [[package]]
+ name = "reth-transaction-pool"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -11706,7 +11607,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -11732,7 +11632,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-common"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -11760,7 +11659,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-db"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "reth-db-api",
+@@ -11776,7 +11674,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-parallel"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-evm",
+  "alloy-primitives",
+@@ -11800,7 +11697,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-sparse"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-trie",
+@@ -13952,7 +13848,6 @@ dependencies = [
+  "tempo-precompiles",
+  "tempo-primitives",
+  "tempo-transaction-pool",
+- "tokio",
+  "tracing",
+ ]
+ 
+@@ -16235,3 +16130,155 @@ dependencies = [
+  "cc",
+  "pkg-config",
+ ]
++
++[[patch.unused]]
++name = "custom-hardforks"
++version = "0.1.0"
++
++[[patch.unused]]
++name = "ef-test-runner"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "ef-tests"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "example-beacon-api-sidecar-fetcher"
++version = "0.1.0"
++
++[[patch.unused]]
++name = "example-beacon-api-sse"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-bsc-p2p"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-auth-http-middleware"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-beacon-withdrawals"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-dev-node"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-engine-types"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-evm"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-inspector"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-node-components"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-payload-builder"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-rlpx-subprotocol"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-rpc-middleware"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-state-root"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-db-access"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-exex-test"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-full-contract-state"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "example-manual-p2p"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-network"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-network-proxy"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-network-txpool"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-node-builder-api"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-node-custom-rpc"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-node-event-hooks"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-polygon-p2p"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-rpc-db"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-txpool-tracing"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "exex-subscription"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-bb"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-exex-test-utils"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-payload-util"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-rpc-e2e-tests"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-snap-sync"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-storage-rpc-provider"
++version = "2.5.2"
+diff --git a/bench-e2e.nu b/bench-e2e.nu
+index 40a33a0..836e5bd 100644
+--- a/bench-e2e.nu
++++ b/bench-e2e.nu
+@@ -39,6 +39,7 @@ const PAYMENTS_BLOAT_WORST_CASE = {
+ const GENERAL_STATE_ACCESS_WORST_CASE = {
+     dependent_preset: "state_access_dependent"
+     predictable_preset: "state_access_predictable"
++    resident_preset: "state_access_resident"
+     tps: 50000
+     duration: 1200
+     summary_warmup_seconds: 600
+@@ -204,8 +205,25 @@ def bench-restore-at [state_path: string, mount_point: string, datadir: string]
+             return
+         }
+         print $"Restoring snapshot from ($datadir).virgin..."
+-        rm -rf $datadir
+-        ^cp -a $"($datadir).virgin" $datadir
++        let target = ($datadir | path expand)
++        let mount = ($mount_point | path expand)
++        # A not-yet-created target cannot be canonicalized, but its parent can.
++        let parent = ($target | path dirname | path expand)
++        if $parent != $mount or ($target | str ends-with ".virgin") {
++            print $"Refusing to replace unexpected scratch path: ($target)"
++            exit 1
++        }
++        # Nodes run in privileged scopes, so scratch descendants can be root-owned.
++        let removed = (^sudo -n rm -rf --one-file-system -- $target | complete)
++        if $removed.exit_code != 0 or ($target | path exists) {
++            print $"Scratch removal failed: ($removed.stderr)"
++            exit 1
++        }
++        let copied = (^cp -aT -- $"($datadir).virgin" $target | complete)
++        if $copied.exit_code != 0 {
++            print $"Snapshot copy failed: ($copied.stderr)"
++            exit 1
++        }
+     }
+ }
+ 
+@@ -1082,8 +1100,27 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
+ 
+     cleanup-local-e2e-processes
+-    bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
+-    bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
++    if not ($ctx | get -o single_restore | default false) {
++        bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
++        bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
++    }
++
++    if ($ctx | get -o observe_state_paths | default false) {
++        let checkpoint_tool = ($env.STATE_PATH_CHECKPOINT_TOOL? | default ($ctx.regenesis_tempo | path dirname | path join "read_finish_checkpoint"))
++        for datadir in [$ctx.a.datadir $ctx.b.datadir] {
++            let result = (run-external $checkpoint_tool ($datadir | path join "db") | complete)
++            if $result.exit_code != 0 {
++                print $"Cannot verify restored checkpoint: ($result.stderr)"
++                exit 1
++            }
++            let checkpoint = ($result.stdout | from json)
++            if $checkpoint.block_number != 0 {
++                print $"Ordinary control requires a genesis snapshot, got block ($checkpoint.block_number) at ($datadir)"
++                exit 1
++            }
++        }
++        print "  Verified both restored Finish checkpoints are at genesis."
++    }
+ 
+     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
+         if not ($path | path exists) {
+@@ -1113,7 +1150,18 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     let a_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-a"
+     let b_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-b"
+     for dir in [$a_log_dir $b_log_dir] {
+-        if ($dir | path exists) { rm -rf $dir }
++        if ($dir | path exists) {
++            let target = ($dir | path expand)
++            if ($target | path dirname) != ($LOCALNET_DIR | path expand) {
++                print $"Refusing to replace unexpected log path: ($target)"
++                exit 1
++            }
++            let removed = (^sudo -n rm -rf --one-file-system -- $target | complete)
++            if $removed.exit_code != 0 or ($target | path exists) {
++                print $"Log cleanup failed: ($removed.stderr)"
++                exit 1
++            }
++        }
+         mkdir $dir
+     }
+ 
+@@ -1199,6 +1247,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
+     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
+ 
++    if $phase_exit == 0 and $ctx.observe_state_paths and $ctx.preset in ["state_access_dependent" "history_code" "history_write"] {
++        print "  Persisting ordinary blocks before the history workload (avoids genesis Merkle rebuild)..."
++        ^node contrib/bench/state-path-observer.cjs prime --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --output $"($ctx.results_dir)/state-path-priming-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++
+     let tracy_output = $"($ctx.results_dir)/tracy-profile-($phase).tracy"
+     let tracy_log = $"($ctx.results_dir)/tracy-capture-($phase).log"
+     mut tracy_capture_started = false
+@@ -1235,6 +1289,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
+     let submit_rpc_url = if $ctx.isolated_roles { $a_rpc } else { [$a_rpc $b_rpc] | str join "," }
++    let observe_state_paths = ($ctx | get -o observe_state_paths | default false)
++    let observer_stop = $"($ctx.results_dir)/state-path-observer-($phase).stop"
++    if $phase_exit == 0 and $observe_state_paths {
++        job spawn {
++            ^node contrib/bench/state-path-observer.cjs watch --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --seconds (($ctx.duration + 600) | into string) --stop $observer_stop --output $"($ctx.results_dir)/state-path-observer-($phase).jsonl"
++        } | ignore
++    }
+ 
+     if $phase_exit == 0 {
+         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
+@@ -1300,6 +1361,19 @@ def run-local-e2e-phase [run: record, ctx: record] {
+         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
+     }
+ 
++    if $phase_exit == 0 and ($ctx | get -o validate_state_access | default false) {
++        print "  Auditing state-access receipts and traces after the measured load..."
++        ^node contrib/bench/state-access-validation.cjs audit --rpc $b_rpc --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++
++    if $phase_exit == 0 and $observe_state_paths {
++        print "  Auditing contract access paths and waiting for durable state/trie persistence..."
++        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --warmup-seconds ($ctx.summary_warmup_seconds | into string) --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++    if $observe_state_paths { "stop" | save -f $observer_stop }
++
+     if $tracy_capture_started {
+         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
+     }
+@@ -1457,6 +1531,10 @@ def "main render-txgen-spec" [
+ def "main e2e" [
+     --baseline: string                                  # Baseline git SHA/ref
+     --feature: string                                   # Feature git SHA/ref
++    --feature-binary: string = ""                       # Explicit local feature binary; recorded by SHA256, never cached
++    --xtask-binary: string = ""                         # Explicit genesis generator for zero-bloat local-binary initialization
++    --snapshot-suffix: string = ""                      # Separate snapshots; letters, digits, underscore, hyphen only
++    --single-restore                                    # One audited feature phase: reuse initial restore and retain stopped scratch
+     --preset: string = ""                               # Txgen preset name
+     --preset-path: string = ""                          # Pre-rendered txgen preset path
+     --tps: int = 50000                                  # Target TPS
+@@ -1469,6 +1547,8 @@ def "main e2e" [
+     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+     --bloat-keccak-signable-shared                       # Make the full shared bloat account range signable
+     --state-access-bloat                                  # Fill the benchmark predeploy with direct-storage pages
++    --validate-state-access                               # Audit sampled receipts and traces after the measured load
++    --observe-state-paths                                 # Audit ordinary read/write controls and observe durable persistence
+     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
+     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
+     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
+@@ -1511,6 +1591,23 @@ def "main e2e" [
+     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
+     --skip-summary                                       # Leave summary generation to a later workflow step
+ ] {
++    let feature_binary = if $feature_binary == "" { "" } else { $feature_binary | path expand }
++    let xtask_binary = if $xtask_binary == "" { "" } else { $xtask_binary | path expand }
++    if $snapshot_suffix != "" and not ($snapshot_suffix =~ '^[a-zA-Z0-9_-]+$') {
++        error make { msg: "--snapshot-suffix requires a simple filename suffix" }
++    }
++    if $single_restore and ($snapshot_suffix == "" or $run_pairs != 1 or $run_side != "feature" or not $observe_state_paths or $force_bloat or $init_only or $feature_binary == "") {
++        error make { msg: "--single-restore requires one observed local-binary feature phase and a dedicated prebuilt snapshot suffix" }
++    }
++    if $feature_binary != "" and ($run_side != "feature" or (($init_only or $force_bloat) and $bloat != 0)) {
++        error make { msg: "--feature-binary requires --run-side feature; initialization is restricted to --bloat 0" }
++    }
++    if $feature_binary != "" and not ($feature_binary | path exists) {
++        error make { msg: $"Feature binary not found: ($feature_binary)" }
++    }
++    if $xtask_binary != "" and ($feature_binary == "" or $bloat != 0 or not ($xtask_binary | path exists)) {
++        error make { msg: "--xtask-binary requires an existing executable, --feature-binary, and --bloat 0" }
++    }
+     let preset_spec = if $preset_path == "" {
+         txgen-resolve-bench-spec $preset
+     } else {
+@@ -1522,6 +1619,12 @@ def "main e2e" [
+         }
+     }
+     let preset_path = $preset_spec.spec_path
++    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write" "state_access_dependent" "history_code" "history_write"]) {
++        error make { msg: "--observe-state-paths requires an isolated supported state-path preset" }
++    }
++    if ($preset in ["history_code" "history_write"] or ($preset == "state_access_dependent" and $observe_state_paths)) and (not $state_access_bloat or $snapshot_suffix != "history_paths" or not $observe_state_paths) {
++        error make { msg: "History presets require the dedicated history_paths state-access fixture and observer" }
++    }
+     if not ($preset_path | path exists) {
+         print $"Error: txgen preset file not found: ($preset_path)"
+         exit 1
+@@ -1610,8 +1713,9 @@ def "main e2e" [
+     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
+     let bloat_mode_suffix = if $state_access_bloat { "_state_access" } else if $bloat_keccak_signable_shared { "_full_signable" } else { "" }
+     let role_mode_suffix = if $isolated_roles { "_isolated_roles" } else { "" }
+-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
+-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)"
++    let extra_suffix = if $snapshot_suffix == "" { "" } else { $"_($snapshot_suffix)" }
++    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)($extra_suffix)"
++    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($bloat_mode_suffix)($role_mode_suffix)($extra_suffix)"
+     let a_identity = $a_db
+     let b_identity = $b_db
+     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
+@@ -1645,6 +1749,9 @@ def "main e2e" [
+ 
+     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db $isolated_roles)
+     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
++    if $feature_binary != "" and $should_init_snapshots and ($bloat_mib != 0 or $xtask_binary == "") {
++        error make { msg: "Local-binary initialization requires --bloat 0 and --xtask-binary; no dump import is allowed" }
++    }
+     if (not $snapshots_ready) and (not $force_bloat) {
+         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
+         let missing_a = (e2e-snapshot-missing-files $a_db)
+@@ -1669,14 +1776,21 @@ def "main e2e" [
+         mkdir $E2E_BLOAT_TMP_DIR
+ 
+         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
+-        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
++        if $feature_binary == "" {
++            build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
++        }
++        let tempo_bin = if $feature_binary != "" { $feature_binary } else if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+         let genesis_accounts = ([$accounts 3] | math max) + 1
+         let committee = if $isolated_roles { $a_validator } else { $E2E_VALIDATORS }
+         let follower_args = if $isolated_roles { ["--followers" $b_validator] } else { [] }
+         let state_access_args = if $state_access_bloat { ["--state-access-benchmark"] } else { [] }
+         print $"Generating local e2e committee: ($committee)"
+-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args ...$state_access_args
++        if $xtask_binary != "" {
++            run-external $xtask_binary "generate-localnet" "-o" $init_dir "--accounts" ($genesis_accounts | into string) "--validators" $committee ...$follower_args "--seed" ($E2E_SEED | into string) "--force" ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
++        } else {
++            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args ...$state_access_args
++        }
++        if $env.LAST_EXIT_CODE != 0 { error make { msg: "Localnet generation failed" } }
+ 
+         let trusted_peers = (trusted-peers-from-localnet $init_dir)
+         if $trusted_peers == "" {
+@@ -1753,6 +1867,13 @@ def "main e2e" [
+     mkdir $results_dir
+     print $"BENCH_RESULTS_DIR=($results_dir)"
+     cp $preset_path $"($results_dir)/txgen-spec.yml"
++    if $feature_binary != "" {
++        let digest = (^sha256sum $feature_binary | split row " " | first)
++        let version = (run-external $feature_binary "--version" | complete)
++        if $version.exit_code != 0 { error make { msg: "Local feature binary version check failed" } }
++        { path: $feature_binary, sha256: $digest, version: $version.stdout, local_override: true }
++            | to json | save -f $"($results_dir)/node-binary-feature.json"
++    }
+ 
+     git worktree prune
+     mkdir $BENCH_WORKTREES_DIR
+@@ -1793,7 +1914,7 @@ def "main e2e" [
+     if $needs_baseline {
+         $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
+     }
+-    if $needs_feature {
++    if $needs_feature and $feature_binary == "" {
+         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
+     }
+     $builds | par-each { |b|
+@@ -1804,7 +1925,7 @@ def "main e2e" [
+         }
+     } | ignore
+     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
+-    let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
++    let feature_tempo = if $feature_binary != "" { $feature_binary } else if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+     let regenesis_tempo = if $regenesis_needed {
+         if $needs_feature { $feature_tempo } else { $baseline_tempo }
+     } else { "" }
+@@ -1849,6 +1970,7 @@ def "main e2e" [
+         preset_path: $preset_path
+         tps: $tps
+         duration: $duration
++        summary_warmup_seconds: $summary_warmup_seconds
+         accounts: $accounts
+         max_concurrent_requests: $max_concurrent_requests
+         scrape_interval_ms: $scrape_interval_ms
+@@ -1886,6 +2008,9 @@ def "main e2e" [
+         regenesis_tempo: $regenesis_tempo
+         tracing_otlp: $tracing_otlp
+         isolated_roles: $isolated_roles
++        validate_state_access: $validate_state_access
++        observe_state_paths: $observe_state_paths
++        single_restore: $single_restore
+     }
+ 
+     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+@@ -1977,8 +2102,10 @@ def "main e2e" [
+         try { git worktree remove --force $feature_wt } catch { }
+     }
+     cleanup-local-e2e-processes
+-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
++    if not $single_restore {
++        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
++        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
++    }
+     if $e2e_exit != 0 {
+         exit $e2e_exit
+     }
+@@ -2048,6 +2175,8 @@ def "main general-state-access-worst-case" [
+     --baseline: string = "HEAD"                         # Baseline git SHA/ref
+     --feature: string = "HEAD"                          # Feature git SHA/ref
+     --predictable                                       # Use the calldata-determined control workload
++    --resident                                          # Keep the same database but read one cache-resident page
++    --validate-state-access                             # Audit sampled receipts and traces after the measured load
+     --tps: int = $GENERAL_STATE_ACCESS_WORST_CASE.tps   # Target TPS
+     --duration: int = $GENERAL_STATE_ACCESS_WORST_CASE.duration # Duration in seconds
+     --summary-warmup-seconds: int = $GENERAL_STATE_ACCESS_WORST_CASE.summary_warmup_seconds # Initial seconds excluded from summary
+@@ -2063,7 +2192,12 @@ def "main general-state-access-worst-case" [
+     --init-only                                         # Build snapshots without running load
+     --no-cache                                          # Skip binary cache
+ ] {
+-    let preset = if $predictable {
++    if $predictable and $resident {
++        error make { msg: "--predictable and --resident are mutually exclusive" }
++    }
++    let preset = if $resident {
++        $GENERAL_STATE_ACCESS_WORST_CASE.resident_preset
++    } else if $predictable {
+         $GENERAL_STATE_ACCESS_WORST_CASE.predictable_preset
+     } else {
+         $GENERAL_STATE_ACCESS_WORST_CASE.dependent_preset
+@@ -2090,6 +2224,7 @@ def "main general-state-access-worst-case" [
+         --summary-warmup-seconds $summary_warmup_seconds
+         --bloat $GENERAL_STATE_ACCESS_WORST_CASE.bloat
+         --state-access-bloat
++        --validate-state-access=($validate_state_access)
+         --isolated-roles
+         --token-count 1
+         --gas-limit $GENERAL_STATE_ACCESS_WORST_CASE.gas_limit
+diff --git a/contrib/bench/txgen/helpers.nu b/contrib/bench/txgen/helpers.nu
+index 69392e2..0db0d20 100644
+--- a/contrib/bench/txgen/helpers.nu
++++ b/contrib/bench/txgen/helpers.nu
+@@ -729,8 +729,8 @@ def txgen-run-streaming-command [command: string] {
+         "; exit 0"
+     ] | str join)
+ 
+-    # Redirect explicitly because this helper's caller captures its return value.
+-    bash -lc $wrapped_command out> /dev/stdout err> /dev/stderr
++    # Append explicitly: callers capture the status, and stdout may be a service log.
++    bash -lc $wrapped_command out>> /dev/stdout err>> /dev/stderr
+     let exit_code = (try {
+         open --raw $status_path | str trim | into int
+     } catch {
+diff --git a/crates/consensus/src/executor/mod.rs b/crates/consensus/src/executor/mod.rs
+index e136ae6..b6f3cd1 100644
+--- a/crates/consensus/src/executor/mod.rs
++++ b/crates/consensus/src/executor/mod.rs
+@@ -200,10 +200,12 @@ impl ExecutionLayer for Arc<TempoFullNode> {
+         &self,
+         payload_id: PayloadId,
+     ) -> impl Future<Output = Option<eyre::Result<TempoBuiltPayload>>> + Send + 'static {
+-        let builder = self.payload_builder_handle.clone();
++        // Register resolution eagerly so dropping even an unpolled future cancels the job.
++        let resolution = self
++            .payload_builder_handle
++            .resolve_kind(payload_id, PayloadKind::WaitForPending);
+         async move {
+-            builder
+-                .resolve_kind(payload_id, PayloadKind::WaitForPending)
++            resolution
+                 .await
+                 .map(|resolved| resolved.map_err(Into::into))
+         }
+diff --git a/crates/payload/builder/Cargo.toml b/crates/payload/builder/Cargo.toml
+index d2b916f..8997cc4 100644
+--- a/crates/payload/builder/Cargo.toml
++++ b/crates/payload/builder/Cargo.toml
+@@ -49,7 +49,6 @@ alloy-rlp.workspace = true
+ metrics.workspace = true
+ tracing.workspace = true
+ crossbeam-channel.workspace = true
+-tokio.workspace = true
+ 
+ [dev-dependencies]
+ proptest.workspace = true
+diff --git a/crates/payload/builder/src/lib.rs b/crates/payload/builder/src/lib.rs
+index 45992c4..06a3b2a 100644
+--- a/crates/payload/builder/src/lib.rs
++++ b/crates/payload/builder/src/lib.rs
+@@ -4,6 +4,7 @@
+ #![cfg_attr(docsrs, feature(doc_cfg))]
+ 
+ mod budget;
++mod completion;
+ mod encode;
+ mod metrics;
+ mod prewarming;
+@@ -78,7 +79,6 @@ use tempo_transaction_pool::{
+     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+     transaction::TempoPoolTransactionError,
+ };
+-use tokio::sync::oneshot;
+ use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+ 
+ /// Conservative estimate for non-transaction execution block RLP bytes.
+@@ -321,6 +321,17 @@ where
+             };
+         }
+ 
++        macro_rules! await_completion {
++            ($receiver:expr) => {
++                match completion::recv($receiver, &cancel) {
++                    Err(completion::CompletionError::Cancelled) => {
++                        return Ok(BuildOutcome::Cancelled);
++                    }
++                    result => result,
++                }
++            };
++        }
++
+         check_cancel!();
+ 
+         let start = Instant::now();
+@@ -809,11 +820,14 @@ where
+         // merge all transitions into bundle state before deriving the hashed post-state
+         db.merge_transitions(BundleRetention::Reverts);
+ 
+-        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
++        let hashed_state = match state_root_handle
+             .as_mut()
+             .and_then(|handle| handle.try_take_hashed_state_rx())
+-            .map(|rx| rx.recv())
+         {
++            Some(rx) => await_completion!(rx).ok(),
++            None => None,
++        };
++        let hashed_state = if let Some(hashed_state) = hashed_state {
+             hashed_state
+         } else {
+             Arc::new(
+@@ -835,7 +849,10 @@ where
+             } else if let Some(mut handle) = state_root_handle {
+                 let state_root_wait_start = Instant::now();
+                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
+-                match handle.state_root() {
++                let outcome = await_completion!(handle.take_state_root_rx())
++                    .map_err(|err| err.to_string())
++                    .and_then(|outcome| outcome.map_err(|err| err.to_string()));
++                match outcome {
+                     Ok(outcome) => {
+                         let elapsed = state_root_wait_start.elapsed();
+                         self.metrics
+@@ -865,7 +882,7 @@ where
+             .unzip();
+ 
+         let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
+-            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
++            let (bal, bal_hash) = await_completion!(bal_rx).map_err(PayloadBuilderError::other)?;
+             (Some(bal), Some(bal_hash))
+         } else {
+             (None, None)
+@@ -890,9 +907,9 @@ where
+             transactions,
+             senders,
+             encoded_block_transactions,
+-        } = roots_rx
+-            .blocking_recv()
+-            .map_err(PayloadBuilderError::other)?;
++        } = await_completion!(roots_rx).map_err(PayloadBuilderError::other)?;
++
++        check_cancel!();
+ 
+         let block = self.evm_config.block_assembler.assemble_block(
+             BlockAssemblerInput::new(
+@@ -1097,14 +1114,14 @@ where
+         &self,
+     ) -> (
+         Sender<(BestTransaction, TempoReceipt)>,
+-        oneshot::Receiver<RootsTaskResult>,
++        mpsc::Receiver<RootsTaskResult>,
+     ) {
+         let (transactions_tx, transactions_rx) =
+             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+-        let (result_tx, result_rx) = oneshot::channel();
++        let (result_tx, result_rx) = mpsc::channel();
+ 
+         self.executor
+-            .spawn_blocking_named("builder-roots-task", || {
++            .spawn_blocking_named("builder-roots-task", move || {
+                 let mut transactions = Vec::new();
+                 let mut senders = Vec::new();
+ 
+@@ -1148,32 +1165,33 @@ where
+ 
+     fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
+-        let (bal_tx, bal_rx) = oneshot::channel();
+-        self.executor.spawn_blocking_named("builder-bal-task", || {
+-            let mut bal_state =
+-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+-            for msg in task_rx {
+-                match msg {
+-                    BalMessage::BumpIndex => {
+-                        bal_state.bump_bal_index();
+-                    }
+-                    BalMessage::State(state) => {
+-                        bal_state.commit(&state);
+-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
+-                            state_root_task_hook.on_state(state);
++        let (bal_tx, bal_rx) = mpsc::channel();
++        self.executor
++            .spawn_blocking_named("builder-bal-task", move || {
++                let mut bal_state =
++                    reth_revm::database_interface::bal::BalState::new().with_bal_builder();
++                for msg in task_rx {
++                    match msg {
++                        BalMessage::BumpIndex => {
++                            bal_state.bump_bal_index();
++                        }
++                        BalMessage::State(state) => {
++                            bal_state.commit(&state);
++                            if let Some(state_root_task_hook) = &mut state_root_task_hook {
++                                state_root_task_hook.on_state(state);
++                            }
+                         }
+                     }
+                 }
+-            }
+ 
+-            drop(state_root_task_hook);
+-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+-            let mut encoded = Vec::new();
+-            bal.encode(&mut encoded);
+-            let bal_hash = keccak256(&encoded);
++                drop(state_root_task_hook);
++                let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
++                let mut encoded = Vec::new();
++                bal.encode(&mut encoded);
++                let bal_hash = keccak256(&encoded);
+ 
+-            let _ = bal_tx.send((encoded.into(), bal_hash));
+-        });
++                let _ = bal_tx.send((encoded.into(), bal_hash));
++            });
+ 
+         BalTaskHandle {
+             msg_tx: task_tx,
+@@ -1184,7 +1202,7 @@ where
+ 
+ struct BalTaskHandle {
+     msg_tx: mpsc::Sender<BalMessage>,
+-    bal_rx: oneshot::Receiver<(Bytes, B256)>,
++    bal_rx: mpsc::Receiver<(Bytes, B256)>,
+ }
+ 
+ impl BalTaskHandle {
+@@ -1199,7 +1217,7 @@ impl BalTaskHandle {
+         let _ = self.msg_tx.send(BalMessage::BumpIndex);
+     }
+ 
+-    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
++    fn into_bal_rx(self) -> mpsc::Receiver<(Bytes, B256)> {
+         self.bal_rx
+     }
+ }
+diff --git a/crates/payload/builder/src/prewarming.rs b/crates/payload/builder/src/prewarming.rs
+index 217e7f1..25254ca 100644
+--- a/crates/payload/builder/src/prewarming.rs
++++ b/crates/payload/builder/src/prewarming.rs
+@@ -908,7 +908,6 @@ mod tests {
+         context.evm_env.block_env.basefee = 0;
+ 
+         let pool = WorkerPool::new(1, "prewarm-actions-test");
+-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+ 
+         pool.install_fn(|| {
+             let failed_action = StorageAction::Sstore(
+@@ -917,9 +916,15 @@ mod tests {
+                 U256::from(2),
+                 U256::from(3),
+             );
+-            WorkerPool::with_worker_mut(|worker| {
+-                let evm = worker
+-                    .get_mut::<PrewarmEvmState>()
++            PREWARM_EVM.with_borrow_mut(|slot| {
++                *slot = Some(ThreadPrewarmEvm {
++                    generation: context.generation,
++                    evm: context.evm_for_ctx(),
++                });
++                let evm = slot
++                    .as_mut()
++                    .expect("thread prewarm state")
++                    .evm
+                     .as_mut()
+                     .expect("prewarm EVM");
+                 // Model an action recorded before the failed execution returned an error.
+@@ -933,22 +938,25 @@ mod tests {
+                 None,
+             );
+             assert!(failed.replay.is_none());
+-            WorkerPool::with_worker_mut(|worker| {
+-                let evm = worker
+-                    .get_mut::<PrewarmEvmState>()
++            PREWARM_EVM.with_borrow_mut(|slot| {
++                let evm = slot
++                    .as_mut()
++                    .expect("thread prewarm state")
++                    .evm
+                     .as_mut()
+                     .expect("prewarm EVM");
+                 assert_eq!(evm.take_actions(), Some(Vec::new()));
+             });
+ 
+             let successful = BestTransactionsPrewarming::prewarm_transaction(
+-                context,
++                context.clone(),
+                 test_payment_tx(sender, 500_000),
+                 None,
+             );
+             let replay = successful.replay.expect("successful prewarm replay");
+             assert!(!replay.actions.is_empty());
+             assert!(!replay.actions.contains(&failed_action));
++            clear_prewarm_evm(context.generation);
+         });
+ 
+         pool.clear();
+diff --git a/tempo.nu b/tempo.nu
+index 6eb60cf..e0945f3 100755
+--- a/tempo.nu
++++ b/tempo.nu
+@@ -192,7 +192,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
+ 
+ # Check if schelk is available
+ def has-schelk [] {
+-    (which schelk | length) > 0
++    ($env.BENCH_DISABLE_SCHELK? | default "") != "1" and (which schelk | length) > 0
+ }
+ 
+ # Check if MinIO client (mc) is available

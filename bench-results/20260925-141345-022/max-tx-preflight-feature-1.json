@@ -1,0 +1,69 @@
+{
+  "ok": true,
+  "scenario": "history_code_max",
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0x42790d8356689e6b8f2eca61839c53ecb0de3ffefe0949835d024ddf5592208a",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0xc873c5da36daabf1387f53be63389a4683c5fa0d656bb856712bca5735ce661d",
+    "state_root": "0x8440accb8cbcabe16279e2978c303d9194cc56ad224978dd16a46c2bb9a1a513",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1
+  },
+  "initialization": {
+    "type": "0x0",
+    "status": "0x1",
+    "cumulativeGasUsed": "0xc45ca",
+    "logs": [
+      {
+        "address": "0x20c0000000000000000000000000000000000001",
+        "topics": [
+          "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+          "0x000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+          "0x000000000000000000000000feec000000000000000000000000000000000000"
+        ],
+        "data": "0x0000000000000000000000000000000000000000000000000000000000013a2e",
+        "blockHash": "0x9db44aed57ec7dd265eed2e11555ca1c743702d8bbf7252edf6e23a4420d746f",
+        "blockNumber": "0x3a",
+        "blockTimestamp": "0x6ab68380",
+        "transactionHash": "0x942130fb14c060c9fcc4b07223bd20657dd3a60a97e24c810361c66eb0ff3e33",
+        "transactionIndex": "0x0",
+        "logIndex": "0x0",
+        "removed": false
+      }
+    ],
+    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000008000000000008000000000000000000000000000000000000000000000000000100000000000000000000000000000010000000000000000000000000000000000020000000000000100000000040000000000000000020000000000000000000000000000000000000000000000000000000000000000002000000200000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "transactionHash": "0x942130fb14c060c9fcc4b07223bd20657dd3a60a97e24c810361c66eb0ff3e33",
+    "transactionIndex": "0x0",
+    "blockHash": "0x9db44aed57ec7dd265eed2e11555ca1c743702d8bbf7252edf6e23a4420d746f",
+    "blockNumber": "0x3a",
+    "gasUsed": "0xc45ca",
+    "effectiveGasPrice": "0x174876e800",
+    "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "to": "0x535441544541434345535342454e434800000000",
+    "contractAddress": null
+  },
+  "probes": [
+    {
+      "salt": 19,
+      "gas_used": 29822609,
+      "output": "0xf2b8624ee00d1e553c52254773b59d2327628ef5d2defdf8d0d4a88e5539681f"
+    },
+    {
+      "salt": 1337,
+      "gas_used": 29842621,
+      "output": "0xde1df52dae5b9bfdfd9002db6544cae9e0dd6afa9834d7199fceeb65178f9b32"
+    },
+    {
+      "salt": 20260925,
+      "gas_used": 29840145,
+      "output": "0x4ff6f7830132699fe8c26c5927bff58c058be6521860aa3bde62129ce2802b7b"
+    }
+  ],
+  "caveat": "One small excluded transaction initializes the cursor before steady-state load. Direct eth_call calibration is not a full fee-paying transaction. Receipt gas, opcode coldness and populated targets are audited after timed load."
+}

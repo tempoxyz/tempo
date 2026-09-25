@@ -1,0 +1,254 @@
+diff --git a/bench-e2e.nu b/bench-e2e.nu
+index 40a33a0..a413b18 100644
+--- a/bench-e2e.nu
++++ b/bench-e2e.nu
+@@ -39,6 +39,7 @@ const PAYMENTS_BLOAT_WORST_CASE = {
+ const GENERAL_STATE_ACCESS_WORST_CASE = {
+     dependent_preset: "state_access_dependent"
+     predictable_preset: "state_access_predictable"
++    resident_preset: "state_access_resident"
+     tps: 50000
+     duration: 1200
+     summary_warmup_seconds: 600
+@@ -204,8 +205,23 @@ def bench-restore-at [state_path: string, mount_point: string, datadir: string]
+             return
+         }
+         print $"Restoring snapshot from ($datadir).virgin..."
+-        rm -rf $datadir
+-        ^cp -a $"($datadir).virgin" $datadir
++        let target = ($datadir | path expand)
++        let mount = ($mount_point | path expand)
++        if ($target | path dirname) != $mount or ($target | str ends-with ".virgin") {
++            print $"Refusing to replace unexpected scratch path: ($target)"
++            exit 1
++        }
++        # Nodes run in privileged scopes, so scratch descendants can be root-owned.
++        let removed = (^sudo -n rm -rf --one-file-system -- $target | complete)
++        if $removed.exit_code != 0 or ($target | path exists) {
++            print $"Scratch removal failed: ($removed.stderr)"
++            exit 1
++        }
++        let copied = (^cp -aT -- $"($datadir).virgin" $target | complete)
++        if $copied.exit_code != 0 {
++            print $"Snapshot copy failed: ($copied.stderr)"
++            exit 1
++        }
+     }
+ }
+ 
+@@ -1085,6 +1101,23 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
+     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+ 
++    if ($ctx | get -o observe_state_paths | default false) {
++        let checkpoint_tool = ($ctx.regenesis_tempo | path dirname | path join "read_finish_checkpoint")
++        for datadir in [$ctx.a.datadir $ctx.b.datadir] {
++            let result = (run-external $checkpoint_tool ($datadir | path join "db") | complete)
++            if $result.exit_code != 0 {
++                print $"Cannot verify restored checkpoint: ($result.stderr)"
++                exit 1
++            }
++            let checkpoint = ($result.stdout | from json)
++            if $checkpoint.block_number != 0 {
++                print $"Ordinary control requires a genesis snapshot, got block ($checkpoint.block_number) at ($datadir)"
++                exit 1
++            }
++        }
++        print "  Verified both restored Finish checkpoints are at genesis."
++    }
++
+     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
+         if not ($path | path exists) {
+             print $"Error: required e2e path does not exist after snapshot recovery: ($path)"
+@@ -1113,7 +1146,18 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     let a_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-a"
+     let b_log_dir = $"($LOCALNET_DIR)/logs-e2e-local-($phase)-b"
+     for dir in [$a_log_dir $b_log_dir] {
+-        if ($dir | path exists) { rm -rf $dir }
++        if ($dir | path exists) {
++            let target = ($dir | path expand)
++            if ($target | path dirname) != ($LOCALNET_DIR | path expand) {
++                print $"Refusing to replace unexpected log path: ($target)"
++                exit 1
++            }
++            let removed = (^sudo -n rm -rf --one-file-system -- $target | complete)
++            if $removed.exit_code != 0 or ($target | path exists) {
++                print $"Log cleanup failed: ($removed.stderr)"
++                exit 1
++            }
++        }
+         mkdir $dir
+     }
+ 
+@@ -1235,6 +1279,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
+     let submit_rpc_url = if $ctx.isolated_roles { $a_rpc } else { [$a_rpc $b_rpc] | str join "," }
++    let observe_state_paths = ($ctx | get -o observe_state_paths | default false)
++    let observer_stop = $"($ctx.results_dir)/state-path-observer-($phase).stop"
++    if $phase_exit == 0 and $observe_state_paths {
++        job spawn {
++            ^node contrib/bench/state-path-observer.cjs watch --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --seconds (($ctx.duration + 600) | into string) --stop $observer_stop --output $"($ctx.results_dir)/state-path-observer-($phase).jsonl"
++        } | ignore
++    }
+ 
+     if $phase_exit == 0 {
+         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
+@@ -1300,6 +1351,19 @@ def run-local-e2e-phase [run: record, ctx: record] {
+         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
+     }
+ 
++    if $phase_exit == 0 and ($ctx | get -o validate_state_access | default false) {
++        print "  Auditing state-access receipts and traces after the measured load..."
++        ^node contrib/bench/state-access-validation.cjs audit --rpc $b_rpc --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++
++    if $phase_exit == 0 and $observe_state_paths {
++        print "  Auditing ordinary contract calls and waiting for durable state/trie persistence..."
++        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++    if $observe_state_paths { "stop" | save -f $observer_stop }
++
+     if $tracy_capture_started {
+         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
+     }
+@@ -1457,6 +1521,7 @@ def "main render-txgen-spec" [
+ def "main e2e" [
+     --baseline: string                                  # Baseline git SHA/ref
+     --feature: string                                   # Feature git SHA/ref
++    --feature-binary: string = ""                       # Explicit local feature binary; recorded by SHA256, never cached
+     --preset: string = ""                               # Txgen preset name
+     --preset-path: string = ""                          # Pre-rendered txgen preset path
+     --tps: int = 50000                                  # Target TPS
+@@ -1469,6 +1534,8 @@ def "main e2e" [
+     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+     --bloat-keccak-signable-shared                       # Make the full shared bloat account range signable
+     --state-access-bloat                                  # Fill the benchmark predeploy with direct-storage pages
++    --validate-state-access                               # Audit sampled receipts and traces after the measured load
++    --observe-state-paths                                 # Audit ordinary read/write controls and observe durable persistence
+     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
+     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
+     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
+@@ -1511,6 +1578,13 @@ def "main e2e" [
+     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
+     --skip-summary                                       # Leave summary generation to a later workflow step
+ ] {
++    let feature_binary = if $feature_binary == "" { "" } else { $feature_binary | path expand }
++    if $feature_binary != "" and ($run_side != "feature" or $init_only or $force_bloat) {
++        error make { msg: "--feature-binary requires --run-side feature and existing snapshots" }
++    }
++    if $feature_binary != "" and not ($feature_binary | path exists) {
++        error make { msg: $"Feature binary not found: ($feature_binary)" }
++    }
+     let preset_spec = if $preset_path == "" {
+         txgen-resolve-bench-spec $preset
+     } else {
+@@ -1522,6 +1596,9 @@ def "main e2e" [
+         }
+     }
+     let preset_path = $preset_spec.spec_path
++    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write"]) {
++        error make { msg: "--observe-state-paths requires an isolated ordinary state_paths_read/write preset" }
++    }
+     if not ($preset_path | path exists) {
+         print $"Error: txgen preset file not found: ($preset_path)"
+         exit 1
+@@ -1645,6 +1722,9 @@ def "main e2e" [
+ 
+     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db $isolated_roles)
+     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
++    if $feature_binary != "" and $should_init_snapshots {
++        error make { msg: "--feature-binary requires complete existing snapshots; refusing implicit initialization" }
++    }
+     if (not $snapshots_ready) and (not $force_bloat) {
+         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
+         let missing_a = (e2e-snapshot-missing-files $a_db)
+@@ -1753,6 +1833,13 @@ def "main e2e" [
+     mkdir $results_dir
+     print $"BENCH_RESULTS_DIR=($results_dir)"
+     cp $preset_path $"($results_dir)/txgen-spec.yml"
++    if $feature_binary != "" {
++        let digest = (^sha256sum $feature_binary | split row " " | first)
++        let version = (run-external $feature_binary "--version" | complete)
++        if $version.exit_code != 0 { error make { msg: "Local feature binary version check failed" } }
++        { path: $feature_binary, sha256: $digest, version: $version.stdout, local_override: true }
++            | to json | save -f $"($results_dir)/node-binary-feature.json"
++    }
+ 
+     git worktree prune
+     mkdir $BENCH_WORKTREES_DIR
+@@ -1793,7 +1880,7 @@ def "main e2e" [
+     if $needs_baseline {
+         $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
+     }
+-    if $needs_feature {
++    if $needs_feature and $feature_binary == "" {
+         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
+     }
+     $builds | par-each { |b|
+@@ -1804,7 +1891,7 @@ def "main e2e" [
+         }
+     } | ignore
+     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
+-    let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
++    let feature_tempo = if $feature_binary != "" { $feature_binary } else if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+     let regenesis_tempo = if $regenesis_needed {
+         if $needs_feature { $feature_tempo } else { $baseline_tempo }
+     } else { "" }
+@@ -1886,6 +1973,8 @@ def "main e2e" [
+         regenesis_tempo: $regenesis_tempo
+         tracing_otlp: $tracing_otlp
+         isolated_roles: $isolated_roles
++        validate_state_access: $validate_state_access
++        observe_state_paths: $observe_state_paths
+     }
+ 
+     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+@@ -2048,6 +2137,8 @@ def "main general-state-access-worst-case" [
+     --baseline: string = "HEAD"                         # Baseline git SHA/ref
+     --feature: string = "HEAD"                          # Feature git SHA/ref
+     --predictable                                       # Use the calldata-determined control workload
++    --resident                                          # Keep the same database but read one cache-resident page
++    --validate-state-access                             # Audit sampled receipts and traces after the measured load
+     --tps: int = $GENERAL_STATE_ACCESS_WORST_CASE.tps   # Target TPS
+     --duration: int = $GENERAL_STATE_ACCESS_WORST_CASE.duration # Duration in seconds
+     --summary-warmup-seconds: int = $GENERAL_STATE_ACCESS_WORST_CASE.summary_warmup_seconds # Initial seconds excluded from summary
+@@ -2063,7 +2154,12 @@ def "main general-state-access-worst-case" [
+     --init-only                                         # Build snapshots without running load
+     --no-cache                                          # Skip binary cache
+ ] {
+-    let preset = if $predictable {
++    if $predictable and $resident {
++        error make { msg: "--predictable and --resident are mutually exclusive" }
++    }
++    let preset = if $resident {
++        $GENERAL_STATE_ACCESS_WORST_CASE.resident_preset
++    } else if $predictable {
+         $GENERAL_STATE_ACCESS_WORST_CASE.predictable_preset
+     } else {
+         $GENERAL_STATE_ACCESS_WORST_CASE.dependent_preset
+@@ -2090,6 +2186,7 @@ def "main general-state-access-worst-case" [
+         --summary-warmup-seconds $summary_warmup_seconds
+         --bloat $GENERAL_STATE_ACCESS_WORST_CASE.bloat
+         --state-access-bloat
++        --validate-state-access=($validate_state_access)
+         --isolated-roles
+         --token-count 1
+         --gas-limit $GENERAL_STATE_ACCESS_WORST_CASE.gas_limit
+diff --git a/contrib/bench/txgen/helpers.nu b/contrib/bench/txgen/helpers.nu
+index 69392e2..0db0d20 100644
+--- a/contrib/bench/txgen/helpers.nu
++++ b/contrib/bench/txgen/helpers.nu
+@@ -729,8 +729,8 @@ def txgen-run-streaming-command [command: string] {
+         "; exit 0"
+     ] | str join)
+ 
+-    # Redirect explicitly because this helper's caller captures its return value.
+-    bash -lc $wrapped_command out> /dev/stdout err> /dev/stderr
++    # Append explicitly: callers capture the status, and stdout may be a service log.
++    bash -lc $wrapped_command out>> /dev/stdout err>> /dev/stderr
+     let exit_code = (try {
+         open --raw $status_path | str trim | into int
+     } catch {

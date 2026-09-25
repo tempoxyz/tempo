@@ -1,0 +1,110 @@
+{
+  "kind": "sload-size-prewarming-factorial",
+  "status": "failed",
+  "started_at": "2026-09-24T20:03:49.805Z",
+  "binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924-v2/tempo",
+  "sha256": "5e4752f9d04cf152486487c6d4a33c91fa31011e6df9e7fa3760d0acd39b9f2d",
+  "tools": {
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-prefetch-e2e-20260924-v2/tempo": "5e4752f9d04cf152486487c6d4a33c91fa31011e6df9e7fa3760d0acd39b9f2d",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint": "85981c8404fe54104ab082c2b3f288aeea1e847185c1a08948bbbff86b1096f6",
+    "/home/ubuntu/repos/txgen/target/release/txgen-tempo": "cfd237552aa6fa8210cdfdc3b6089a80e620f097fb857abfbef2b9f573307d6a",
+    "/home/ubuntu/.cargo/bin/bench": "ae47ab9631c6aa59c5435b087d19a40e083fa78b61b4f5fdda98b18391c39d5c"
+  },
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0x0d19bc8583f4967a4db228eacd171756375f049c34d53527f0a33cc5ca7c3a1c",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0x42790d8356689e6b8f2eca61839c53ecb0de3ffefe0949835d024ddf5592208a",
+    "state_root": "0x35b455ab5ebd982f1516eb9cd5660e4a652e1bbbe78de642b1f0f59eb5cc9784",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1
+  },
+  "order": [
+    {
+      "reads": 4096,
+      "prewarming": true
+    },
+    {
+      "reads": 128,
+      "prewarming": true
+    },
+    {
+      "reads": 128,
+      "prewarming": false
+    },
+    {
+      "reads": 4096,
+      "prewarming": false
+    }
+  ],
+  "memory_bytes_per_node": 21474836480,
+  "swap_bytes_per_node": 0,
+  "duration": 1200,
+  "warmup": 600,
+  "runs": [
+    {
+      "reads": 4096,
+      "prewarming": true,
+      "label": "1-4096-on",
+      "directory": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/sload-size-isolation-20260924-200336/1-4096-on",
+      "status": "failed",
+      "started_at": "2026-09-24T20:03:50.350Z",
+      "exit_code": 1,
+      "finished_at": "2026-09-24T20:05:01.817Z"
+    }
+  ],
+  "sources": {
+    "bench-e2e.nu": "d82ade2c3a77a2145cd3506f312420f992f89b2e38bb71e20d8236fae953aca9",
+    "tempo.nu": "e52fbe27d9868599361bd9a89cde0de87f7be57c769d480dc9d587eba7709000",
+    "contrib/bench/analyze-bytecode-prefetch.cjs": "9f86cc53d31aebba0cd096c7d710694e028fd6254a4f43c1f85287b48f1f555c",
+    "contrib/bench/analyze-bytecode-prefetch.test.cjs": "455be04e7a6e453c89a64a7a23fa59108f042aae7cc28d2224a7095cc2a90dbf",
+    "contrib/bench/analyze-history-state-paths.cjs": "c38f492e02c802dfd8febf7f794a480123d0280f946bac727b96426e4bfbbd61",
+    "contrib/bench/analyze-sload-size-isolation.cjs": "8a2b97e8a9dacb30877be9664cbba39ac5db4855f01f883b45fe979c94c80346",
+    "contrib/bench/analyze-state-access.cjs": "f985987010a0d93dd9bd55267daee425b740a562ccee5736d12db9f3ad70765a",
+    "contrib/bench/analyze-state-access.test.cjs": "b3cad437d7e0c1b967e6986191ae02b5358247e514fb5a67d978293d80603b1f",
+    "contrib/bench/analyze-state-path-controls.cjs": "08e07b79a571bae8e68fd1850a503bb64f361ee3b2c1ee70ea10abb840c0df06",
+    "contrib/bench/analyze-state-path-controls.test.cjs": "e64aa6ca0cae186c22dfac6a559e55524d33a14442be826d0d7a0246d8415cd0",
+    "contrib/bench/clean-state-path-controls.test.cjs": "e9d7d81f5a5d2edf49f1700b3c5bc050d54444688dffbe20a306b224cdd31ac2",
+    "contrib/bench/history-state-path-status.cjs": "e09953ce7acb8732fffcda27f81a38472bb968ce31a3bbf9dc50c97bad21e034",
+    "contrib/bench/history-state-path-validation.cjs": "0cee72bc0217f8af8f18e8c4d01daf37231b8784decb5fa3e0338d1ae2f9d4c8",
+    "contrib/bench/history-state-paths.test.cjs": "c6dfbd2d286155cf1613a35e9696b3b51d2bc651112ec62e40f9a1168f8299b9",
+    "contrib/bench/native-state-access-suite.test.cjs": "e439c6e859f3e62b543cc4f6c27e60b3e488115ee7a68a79f4d1397e06712651",
+    "contrib/bench/prepare-history-state-paths.sh": "76ad0008238f509ab79e2692dc2c3fc750422d5e9e626ae8a4bd21030950558f",
+    "contrib/bench/run-bytecode-prefetch.cjs": "1297bbc8db2f20fedf875a1d09d39f1abf585ea23c6716e0681185c6779c7590",
+    "contrib/bench/run-clean-state-path-controls.sh": "f34130bbaebbfbe6e6630ca3b01a971e7658da9d9c448e32986130f5d0b07f3f",
+    "contrib/bench/run-history-state-paths.sh": "4f0045c55356177a41159440b7d13aff59fcb1d8be2da6b06cbeb256a675c8e2",
+    "contrib/bench/run-sload-size-isolation.cjs": "c8c714654f452d18c8359ed43eb8e38b03bfafaba9bd0bfe958c87975c1699c0",
+    "contrib/bench/run-state-path-controls.sh": "7a1023230aeffad72c450afc9a084bd2e215b00c942223f90307e57ea7852eb7",
+    "contrib/bench/sload-size-isolation.test.cjs": "498ce62c6c0045ba5a352c16539bc4f322cd3381751c91c07597a2f45e735817",
+    "contrib/bench/state-access-config.cjs": "b32344d6eee6314e9e141b5ab5e4e666d385a20b74b68259d48c7ffde765a57d",
+    "contrib/bench/state-access-config.test.cjs": "de9ccfc1cbc20967127d704a4b16f8a779e21406ccb414c58bbcaf2450482df3",
+    "contrib/bench/state-access-suite-process.cjs": "f1861da9bfe7b800dd13c0869dcae58df6565fcd887c5851965b48a92b8f49ec",
+    "contrib/bench/state-access-validation.cjs": "b016a77658c023e1fa22889f73afd94a95fd22491dc331b18dcc9355d44da59f",
+    "contrib/bench/state-access-validation.test.cjs": "c097b96255c1a83c930a75d561e497f1c72c83c906f8625bacdfeb2b26b075e7",
+    "contrib/bench/state-path-durability.cjs": "2accdc9f08942a4f49ef8723cf5428c8983623bea206f78424e000d2600dfdbd",
+    "contrib/bench/state-path-durability.test.cjs": "cf0becacddb9b8580c406e355b5532497385085e556a5a470cc06d7a1c759528",
+    "contrib/bench/state-path-memory.cjs": "3da886397e0c15689e461c6859ed737fedb8847845c635a03f60a86b07a45ee2",
+    "contrib/bench/state-path-memory.test.cjs": "b51ca3de392a115b046405f1ec57f8a6d5f59dfdafcc34e2cd74d0af3e093219",
+    "contrib/bench/state-path-observer.cjs": "a1037508c52aceef3ab1d8e51fa83d10eced5a006aaff2a14187eb3ff85cabec",
+    "contrib/bench/state-path-observer.test.cjs": "39a1d5e44ad9e15df7b140b0b1239c23cda1121778f480ca70453cb7646a5659",
+    "contrib/bench/state-path-timing.cjs": "7dc6474d2d3cf64d26dedbc3f05bc1751f9a951a5cf35b9babb34276e85897fb",
+    "contrib/bench/update-history-router.sh": "c9239c38e58e2e60fec30abdd132a1cc06eaac3859929aece099d09d06e50f2c",
+    "contrib/bench/upload-clickhouse-txgen.sh": "f812ae4ee479ab3b7f9f853141fec46047185dd7ff28cadfb0533ec9f767e30c",
+    "contrib/bench/upload-clickhouse.sh": "12a6845a3213eca7969ee6afabe225d38088d891cd02b1552725409b558268d2",
+    "contrib/bench/upload-samply-profile.sh": "757bd123cbd9a676fa36e30d9a26bc27820847b72504157990f109b6c57de6d7",
+    "contrib/bench/configs/state-access-bloated.json": "59bbd1432a8086c0ec40a507ad5ed7429371f47fb70d06238c5e50335447c200",
+    "contrib/bench/txgen/history-state-paths.json": "e82a814464941153a9020a1b3a42d908ff96ff8479f856928d546feed9d54948",
+    "contrib/bench/txgen/HistoryStatePaths.sol": "6e3c040b0799616fef67134aa9f5559c6cc2bbe06a44c0774505d09a80e85559",
+    "contrib/bench/txgen/StateAccessBenchmark.sol": "2a3b2e429e84bfff485a26184b175e37a118eb157f1877eaac0d0f086066ae3b",
+    "contrib/bench/txgen/presets/history_read.yml": "4cf60d6640310004ba8783da8c775ba2b8e6b6ec5e0a76d5009a81ef1512445e",
+    "contrib/bench/txgen/presets/state_access_dependent.yml": "b91e57b4baf8f7e5160957f839bfcbfec2adfa36fdfbf572512603da016770c3"
+  },
+  "limits": "Fresh restore each run, same router and binary, 20 GiB total memory per node, no swap. Caps do not pin file-cache bytes. No global cache flush. One pass is not a confidence interval.",
+  "error": "AssertionError [ERR_ASSERTION]: 1-4096-on failed: see run.log\n\n1 !== 0\n",
+  "finished_at": "2026-09-24T20:05:01.818Z"
+}

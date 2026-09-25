@@ -1,0 +1,258 @@
+{
+  "ok": true,
+  "exhaustive": true,
+  "transactions": 4,
+  "receipts": [
+    {
+      "type": "0x76",
+      "status": "0x1",
+      "cumulativeGasUsed": "0x1c78729",
+      "logs": [
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000fb9b67aedaf3926651a19da7aa1ff889ef73e0e8",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x00000000000000000000000000000000000000000000000000000000002d8d8d",
+          "blockHash": "0xf2756e05885310145466549cb2eeb30309e37f04b6f5cc103d266d96c413d905",
+          "blockNumber": "0x5b",
+          "blockTimestamp": "0x6ab684ab",
+          "transactionHash": "0x3079d2a5dafb5e8d7c1815f9a818f8e14b757dc2d34f1eb9ca820d5f34437e48",
+          "transactionIndex": "0x0",
+          "logIndex": "0x0",
+          "removed": false
+        }
+      ],
+      "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000004000000000000000008000000000000000000000000000000000400000000000000000000000000000000000000000000010000000000000010000000000000000000000000000000000020000000000002800000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000800000000000000000",
+      "transactionHash": "0x3079d2a5dafb5e8d7c1815f9a818f8e14b757dc2d34f1eb9ca820d5f34437e48",
+      "transactionIndex": "0x0",
+      "blockHash": "0xf2756e05885310145466549cb2eeb30309e37f04b6f5cc103d266d96c413d905",
+      "blockNumber": "0x5b",
+      "gasUsed": "0x1c78729",
+      "effectiveGasPrice": "0x17487b18da",
+      "from": "0xfb9b67aedaf3926651a19da7aa1ff889ef73e0e8",
+      "to": "0x535441544541434345535342454e434800000000",
+      "contractAddress": null,
+      "feeToken": "0x20c0000000000000000000000000000000000000",
+      "feePayer": "0xfb9b67aedaf3926651a19da7aa1ff889ef73e0e8"
+    },
+    {
+      "type": "0x76",
+      "status": "0x1",
+      "cumulativeGasUsed": "0x1c72f45",
+      "logs": [
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000e98c5e56dd38cd2e3f23034bae9d4a6ba9b86168",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x00000000000000000000000000000000000000000000000000000000002d84cb",
+          "blockHash": "0xeff49ad6c1bc9d2ef0cd860a2d571dd37d349c83032b5374ee268d4a66003945",
+          "blockNumber": "0x5c",
+          "blockTimestamp": "0x6ab685c7",
+          "transactionHash": "0x5c13c5d27b84d78fad0cfcd1cfe832683ce456e15d3f3c8d07c424ed85c085d7",
+          "transactionIndex": "0x0",
+          "logIndex": "0x0",
+          "removed": false
+        }
+      ],
+      "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000040000100000000000000000000000000000000000000000004000000000000000008000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000010000000000000000000001000000000000020000000000000800000000000000000000000000020000000000000000000000000000000000001000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "transactionHash": "0x5c13c5d27b84d78fad0cfcd1cfe832683ce456e15d3f3c8d07c424ed85c085d7",
+      "transactionIndex": "0x0",
+      "blockHash": "0xeff49ad6c1bc9d2ef0cd860a2d571dd37d349c83032b5374ee268d4a66003945",
+      "blockNumber": "0x5c",
+      "gasUsed": "0x1c72f45",
+      "effectiveGasPrice": "0x17487f6e37",
+      "from": "0xe98c5e56dd38cd2e3f23034bae9d4a6ba9b86168",
+      "to": "0x535441544541434345535342454e434800000000",
+      "contractAddress": null,
+      "feeToken": "0x20c0000000000000000000000000000000000000",
+      "feePayer": "0xe98c5e56dd38cd2e3f23034bae9d4a6ba9b86168"
+    },
+    {
+      "type": "0x76",
+      "status": "0x1",
+      "cumulativeGasUsed": "0x1c79aa5",
+      "logs": [
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x0000000000000000000000007b053dd88a0940cdf5531bc7127fdddf54bd8ce4",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x00000000000000000000000000000000000000000000000000000000002d8f91",
+          "blockHash": "0x2657d6ffda39f7ff94c45ebe0df374cdd90bb6c8fd29d7d95ddfafa1369a4140",
+          "blockNumber": "0x5d",
+          "blockTimestamp": "0x6ab686e1",
+          "transactionHash": "0x99fde335ef0ffccd5ce3185eb51562552190e9e91bc7816813f2c110a5764526",
+          "transactionIndex": "0x0",
+          "logIndex": "0x0",
+          "removed": false
+        }
+      ],
+      "logsBloom": "0x00000000000000000000100000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000004000100000000000008000000000000000000000000000000000400000000000000000000000000000000010000000000000000000000000010000000000000000000000000000000000020000000000000800000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "transactionHash": "0x99fde335ef0ffccd5ce3185eb51562552190e9e91bc7816813f2c110a5764526",
+      "transactionIndex": "0x0",
+      "blockHash": "0x2657d6ffda39f7ff94c45ebe0df374cdd90bb6c8fd29d7d95ddfafa1369a4140",
+      "blockNumber": "0x5d",
+      "gasUsed": "0x1c79aa5",
+      "effectiveGasPrice": "0x174883c399",
+      "from": "0x7b053dd88a0940cdf5531bc7127fdddf54bd8ce4",
+      "to": "0x535441544541434345535342454e434800000000",
+      "contractAddress": null,
+      "feeToken": "0x20c0000000000000000000000000000000000000",
+      "feePayer": "0x7b053dd88a0940cdf5531bc7127fdddf54bd8ce4"
+    },
+    {
+      "type": "0x76",
+      "status": "0x1",
+      "cumulativeGasUsed": "0x1c79ab1",
+      "logs": [
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000d7e8e9c8b80ebf31a48c5381d38c0d73a1758033",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x00000000000000000000000000000000000000000000000000000000002d8f9a",
+          "blockHash": "0x84ad6fb819f92e687f252feb5082e2c0d7a68f214688f89cef37fbec02e26f6a",
+          "blockNumber": "0x5e",
+          "blockTimestamp": "0x6ab687f9",
+          "transactionHash": "0xe9bf24ca3c609420c871b2f170892d3d1dd8026170d6de81cef8c6e0ef872981",
+          "transactionIndex": "0x0",
+          "logIndex": "0x0",
+          "removed": false
+        }
+      ],
+      "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000200000000000000004001000000000000008000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000020000000000000800000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000002000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "transactionHash": "0xe9bf24ca3c609420c871b2f170892d3d1dd8026170d6de81cef8c6e0ef872981",
+      "transactionIndex": "0x0",
+      "blockHash": "0x84ad6fb819f92e687f252feb5082e2c0d7a68f214688f89cef37fbec02e26f6a",
+      "blockNumber": "0x5e",
+      "gasUsed": "0x1c79ab1",
+      "effectiveGasPrice": "0x174888112a",
+      "from": "0xd7e8e9c8b80ebf31a48c5381d38c0d73a1758033",
+      "to": "0x535441544541434345535342454e434800000000",
+      "contractAddress": null,
+      "feeToken": "0x20c0000000000000000000000000000000000000",
+      "feePayer": "0xd7e8e9c8b80ebf31a48c5381d38c0d73a1758033"
+    }
+  ],
+  "traces": [
+    {
+      "hash": "0x3079d2a5dafb5e8d7c1815f9a818f8e14b757dc2d34f1eb9ca820d5f34437e48",
+      "cursor_before": "1",
+      "parent_cursor": "1",
+      "replay_sender_nonce_override": true,
+      "history_advanced": false,
+      "actual_unique": 10789,
+      "parent_state_unique": 10789,
+      "overlap": 10789,
+      "parent_state_mismatch_fraction": 0,
+      "accesses": 10800,
+      "gas_cost_histogram": {
+        "103": 11,
+        "2603": 10789
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/max-state-access-20260925-final/history-trace-0x3079d2a5dafb5e8d7c1815f9a818f8e14b757dc2d34f1eb9ca820d5f34437e48.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets.",
+      "block": 91,
+      "measured_window": false
+    },
+    {
+      "hash": "0x5c13c5d27b84d78fad0cfcd1cfe832683ce456e15d3f3c8d07c424ed85c085d7",
+      "cursor_before": "2",
+      "parent_cursor": "2",
+      "replay_sender_nonce_override": true,
+      "history_advanced": false,
+      "actual_unique": 10780,
+      "parent_state_unique": 10780,
+      "overlap": 10780,
+      "parent_state_mismatch_fraction": 0,
+      "accesses": 10800,
+      "gas_cost_histogram": {
+        "103": 20,
+        "2603": 10780
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/max-state-access-20260925-final/history-trace-0x5c13c5d27b84d78fad0cfcd1cfe832683ce456e15d3f3c8d07c424ed85c085d7.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets.",
+      "block": 92,
+      "measured_window": false
+    },
+    {
+      "hash": "0x99fde335ef0ffccd5ce3185eb51562552190e9e91bc7816813f2c110a5764526",
+      "cursor_before": "3",
+      "parent_cursor": "3",
+      "replay_sender_nonce_override": true,
+      "history_advanced": false,
+      "actual_unique": 10791,
+      "parent_state_unique": 10791,
+      "overlap": 10791,
+      "parent_state_mismatch_fraction": 0,
+      "accesses": 10800,
+      "gas_cost_histogram": {
+        "103": 9,
+        "2603": 10791
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/max-state-access-20260925-final/history-trace-0x99fde335ef0ffccd5ce3185eb51562552190e9e91bc7816813f2c110a5764526.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets.",
+      "block": 93,
+      "measured_window": true
+    },
+    {
+      "hash": "0xe9bf24ca3c609420c871b2f170892d3d1dd8026170d6de81cef8c6e0ef872981",
+      "cursor_before": "4",
+      "parent_cursor": "4",
+      "replay_sender_nonce_override": true,
+      "history_advanced": false,
+      "actual_unique": 10791,
+      "parent_state_unique": 10791,
+      "overlap": 10791,
+      "parent_state_mismatch_fraction": 0,
+      "accesses": 10800,
+      "gas_cost_histogram": {
+        "103": 9,
+        "2603": 10791
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/max-state-access-20260925-final/history-trace-0xe9bf24ca3c609420c871b2f170892d3d1dd8026170d6de81cef8c6e0ef872981.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets.",
+      "block": 94,
+      "measured_window": false
+    }
+  ],
+  "cursor_check": {
+    "first_block": 91,
+    "last_block": 94,
+    "before": "1",
+    "after": "5",
+    "transactions": "4",
+    "ok": true
+  },
+  "from_unix_ms": 1790346728414,
+  "to_unix_ms": 1790347253414,
+  "measured_transactions": 1,
+  "persisted_through_workload": true,
+  "persisted": {
+    "a": {
+      "block": 95,
+      "state": 95
+    },
+    "b": {
+      "block": 95,
+      "state": 95
+    }
+  },
+  "audited_at": "2026-09-25T14:42:55.820Z",
+  "original_experiment_status": "failed",
+  "scope": "Post-load exhaustive audit of every included transaction in the original report, including warmup. Original performance data and failed standard-audit result are unchanged. RPC response limit raised only for this audit restart. Very few completed transactions: not a steady-state execution capacity estimate."
+}

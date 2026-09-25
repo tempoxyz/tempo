@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "state-access-declared",
+  "description": "Declared storage on the existing EIP-2930 access-list path; full populated domain, no history cursor",
+  "common": {
+    "duration": 1200,
+    "warmup": 600,
+    "tps": 1000,
+    "accounts": 1000,
+    "gas_limit": "1000000000000",
+    "node_args": "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
+  },
+  "fixture": {
+    "snapshot_suffix": "history_paths",
+    "bloat_mib": 100000,
+    "code_count": 4266667,
+    "code_bytes": 24576
+  },
+  "cases": [
+    {
+      "id": "sload",
+      "scenario": "declared_read",
+      "description": "128 declared SLOADs, no persistent writes",
+      "operations_per_transaction": 128,
+      "minimum_history_advanced_fraction": 0
+    },
+    {
+      "id": "writes",
+      "scenario": "declared_write",
+      "description": "128 declared slots, each read and changed nonzero-to-nonzero",
+      "operations_per_transaction": 128,
+      "minimum_history_advanced_fraction": 0
+    }
+  ]
+}

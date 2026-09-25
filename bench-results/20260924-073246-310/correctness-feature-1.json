@@ -1,0 +1,329 @@
+{
+  "ok": true,
+  "scenario": "history_code",
+  "contract": "0x535441544541434345535342454e434800000000",
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0xad9cdf0b851818025be632f289c8bef319f6e757010d2f9f46a285e9036d2208",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0x150aa03ba0d89677caced10b6e64bcfefbbcfdc6d244a2503979730993e1d9d4",
+    "state_root": "0x0ca730ea6c908fd0dd74d23b5400dd8abeba4775cf2a6fcbe490ba0a892027ca",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1,
+    "page_count": 399999
+  },
+  "timing": {
+    "duration_seconds": 1200,
+    "warmup_seconds": 600,
+    "from_ms": 600000,
+    "to_ms": 1200000,
+    "slice_ms": 120000
+  },
+  "cursor_check": {
+    "first_block": 69,
+    "last_block": 4376,
+    "before": "0",
+    "after": "19269",
+    "transactions": "19269",
+    "ok": true,
+    "transactions_with_prior_workload_in_block": 14961,
+    "history_advanced_fraction": 0.7764284602210805
+  },
+  "runtime_code_bytes": 779,
+  "receipts": [
+    {
+      "block": 2231,
+      "count": 4,
+      "gas": "1576780"
+    },
+    {
+      "block": 2537,
+      "count": 4,
+      "gas": "1576792"
+    },
+    {
+      "block": 2843,
+      "count": 3,
+      "gas": "1182603"
+    },
+    {
+      "block": 3150,
+      "count": 3,
+      "gas": "1182603"
+    },
+    {
+      "block": 3456,
+      "count": 4,
+      "gas": "1576804"
+    },
+    {
+      "block": 3763,
+      "count": 6,
+      "gas": "2365194"
+    },
+    {
+      "block": 4069,
+      "count": 5,
+      "gas": "1971005"
+    },
+    {
+      "block": 4376,
+      "count": 5,
+      "gas": "1971005"
+    }
+  ],
+  "traces": [
+    {
+      "hash": "0x5857cf5b79d5bf174d63a4cd55df78717cbfb02bea45ae55c5645d54a0bafc29",
+      "cursor_before": "10155",
+      "parent_cursor": "10152",
+      "history_advanced": true,
+      "actual_unique": 128,
+      "parent_state_unique": 128,
+      "overlap": 0,
+      "parent_state_mismatch_fraction": 1,
+      "accesses": 128,
+      "gas_cost_histogram": {
+        "2603": 128
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "bench-results/20260924-073246-310/history-trace-0x5857cf5b79d5bf174d63a4cd55df78717cbfb02bea45ae55c5645d54a0bafc29.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+    },
+    {
+      "hash": "0x555103a6b302c25fb538dff3eb836cf0d060e1fa168f80eba9d31a6f2fa35a51",
+      "cursor_before": "13414",
+      "parent_cursor": "13412",
+      "history_advanced": true,
+      "actual_unique": 128,
+      "parent_state_unique": 128,
+      "overlap": 0,
+      "parent_state_mismatch_fraction": 1,
+      "accesses": 128,
+      "gas_cost_histogram": {
+        "2603": 128
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "bench-results/20260924-073246-310/history-trace-0x555103a6b302c25fb538dff3eb836cf0d060e1fa168f80eba9d31a6f2fa35a51.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+    },
+    {
+      "hash": "0xd1e807615f83c189a7119a9a450a4992afa6a0a920bdb00bf2f29bbbb1e762e7",
+      "cursor_before": "19268",
+      "parent_cursor": "19264",
+      "history_advanced": true,
+      "actual_unique": 128,
+      "parent_state_unique": 128,
+      "overlap": 0,
+      "parent_state_mismatch_fraction": 1,
+      "accesses": 128,
+      "gas_cost_histogram": {
+        "2603": 128
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "bench-results/20260924-073246-310/history-trace-0xd1e807615f83c189a7119a9a450a4992afa6a0a920bdb00bf2f29bbbb1e762e7.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+    }
+  ],
+  "sampled_receipts": 34,
+  "workload_end_block": 4376,
+  "quiet_target_block": 4452,
+  "persisted_through_workload": true,
+  "drain": [
+    {
+      "unix_ms": 1790236941452,
+      "nodes": {
+        "a": {
+          "head": 4572,
+          "metrics": {
+            "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 4572,
+            "reth_sync_execution_gas_processed_total": 0,
+            "reth_sync_caching_account_cache_misses{source=\"builder\"}": 2571836,
+            "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+            "reth_consensus_engine_beacon_executed_blocks": 44,
+            "reth_consensus_engine_beacon_backpressure_active": 0,
+            "reth_transaction_pool_aa_2d_pending_transactions": 683,
+            "reth_sync_caching_code_cache_hits{source=\"builder\"}": 9302,
+            "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 92193,
+            "reth_sync_caching_account_cache_hits{source=\"builder\"}": 51502,
+            "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_code_cache_misses{source=\"builder\"}": 2512881,
+            "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 64915,
+            "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 1295.5485059830005,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_count": 4572,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.9127977559999997,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 4572,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.5649854129999987,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 4572,
+            "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+            "reth_tempo_payload_builder_total_transactions_sum": 23636,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 1285.0792822819994,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 4572,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 1285.0792822819994,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 4572,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.8981830330000019,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 4572,
+            "reth_tempo_payload_builder_gas_used_sum": 7976771916,
+            "reth_consensus_engine_beacon_persistence_duration_sum": 1.364636740999999
+          },
+          "io": {
+            "259:2": {
+              "rbytes": 2080768,
+              "wbytes": 241307648,
+              "rios": 209,
+              "wios": 1569,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "259:0": {
+              "rbytes": 1061331709952,
+              "wbytes": 1119395840,
+              "rios": 259105674,
+              "wios": 194634,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "259:3": {
+              "rbytes": 3117056,
+              "wbytes": 241561600,
+              "rios": 293,
+              "wios": 1631,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "9:3": {
+              "rbytes": 5189632,
+              "wbytes": 237916160,
+              "rios": 500,
+              "wios": 741,
+              "dbytes": 0,
+              "dios": 0
+            }
+          },
+          "database_device": "259:0",
+          "memory": {
+            "file": 31108165632,
+            "file_mapped": 31078670336,
+            "file_dirty": 405504,
+            "file_writeback": 0,
+            "workingset_refault_file": 215799515,
+            "pgfault": 316380844,
+            "pgmajfault": 260342242
+          },
+          "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/examples/read_finish_checkpoint",
+          "persisted": {
+            "block": 4558,
+            "state": 4528
+          },
+          "unix_ms": 1790236941478
+        },
+        "b": {
+          "head": 4572,
+          "metrics": {
+            "reth_sync_execution_gas_processed_total": 8304349043,
+            "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_code_cache_misses{source=\"engine\"}": 969183,
+            "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 19559,
+            "reth_transaction_pool_aa_2d_pending_transactions": 0,
+            "reth_sync_caching_account_cache_hits{source=\"engine\"}": 19476,
+            "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+            "reth_consensus_engine_beacon_backpressure_active": 0,
+            "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+            "reth_sync_caching_code_cache_hits{source=\"engine\"}": 5474,
+            "reth_consensus_engine_beacon_executed_blocks": 37,
+            "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_account_cache_misses{source=\"engine\"}": 1000167,
+            "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 38415,
+            "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0,
+            "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+            "reth_tempo_payload_builder_gas_used_sum": 0,
+            "reth_tempo_payload_builder_total_transactions_sum": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+            "reth_consensus_engine_beacon_persistence_duration_sum": 8.644431998999996
+          },
+          "io": {
+            "259:2": {
+              "rbytes": 2355200,
+              "wbytes": 115109888,
+              "rios": 110,
+              "wios": 617,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "9:3": {
+              "rbytes": 5054464,
+              "wbytes": 115109888,
+              "rios": 240,
+              "wios": 617,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "259:3": {
+              "rbytes": 3809280,
+              "wbytes": 123453440,
+              "rios": 401,
+              "wios": 2654,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "259:1": {
+              "rbytes": 68353519616,
+              "wbytes": 757075968,
+              "rios": 16685118,
+              "wios": 112963,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "259:0": {
+              "rbytes": 1003520,
+              "wbytes": 0,
+              "rios": 3,
+              "wios": 0,
+              "dbytes": 0,
+              "dios": 0
+            }
+          },
+          "database_device": "259:1",
+          "memory": {
+            "file": 15376605184,
+            "file_mapped": 15331274752,
+            "file_dirty": 356352,
+            "file_writeback": 0,
+            "workingset_refault_file": 1702501,
+            "pgfault": 34756489,
+            "pgmajfault": 16772114
+          },
+          "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/examples/read_finish_checkpoint",
+          "persisted": {
+            "block": 4535,
+            "state": 4535
+          },
+          "unix_ms": 1790236941525
+        }
+      }
+    }
+  ],
+  "audited_at": "2026-09-24T08:02:21.525Z",
+  "caveat": "History-dependent targets verified by actual transaction traces and parent-state replays. Not a direct log of prewarming worker accesses or proof of a universal worst case. Physical I/O is measured separately. Quiet-tail persistence includes post-load transactions."
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "state-access-sized",
+  "description": "History-dependent transactions calibrated for approximately 900ms total builder time on the reference host; retune on other hardware",
+  "common": {
+    "duration": 1200, "warmup": 600, "tps": 1000, "accounts": 1000,
+    "gas_limit": "1000000000000",
+    "node_args": "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
+  },
+  "fixture": {"snapshot_suffix": "history_paths", "bloat_mib": 100000, "code_count": 4266667, "code_bytes": 24576},
+  "cases": [
+    {"id": "sload", "scenario": "history_read_sized", "description": "7200 SLOADs; approximately 900ms total builder time on the reference host; full populated domain", "operations_per_transaction": 7200, "minimum_history_advanced_fraction": 0},
+    {"id": "bytecode", "scenario": "history_code_sized", "description": "2250 EXTCODECOPY accesses; approximately 900ms total builder time on the reference host; full unique code corpus", "operations_per_transaction": 2250, "minimum_history_advanced_fraction": 0}
+  ]
+}

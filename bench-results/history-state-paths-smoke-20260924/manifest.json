@@ -1,0 +1,395 @@
+{
+  "started_at": "2026-09-24T05:49:01.077Z",
+  "build": {
+    "binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/tempo",
+    "version": "Tempo Version: 1.14.0-dev\nCommit SHA: f62969a95e8a787d2956f3509d25c533bdaac746\nBuild Timestamp: 2026-09-23T13:47:19Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n",
+    "binary_sha256": "57169b32c8d0867ce3768af7f9c0cc7d36146fe7dcadecaed45064ee1479d4f6",
+    "revision": "f62969a95e8a787d2956f3509d25c533bdaac746",
+    "checkpoint_sha256": "0a113f945d82fd72269dd67e03900f3c4aa9603733857b11fa005983e43ceace"
+  },
+  "configuration": {
+    "duration": 360,
+    "warmup": 60,
+    "tps": 1000,
+    "transaction_cap": null,
+    "prewarming": "unchanged/default enabled"
+  },
+  "host": {
+    "cpus": [
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 25728560,
+          "nice": 0,
+          "sys": 5663070,
+          "idle": 1046070770,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 4730,
+        "times": {
+          "user": 26816250,
+          "nice": 230,
+          "sys": 6306680,
+          "idle": 1044938020,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 5305,
+        "times": {
+          "user": 27529650,
+          "nice": 1220,
+          "sys": 6936890,
+          "idle": 1043451080,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 3328,
+        "times": {
+          "user": 26821300,
+          "nice": 140,
+          "sys": 6178510,
+          "idle": 1045191790,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 2728,
+        "times": {
+          "user": 26453170,
+          "nice": 60,
+          "sys": 5808670,
+          "idle": 1046054860,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 26676240,
+          "nice": 20,
+          "sys": 5927670,
+          "idle": 1045739640,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 25623590,
+          "nice": 10,
+          "sys": 5490030,
+          "idle": 1047410520,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 25822990,
+          "nice": 0,
+          "sys": 5539970,
+          "idle": 1047188860,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 2900,
+        "times": {
+          "user": 26917190,
+          "nice": 460,
+          "sys": 8345740,
+          "idle": 1041447230,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 5237,
+        "times": {
+          "user": 55399550,
+          "nice": 12170,
+          "sys": 24690490,
+          "idle": 986633050,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 25722260,
+          "nice": 180,
+          "sys": 6652060,
+          "idle": 1045741760,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 2623,
+        "times": {
+          "user": 29881130,
+          "nice": 310,
+          "sys": 9494740,
+          "idle": 1035733500,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 3181,
+        "times": {
+          "user": 26173180,
+          "nice": 180,
+          "sys": 6541470,
+          "idle": 1046040500,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 2649,
+        "times": {
+          "user": 47514580,
+          "nice": 6490,
+          "sys": 22722160,
+          "idle": 997980590,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 2614,
+        "times": {
+          "user": 25371810,
+          "nice": 90,
+          "sys": 6044970,
+          "idle": 1047703610,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 2813,
+        "times": {
+          "user": 24182810,
+          "nice": 100,
+          "sys": 5292860,
+          "idle": 1050971930,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 26249390,
+          "nice": 10,
+          "sys": 5677530,
+          "idle": 1046622750,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 27179570,
+          "nice": 180,
+          "sys": 7168630,
+          "idle": 1044463310,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 26861160,
+          "nice": 430,
+          "sys": 10234700,
+          "idle": 1042026460,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 27220950,
+          "nice": 120,
+          "sys": 6647190,
+          "idle": 1044763590,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 26680730,
+          "nice": 40,
+          "sys": 5882860,
+          "idle": 1045878060,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 27051880,
+          "nice": 30,
+          "sys": 6109810,
+          "idle": 1045441930,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 25642200,
+          "nice": 20,
+          "sys": 5441130,
+          "idle": 1047534260,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 25986130,
+          "nice": 20,
+          "sys": 5523160,
+          "idle": 1047106340,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 2624,
+        "times": {
+          "user": 26495350,
+          "nice": 70,
+          "sys": 6270240,
+          "idle": 1047915940,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 44815280,
+          "nice": 4930,
+          "sys": 12506200,
+          "idle": 1023065530,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 24924610,
+          "nice": 120,
+          "sys": 5538020,
+          "idle": 1050086140,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 27772300,
+          "nice": 240,
+          "sys": 7373450,
+          "idle": 1045745690,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 25652580,
+          "nice": 20,
+          "sys": 5785070,
+          "idle": 1049348760,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 47189450,
+          "nice": 2590,
+          "sys": 12997190,
+          "idle": 1020611040,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 24202270,
+          "nice": 50,
+          "sys": 5337470,
+          "idle": 1051226190,
+          "irq": 0
+        }
+      },
+      {
+        "model": "AMD EPYC 4585PX 16-Core Processor",
+        "speed": 600,
+        "times": {
+          "user": 23103550,
+          "nice": 10,
+          "sys": 5123090,
+          "idle": 1052542910,
+          "irq": 0
+        }
+      }
+    ],
+    "total_memory_bytes": 67004719104,
+    "platform": "linux"
+  },
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0xad9cdf0b851818025be632f289c8bef319f6e757010d2f9f46a285e9036d2208",
+    "state_root": "0x74c68811b32882608b8902bd5c56d268ad1015183aebabc3f52a9adf5ee5c958",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1
+  },
+  "cases": [
+    {
+      "scenario": "history_code",
+      "exit_code": 1,
+      "finished_at": "2026-09-24T05:49:02.059Z"
+    }
+  ]
+}

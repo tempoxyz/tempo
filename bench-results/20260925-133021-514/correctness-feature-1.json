@@ -1,0 +1,363 @@
+{
+  "ok": true,
+  "scenario": "history_read_max",
+  "contract": "0x535441544541434345535342454e434800000000",
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0x42790d8356689e6b8f2eca61839c53ecb0de3ffefe0949835d024ddf5592208a",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0xc873c5da36daabf1387f53be63389a4683c5fa0d656bb856712bca5735ce661d",
+    "state_root": "0x8440accb8cbcabe16279e2978c303d9194cc56ad224978dd16a46c2bb9a1a513",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1,
+    "page_count": 399999
+  },
+  "timing": {
+    "duration_seconds": 1200,
+    "warmup_seconds": 600,
+    "from_ms": 600000,
+    "to_ms": 1200000,
+    "slice_ms": 120000
+  },
+  "cursor_check": {
+    "first_block": 83,
+    "last_block": 298,
+    "before": "1",
+    "after": "217",
+    "transactions": "216",
+    "ok": true,
+    "transactions_with_prior_workload_in_block": 0,
+    "history_advanced_fraction": 0
+  },
+  "measured_history_coverage": {
+    "blocks": 103,
+    "transactions": 103,
+    "non_first_transactions": 0,
+    "fraction": 0,
+    "minimum_required": 0,
+    "transactions_per_block": {
+      "1": 103
+    }
+  },
+  "trace_sampling": {
+    "policy": "max-size-first-allowed",
+    "non_first_samples": 0
+  },
+  "runtime_code_bytes": 1768,
+  "receipts": [
+    {
+      "block": 196,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 210,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 225,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 239,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 254,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 268,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 283,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 298,
+      "count": 1,
+      "gas": "29945643"
+    },
+    {
+      "block": 247,
+      "count": 1,
+      "gas": "29945643"
+    }
+  ],
+  "traces": [
+    {
+      "hash": "0x8220369923521f84a78f44cb1f3c33bfe6bbabe9f22ffb3b61f26d6c3e208ecf",
+      "cursor_before": "114",
+      "parent_cursor": "114",
+      "replay_sender_nonce_override": true,
+      "history_advanced": false,
+      "actual_unique": 13800,
+      "parent_state_unique": 13800,
+      "overlap": 13800,
+      "parent_state_mismatch_fraction": 0,
+      "accesses": 13800,
+      "gas_cost_histogram": {
+        "2100": 13800
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "bench-results/20260925-133021-514/history-trace-0x8220369923521f84a78f44cb1f3c33bfe6bbabe9f22ffb3b61f26d6c3e208ecf.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+    },
+    {
+      "hash": "0x0db8e478a16fba2f2202e6ca434771deca4d2a4527806cb0340db435b3354790",
+      "cursor_before": "216",
+      "parent_cursor": "216",
+      "replay_sender_nonce_override": true,
+      "history_advanced": false,
+      "actual_unique": 13800,
+      "parent_state_unique": 13800,
+      "overlap": 13800,
+      "parent_state_mismatch_fraction": 0,
+      "accesses": 13800,
+      "gas_cost_histogram": {
+        "2100": 13800
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "bench-results/20260925-133021-514/history-trace-0x0db8e478a16fba2f2202e6ca434771deca4d2a4527806cb0340db435b3354790.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+    },
+    {
+      "hash": "0x31e5bf0953ee2131bbb3f2d4cadc34ee40daa59776fa1977f7e5d38fa24b413b",
+      "cursor_before": "165",
+      "parent_cursor": "165",
+      "replay_sender_nonce_override": true,
+      "history_advanced": false,
+      "actual_unique": 13800,
+      "parent_state_unique": 13800,
+      "overlap": 13800,
+      "parent_state_mismatch_fraction": 0,
+      "accesses": 13800,
+      "gas_cost_histogram": {
+        "2100": 13800
+      },
+      "changed_contract_slots": 0,
+      "trace_file": "bench-results/20260925-133021-514/history-trace-0x31e5bf0953ee2131bbb3f2d4cadc34ee40daa59776fa1977f7e5d38fa24b413b.json.gz",
+      "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+    }
+  ],
+  "sampled_receipts": 9,
+  "workload_end_block": 298,
+  "quiet_target_block": 302,
+  "persisted_through_workload": true,
+  "drain": [
+    {
+      "unix_ms": 1790345014358,
+      "nodes": {
+        "a": {
+          "head": 343,
+          "metrics": {
+            "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 42,
+            "reth_sync_execution_gas_processed_total": 0,
+            "reth_db_bytecode_prefetch_enabled": 1,
+            "reth_transaction_pool_aa_2d_pending_transactions": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 420,
+            "reth_consensus_engine_beacon_backpressure_active": 0,
+            "reth_consensus_engine_beacon_executed_blocks": 42,
+            "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+            "reth_sync_caching_code_cache_misses{source=\"builder\"}": 42,
+            "reth_sync_caching_account_cache_misses{source=\"builder\"}": 589,
+            "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+            "reth_sync_caching_account_cache_hits{source=\"builder\"}": 41,
+            "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+            "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.004004312000000001,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 42,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.0009490350000000002,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 42,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.003907868000000001,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 42,
+            "reth_consensus_engine_beacon_persistence_duration_sum": 0,
+            "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+            "reth_tempo_payload_builder_gas_used_sum": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 19.81379827,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_count": 42,
+            "reth_tempo_payload_builder_total_transactions_sum": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 19.802417137999992,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 42,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 19.802417137999992,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 42
+          },
+          "io_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-a-feature-1.scope/io.stat'",
+          "memory_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-a-feature-1.scope/memory.stat'",
+          "memory_limits_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-a-feature-1.scope/memory.max'",
+          "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+          "persisted": {
+            "block": 301,
+            "state": 301
+          },
+          "unix_ms": 1790345014420
+        },
+        "b": {
+          "head": 343,
+          "metrics": {
+            "reth_sync_execution_gas_processed_total": 0,
+            "reth_sync_caching_account_cache_hits{source=\"engine\"}": 41,
+            "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+            "reth_consensus_engine_beacon_executed_blocks": 42,
+            "reth_sync_caching_account_cache_misses{source=\"engine\"}": 589,
+            "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 84,
+            "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_code_cache_misses{source=\"engine\"}": 42,
+            "reth_consensus_engine_beacon_backpressure_active": 0,
+            "reth_db_bytecode_prefetch_enabled": 1,
+            "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+            "reth_transaction_pool_aa_2d_pending_transactions": 0,
+            "reth_tempo_payload_builder_total_transactions_sum": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+            "reth_consensus_engine_beacon_persistence_duration_sum": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_gas_used_sum": 0,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+            "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0
+          },
+          "io_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-b-feature-1.scope/io.stat'",
+          "memory_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-b-feature-1.scope/memory.stat'",
+          "memory_limits_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-b-feature-1.scope/memory.max'",
+          "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+          "persisted": {
+            "block": 301,
+            "state": 301
+          },
+          "unix_ms": 1790345014439
+        }
+      }
+    },
+    {
+      "unix_ms": 1790345019439,
+      "nodes": {
+        "a": {
+          "head": 354,
+          "metrics": {
+            "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 53,
+            "reth_sync_execution_gas_processed_total": 0,
+            "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+            "reth_sync_caching_code_cache_misses{source=\"builder\"}": 53,
+            "reth_sync_caching_account_cache_misses{source=\"builder\"}": 743,
+            "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+            "reth_consensus_engine_beacon_executed_blocks": 37,
+            "reth_db_bytecode_prefetch_enabled": 1,
+            "reth_consensus_engine_beacon_backpressure_active": 0,
+            "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 530,
+            "reth_sync_caching_account_cache_hits{source=\"builder\"}": 52,
+            "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+            "reth_transaction_pool_aa_2d_pending_transactions": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.004824449000000002,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 53,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.0011790219999999998,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 53,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.004708317000000001,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 53,
+            "reth_consensus_engine_beacon_persistence_duration_sum": 0.001868052,
+            "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+            "reth_tempo_payload_builder_gas_used_sum": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 25.037264525,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_count": 53,
+            "reth_tempo_payload_builder_total_transactions_sum": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 25.023429495999988,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 53,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 25.023429495999988,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 53
+          },
+          "io_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-a-feature-1.scope/io.stat'",
+          "memory_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-a-feature-1.scope/memory.stat'",
+          "memory_limits_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-a-feature-1.scope/memory.max'",
+          "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+          "persisted": {
+            "block": 347,
+            "state": 317
+          },
+          "unix_ms": 1790345019500
+        },
+        "b": {
+          "head": 354,
+          "metrics": {
+            "reth_sync_execution_gas_processed_total": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 106,
+            "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+            "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+            "reth_db_bytecode_prefetch_enabled": 1,
+            "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+            "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+            "reth_consensus_engine_beacon_backpressure_active": 0,
+            "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+            "reth_sync_caching_account_cache_misses{source=\"engine\"}": 743,
+            "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+            "reth_sync_caching_account_cache_hits{source=\"engine\"}": 52,
+            "reth_transaction_pool_aa_2d_pending_transactions": 0,
+            "reth_consensus_engine_beacon_executed_blocks": 37,
+            "reth_sync_caching_code_cache_misses{source=\"engine\"}": 53,
+            "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+            "reth_tempo_payload_builder_total_transactions_sum": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+            "reth_consensus_engine_beacon_persistence_duration_sum": 0.001980328,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_gas_used_sum": 0,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+            "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+            "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0
+          },
+          "io_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-b-feature-1.scope/io.stat'",
+          "memory_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-b-feature-1.scope/memory.stat'",
+          "memory_limits_error": "Error: ENOENT: no such file or directory, open '/sys/fs/cgroup/system.slice/tempo-e2e-b-feature-1.scope/memory.max'",
+          "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/build-payload-cancel-20260923-v3/read_finish_checkpoint",
+          "persisted": {
+            "block": 347,
+            "state": 317
+          },
+          "unix_ms": 1790345019526
+        }
+      }
+    }
+  ],
+  "audited_at": "2026-09-25T14:03:39.526Z",
+  "caveat": "Near-cap transactions may be the first or only transaction in a block. Cold-access and gas-cap checks passed; report actual history coverage rather than claiming within-block prewarming bypass."
+}

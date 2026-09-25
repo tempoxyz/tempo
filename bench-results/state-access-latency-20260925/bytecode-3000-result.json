@@ -1,0 +1,136 @@
+{
+  "status": "failed-calibration-sparse-inclusions",
+  "suite": "bench-results/state-access-bloat-20260925-151837-779",
+  "results": "bench-results/20260925-151837-917",
+  "analysis": {
+    "from_unix_ms": 1790350325767,
+    "to_unix_ms": 1790350625767,
+    "duration_seconds": 300,
+    "attempts_started": 244,
+    "attempts_unfinished": 0,
+    "valid_attempt_execution": {
+      "count": 244,
+      "p50_ms": 649.496,
+      "p90_ms": 664.527,
+      "p95_ms": 666.596,
+      "p99_ms": 670.557,
+      "max_ms": 680.265,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "invalid_attempt_execution": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_attempts_on_cancelled_jobs": 239,
+    "cancelled_valid_execution": {
+      "count": 239,
+      "p50_ms": 648.945,
+      "p90_ms": 664.796,
+      "p95_ms": 666.796,
+      "p99_ms": 670.557,
+      "max_ms": 680.265,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_before_execution": {
+      "count": 244,
+      "p50_ms": 563.243,
+      "p90_ms": 604.644,
+      "p95_ms": 610.339,
+      "p99_ms": 616.52,
+      "max_ms": 618.937,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_build_elapsed_at_tx_finish": {
+      "count": 244,
+      "p50_ms": 1217.661,
+      "p90_ms": 1248.017,
+      "p95_ms": 1253.775,
+      "p99_ms": 1263.946,
+      "max_ms": 1274.742,
+      "above_900ms": 239,
+      "above_1200ms": 195
+    },
+    "proposal_jobs": 252,
+    "cancelled_jobs": 247,
+    "completed_jobs": 5,
+    "jobs_without_terminal_event": 0,
+    "cancellation_after_job_creation": {
+      "count": 247,
+      "p50_ms": 1202,
+      "p90_ms": 1202,
+      "p95_ms": 1202,
+      "p99_ms": 1203,
+      "max_ms": 1204,
+      "above_900ms": 247,
+      "above_1200ms": 246
+    },
+    "completed_builds": 5,
+    "completed_nonempty_build_elapsed": {
+      "count": 5,
+      "p50_ms": 662.986873,
+      "p90_ms": 666.549288,
+      "p95_ms": 666.549288,
+      "p99_ms": 666.549288,
+      "max_ms": 666.549288,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "completed_build_execution_mgas_per_second": 12.689418586622107,
+    "origin_unix_ms": 1790350025767,
+    "scenario": "history_code_sized",
+    "accesses_per_transaction": 3000,
+    "chain": {
+      "gas": 41637035,
+      "transactions": 5,
+      "blocks": 5,
+      "gas_per_transaction": 8327407,
+      "mgas_per_second": 0.13879011666666666,
+      "history_advanced_fraction": 0
+    },
+    "follower": {
+      "blocks": 5,
+      "execution_mgas_per_second": 10.813170916850039,
+      "nonempty_block_execution": {
+        "count": 5,
+        "p50_ms": 771.55532,
+        "p90_ms": 786.989466,
+        "p95_ms": 786.989466,
+        "p99_ms": 786.989466,
+        "max_ms": 786.989466,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      }
+    },
+    "io": {
+      "a": {
+        "from_unix_ms": 1790350327426,
+        "to_unix_ms": 1790350624720,
+        "read_mb_per_second": 1961.08946128748,
+        "file_cache_start_gib": 15.969100952148438,
+        "file_cache_end_gib": 15.759235382080078
+      },
+      "b": {
+        "from_unix_ms": 1790350327438,
+        "to_unix_ms": 1790350624732,
+        "read_mb_per_second": 1.702306053939871,
+        "file_cache_start_gib": 1.0203323364257812,
+        "file_cache_end_gib": 1.4918785095214844
+      }
+    },
+    "caveats": [
+      "Attempt cohort is selected by START time, including completions after the window and canceled payloads. Unfinished attempts are explicitly counted, not silently discarded.",
+      "Transaction execution does not include all proposal overhead; the 1200ms deadline covers more than EVM execution. Completed-build throughput excludes canceled work.",
+      "Exact submission-relative wall window, not a trimmed metric endpoint or first inclusion timestamp. A single calibration run is not a worst-case latency guarantee."
+    ]
+  },
+  "audit": "Standard audit failed: insufficient steady-state receipt samples. Do not present as a passing correctness benchmark."
+}

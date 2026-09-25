@@ -1,0 +1,72 @@
+diff --git a/bench-e2e.nu b/bench-e2e.nu
+index 40a33a0..4094221 100644
+--- a/bench-e2e.nu
++++ b/bench-e2e.nu
+@@ -39,6 +39,7 @@ const PAYMENTS_BLOAT_WORST_CASE = {
+ const GENERAL_STATE_ACCESS_WORST_CASE = {
+     dependent_preset: "state_access_dependent"
+     predictable_preset: "state_access_predictable"
++    resident_preset: "state_access_resident"
+     tps: 50000
+     duration: 1200
+     summary_warmup_seconds: 600
+@@ -1300,6 +1301,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
+         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
+     }
+ 
++    if $phase_exit == 0 and ($ctx | get -o validate_state_access | default false) {
++        print "  Auditing state-access receipts and traces after the measured load..."
++        ^node contrib/bench/state-access-validation.cjs audit --rpc $b_rpc --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++
+     if $tracy_capture_started {
+         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
+     }
+@@ -1469,6 +1476,7 @@ def "main e2e" [
+     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+     --bloat-keccak-signable-shared                       # Make the full shared bloat account range signable
+     --state-access-bloat                                  # Fill the benchmark predeploy with direct-storage pages
++    --validate-state-access                               # Audit sampled receipts and traces after the measured load
+     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
+     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
+     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
+@@ -1886,6 +1894,7 @@ def "main e2e" [
+         regenesis_tempo: $regenesis_tempo
+         tracing_otlp: $tracing_otlp
+         isolated_roles: $isolated_roles
++        validate_state_access: $validate_state_access
+     }
+ 
+     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+@@ -2048,6 +2057,8 @@ def "main general-state-access-worst-case" [
+     --baseline: string = "HEAD"                         # Baseline git SHA/ref
+     --feature: string = "HEAD"                          # Feature git SHA/ref
+     --predictable                                       # Use the calldata-determined control workload
++    --resident                                          # Keep the same database but read one cache-resident page
++    --validate-state-access                             # Audit sampled receipts and traces after the measured load
+     --tps: int = $GENERAL_STATE_ACCESS_WORST_CASE.tps   # Target TPS
+     --duration: int = $GENERAL_STATE_ACCESS_WORST_CASE.duration # Duration in seconds
+     --summary-warmup-seconds: int = $GENERAL_STATE_ACCESS_WORST_CASE.summary_warmup_seconds # Initial seconds excluded from summary
+@@ -2063,7 +2074,12 @@ def "main general-state-access-worst-case" [
+     --init-only                                         # Build snapshots without running load
+     --no-cache                                          # Skip binary cache
+ ] {
+-    let preset = if $predictable {
++    if $predictable and $resident {
++        error make { msg: "--predictable and --resident are mutually exclusive" }
++    }
++    let preset = if $resident {
++        $GENERAL_STATE_ACCESS_WORST_CASE.resident_preset
++    } else if $predictable {
+         $GENERAL_STATE_ACCESS_WORST_CASE.predictable_preset
+     } else {
+         $GENERAL_STATE_ACCESS_WORST_CASE.dependent_preset
+@@ -2090,6 +2106,7 @@ def "main general-state-access-worst-case" [
+         --summary-warmup-seconds $summary_warmup_seconds
+         --bloat $GENERAL_STATE_ACCESS_WORST_CASE.bloat
+         --state-access-bloat
++        --validate-state-access=($validate_state_access)
+         --isolated-roles
+         --token-count 1
+         --gas-limit $GENERAL_STATE_ACCESS_WORST_CASE.gas_limit

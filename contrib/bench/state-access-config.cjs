@@ -5,12 +5,17 @@ const path = require('node:path');
 const {parseArgs} = require('node:util');
 const {execFileSync} = require('node:child_process');
 const defaultFile = path.join(__dirname, 'configs/state-access-bloated.json');
-const scenarios = {sload: 'state_access_dependent', bytecode: 'history_code', writes: 'history_write'};
+const scenarios = {sload: 'history_read', bytecode: 'history_code', writes: 'history_write'};
 
-function resolveConfig(file = defaultFile, selected = [], env = process.env) {
+function resolveConfig(file = defaultFile, selected = [], env = process.env, accesses) {
   const source = JSON.parse(fs.readFileSync(file));
   assert.equal(source.schema_version, 1, 'unsupported configuration schema');
   assert.match(source.id, /^[a-z0-9-]+$/);
+  const maxTx = source.id === 'state-access-max-tx';
+  const sized = source.id === 'state-access-sized';
+  const declared = source.id === 'state-access-declared';
+  const expectedScenarios = declared ? {sload: 'declared_read', writes: 'declared_write'} : sized ? {sload: 'history_read_sized', bytecode: 'history_code_sized'} :
+    maxTx ? {sload: 'history_read_max', bytecode: 'history_code_max'} : scenarios;
   const common = {...source.common};
   for (const [key, variable] of Object.entries({duration: 'HISTORY_DURATION', warmup: 'HISTORY_WARMUP', tps: 'HISTORY_TPS'})) {
     if (env[variable] !== undefined) {
@@ -24,10 +29,26 @@ function resolveConfig(file = defaultFile, selected = [], env = process.env) {
   assert.equal(common.gas_limit, '1000000000000', 'comparison uses nonbinding gas limits');
   assert.equal(common.node_args, '--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128', 'comparison node settings must match');
   assert.deepEqual(source.fixture, {snapshot_suffix: 'history_paths', bloat_mib: 100000, code_count: 4266667, code_bytes: 24576});
-  assert.deepEqual(source.cases.map(c => c.id).sort(), Object.keys(scenarios).sort(), 'registry must contain each workload exactly once');
-  for (const item of source.cases) assert.equal(item.scenario, scenarios[item.id], 'unexpected workload preset');
+  assert.deepEqual(source.cases.map(c => c.id).sort(), Object.keys(expectedScenarios).sort(), 'registry must contain each workload exactly once');
+  for (const item of source.cases) assert.equal(item.scenario, expectedScenarios[item.id], 'unexpected workload preset');
+  const sload = source.cases.find(item => item.id === 'sload');
+  if (!sized && !declared) assert.equal(sload.operations_per_transaction, maxTx ? 13800 : 128);
+  assert.equal(sload.minimum_history_advanced_fraction, maxTx || sized || declared ? 0 : 0.9);
+  if (maxTx) assert.equal(source.cases.find(c => c.id === 'bytecode').operations_per_transaction, 10800);
   assert.equal(new Set(selected).size, selected.length, 'duplicate case selection');
-  for (const id of selected) assert.ok(Object.hasOwn(scenarios, id), `unknown case ${id}; choose sload, bytecode, writes`);
+  for (const id of selected) assert.ok(Object.hasOwn(expectedScenarios, id), `unknown case ${id}; choose ${Object.keys(expectedScenarios).join(', ')}`);
+  if (accesses !== undefined) {
+    assert.ok((sized || declared) && selected.length === 1, '--accesses requires --sized-transactions or --declared-storage and exactly one --case');
+    assert.match(String(accesses), /^\d+$/, 'invalid access count');
+    const item = source.cases.find(c => c.id === selected[0]);
+    item.operations_per_transaction = Number(accesses);
+    item.description = `${accesses} ${declared ? 'declared' : 'history-dependent'} ${item.id} accesses; latency requires calibration`;
+  }
+  if (sized || declared) for (const item of source.cases) {
+    assert.ok(Number.isSafeInteger(item.operations_per_transaction) && item.operations_per_transaction > 0 &&
+      item.operations_per_transaction <= (declared ? 256 : item.id === 'sload' ? 13800 : 10800), 'access count exceeds router bounds');
+    assert.equal(item.minimum_history_advanced_fraction, 0);
+  }
   return {id: source.id, schema_version: source.schema_version, ...common,
     fixture_requirements: source.fixture,
     transaction_cap: null, prewarming: 'unchanged/default enabled',
@@ -77,14 +98,14 @@ function main() {
   const {values} = parseArgs({options: {config: {type: 'string', default: defaultFile}, case: {type: 'string', multiple: true},
     list: {type: 'boolean'}, show: {type: 'boolean'}, help: {type: 'boolean'}, resolve: {type: 'boolean'}, 'dry-run': {type: 'boolean'},
     'check-fixtures': {type: 'boolean'}, 'ignore-env': {type: 'boolean'},
-    tps: {type: 'string'}, duration: {type: 'string'}, warmup: {type: 'string'}}});
+    accesses: {type: 'string'}, tps: {type: 'string'}, duration: {type: 'string'}, warmup: {type: 'string'}}});
   if (values.help) {
     console.log('Usage: bash contrib/bench/run-history-state-paths.sh [--list | --show | --dry-run] [--case sload|bytecode|writes] [--config FILE]\nNo selection runs all three cases sequentially. Repeat --case to choose an order.');
     return;
   }
   const env = values['ignore-env'] ? {} : {...process.env};
   for (const key of ['tps', 'duration', 'warmup']) if (values[key] !== undefined) env[`HISTORY_${key.toUpperCase()}`] = values[key];
-  const config = resolveConfig(values.config, values.case, env);
+  const config = resolveConfig(values.config, values.case, env, values.accesses);
   if (values['check-fixtures']) console.log(JSON.stringify(verifyFixtures(config)));
   else if (values.list) for (const item of config.cases) console.log(`${item.id}\t${item.scenario}\t${item.description}`);
   else console.log(JSON.stringify({...config, dry_run: !!values['dry-run']}, null, values.resolve ? 0 : 2));

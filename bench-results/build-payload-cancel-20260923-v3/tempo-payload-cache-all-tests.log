@@ -1,0 +1,90 @@
+warning: patch `custom-hardforks v0.1.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-hardforks)` was not used in the crate graph
+warning: patch `ef-test-runner v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/testing/runner)` was not used in the crate graph
+warning: patch `ef-tests v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/testing/ef-tests)` was not used in the crate graph
+warning: patch `example-beacon-api-sidecar-fetcher v0.1.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/beacon-api-sidecar-fetcher)` was not used in the crate graph
+warning: patch `example-beacon-api-sse v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/beacon-api-sse)` was not used in the crate graph
+warning: patch `example-bsc-p2p v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/bsc-p2p)` was not used in the crate graph
+warning: patch `example-custom-auth-http-middleware v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-auth-http-middleware)` was not used in the crate graph
+warning: patch `example-custom-beacon-withdrawals v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-beacon-withdrawals)` was not used in the crate graph
+warning: patch `example-custom-dev-node v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-dev-node)` was not used in the crate graph
+warning: patch `example-custom-engine-types v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-engine-types)` was not used in the crate graph
+warning: patch `example-custom-evm v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-evm)` was not used in the crate graph
+warning: patch `example-custom-inspector v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-inspector)` was not used in the crate graph
+warning: patch `example-custom-node-components v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-node-components)` was not used in the crate graph
+warning: patch `example-custom-payload-builder v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-payload-builder)` was not used in the crate graph
+warning: patch `example-custom-rlpx-subprotocol v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-rlpx-subprotocol)` was not used in the crate graph
+warning: patch `example-custom-rpc-middleware v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-rpc-middleware)` was not used in the crate graph
+warning: patch `example-custom-state-root v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/custom-state-root)` was not used in the crate graph
+warning: patch `example-db-access v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/db-access)` was not used in the crate graph
+warning: patch `example-exex-test v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/exex-test)` was not used in the crate graph
+warning: patch `example-full-contract-state v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/full-contract-state)` was not used in the crate graph
+warning: patch `example-manual-p2p v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/manual-p2p)` was not used in the crate graph
+warning: patch `example-network v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/network)` was not used in the crate graph
+warning: patch `example-network-proxy v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/network-proxy)` was not used in the crate graph
+warning: patch `example-network-txpool v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/network-txpool)` was not used in the crate graph
+warning: patch `example-node-builder-api v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/node-builder-api)` was not used in the crate graph
+warning: patch `example-node-custom-rpc v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/node-custom-rpc)` was not used in the crate graph
+warning: patch `example-node-event-hooks v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/node-event-hooks)` was not used in the crate graph
+warning: patch `example-polygon-p2p v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/polygon-p2p)` was not used in the crate graph
+warning: patch `example-rpc-db v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/rpc-db)` was not used in the crate graph
+warning: patch `example-txpool-tracing v0.0.0 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/txpool-tracing)` was not used in the crate graph
+warning: patch `exex-subscription v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/examples/exex-subscription)` was not used in the crate graph
+warning: patch `reth v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/bin/reth)` was not used in the crate graph
+warning: patch `reth-bb v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/bin/reth-bb)` was not used in the crate graph
+warning: patch `reth-exex-test-utils v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/exex/test-utils)` was not used in the crate graph
+warning: patch `reth-payload-util v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/util)` was not used in the crate graph
+warning: patch `reth-rpc-e2e-tests v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/rpc/rpc-e2e-tests)` was not used in the crate graph
+warning: patch `reth-snap-sync v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/snap-sync)` was not used in the crate graph
+warning: patch `reth-storage-rpc-provider v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/rpc-provider)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling reth-provider v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/provider)
+   Compiling reth-execution-cache v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/execution-cache)
+   Compiling reth-trie-parallel v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/parallel)
+   Compiling reth-static-file v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/static-file/static-file)
+   Compiling reth-prune v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/prune/prune)
+   Compiling tempo-transaction-pool v1.14.0 (/home/ubuntu/repos/tempo-payments-bloat-pr/crates/transaction-pool)
+   Compiling reth-payload-builder v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/builder)
+   Compiling reth-stages-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/stages/api)
+   Compiling reth-engine-local v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/local)
+   Compiling reth-basic-payload-builder v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/basic)
+   Compiling reth-engine-tree v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/tree)
+   Compiling reth-node-core v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/node/core)
+   Compiling reth-node-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/node/api)
+   Compiling tempo-payload-types v1.14.0 (/home/ubuntu/repos/tempo-payments-bloat-pr/crates/payload/types)
+   Compiling tempo-payload-builder v1.14.0 (/home/ubuntu/repos/tempo-payments-bloat-pr/crates/payload/builder)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.72s
+     Running unittests src/lib.rs (target/debug/deps/tempo_payload_builder-9d451ffb0a0ab987)
+
+running 26 tests
+test budget::tests::build_multiplier_scales_decimal_values ... ok
+test budget::tests::observed_build_multiplier_tracks_tail_cost ... ok
+test budget::tests::payload_budget_accounts_for_leader_idle_once ... ok
+test budget::tests::payload_budget_accounts_for_marshal_persist_twice ... ok
+test completion::tests::finalization_request_still_requires_completed_work ... ok
+test budget::tests::payload_budget_caps_scaled_validator_feedback_at_builder_projection ... ok
+test budget::tests::payload_budget_uses_validator_feedback_when_available ... ok
+test completion::tests::cancelled_work_is_not_accepted ... ok
+test completion::tests::receives_completed_work ... ok
+test completion::tests::reports_disconnected_producer ... ok
+test completion::tests::cancellation_releases_idle_receiver ... ok
+test encode::tests::encoded_block_transaction_list_matches_alloy_encoding ... ok
+test encode::tests::cached_transaction_list_block_encoding_matches_full_block_encoding ... ok
+test encode::tests::cached_transaction_list_block_encoding_falls_back_on_count_mismatch ... ok
+test tests::test_extra_data_flow_in_attributes ... ok
+test encode::tests::proptest_encoded_block_transaction_list_matches_alloy_encoding ... ok
+test encode::tests::proptest_cached_transaction_list_block_encoding_matches_full_block_encoding ... ok
+test encode::tests::proptest_execution_block_encoder_matches_full_block_encoding ... ok
+test encode::tests::proptest_cached_transaction_list_block_encoding_falls_back_to_full_block_encoding ... ok
+test prewarming::tests::failed_prewarm_clears_actions_before_same_worker_is_reused ... ok
+test prewarming::tests::source_ordering_is_unchanged_when_prewarming_is_enabled ... ok
+test prewarming::tests::prewarming_does_not_use_shared_worker_state_slot ... ok
+test prewarming::tests::prewarming_eagerly_drains_source_iterator ... ok
+test prewarming::tests::commands_are_forwarded_to_source_iterator ... ok
+test prewarming::tests::mark_invalid_filters_already_buffered_invalidated_transactions ... ok
+test prewarming::tests::empty_source_is_polled_for_eager_advances_and_each_consumer_advance ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+

@@ -1,0 +1,23 @@
+{
+  "node": "a",
+  "persisted_state": 307,
+  "excluded_from_measurement": true,
+  "checked_at": "2026-09-24T06:44:14.701Z",
+  "audit": {
+    "hash": "0x32c1dd9783d1ff076a3b01c1e1ffbd994855a9a49bb3827fd9713bf54b32b2e2",
+    "cursor_before": "1061",
+    "parent_cursor": "1057",
+    "history_advanced": true,
+    "actual_unique": 1024,
+    "parent_state_unique": 1024,
+    "overlap": 0,
+    "parent_state_mismatch_fraction": 1,
+    "accesses": 1024,
+    "gas_cost_histogram": {
+      "2100": 1024
+    },
+    "changed_contract_slots": 1024,
+    "trace_file": "bench-results/history-state-paths-sustained-20260924/warmup-check/history-trace-0x32c1dd9783d1ff076a3b01c1e1ffbd994855a9a49bb3827fd9713bf54b32b2e2.json.gz",
+    "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+  }
+}

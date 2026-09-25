@@ -1,0 +1,27 @@
+{
+  "checked_at": "2026-09-23T18:52:52.003Z",
+  "binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/examples/read_finish_checkpoint",
+  "binary_sha256": "0a113f945d82fd72269dd67e03900f3c4aa9603733857b11fa005983e43ceace",
+  "source": "bin/tempo/examples/read_finish_checkpoint.rs",
+  "source_sha256": "ebf7a0dc129f8d8a17ee7663e9586614c95676f5cf02f63af8df0940e9921201",
+  "checks": [
+    {
+      "role": "a",
+      "genesis_checkpoint_matches": true,
+      "checkpoint": {
+        "block_number": 0,
+        "stage_checkpoint": null
+      }
+    },
+    {
+      "role": "b",
+      "genesis_checkpoint_matches": true,
+      "checkpoint": {
+        "block_number": 0,
+        "stage_checkpoint": null
+      }
+    }
+  ],
+  "missing_database_rejected_without_creation": true,
+  "note": "Built and checked after the timed smoke suite. The suite manifest preserves the separate checkpoint executable actually used during measurement."
+}

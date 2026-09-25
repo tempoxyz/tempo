@@ -1,0 +1,97 @@
+{
+  "generated_at": "2026-09-24T13:34:51.707Z",
+  "rows": {
+    "sload": {
+      "directory": "bench-results/20260924-123000-011",
+      "gas_per_tx": 8916543.627237353,
+      "accesses_per_mgas": 459.37082475410705,
+      "chain_mgas_s": 19.256737077310923,
+      "builder_execution_mgas_s": 19.52418917681025,
+      "follower_execution_mgas_s": 42.47874679496658,
+      "builder_code_miss_fraction": 0.7388758782201406,
+      "roles": {
+        "a": {
+          "read_ios_per_mgas": 7874.036553381463,
+          "read_bytes_per_mgas": 32252053.722650472,
+          "major_faults_per_mgas": 8129.6008929995705,
+          "read_ios_per_nominal_opcode": 17.140915637374867,
+          "average_read_bytes": 4096
+        },
+        "b": {
+          "read_ios_per_mgas": 333.826266005612,
+          "read_bytes_per_mgas": 1367352.3855589868,
+          "major_faults_per_mgas": 333.82415492645833,
+          "read_ios_per_nominal_opcode": 0.726703238466011,
+          "average_read_bytes": 4096
+        }
+      },
+      "follower_execution_coverage": {
+        "pipeline_runs": 0,
+        "pipeline_execution_seconds": 0,
+        "syncing_payloads": 0,
+        "mixed_paths": false,
+        "unknown_pipeline_coverage": false,
+        "engine_cache_ratio_suppressed": false,
+        "payload_fault_ratio_suppressed": false
+      }
+    },
+    "bytecode": {
+      "directory": "bench-results/20260924-073246-310",
+      "gas_per_tx": 394192.2300365489,
+      "accesses_per_mgas": 324.7146702717403,
+      "chain_mgas_s": 5.981784277310925,
+      "builder_execution_mgas_s": 6.109871450416378,
+      "follower_execution_mgas_s": 7.743246140267532,
+      "builder_code_miss_fraction": 0.9963974870359544,
+      "roles": {
+        "a": {
+          "read_ios_per_mgas": 35413.4357049126,
+          "read_bytes_per_mgas": 145053465.10068285,
+          "major_faults_per_mgas": 35595.67459168685,
+          "read_ios_per_nominal_opcode": 109.06016557637065,
+          "average_read_bytes": 4096.00091641379
+        },
+        "b": {
+          "read_ios_per_mgas": 2074.0610725091437,
+          "read_bytes_per_mgas": 8496809.222139703,
+          "major_faults_per_mgas": 2090.3427238847694,
+          "read_ios_per_nominal_opcode": 6.387334057846686,
+          "average_read_bytes": 4096.701555591365
+        }
+      },
+      "follower_execution_coverage": {
+        "pipeline_runs": 8,
+        "pipeline_execution_seconds": 169.01356280899995,
+        "syncing_payloads": 778,
+        "mixed_paths": true,
+        "unknown_pipeline_coverage": false,
+        "engine_cache_ratio_suppressed": true,
+        "payload_fault_ratio_suppressed": true
+      }
+    }
+  },
+  "measured_history": {
+    "sload": {
+      "transactions": 1297,
+      "advanced": 5,
+      "fraction": 0.0038550501156515036
+    },
+    "bytecode": {
+      "transactions": 9117,
+      "advanced": 6971,
+      "fraction": 0.7646155533618515
+    }
+  },
+  "ratios": {
+    "follower_read_ios_per_gas": 6.212995452174145,
+    "builder_read_ios_per_gas": 4.497494450886755,
+    "follower_execution_slowdown": 5.485909400976233,
+    "builder_execution_slowdown": 3.1955155415716163
+  },
+  "limits": [
+    "Same node binary and load settings, but router/state-root differ between historical runs.",
+    "Whole-node I/O includes speculation, replay and persistence; nominal per-opcode ratios are not direct attribution.",
+    "Bytecode follower used engine and pipeline paths, so do not normalize partial engine-cache counters by all executed gas.",
+    "Mechanism controls use copied actual records, not an end-to-end EVM or sustained-bloat run."
+  ]
+}

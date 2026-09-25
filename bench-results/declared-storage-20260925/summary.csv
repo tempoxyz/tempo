@@ -1,0 +1,3 @@
+case,slots_per_transaction,measurement_seconds,canonical_transactions,canonical_slots_per_second,whole_wall_ns_per_slot,builder_durable_slots_per_second,follower_durable_slots_per_second,builder_backpressure_fraction,follower_backpressure_fraction,builder_durable_completion_seconds_after_load,follower_durable_completion_seconds_after_load
+declared_read,128,600,380128,81093.97333333333,12331.372590285378,80530.24896076013,80532.16192609756,0,0,34.491,34.52
+declared_write,128,600,18846,4020.48,248726.52021649157,4028.8871341390072,2805.7551448722106,0.9321657971053544,0.24577204582122178,479.973,1346.045

@@ -1,0 +1,120 @@
+diff --git a/bench-e2e.nu b/bench-e2e.nu
+index 40a33a0..6570912 100644
+--- a/bench-e2e.nu
++++ b/bench-e2e.nu
+@@ -39,6 +39,7 @@ const PAYMENTS_BLOAT_WORST_CASE = {
+ const GENERAL_STATE_ACCESS_WORST_CASE = {
+     dependent_preset: "state_access_dependent"
+     predictable_preset: "state_access_predictable"
++    resident_preset: "state_access_resident"
+     tps: 50000
+     duration: 1200
+     summary_warmup_seconds: 600
+@@ -1235,6 +1236,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
+     let submit_rpc_url = if $ctx.isolated_roles { $a_rpc } else { [$a_rpc $b_rpc] | str join "," }
++    let observe_state_paths = ($ctx | get -o observe_state_paths | default false)
++    let observer_stop = $"($ctx.results_dir)/state-path-observer-($phase).stop"
++    if $phase_exit == 0 and $observe_state_paths {
++        job spawn {
++            ^node contrib/bench/state-path-observer.cjs watch --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --seconds (($ctx.duration + 600) | into string) --stop $observer_stop --output $"($ctx.results_dir)/state-path-observer-($phase).jsonl"
++        } | ignore
++    }
+ 
+     if $phase_exit == 0 {
+         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
+@@ -1300,6 +1308,19 @@ def run-local-e2e-phase [run: record, ctx: record] {
+         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
+     }
+ 
++    if $phase_exit == 0 and ($ctx | get -o validate_state_access | default false) {
++        print "  Auditing state-access receipts and traces after the measured load..."
++        ^node contrib/bench/state-access-validation.cjs audit --rpc $b_rpc --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++
++    if $phase_exit == 0 and $observe_state_paths {
++        print "  Auditing ordinary contract calls and waiting for durable state/trie persistence..."
++        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++    if $observe_state_paths { "stop" | save -f $observer_stop }
++
+     if $tracy_capture_started {
+         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
+     }
+@@ -1469,6 +1490,8 @@ def "main e2e" [
+     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+     --bloat-keccak-signable-shared                       # Make the full shared bloat account range signable
+     --state-access-bloat                                  # Fill the benchmark predeploy with direct-storage pages
++    --validate-state-access                               # Audit sampled receipts and traces after the measured load
++    --observe-state-paths                                 # Audit ordinary read/write controls and observe durable persistence
+     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
+     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
+     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
+@@ -1522,6 +1545,9 @@ def "main e2e" [
+         }
+     }
+     let preset_path = $preset_spec.spec_path
++    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write"]) {
++        error make { msg: "--observe-state-paths requires an isolated ordinary state_paths_read/write preset" }
++    }
+     if not ($preset_path | path exists) {
+         print $"Error: txgen preset file not found: ($preset_path)"
+         exit 1
+@@ -1886,6 +1912,8 @@ def "main e2e" [
+         regenesis_tempo: $regenesis_tempo
+         tracing_otlp: $tracing_otlp
+         isolated_roles: $isolated_roles
++        validate_state_access: $validate_state_access
++        observe_state_paths: $observe_state_paths
+     }
+ 
+     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+@@ -2048,6 +2076,8 @@ def "main general-state-access-worst-case" [
+     --baseline: string = "HEAD"                         # Baseline git SHA/ref
+     --feature: string = "HEAD"                          # Feature git SHA/ref
+     --predictable                                       # Use the calldata-determined control workload
++    --resident                                          # Keep the same database but read one cache-resident page
++    --validate-state-access                             # Audit sampled receipts and traces after the measured load
+     --tps: int = $GENERAL_STATE_ACCESS_WORST_CASE.tps   # Target TPS
+     --duration: int = $GENERAL_STATE_ACCESS_WORST_CASE.duration # Duration in seconds
+     --summary-warmup-seconds: int = $GENERAL_STATE_ACCESS_WORST_CASE.summary_warmup_seconds # Initial seconds excluded from summary
+@@ -2063,7 +2093,12 @@ def "main general-state-access-worst-case" [
+     --init-only                                         # Build snapshots without running load
+     --no-cache                                          # Skip binary cache
+ ] {
+-    let preset = if $predictable {
++    if $predictable and $resident {
++        error make { msg: "--predictable and --resident are mutually exclusive" }
++    }
++    let preset = if $resident {
++        $GENERAL_STATE_ACCESS_WORST_CASE.resident_preset
++    } else if $predictable {
+         $GENERAL_STATE_ACCESS_WORST_CASE.predictable_preset
+     } else {
+         $GENERAL_STATE_ACCESS_WORST_CASE.dependent_preset
+@@ -2090,6 +2125,7 @@ def "main general-state-access-worst-case" [
+         --summary-warmup-seconds $summary_warmup_seconds
+         --bloat $GENERAL_STATE_ACCESS_WORST_CASE.bloat
+         --state-access-bloat
++        --validate-state-access=($validate_state_access)
+         --isolated-roles
+         --token-count 1
+         --gas-limit $GENERAL_STATE_ACCESS_WORST_CASE.gas_limit
+diff --git a/contrib/bench/txgen/helpers.nu b/contrib/bench/txgen/helpers.nu
+index 69392e2..0db0d20 100644
+--- a/contrib/bench/txgen/helpers.nu
++++ b/contrib/bench/txgen/helpers.nu
+@@ -729,8 +729,8 @@ def txgen-run-streaming-command [command: string] {
+         "; exit 0"
+     ] | str join)
+ 
+-    # Redirect explicitly because this helper's caller captures its return value.
+-    bash -lc $wrapped_command out> /dev/stdout err> /dev/stderr
++    # Append explicitly: callers capture the status, and stdout may be a service log.
++    bash -lc $wrapped_command out>> /dev/stdout err>> /dev/stderr
+     let exit_code = (try {
+         open --raw $status_path | str trim | into int
+     } catch {

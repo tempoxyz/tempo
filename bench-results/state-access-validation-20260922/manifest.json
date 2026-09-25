@@ -1,0 +1,26 @@
+{
+  "reference_results": "bench-results/20260922-132103-536",
+  "cases": [
+    {
+      "scenario": "dependent-repeat",
+      "benchmark_id": "local-state-access-validation-dependent-repeat-20260922",
+      "results_dir": "bench-results/20260922-152637-070",
+      "exit_code": 0,
+      "finished_at": "2026-09-22T16:01:15.426Z"
+    },
+    {
+      "scenario": "predictable",
+      "benchmark_id": "local-state-access-validation-predictable-20260922",
+      "results_dir": "bench-results/20260922-160115-489",
+      "exit_code": 0,
+      "finished_at": "2026-09-22T16:35:46.294Z"
+    },
+    {
+      "scenario": "resident",
+      "benchmark_id": "local-state-access-validation-resident-20260922",
+      "results_dir": "bench-results/20260922-163546-361",
+      "exit_code": 0,
+      "finished_at": "2026-09-22T17:10:38.626Z"
+    }
+  ]
+}

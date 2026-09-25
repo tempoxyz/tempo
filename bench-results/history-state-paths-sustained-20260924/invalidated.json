@@ -1,0 +1,6 @@
+{
+  "valid_sustained_result": false,
+  "reason": "Follower entered pipeline catch-up before its first ordinary persistence. MerkleExecute started from block 1 and selected a whole-fixture rebuild, preventing a meaningful sustained write measurement. Stopped during warmup; transactions themselves passed a persisted proposer trace check.",
+  "source": "/home/ubuntu/repos/reth-payload-cancel-fix/crates/stages/stages/src/stages/merkle.rs:218",
+  "fix": "Wait for both nodes to persist a positive state/trie frontier before sending the workload; no node-binary or workload changes."
+}

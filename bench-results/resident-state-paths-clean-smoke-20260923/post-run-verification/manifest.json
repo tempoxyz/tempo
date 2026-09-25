@@ -1,0 +1,13 @@
+{
+  "created_at": "2026-09-23T18:55:22.088Z",
+  "tests_passed": 40,
+  "source_sha256": {
+    "contrib/bench/run-clean-state-path-controls.sh": "f34130bbaebbfbe6e6630ca3b01a971e7658da9d9c448e32986130f5d0b07f3f",
+    "contrib/bench/analyze-state-access.cjs": "45e5e5c0d4902a4e095b8b8b03722193cf8cd8231d113bb572428288fb381350",
+    "contrib/bench/state-path-timing.cjs": "7dc6474d2d3cf64d26dedbc3f05bc1751f9a951a5cf35b9babb34276e85897fb",
+    "contrib/bench/clean-state-path-controls.test.cjs": "e9d7d81f5a5d2edf49f1700b3c5bc050d54444688dffbe20a306b224cdd31ac2",
+    "bin/tempo/examples/read_finish_checkpoint.rs": "ebf7a0dc129f8d8a17ee7663e9586614c95676f5cf02f63af8df0940e9921201"
+  },
+  "analysis_json_sha256": "76fb236468f390b934d0cfc32934266c212186f47cacca4a1f162ab361043b74",
+  "note": "Post-run changes package the in-repo checkpoint example, default its path, archive genesis on future runs, and correct the equal-duration-slice label. Numeric analysis is unchanged. The original source/ directory preserves the exact runner and observers used for the measured smoke suite."
+}

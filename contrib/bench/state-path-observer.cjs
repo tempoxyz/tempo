@@ -7,8 +7,10 @@ const path = require('node:path');
 const {execFile} = require('node:child_process');
 const {promisify, parseArgs} = require('node:util');
 const {measurementTiming} = require('./state-path-timing.cjs');
+const {loadOrigin} = require('./state-access-load-clock.cjs');
 const {parseMemory} = require('./state-path-memory.cjs');
 const historyValidation = require('./history-state-path-validation.cjs');
+const declaredValidation = require('./declared-state-path-validation.cjs');
 const {checkCursorAdvance} = require('./state-access-validation.cjs');
 const execute = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -69,6 +71,11 @@ function selectedMetrics(text) {
     const match = /^(\w+)(\{[^}]*\})?\s+([\d.eE+-]+)$/.exec(line);
     if (!match) continue;
     const [, name, labels = '', value] = match;
+    if (/^reth_db_bytecode_prefetch_(enabled|requests|requests_rw|bytes|errors|skipped_dirty)$/.test(name)) {
+      assert.ok(Number.isFinite(Number(value)));
+      values[name + labels] = Number(value);
+      continue;
+    }
     if (!/^(reth_tempo_payload_builder_(gas_used_sum|total_transactions_sum|block_build_stop_total|(total_normal_transaction_fill|total_transaction_execution|payload_finalization|sparse_trie_state_root_wait|builder_finish|payload_build)_duration_seconds_(sum|count))|reth_sync_execution_gas_processed_total|reth_consensus_engine_beacon_(executed_blocks|backpressure_active|backpressure_stall_duration_sum|persistence_duration_sum)|reth_sync_caching_(code|storage|account)_cache_(hits|misses)|reth_transaction_pool_aa_2d_pending_transactions)$/.test(name)) continue;
     const number = Number(value);
     assert.ok(Number.isFinite(number));
@@ -94,6 +101,13 @@ async function observation(options, withCheckpoint = true) {
       catch (error) { sample.io_error = String(error); }
       try { sample.memory = parseMemory(fs.readFileSync(`/sys/fs/cgroup/system.slice/${unit}/memory.stat`, 'utf8')); }
       catch (error) { sample.memory_error = String(error); }
+      try {
+        const group = `/sys/fs/cgroup/system.slice/${unit}`;
+        sample.memory_limits = Object.fromEntries(['memory.max', 'memory.current', 'memory.swap.max', 'memory.swap.current']
+          .map(file => [file, fs.readFileSync(`${group}/${file}`, 'utf8').trim()]));
+        sample.memory_events = Object.fromEntries(fs.readFileSync(`${group}/memory.events`, 'utf8').trim().split('\n')
+          .map(line => { const [key, value] = line.split(/\s+/); return [key, Number(value)]; }));
+      } catch (error) { sample.memory_limits_error = String(error); }
       if (withCheckpoint) {
         sample.checkpoint_tool = options['checkpoint-tool'] || 'tempo db get';
         try {
@@ -192,41 +206,84 @@ function changedStorage(diff) {
     .filter(key => BigInt(before[key] || '0x0') !== BigInt(after[key] || '0x0'));
 }
 
+function selectTraceCandidates(candidates, history, scenario, allowFirstSload = false) {
+  if (allowFirstSload) assert.equal(scenario, 'state_access_dependent', 'first-transaction allowance is only for the 4096-SLOAD diagnostic control');
+  let selected = history ? candidates.filter(block => block.tx_count > 1) : candidates;
+  let policy = history ? 'non-first-required' : 'ordinary';
+  const maxTx = ['history_read_max', 'history_code_max'].includes(scenario);
+  const sized = ['history_read_sized', 'history_code_sized'].includes(scenario);
+  if (selected.length < 3 && (allowFirstSload || maxTx || sized)) {
+    selected = candidates;
+    policy = sized ? 'sized-first-allowed' : maxTx ? 'max-size-first-allowed' : 'large-sload-control-first-allowed';
+  }
+  assert.ok(selected.length >= 3, 'insufficient non-first transaction samples for history audit');
+  return {candidates: selected, policy};
+}
+
+function validateHistorySamples(traces, policy) {
+  const advanced = traces.filter(trace => trace.history_advanced);
+  if (!['large-sload-control-first-allowed', 'max-size-first-allowed', 'sized-first-allowed'].includes(policy))
+    assert.ok(advanced.length > 0, 'no within-block history change sampled');
+  if (advanced.length) assert.ok(advanced.reduce((sum, trace) => sum + trace.parent_state_mismatch_fraction, 0) / advanced.length > 0.9,
+    'sampled parent-state access mismatch is not established');
+}
+
 async function audit(options) {
   await guardLocalChain();
   const report = JSON.parse(fs.readFileSync(options.report));
-  const history = ['state_access_dependent', 'history_code', 'history_write'].includes(report.metadata.scenario);
-  const writing = ['state_paths_write', 'history_write'].includes(report.metadata.scenario);
-  assert.ok(history || writing || report.metadata.scenario === 'state_paths_read', 'unexpected control scenario');
-  const contract = history ? historyValidation.ROUTER : CONTRACT;
-  const fixture = history ? JSON.parse(fs.readFileSync(path.join(options['a-datadir'], '.bench-meta/history-state-paths.json'))) : null;
+  const maxTx = ['history_read_max', 'history_code_max'].includes(report.metadata.scenario);
+  const sized = ['history_read_sized', 'history_code_sized'].includes(report.metadata.scenario);
+  const history = maxTx || sized || ['state_access_dependent', 'history_read', 'history_code', 'history_write'].includes(report.metadata.scenario);
+  const declared = ['declared_read', 'declared_write'].includes(report.metadata.scenario);
+  const writing = ['state_paths_write', 'history_write', 'declared_write'].includes(report.metadata.scenario);
+  assert.ok(history || declared || writing || report.metadata.scenario === 'state_paths_read', 'unexpected control scenario');
+  const contract = history || declared ? historyValidation.ROUTER : CONTRACT;
+  const fixture = history || declared ? JSON.parse(fs.readFileSync(path.join(options['a-datadir'], '.bench-meta/history-state-paths.json'))) : null;
   if (fixture) fixture.page_count = Number(report.metadata.bloat_mib) * 4 - 1;
+  if (declared) {
+    const preflight = JSON.parse(fs.readFileSync(options.report.replace(/\.json$/, '.declared-preflight.json')));
+    assert.equal(preflight.ok, true);
+    assert.equal(preflight.scenario, report.metadata.scenario);
+    assert.equal(preflight.page_count, fixture.page_count);
+    fixture.declared_accesses = preflight.accesses;
+  }
+  if (sized) {
+    const preflight = JSON.parse(fs.readFileSync(path.join(path.dirname(options.report), `max-tx-preflight-${options.phase}.json`)));
+    assert.equal(preflight.scenario, report.metadata.scenario);
+    assert.equal(preflight.ok, true);
+    fixture.sized_accesses = preflight.accesses;
+  }
   const blocks = [...report.blocks].sort((a, b) => a.number - b.number);
   assert.ok(blocks.length > 1);
   const endBlock = blocks.at(-1).number;
-  const deadline = Date.now() + (history ? (writing ? 1800000 : 600000) : 300000);
+  const deadline = Date.now() + (history || declared ? (writing ? 1800000 : 600000) : 300000);
   while (Number(BigInt(await rpc('b', 'eth_blockNumber'))) < endBlock) {
     assert.ok(Date.now() < deadline, 'follower catch-up timed out');
     await sleep(2000);
   }
   const code = await rpc('b', 'eth_getCode', [contract, 'latest']);
   let cursorCheck;
-  if (history) {
+  if (history || declared) {
     const artifact = JSON.parse(fs.readFileSync(path.join(__dirname, 'txgen/history-state-paths.json')));
     assert.equal(code.toLowerCase(), artifact.deployedBytecode.object.toLowerCase(), 'router artifact differs from executed code');
-    const before = await rpc('b', 'eth_getStorageAt', [contract, historyValidation.CURSOR, '0x' + (blocks[0].number - 1).toString(16)]);
-    const after = await rpc('b', 'eth_getStorageAt', [contract, historyValidation.CURSOR, '0x' + endBlock.toString(16)]);
-    cursorCheck = checkCursorAdvance(before, after, blocks);
-    const nonempty = blocks.filter(block => block.tx_count > 0).length;
-    cursorCheck.transactions_with_prior_workload_in_block = Number(cursorCheck.transactions) - nonempty;
-    cursorCheck.history_advanced_fraction = cursorCheck.transactions_with_prior_workload_in_block / Number(cursorCheck.transactions);
+    if (history) {
+      const before = await rpc('b', 'eth_getStorageAt', [contract, historyValidation.CURSOR, '0x' + (blocks[0].number - 1).toString(16)]);
+      const after = await rpc('b', 'eth_getStorageAt', [contract, historyValidation.CURSOR, '0x' + endBlock.toString(16)]);
+      cursorCheck = checkCursorAdvance(before, after, blocks);
+      const nonempty = blocks.filter(block => block.tx_count > 0).length;
+      cursorCheck.transactions_with_prior_workload_in_block = Number(cursorCheck.transactions) - nonempty;
+      cursorCheck.history_advanced_fraction = cursorCheck.transactions_with_prior_workload_in_block / Number(cursorCheck.transactions);
+    }
   } else assert.ok((code.length - 2) / 2 > 4096, 'expected an ordinary multi-page deployed contract');
   const timing = measurementTiming(report.metadata.run_duration_secs, options['warmup-seconds'] ?? 600);
-  const candidates = blocks.filter(block => block.tx_count > 0 && block.timestamp_ms >= blocks[0].timestamp_ms + timing.from_ms);
+  const origin = await loadOrigin(options.report.replace(/\.json$/, '.samples.ndjson.gz'));
+  const historyCoverage = history ? historyValidation.measuredHistoryCoverage(blocks, timing,
+    report.metadata.scenario === 'history_read' ? 0.9 : 0, origin) : null;
+  const candidates = blocks.filter(block => block.tx_count > 0 && block.timestamp_ms >= origin + timing.from_ms && block.timestamp_ms <= origin + timing.to_ms);
   assert.ok(candidates.length >= 8, 'insufficient steady-state receipt samples');
   const receiptBlocks = Array.from({length:8},(_,i)=>candidates[Math.floor(i*(candidates.length-1)/7)]);
-  const traceCandidates = history ? candidates.filter(block=>block.tx_count>1) : candidates;
-  assert.ok(traceCandidates.length>=3,'insufficient non-first transaction samples for history audit');
+  const traceSelection = selectTraceCandidates(candidates, history, report.metadata.scenario, !!options['allow-first-sload-samples']);
+  const traceCandidates = traceSelection.candidates;
   const traceBlocks = new Set([0,0.5,1].map(fraction=>traceCandidates[Math.floor(fraction*(traceCandidates.length-1))].number));
   const sampledBlocks = [...new Map([...receiptBlocks,...candidates.filter(block=>traceBlocks.has(block.number))].map(block=>[block.number,block])).values()];
   const receipts = [], traces = [];
@@ -238,6 +295,7 @@ async function audit(options) {
     let gas = 0n;
     for (const receipt of list) {
       assert.equal(BigInt(receipt.status), 1n, `revert: ${receipt.transactionHash}`);
+      if (maxTx) assert.ok(BigInt(receipt.gasUsed) >= 29700000n && BigInt(receipt.gasUsed) <= 30000000n, 'transaction is not near the 30M gas cap');
       assert.equal(receipt.blockHash, block.hash);
       gas += BigInt(receipt.gasUsed);
     }
@@ -245,6 +303,11 @@ async function audit(options) {
     assert.equal(gas, BigInt(reported.gas_used));
     receipts.push({block: reported.number, count: list.length, gas: gas.toString()});
     if (traceBlocks.has(reported.number)) {
+      if (declared) {
+        const hash = list.at(-1).transactionHash;
+        traces.push(await declaredValidation.auditTransaction(rpc, hash, reported.number, report.metadata.scenario, fixture, path.dirname(options.output)));
+        continue;
+      }
       if (history) {
         const hash = list.at(-1).transactionHash;
         traces.push(await historyValidation.auditTransaction(rpc, hash, reported.number, report.metadata.scenario, fixture, path.dirname(options.output)));
@@ -261,12 +324,7 @@ async function audit(options) {
       traces.push({hash, selectors, changed_contract_slots: changed.length, trace_file: traceFile});
     }
   }
-  if (history) {
-    assert.ok(traces.some(trace => trace.history_advanced), 'no within-block history change sampled');
-    const advanced = traces.filter(trace => trace.history_advanced);
-    assert.ok(advanced.reduce((sum, trace) => sum + trace.parent_state_mismatch_fraction, 0) / advanced.length > 0.9,
-      'sampled parent-state access mismatch is not established');
-  }
+  if (history) validateHistorySamples(traces, traceSelection.policy);
   // Wait for actual empty blocks, not just the legacy nonce-pool count (AA has a separate pool).
   let quietSince = null, quietTarget = null, previousHead = endBlock, quietBlocks = 0;
   while (Date.now() < deadline) {
@@ -290,12 +348,22 @@ async function audit(options) {
     drain.push(sample);
     if (['a', 'b'].every(node => sample.nodes[node].persisted?.state >= quietTarget)) {
       const result = {ok: true, scenario: report.metadata.scenario, contract, fixture, timing, cursor_check: cursorCheck,
+        measured_history_coverage: historyCoverage,
+        trace_sampling: {policy: declared ? 'declared-last-transaction' : traceSelection.policy, non_first_samples: traces.filter(trace => trace.history_advanced).length},
         runtime_code_bytes: (code.length - 2) / 2, receipts, traces,
         sampled_receipts: receipts.reduce((sum, row) => sum + row.count, 0),
         workload_end_block: endBlock, quiet_target_block: quietTarget,
         persisted_through_workload: true, drain,
         audited_at: new Date().toISOString(),
-        caveat: history
+        caveat: declared
+          ? 'Declared router storage reads are EIP-2930 warm; signed access lists match calldata and state effects. Current node prewarming is used unchanged. Gas warmth alone does not establish physical prefetch. Report whole-node I/O, wall time and durable progress as well as execution time.'
+          : traceSelection.policy === 'sized-first-allowed'
+          ? 'Sized transactions may be the first or only transaction in a block. Report measured history coverage; do not infer prewarming bypass from the router design alone.'
+          : traceSelection.policy === 'max-size-first-allowed'
+          ? 'Near-cap transactions may be the first or only transaction in a block. Cold-access and gas-cap checks passed; report actual history coverage rather than claiming within-block prewarming bypass.'
+          : traceSelection.policy === 'large-sload-control-first-allowed'
+          ? 'Large-SLOAD diagnostic control: first transactions may be sampled. Cold-read correctness is verified, but history-bypass coverage must not be inferred from these traces. Timed I/O and persistence are reported separately.'
+          : history
           ? 'History-dependent targets verified by actual transaction traces and parent-state replays. Not a direct log of prewarming worker accesses or proof of a universal worst case. Physical I/O is measured separately. Quiet-tail persistence includes post-load transactions.'
           : 'Ordinary resident-working-set controls. Sampled correctness, not exhaustive. No cache-evasion or cold-code claim. Quiet-tail persistence includes post-load transactions; metrics during load are separate.'};
       fs.writeFileSync(options.output, JSON.stringify(result, null, 2) + '\n');
@@ -310,7 +378,8 @@ async function audit(options) {
 
 async function main() {
   const {positionals, values: options} = parseArgs({allowPositionals: true, options:
-    Object.fromEntries(['tempo', 'checkpoint-tool', 'a-datadir', 'b-datadir', 'phase', 'seconds', 'warmup-seconds', 'stop', 'output', 'report'].map(key => [key, {type: 'string'}]))});
+    {...Object.fromEntries(['tempo', 'checkpoint-tool', 'a-datadir', 'b-datadir', 'phase', 'seconds', 'warmup-seconds', 'stop', 'output', 'report'].map(key => [key, {type: 'string'}])),
+      'allow-first-sload-samples': {type: 'boolean'}}});
   assert.ok(['watch', 'audit', 'prime'].includes(positionals[0]));
   for (const key of ['tempo', 'a-datadir', 'b-datadir', 'phase', 'output']) assert.ok(options[key], `missing ${key}`);
   const bundledCheckpointTool = path.join(path.dirname(options.tempo), 'read_finish_checkpoint');
@@ -324,5 +393,5 @@ async function main() {
   } else { assert.ok(options.report); await audit(options); }
 }
 
-module.exports = {frontier, checkpointCommand, parseIo, selectedMetrics, checkCalls, changedStorage, primed};
+module.exports = {frontier, checkpointCommand, parseIo, selectedMetrics, checkCalls, changedStorage, primed, selectTraceCandidates, validateHistorySamples};
 if (require.main === module) main().catch(error => {console.error(error); process.exitCode = 1;});

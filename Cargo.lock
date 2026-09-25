@@ -13952,7 +13952,6 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
- "tokio",
  "tracing",
 ]
 

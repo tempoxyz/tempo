@@ -1,0 +1,120 @@
+{
+  "results": [
+    {
+      "workload": "sload",
+      "log": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-133021-514/logs-feature-1-a/dev/reth.log",
+      "from": "2026-09-25T13:48:38.288Z",
+      "to": "2026-09-25T13:58:38.288Z",
+      "admission": {
+        "logged_failures": 0,
+        "nonce_too_far_in_future": 0,
+        "bursts": [],
+        "log_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/max-state-access-20260925-v2/1-sload-13800-on/run.log",
+        "available": true
+      },
+      "duration_seconds": 600,
+      "unique_nullified_rounds": 411,
+      "new_payload_jobs": 516,
+      "completed_build_events": 105,
+      "unique_completed_jobs": 105,
+      "jobs_without_completed_build_in_window": 411,
+      "completed_build_gas": 3144292395,
+      "nonempty_builds": 105,
+      "nonempty_build_elapsed": {
+        "count": 105,
+        "p50_ms": 874.177423,
+        "p95_ms": 898.739771,
+        "max_ms": 944.492736
+      },
+      "nonempty_build_execution": {
+        "count": 105,
+        "p50_ms": 871.87092,
+        "p95_ms": 896.264718,
+        "max_ms": 942.843111
+      },
+      "execution_task_outcomes": {
+        "build:completed": 516,
+        "notarize:completed": 104,
+        "finalize:completed": 105
+      },
+      "canonical": {
+        "from_unix_ms": 1790344118288,
+        "to_unix_ms": 1790344718288,
+        "duration_seconds": 600,
+        "gas": "3144292395",
+        "blocks": 105,
+        "transactions": 105,
+        "mgas_per_second": 5.240487325
+      }
+    },
+    {
+      "workload": "bytecode",
+      "log": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-141345-022/logs-feature-1-a/dev/reth.log",
+      "from": "2026-09-25T14:32:08.411Z",
+      "to": "2026-09-25T14:42:08.411Z",
+      "admission": {
+        "logged_failures": 12610,
+        "nonce_too_far_in_future": 12610,
+        "bursts": [
+          {
+            "first_ms": 1790346971113,
+            "last_ms": 1790346978476,
+            "count": 7365,
+            "first": "2026-09-25T14:36:11.113Z",
+            "last": "2026-09-25T14:36:18.476Z"
+          },
+          {
+            "first_ms": 1790347253113,
+            "last_ms": 1790347258357,
+            "count": 5245,
+            "first": "2026-09-25T14:40:53.113Z",
+            "last": "2026-09-25T14:40:58.357Z"
+          }
+        ],
+        "log_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/max-state-access-20260925-v4/1-bytecode-10800-on/run.log",
+        "available": true
+      },
+      "duration_seconds": 600,
+      "unique_nullified_rounds": 498,
+      "new_payload_jobs": 500,
+      "completed_build_events": 2,
+      "unique_completed_jobs": 2,
+      "jobs_without_completed_build_in_window": 498,
+      "completed_build_gas": 59716950,
+      "nonempty_builds": 2,
+      "nonempty_build_elapsed": {
+        "count": 2,
+        "p50_ms": 493.346041,
+        "p95_ms": 493.346041,
+        "max_ms": 493.346041
+      },
+      "nonempty_build_execution": {
+        "count": 2,
+        "p50_ms": 477.19984,
+        "p95_ms": 477.19984,
+        "max_ms": 477.19984
+      },
+      "execution_task_outcomes": {
+        "build:completed": 500,
+        "notarize:completed": 2,
+        "finalize:completed": 2
+      },
+      "canonical": {
+        "from_unix_ms": 1790346728411,
+        "to_unix_ms": 1790347328411,
+        "duration_seconds": 600,
+        "gas": "59716950",
+        "blocks": 2,
+        "transactions": 2,
+        "mgas_per_second": 0.09952825,
+        "source": "Canonical gas in the fixed metric window. Empty time slices remain zero; no minimum-block filter."
+      }
+    }
+  ],
+  "caveats": [
+    "Events use the exact full 600-second window when reconstructed; otherwise the retained builder gas-counter window.",
+    "Nullified rounds are consensus observations, not a direct count of canceled EVM executions or proof of a particular timeout cause.",
+    "A job without a completion in this window is not necessarily canceled: boundary-crossing jobs and payload-job reuse affect this statistic.",
+    "Completed build duration distributions exclude incomplete/canceled work. Canonical gas divided by wall time is the chain metric."
+  ]
+}

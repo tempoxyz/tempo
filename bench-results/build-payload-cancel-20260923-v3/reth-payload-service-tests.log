@@ -1,0 +1,424 @@
+    Updating git repository `https://github.com/paradigmxyz/revmc`
+    Skipping git submodule `https://github.com/ethereum/tests.git` due to update strategy in .gitmodules
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded alloy-sol-macro v1.7.2
+  Downloaded alloy-chains v0.2.37
+  Downloaded defmt v1.1.1
+  Downloaded smallvec v1.16.1
+  Downloaded tokio-stream v0.1.19
+  Downloaded serde_json v1.0.151
+  Downloaded syn v3.0.3
+  Downloaded http v1.5.0
+  Downloaded http-body v1.1.0
+  Downloaded either v1.18.0
+  Downloaded crossbeam-utils v0.8.23
+  Downloaded darling_macro v0.24.1
+  Downloaded clap_derive v4.6.4
+  Downloaded bitflags v2.13.1
+  Downloaded socket2 v0.6.5
+  Downloaded futures-io v0.3.34
+  Downloaded find-msvc-tools v0.1.12
+  Downloaded thiserror v2.0.20
+  Downloaded syn-solidity v1.7.2
+  Downloaded roaring v0.11.5
+  Downloaded tokio-util v0.7.19
+  Downloaded http-body-util v0.1.5
+  Downloaded crossbeam-channel v0.5.17
+  Downloaded serde_with_macros v3.23.0
+  Downloaded quote v1.0.47
+  Downloaded futures-util v0.3.34
+  Downloaded serde_with v3.23.0
+  Downloaded proc-macro2 v1.0.107
+  Downloaded alloy-sol-types v1.7.2
+  Downloaded futures-core v0.3.34
+  Downloaded serde_derive v1.0.229
+  Downloaded eyre v0.6.14
+  Downloaded futures-macro v0.3.34
+  Downloaded thiserror-impl v2.0.20
+  Downloaded tokio v1.53.1
+  Downloaded opentelemetry-semantic-conventions v0.32.1
+  Downloaded futures-task v0.3.34
+  Downloaded futures-channel v0.3.34
+  Downloaded serde_core v1.0.229
+  Downloaded indexmap v2.14.2
+  Downloaded defmt-macros v1.1.1
+  Downloaded hyper v1.11.1
+  Downloaded libc v0.2.189
+  Downloaded darling_core v0.24.1
+  Downloaded defmt-parser v1.0.0
+  Downloaded anyhow v1.0.104
+  Downloaded clap v4.6.6
+  Downloaded base64 v0.23.1
+  Downloaded alloy-sol-macro-input v1.7.2
+  Downloaded cc v1.4.5
+  Downloaded alloy-json-abi v1.7.2
+  Downloaded serde v1.0.229
+  Downloaded jiff-core v0.1.0
+  Downloaded futures-sink v0.3.34
+  Downloaded futures-executor v0.3.34
+  Downloaded clap_builder v4.6.6
+  Downloaded bytemuck v1.25.2
+  Downloaded alloy-primitives v1.7.2
+  Downloaded alloy-sol-macro-expander v1.7.2
+  Downloaded ipnet v2.12.2
+  Downloaded futures v0.3.34
+  Downloaded darling v0.24.1
+  Downloaded crossbeam-queue v0.3.14
+  Downloaded async-trait v0.1.92
+  Downloaded alloy-sol-type-parser v1.7.2
+  Downloaded jiff v0.2.35
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.12
+   Compiling portable-atomic v1.13.1
+   Compiling zeroize v1.8.2
+   Compiling typenum v1.20.1
+   Compiling subtle v2.6.1
+   Compiling thiserror v2.0.20
+   Compiling der v0.7.10
+   Compiling serde_json v1.0.151
+   Compiling num-traits v0.2.19
+   Compiling once_cell v1.21.4
+   Compiling tracing-core v0.1.36
+   Compiling syn v2.0.118
+   Compiling syn v3.0.3
+   Compiling jobserver v0.1.34
+   Compiling generic-array v0.14.7
+   Compiling getrandom v0.2.17
+   Compiling cc v1.4.5
+   Compiling rand_core v0.6.4
+   Compiling hybrid-array v0.4.12
+   Compiling ff v0.13.1
+   Compiling spki v0.7.3
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling pkcs8 v0.10.2
+   Compiling group v0.13.0
+   Compiling digest v0.10.7
+   Compiling crypto-common v0.2.1
+   Compiling block-buffer v0.12.0
+   Compiling crypto-bigint v0.5.5
+   Compiling hmac v0.12.1
+   Compiling signature v2.2.0
+   Compiling rfc6979 v0.4.0
+   Compiling hashbrown v0.17.0
+   Compiling sha2 v0.10.9
+   Compiling const-hex v1.18.1
+   Compiling bitflags v2.13.1
+   Compiling digest v0.11.3
+   Compiling sha3 v0.11.0
+   Compiling indexmap v2.14.2
+   Compiling secp256k1-sys v0.11.0
+   Compiling crc-catalog v2.4.0
+   Compiling crc v3.4.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling futures-core v0.3.34
+   Compiling secp256k1-sys v0.10.1
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling num-integer v0.1.46
+   Compiling darling_core v0.24.1
+   Compiling futures-sink v0.3.34
+   Compiling num-bigint v0.4.6
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling darling_core v0.23.0
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling derive_more-impl v2.1.1
+   Compiling alloy-rlp-derive v0.3.16
+   Compiling auto_impl v1.3.0
+   Compiling secp256k1 v0.31.1
+   Compiling darling_macro v0.24.1
+   Compiling rand_chacha v0.3.1
+   Compiling errno v0.3.14
+   Compiling darling v0.24.1
+   Compiling serde_with_macros v3.23.0
+   Compiling mio v1.2.0
+   Compiling signal-hook-registry v1.4.8
+   Compiling rand v0.8.6
+   Compiling enum-ordinalize-derive v4.3.2
+   Compiling tokio-macros v2.7.0
+   Compiling darling_macro v0.23.0
+   Compiling synstructure v0.13.2
+   Compiling darling v0.23.0
+   Compiling alloy-tx-macros v2.4.2
+   Compiling serde_with v3.23.0
+   Compiling socket2 v0.6.5
+   Compiling bytes v1.12.1
+   Compiling smallvec v1.16.1
+   Compiling serdect v0.2.0
+   Compiling arrayvec v0.7.8
+   Compiling sec1 v0.7.3
+   Compiling either v1.18.0
+   Compiling parking_lot_core v0.9.12
+   Compiling elliptic-curve v0.13.8
+   Compiling alloy-rlp v0.3.16
+   Compiling bitvec v1.0.1
+   Compiling nonmax v0.5.5
+   Compiling ruint v1.20.0
+   Compiling secp256k1 v0.30.0
+   Compiling ecdsa v0.16.9
+   Compiling parking_lot v0.12.5
+   Compiling k256 v0.13.4
+   Compiling tokio v1.53.1
+   Compiling enum-ordinalize v4.3.2
+   Compiling ark-std v0.6.0
+   Compiling nybbles v0.4.8
+   Compiling ark-serialize-derive v0.6.0
+   Compiling ahash v0.8.12
+   Compiling educe v0.6.0
+   Compiling itertools v0.14.0
+   Compiling ark-serialize v0.6.0
+   Compiling zerofrom-derive v0.1.7
+   Compiling ark-ff-macros v0.6.0
+   Compiling derive_more v2.1.1
+   Compiling ark-ff-asm v0.6.0
+   Compiling alloy-primitives v1.7.2
+   Compiling yoke-derive v0.8.2
+   Compiling zerofrom v0.1.7
+   Compiling const_format_proc_macros v0.2.34
+   Compiling crossbeam-epoch v0.9.20
+   Compiling modular-bitfield-impl v0.13.1
+   Compiling impl-trait-for-tuples v0.2.3
+   Compiling ark-ff v0.6.0
+   Compiling const_format v0.2.36
+   Compiling alloy-eip7928 v0.4.10
+   Compiling alloy-eip7702 v0.6.3
+   Compiling alloy-eip2930 v0.2.3
+   Compiling alloy-eip2124 v0.2.0
+   Compiling revm-primitives v43.0.0
+   Compiling alloy-serde v2.4.2
+   Compiling revm-bytecode v43.0.0
+   Compiling alloy-trie v0.9.5
+   Compiling alloy-eips v2.4.2
+   Compiling yoke v0.8.2
+   Compiling parity-scale-codec v3.7.5
+   Compiling revm-state v43.0.0
+   Compiling modular-bitfield v0.13.1
+   Compiling crossbeam-deque v0.8.6
+   Compiling reth-codecs-derive v0.7.1
+   Compiling tokio-util v0.7.19
+   Compiling revm-database-interface v43.0.0
+   Compiling zerovec-derive v0.11.3
+   Compiling num-rational v0.4.2
+   Compiling alloy-consensus v2.4.2
+   Compiling revm-context-interface v43.0.1
+   Compiling alloy-genesis v2.4.2
+   Compiling num-iter v0.1.45
+   Compiling num-complex v0.4.6
+   Compiling dashmap v6.2.1
+   Compiling num v0.4.3
+   Compiling zerovec v0.11.6
+   Compiling rayon-core v1.13.0
+   Compiling primeorder v0.13.6
+   Compiling displaydoc v0.2.5
+   Compiling futures-channel v0.3.34
+   Compiling raw-cpuid v11.6.0
+   Compiling hex v0.4.3
+   Compiling sha2 v0.11.0
+   Compiling rayon v1.12.0
+   Compiling aurora-engine-modexp v1.2.0
+   Compiling p256 v0.13.2
+   Compiling ark-poly v0.6.0
+   Compiling derive-where v1.6.1
+   Compiling futures-macro v0.3.34
+   Compiling ripemd v0.2.0
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling revm-interpreter v43.0.1
+   Compiling futures-util v0.3.34
+   Compiling ark-ec v0.6.0
+   Compiling revm-context v43.0.2
+   Compiling quanta v0.12.6
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling zerotrie v0.2.4
+   Compiling revm-database v43.0.0
+   Compiling icu_locale_core v2.2.0
+   Compiling icu_collections v2.0.0
+   Compiling syn-solidity v1.7.2
+   Compiling zstd-safe v7.2.4
+   Compiling macro-string v0.2.0
+   Compiling proc-macro-error-attr3 v3.0.1
+   Compiling zstd v0.13.3
+   Compiling reth-zstd-compressors v0.7.1
+   Compiling icu_provider v2.2.0
+   Compiling ark-bn254 v0.6.0
+   Compiling reth-codecs v0.7.1
+   Compiling ark-bls12-381 v0.6.0
+   Compiling proc-macro-error3 v3.0.1
+   Compiling siphasher v1.0.2
+   Compiling icu_normalizer v2.0.1
+   Compiling phf_shared v0.14.0
+   Compiling icu_properties v2.0.2
+   Compiling strum_macros v0.27.2
+   Compiling revm-precompile v43.0.2
+   Compiling reth-primitives-traits v0.7.1
+   Compiling num_enum_derive v0.7.6
+   Compiling alloy-sol-macro-input v1.7.2
+   Compiling phf v0.14.0
+   Compiling alloy-sol-macro-expander v1.7.2
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling fixed-map-derive v0.9.5
+   Compiling tokio-stream v0.1.19
+   Compiling num_enum v0.7.6
+   Compiling alloy-chains v0.2.37
+   Compiling revm-handler v43.0.2
+   Compiling url v2.5.8
+   Compiling alloy-hardforks v0.4.8
+   Compiling http v1.5.0
+   Compiling strum v0.27.2
+   Compiling reth-prune-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/prune/types)
+   Compiling revm-inspector v43.0.2
+   Compiling pin-project-internal v1.1.13
+   Compiling revm v43.0.2
+   Compiling cmake v0.1.58
+   Compiling reth-trie-common v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/common)
+   Compiling aws-lc-sys v0.45.0
+   Compiling http-body v1.1.0
+   Compiling reth-ethereum-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/primitives)
+   Compiling futures-executor v0.3.34
+   Compiling pin-project v1.1.13
+   Compiling h2 v0.4.16
+   Compiling fixed-map v0.9.5
+   Compiling aws-lc-rs v1.18.1
+   Compiling rustc-hash v2.1.3
+   Compiling ipnet v2.12.2
+   Compiling anyhow v1.0.104
+   Compiling reth-ethereum-forks v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/hardforks)
+   Compiling alloy-sol-macro v1.7.2
+   Compiling reth-network-peers v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/net/peers)
+   Compiling alloy-rpc-types-engine v2.4.2
+   Compiling sync_wrapper v1.0.2
+   Compiling rustls-pki-types v1.14.0
+   Compiling alloy-sol-types v1.7.2
+   Compiling bytemuck v1.25.2
+   Compiling regex-syntax v0.8.10
+   Compiling roaring v0.11.5
+   Compiling tower v0.5.3
+   Compiling reth-stages-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/stages/types)
+   Compiling regex-automata v0.4.14
+   Compiling hyper v1.11.1
+   Compiling alloy-evm v0.39.0
+   Compiling reth-static-file-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/static-file/types)
+   Compiling reth-db-models v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db-models)
+   Compiling clang-sys v1.8.1
+   Compiling futures v0.3.34
+   Compiling reth-storage-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/errors)
+   Compiling hyper-util v0.1.20
+   Compiling http-body-util v0.1.5
+   Compiling reth-execution-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/execution-types)
+   Compiling reth-execution-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/execution-errors)
+   Compiling reth-chainspec v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/chainspec)
+   Compiling matchers v0.2.0
+   Compiling reth-db-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db-api)
+   Compiling itertools v0.13.0
+   Compiling tracing-serde v0.2.0
+   Compiling metrics-derive v0.1.2
+   Compiling tracing-log v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling bindgen v0.72.1
+   Compiling reth-metrics v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/metrics)
+   Compiling getrandom v0.3.4
+   Compiling reth-tokio-util v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tokio-util)
+   Compiling prost-derive v0.14.3
+   Compiling async-trait v0.1.92
+   Compiling reth-storage-api v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/storage-api)
+   Compiling rand_core v0.9.5
+   Compiling hyper-timeout v0.5.2
+   Compiling reth-consensus v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/consensus/consensus)
+   Compiling opentelemetry v0.32.0
+   Compiling rustls-native-certs v0.8.3
+   Compiling reth-errors v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/errors)
+   Compiling tonic v0.14.5
+   Compiling rand_chacha v0.9.0
+   Compiling prost v0.14.3
+   Compiling reth-trie-sparse v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/sparse)
+   Compiling rand v0.9.4
+   Compiling tower-http v0.6.11
+   Compiling libz-sys v1.1.28
+   Compiling prost-types v0.14.3
+   Compiling bzip2-sys v0.1.13+1.0.8
+   Compiling lz4-sys v1.11.1+lz4-1.10.0
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling eyre v0.6.14
+   Compiling clap_builder v4.6.6
+   Compiling tonic-prost v0.14.5
+   Compiling reth-trie v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/trie)
+   Compiling tonic-types v0.14.5
+   Compiling opentelemetry-proto v0.32.0
+   Compiling reth-mdbx-sys v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/libmdbx-rs/mdbx-sys)
+   Compiling reth-chain-state v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/chain-state)
+   Compiling reth-payload-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/primitives)
+   Compiling clap_derive v4.6.4
+   Compiling memmap2 v0.9.11
+   Compiling chrono v0.4.45
+   Compiling reth-payload-builder-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/builder-primitives)
+   Compiling reth-evm v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/evm)
+   Compiling librocksdb-sys v0.17.3+10.4.2
+   Compiling tracing-opentelemetry v0.33.0
+   Compiling crossbeam-channel v0.5.17
+   Compiling clap v4.6.6
+   Compiling opentelemetry-semantic-conventions v0.32.1
+   Compiling rolling-file v0.2.0
+   Compiling reth-engine-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/primitives)
+   Compiling tracing-appender v0.2.5
+   Compiling tracing-samply v0.1.5
+   Compiling tracing-logfmt v0.3.7
+   Compiling tracing-chrome v0.7.2
+   Compiling tracing-journald v0.3.2
+   Compiling bincode v1.3.3
+   Compiling reth-fs-util v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/fs-util)
+   Compiling crossbeam-queue v0.3.14
+   Compiling inotify-sys v0.1.5
+   Compiling lz4_flex v0.12.1
+   Compiling inotify v0.11.1
+   Compiling reth-trie-db v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/db)
+   Compiling reth-nippy-jar v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/nippy-jar)
+   Compiling tracing-futures v0.2.5
+   Compiling thread-priority v3.1.1
+   Compiling notify-types v2.1.0
+   Compiling page_size v0.6.0
+   Compiling sysinfo v0.38.4
+   Compiling notify v8.2.0
+   Compiling reth-tasks v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tasks)
+   Compiling reth-storage-overlay v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/storage-overlay)
+   Compiling reth-node-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/node/types)
+   Compiling alloy-consensus-any v2.4.2
+   Compiling alloy-network-primitives v2.4.2
+   Compiling reth-revm v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/revm)
+   Compiling reth-ethereum-engine-primitives v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/ethereum/engine-primitives)
+   Compiling alloy-rpc-types-eth v2.4.2
+   Compiling alloy-rpc-types v2.4.2
+   Compiling reth-libmdbx v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/libmdbx-rs)
+   Compiling rustls v0.23.45
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.4
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.13.4
+   Compiling opentelemetry-http v0.32.0
+   Compiling opentelemetry-otlp v0.32.0
+   Compiling reth-tracing-otlp v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tracing-otlp)
+   Compiling reth-tracing v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/tracing)
+   Compiling reth-db v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/db)
+   Compiling rocksdb v0.24.0
+   Compiling reth-provider v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/storage/provider)
+   Compiling reth-execution-cache v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/engine/execution-cache)
+   Compiling reth-trie-parallel v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/parallel)
+   Compiling reth-payload-builder v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/payload/builder)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 45s
+     Running unittests src/lib.rs (/home/ubuntu/repos/tempo-payments-bloat-pr/target/debug/deps/reth_payload_builder-6ecbc38decbd0c76)
+
+running 2 tests
+test service::tests::payload_builder_lease_is_held_until_resolve_finishes ... ok
+test service::tests::unpolled_resolution_is_owned_and_releases_lease ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

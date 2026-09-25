@@ -1,0 +1,67 @@
+[
+  {
+    "target": "trie::proof_task",
+    "message": "Spawning proof worker pools",
+    "count": 2458
+  },
+  {
+    "target": "engine::root",
+    "message": "All proofs processed, ending calculation",
+    "count": 2444
+  },
+  {
+    "target": "storage::db::mdbx",
+    "message": "Commit",
+    "count": 282
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Saving range of blocks",
+    "count": 136
+  },
+  {
+    "target": "providers::db",
+    "message": "Writing blocks and execution data to storage",
+    "count": 136
+  },
+  {
+    "target": "providers::db",
+    "message": "Appended block data",
+    "count": 136
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Saved range of blocks",
+    "count": 136
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Running pruner",
+    "count": 136
+  },
+  {
+    "target": "trie::changeset_cache",
+    "message": "Starting cache eviction",
+    "count": 136
+  },
+  {
+    "target": "trie::changeset_cache",
+    "message": "Finished cache eviction",
+    "count": 136
+  },
+  {
+    "target": "engine::persistence",
+    "message": "Finished pruning after saving blocks",
+    "count": 136
+  },
+  {
+    "target": "trie::sparse",
+    "message": "SparseStateTrie::prune completed",
+    "count": 124
+  },
+  {
+    "target": "storage::db::mdbx",
+    "message": "Targeted bytecode prefetch",
+    "count": 1
+  }
+]

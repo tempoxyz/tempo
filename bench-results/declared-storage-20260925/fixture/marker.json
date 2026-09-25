@@ -1,0 +1,20 @@
+{
+  "bloat_mib": 100000,
+  "bloat": 100,
+  "accounts": 1001,
+  "validators": "127.0.0.2:8000",
+  "follower": "127.0.0.3:8100",
+  "seed": 42,
+  "gas_limit": "1000000000000",
+  "general_gas_limit": "1000000000000",
+  "dkg_in_genesis": true,
+  "topology": "single-proposer-certified-follower",
+  "state_hardfork": "T9",
+  "bloat_address_mode": "state-access-raw-storage",
+  "bench_datadir": "/reth-bench-a/tempo_e2e_100000mb_state_access_isolated_roles_history_paths",
+  "node_dir": "/reth-bench-a/tempo_e2e_100000mb_state_access_isolated_roles_history_paths",
+  "validator_addr": "127.0.0.2:8000",
+  "validator_role": "a",
+  "initialized_at": "2026-09-22T14:08:03Z",
+  "history_state_paths": true
+}

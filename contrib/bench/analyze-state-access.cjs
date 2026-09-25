@@ -150,10 +150,11 @@ function metricsWindow(series, node, from, to) {
   };
 }
 
-async function analyzeRun(directory, label) {
-  const report = JSON.parse(fs.readFileSync(path.join(directory, 'report-feature-1.json')));
-  const series = await loadSeries(path.join(directory, 'report-feature-1.samples.ndjson.gz'));
-  const correctnessPath = path.join(directory, 'correctness-feature-1.json');
+async function analyzeRun(directory, label, phase = 'feature-1') {
+  assert.match(phase, /^(baseline|feature)-[1-9][0-9]*$/);
+  const report = JSON.parse(fs.readFileSync(path.join(directory, `report-${phase}.json`)));
+  const series = await loadSeries(path.join(directory, `report-${phase}.samples.ndjson.gz`));
+  const correctnessPath = path.join(directory, `correctness-${phase}.json`);
   const correctness = fs.existsSync(correctnessPath) ? JSON.parse(fs.readFileSync(correctnessPath)) : null;
   const timing = readTiming(directory, report);
   const warmup = timing.from_ms, end = timing.to_ms;
@@ -175,7 +176,7 @@ async function analyzeRun(directory, label) {
       follower: metricsWindow(series, 'b', warmup + i*timing.slice_ms, warmup + (i+1)*timing.slice_ms),
     })),
   };
-  fs.writeFileSync(path.join(directory, 'state-access-analysis.json'), JSON.stringify(result, null, 2) + '\n');
+  fs.writeFileSync(path.join(directory, phase === 'feature-1' ? 'state-access-analysis.json' : `state-access-analysis-${phase}.json`), JSON.stringify(result, null, 2) + '\n');
   return result;
 }
 

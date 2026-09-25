@@ -1,0 +1,33 @@
+{
+  "created_at": "2026-09-25T15:18:21.870Z",
+  "tempo_base": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+  "reth_base": "dfcb10454cabf4ce778e0dedfe79c512b37f2c8c",
+  "build_command": "RUSTFLAGS='-C target-cpu=native' cargo build --offline --config contrib/bench/payload-cancel-patches.toml -p tempo --bin tempo --profile profiling --features jemalloc,asm-keccak -j8",
+  "binary_sha256": "3cf755ffee2de9d5dc90fbcc327f2dd7a54b40e0fcf821b4d9943cd663bcf19b",
+  "compiler": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+  "sources": {
+    "tempo/Cargo.lock": "7db54793a55a3371c840a9c94a05f3164abd5de0b47581b77ba7c8c12dda3281",
+    "tempo/contrib/bench/payload-cancel-patches.toml": "7ee38b2d1d82d26c51b920e332fca96b80c634aaf0e6e1567c19dceba8447dce",
+    "tempo/crates/consensus/src/executor/mod.rs": "4fb0063773aaee3e7979bbd669725266bbc65a6e8872d92afa3ab9d98ab19de1",
+    "tempo/crates/payload/builder/Cargo.toml": "f6499d5c21aadbc1715c3d148985e657decd0fa2e9047478f403fe5262c4a9f7",
+    "tempo/crates/payload/builder/src/lib.rs": "6006c17d2457c18cd1c2fcdcfe18f6922918d54fedf44a11bd5797dc291b571d",
+    "tempo/crates/payload/builder/src/prewarming.rs": "c791202d4046444f3f8e71d2e83d6c3be18f792c0af803ae65ffdbe3ea5efbad",
+    "tempo/crates/payload/builder/src/completion.rs": "9c213a3de345e03ec28c9eaa5550e8b48195c160b306a4a1f811a23c56ffa319",
+    "reth/Cargo.lock": "e56650258051b46b3f711980b70c2c8bc7252d40d334264b5c3d51fc05b009a0",
+    "reth/crates/storage/db/src/implementation/mdbx/mod.rs": "0ff3401d793646362882d3aad56bd873a9d7732310849a81a035ac787cd29c14",
+    "reth/crates/storage/db/src/implementation/mdbx/tx.rs": "f936fbdbe8fb3a31b39238d2d441dc04db19d3239f42fad5a40d79257b48c4a9",
+    "reth/crates/storage/db/src/implementation/mdbx/bytecode_prefetch.rs": "a70c3ae773d8e57aaeed4dc8430693718bce92d004ed06901aeb0a35abb3b55c",
+    "reth/crates/storage/provider/src/providers/rocksdb/provider.rs": "c2ac27fde738a5a46faa7d0a6dd661bbbab730319c335cbd08a3c36c054b0aa4",
+    "reth/crates/payload/basic/src/lib.rs": "835d80dbe2ea3a8050d322f3778f9e7717683299cb52925d372576a700fd3494",
+    "reth/crates/payload/builder/src/service.rs": "2dcbf0737b09fd1f4bbdc29b311426377067411bd26c07abebb01d109477bd5d"
+  },
+  "binary_version": "Tempo Version: 1.14.0-dev\nCommit SHA: 84dd0be10d38a0d3e2670c7371a16f028a8bcaf0\nBuild Timestamp: 2026-09-24T15:35:00.000000000Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n",
+  "build_environment": {
+    "RUSTFLAGS": "-C target-cpu=native",
+    "VERGEN_GIT_SHA": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+    "VERGEN_GIT_DIRTY": "true",
+    "SOURCE_DATE_EPOCH": "1790264100"
+  },
+  "coverage": "RO and clean mapped RW bytecode values; dirty values excluded",
+  "difference": "Opt-in TEMPO_BENCH_TX_TIMING=1 logs all builder tx attempt starts/completions including canceled builds; additional reth tx.rs changes are tests only."
+}

@@ -1,0 +1,10 @@
+{
+  "reth": {
+    "base": "dfcb10454cabf4ce778e0dedfe79c512b37f2c8c",
+    "patch_sha256": "2f145b49e93e3a0515be57edaac7ece4165477409c799e3e109538bc54191aa1"
+  },
+  "txgen": {
+    "base": "fbd4c325fcf296d6726d18d6697b6618b1a58001",
+    "patch_sha256": "5742a477fc55b85691a73cf06af59531d3f65783ec34e5d0bb5d88b2c87596c4"
+  }
+}

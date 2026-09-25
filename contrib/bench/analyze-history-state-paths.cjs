@@ -68,6 +68,10 @@ async function main() {
   lines.push('','## Validation','');
   for(const run of runs) {
     const audit=run.correctness;
+    if (audit.measured_history_coverage) {
+      const h=audit.measured_history_coverage;
+      lines.push(`- ${run.label}: measured-window history coverage ${(100*h.fraction).toFixed(2)}% (${h.non_first_transactions}/${h.transactions}); required ${(100*h.minimum_required).toFixed(0)}%; transactions/block histogram ${JSON.stringify(h.transactions_per_block)}.`);
+    }
     lines.push(`- ${run.label}: ${(audit.cursor_check.history_advanced_fraction * 100).toFixed(2)}% of all included workload transactions have a preceding transaction in their block; first transactions are not claimed to evade matching parent-state prewarming.`);
     lines.push(`- ${run.label}: ${audit.sampled_receipts} successful sampled receipts; ${audit.traces.length} actual access-set/opcode-replay checks; parent-state mismatch fractions ${audit.traces.map(t=>f(t.parent_state_mismatch_fraction)).join(', ')}; both persistence frontiers reached ${audit.quiet_target_block}.`);
     lines.push(`- ${run.label}: builder stop reasons ${JSON.stringify(run.builder.stop_reasons)}; pending pool ${JSON.stringify(run.builder.pending_pool)}; code-cache misses/Mgas (builder/follower) ${f(run.builder.other_caches.code.misses_per_mgas)}/${f(run.follower.other_caches.code.misses_per_mgas)}.`);

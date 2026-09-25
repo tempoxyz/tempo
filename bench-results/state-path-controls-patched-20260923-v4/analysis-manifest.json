@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-09-23T15:16:10.668Z",
+  "source_sha256": {
+    "contrib/bench/analyze-state-access.cjs": "5ecb892197f1602c162e2f9089ae72cdd62d70ace07abd080acce6edb5146c14",
+    "contrib/bench/analyze-state-access.test.cjs": "3bac20c681eb5636497f93cf1083643bf12b50831426d5eaf0bd25ee8e8c21de",
+    "contrib/bench/analyze-state-path-controls.cjs": "fad3a6f57418d1ddeb9b46f1f43cd353d506cd03d23209192829d589de2f33a9",
+    "contrib/bench/analyze-state-path-controls.test.cjs": "f37e2acb20a9d8be11c0b5d43871903a5905746a844804c9da77ad22fe04ca9a"
+  },
+  "measurement_tests_passed": 33,
+  "note": "Post-load report-wording correction identifies the historical unpatched SLOAD reference. Numerical analysis, workloads, node binaries, observer, and completed measurement windows unchanged."
+}

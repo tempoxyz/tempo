@@ -542,7 +542,7 @@ def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mi
 def --env txgen-configure-state-access-env [preset_path: string, bloat_mib: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '.yml$' "")
     let uses_state_access_pages = if ($preset_path | path exists) {
-        (txgen-spec-effective-text $preset_path) =~ "TXGEN_STATE_ACCESS_PAGE_COUNT"
+        (txgen-spec-effective-text $preset_path) =~ "TXGEN_STATE_ACCESS_PAGE_COUNT|TXGEN_DECLARED_MAX_START"
     } else {
         false
     }
@@ -556,6 +556,13 @@ def --env txgen-configure-state-access-env [preset_path: string, bloat_mib: int]
     # One 40-byte header precedes 64-byte slots; retain only complete 4096-slot pages.
     let page_count = ($bloat_mib * 4) - 1
     $env.TXGEN_STATE_ACCESS_PAGE_COUNT = ($page_count | into string)
+    if (txgen-spec-effective-text $preset_path) =~ "TXGEN_DECLARED_MAX_START" {
+        let accesses = ($env.TXGEN_STATE_ACCESSES? | default "128" | into int)
+        if $accesses < 1 or $accesses > 256 { error make {msg: "Declared storage requires 1..256 slots per transaction"} }
+        $env.TXGEN_STATE_ACCESSES = ($accesses | into string)
+        # U256 uniform has inclusive endpoints. Last start must end in the corpus.
+        $env.TXGEN_DECLARED_MAX_START = (($page_count * 4096 - $accesses) | into string)
+    }
     print $"  Using ($page_count) state-access pages from ($bloat_mib) MiB bloat"
 }
 
@@ -786,6 +793,11 @@ def txgen-run-preset-pipeline [
     txgen-configure-state-access-env $spec_path $bloat_mib
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    if $preset_name in ["declared_read" "declared_write"] {
+        let preflight_path = ($report_path | str replace --regex '\.json$' '.declared-preflight.json')
+        ^node contrib/bench/declared-state-path-preflight.cjs $txgen_tempo_bin $spec_path $preflight_path
+        if $env.LAST_EXIT_CODE != 0 { error make {msg: "Declared storage preflight failed; rebuild txgen-tempo with access_list support"} }
+    }
     let tx_count = [($tps * $duration) 1] | math max
     mut zone_metadata = []
     if $preset_name == "zones" {

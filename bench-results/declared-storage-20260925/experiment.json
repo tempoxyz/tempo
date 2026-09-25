@@ -1,0 +1,50 @@
+{
+  "created_at": "2026-09-25T18:56:31.086042+00:00",
+  "status": "complete",
+  "node_base": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+  "tools": {
+    "bench": "ae47ab9631c6aa59c5435b087d19a40e083fa78b61b4f5fdda98b18391c39d5c",
+    "txgen-tempo": "7eb042d1cbf4a0aa5318cbbda0d6e1bf0e821a7259f488e6102d3290b6b94acc",
+    "read_finish_checkpoint": "0a113f945d82fd72269dd67e03900f3c4aa9603733857b11fa005983e43ceace",
+    "evict-benchmark-file-cache": "197679a2e15d2ce2d8dcc955c40579955051140a46c994cff9b8b3b1768cb0a5",
+    "tempo": "3cf755ffee2de9d5dc90fbcc327f2dd7a54b40e0fcf821b4d9943cd663bcf19b"
+  },
+  "fixture": {
+    "code_base": "0x6000000000000000000000000000000000000000",
+    "code_bytes": 24576,
+    "code_count": 4266667,
+    "elapsed_seconds": 331.609740242,
+    "hashed_storage_entries": 1638400975,
+    "previous_router_code_hash": "0x586fe8d8d1cbd243fdce7aae1e50234f00971104ade6085582a8836c109f43d5",
+    "router": "0x535441544541434345535342454e434800000000",
+    "router_code_hash": "0xbab30df82c2c6f20abbca26ddc3b6dab274c9741dbc9856e6cf2346a75c07455",
+    "state_root": "0x854463d6ae8abea111a2598b9f1e7b99e8b111f2d226cb486b12d0ae11eba4f1",
+    "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+    "total_code_bytes": 104857608192,
+    "version": 1
+  },
+  "duration_seconds": 1200,
+  "excluded_warmup_seconds": 600,
+  "slots_per_transaction": 128,
+  "offered_tps": 1000,
+  "cases": [
+    "declared_read",
+    "declared_write"
+  ],
+  "prewarming": "default enabled",
+  "node_memory_bytes": 21474836480,
+  "node_swap_bytes": 0,
+  "suite_dir": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/state-access-bloat-20260925-185631-646",
+  "router_update": "bench-results/history-router-update-20260925-185550",
+  "finished_at": "2026-09-25T20:17:22.590Z",
+  "results": [
+    {
+      "scenario": "declared_read",
+      "directory": "bench-results/20260925-185631-770"
+    },
+    {
+      "scenario": "declared_write",
+      "directory": "bench-results/20260925-192547-004"
+    }
+  ]
+}

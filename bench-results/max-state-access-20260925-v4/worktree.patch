@@ -1,0 +1,2380 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index fb02f5c..b8b31b4 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -9088,7 +9088,6 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
+ [[package]]
+ name = "reth-basic-payload-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9115,7 +9114,6 @@ dependencies = [
+ [[package]]
+ name = "reth-chain-state"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9146,7 +9144,6 @@ dependencies = [
+ [[package]]
+ name = "reth-chainspec"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -9166,7 +9163,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-genesis",
+  "clap",
+@@ -9179,7 +9175,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli-commands"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -9264,7 +9259,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli-runner"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "reth-tasks",
+  "tokio",
+@@ -9274,7 +9268,6 @@ dependencies = [
+ [[package]]
+ name = "reth-cli-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -9327,7 +9320,6 @@ dependencies = [
+ [[package]]
+ name = "reth-config"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "eyre",
+  "humantime-serde",
+@@ -9344,7 +9336,6 @@ dependencies = [
+ [[package]]
+ name = "reth-consensus"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -9358,7 +9349,6 @@ dependencies = [
+ [[package]]
+ name = "reth-consensus-common"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9371,7 +9361,6 @@ dependencies = [
+ [[package]]
+ name = "reth-consensus-debug-client"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9396,7 +9385,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "derive_more",
+@@ -9425,7 +9413,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9452,7 +9439,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db-common"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-genesis",
+@@ -9482,7 +9468,6 @@ dependencies = [
+ [[package]]
+ name = "reth-db-models"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -9497,7 +9482,6 @@ dependencies = [
+ [[package]]
+ name = "reth-discv4"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -9522,7 +9506,6 @@ dependencies = [
+ [[package]]
+ name = "reth-discv5"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -9546,7 +9529,6 @@ dependencies = [
+ [[package]]
+ name = "reth-dns-discovery"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "dashmap",
+@@ -9570,7 +9552,6 @@ dependencies = [
+ [[package]]
+ name = "reth-downloaders"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9607,7 +9588,6 @@ dependencies = [
+ [[package]]
+ name = "reth-e2e-test-utils"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9666,7 +9646,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ecies"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "aes",
+  "alloy-primitives",
+@@ -9693,7 +9672,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-local"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -9716,7 +9694,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9743,7 +9720,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-tree"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -9799,7 +9775,6 @@ dependencies = [
+ [[package]]
+ name = "reth-engine-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -9829,7 +9804,6 @@ dependencies = [
+ [[package]]
+ name = "reth-era"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -9847,7 +9821,6 @@ dependencies = [
+ [[package]]
+ name = "reth-era-downloader"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "bytes",
+@@ -9863,7 +9836,6 @@ dependencies = [
+ [[package]]
+ name = "reth-era-utils"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -9887,7 +9859,6 @@ dependencies = [
+ [[package]]
+ name = "reth-errors"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "reth-consensus",
+  "reth-execution-errors",
+@@ -9898,7 +9869,6 @@ dependencies = [
+ [[package]]
+ name = "reth-eth-wire"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-primitives",
+@@ -9926,7 +9896,6 @@ dependencies = [
+ [[package]]
+ name = "reth-eth-wire-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -9949,7 +9918,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-rpc-types-engine",
+  "alloy-rpc-types-eth",
+@@ -9990,7 +9958,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-cli"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "clap",
+  "eyre",
+@@ -10013,7 +9980,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-consensus"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10029,7 +9995,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-engine-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -10045,7 +10010,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-forks"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eip2124",
+  "alloy-hardforks",
+@@ -10058,7 +10022,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-payload-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10088,7 +10051,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ethereum-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10101,7 +10063,6 @@ dependencies = [
+ [[package]]
+ name = "reth-etl"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "rayon",
+  "reth-db-api",
+@@ -10111,7 +10072,6 @@ dependencies = [
+ [[package]]
+ name = "reth-evm"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -10137,7 +10097,6 @@ dependencies = [
+ [[package]]
+ name = "reth-evm-ethereum"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10157,7 +10116,6 @@ dependencies = [
+ [[package]]
+ name = "reth-execution-cache"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "fixed-cache",
+@@ -10175,7 +10133,6 @@ dependencies = [
+ [[package]]
+ name = "reth-execution-errors"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-evm",
+  "alloy-primitives",
+@@ -10188,7 +10145,6 @@ dependencies = [
+ [[package]]
+ name = "reth-execution-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10207,7 +10163,6 @@ dependencies = [
+ [[package]]
+ name = "reth-exex"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10245,7 +10200,6 @@ dependencies = [
+ [[package]]
+ name = "reth-exex-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -10259,7 +10213,6 @@ dependencies = [
+ [[package]]
+ name = "reth-fs-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "serde",
+  "serde_json",
+@@ -10269,7 +10222,6 @@ dependencies = [
+ [[package]]
+ name = "reth-invalid-block-hooks"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10295,7 +10247,6 @@ dependencies = [
+ [[package]]
+ name = "reth-ipc"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bytes",
+  "futures",
+@@ -10315,7 +10266,6 @@ dependencies = [
+ [[package]]
+ name = "reth-libmdbx"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bitflags 2.11.1",
+  "byteorder",
+@@ -10332,7 +10282,6 @@ dependencies = [
+ [[package]]
+ name = "reth-mdbx-sys"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bindgen",
+  "cc",
+@@ -10341,7 +10290,6 @@ dependencies = [
+ [[package]]
+ name = "reth-metrics"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "futures",
+  "libc",
+@@ -10355,7 +10303,6 @@ dependencies = [
+ [[package]]
+ name = "reth-net-banlist"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "ipnet",
+@@ -10364,7 +10311,6 @@ dependencies = [
+ [[package]]
+ name = "reth-net-nat"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "futures-util",
+  "if-addrs",
+@@ -10378,7 +10324,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10437,7 +10382,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10462,7 +10406,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-p2p"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -10486,7 +10429,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-peers"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -10501,7 +10443,6 @@ dependencies = [
+ [[package]]
+ name = "reth-network-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eip2124",
+  "humantime-serde",
+@@ -10515,7 +10456,6 @@ dependencies = [
+ [[package]]
+ name = "reth-nippy-jar"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "anyhow",
+  "bincode",
+@@ -10533,7 +10473,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-rpc-types-engine",
+  "eyre",
+@@ -10557,7 +10496,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10625,7 +10563,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-core"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10680,7 +10617,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-ethereum"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10733,7 +10669,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-ethstats"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10757,7 +10692,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-events"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10781,7 +10715,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-metrics"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "bytes",
+  "eyre",
+@@ -10811,7 +10744,6 @@ dependencies = [
+ [[package]]
+ name = "reth-node-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "reth-chainspec",
+  "reth-db-api",
+@@ -10823,7 +10755,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -10847,7 +10778,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-builder-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "pin-project",
+  "reth-payload-primitives",
+@@ -10859,7 +10789,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-primitives"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -10882,7 +10811,6 @@ dependencies = [
+ [[package]]
+ name = "reth-payload-validator"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-rpc-types-engine",
+@@ -10926,7 +10854,6 @@ dependencies = [
+ [[package]]
+ name = "reth-provider"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -10976,7 +10903,6 @@ dependencies = [
+ [[package]]
+ name = "reth-prune"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -11003,7 +10929,6 @@ dependencies = [
+ [[package]]
+ name = "reth-prune-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "arbitrary",
+@@ -11019,7 +10944,6 @@ dependencies = [
+ [[package]]
+ name = "reth-revm"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rlp",
+@@ -11034,7 +10958,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-dyn-abi",
+@@ -11110,7 +11033,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-genesis",
+@@ -11140,7 +11062,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-builder"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-network",
+  "alloy-provider",
+@@ -11183,7 +11104,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-convert"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-evm",
+@@ -11203,7 +11123,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-engine-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11234,7 +11153,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-eth-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-dyn-abi",
+@@ -11281,7 +11199,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-eth-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-chains",
+  "alloy-consensus",
+@@ -11331,7 +11248,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-layer"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-rpc-types-engine",
+  "http 1.4.0",
+@@ -11347,7 +11263,6 @@ dependencies = [
+ [[package]]
+ name = "reth-rpc-server-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-rpc-types-engine",
+@@ -11377,7 +11292,6 @@ dependencies = [
+ [[package]]
+ name = "reth-stages"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -11429,7 +11343,6 @@ dependencies = [
+ [[package]]
+ name = "reth-stages-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11457,7 +11370,6 @@ dependencies = [
+ [[package]]
+ name = "reth-stages-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "arbitrary",
+@@ -11471,7 +11383,6 @@ dependencies = [
+ [[package]]
+ name = "reth-static-file"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "parking_lot",
+@@ -11491,7 +11402,6 @@ dependencies = [
+ [[package]]
+ name = "reth-static-file-types"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "clap",
+@@ -11506,7 +11416,6 @@ dependencies = [
+ [[package]]
+ name = "reth-storage-api"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eip7928",
+@@ -11532,7 +11441,6 @@ dependencies = [
+ [[package]]
+ name = "reth-storage-errors"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11549,7 +11457,6 @@ dependencies = [
+ [[package]]
+ name = "reth-storage-overlay"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-eips",
+  "alloy-primitives",
+@@ -11577,7 +11484,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tasks"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "crossbeam-utils",
+  "dashmap",
+@@ -11598,7 +11504,6 @@ dependencies = [
+ [[package]]
+ name = "reth-testing-utils"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -11614,7 +11519,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tokio-util"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "tokio",
+  "tokio-stream",
+@@ -11624,7 +11528,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tracing"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "clap",
+  "eyre",
+@@ -11644,7 +11547,6 @@ dependencies = [
+ [[package]]
+ name = "reth-tracing-otlp"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "base64 0.22.1",
+  "clap",
+@@ -11663,7 +11565,6 @@ dependencies = [
+ [[package]]
+ name = "reth-transaction-pool"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -11706,7 +11607,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-eips",
+@@ -11732,7 +11632,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-common"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-consensus",
+  "alloy-primitives",
+@@ -11760,7 +11659,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-db"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "reth-db-api",
+@@ -11776,7 +11674,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-parallel"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-evm",
+  "alloy-primitives",
+@@ -11800,7 +11697,6 @@ dependencies = [
+ [[package]]
+ name = "reth-trie-sparse"
+ version = "2.5.2"
+-source = "git+https://github.com/paradigmxyz/reth?rev=dfcb104#dfcb10454cabf4ce778e0dedfe79c512b37f2c8c"
+ dependencies = [
+  "alloy-primitives",
+  "alloy-trie",
+@@ -13952,7 +13848,6 @@ dependencies = [
+  "tempo-precompiles",
+  "tempo-primitives",
+  "tempo-transaction-pool",
+- "tokio",
+  "tracing",
+ ]
+ 
+@@ -16235,3 +16130,155 @@ dependencies = [
+  "cc",
+  "pkg-config",
+ ]
++
++[[patch.unused]]
++name = "custom-hardforks"
++version = "0.1.0"
++
++[[patch.unused]]
++name = "ef-test-runner"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "ef-tests"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "example-beacon-api-sidecar-fetcher"
++version = "0.1.0"
++
++[[patch.unused]]
++name = "example-beacon-api-sse"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-bsc-p2p"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-auth-http-middleware"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-beacon-withdrawals"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-dev-node"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-engine-types"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-evm"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-inspector"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-node-components"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-payload-builder"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-rlpx-subprotocol"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-rpc-middleware"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-custom-state-root"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-db-access"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-exex-test"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-full-contract-state"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "example-manual-p2p"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-network"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-network-proxy"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-network-txpool"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-node-builder-api"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-node-custom-rpc"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-node-event-hooks"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-polygon-p2p"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-rpc-db"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "example-txpool-tracing"
++version = "0.0.0"
++
++[[patch.unused]]
++name = "exex-subscription"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-bb"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-exex-test-utils"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-payload-util"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-rpc-e2e-tests"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-snap-sync"
++version = "2.5.2"
++
++[[patch.unused]]
++name = "reth-storage-rpc-provider"
++version = "2.5.2"
+diff --git a/bench-e2e.nu b/bench-e2e.nu
+index 2d978f6..b30e200 100644
+--- a/bench-e2e.nu
++++ b/bench-e2e.nu
+@@ -633,13 +633,14 @@ def derive-tracing-otlp [tracing_otlp: string] {
+     $tracing_otlp
+ }
+ 
+-def systemd-scope-command [unit: string, cpus: string, memory: string, script: string] {
++def systemd-scope-command [unit: string, cpus: string, memory: string, swap: string, script: string] {
+     let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and ($cpus != "" or $memory != "")
+     if not $can_scope {
+         return ["bash" "-lc" $script]
+     }
+ 
+     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
++    let swap_args = if $swap != "" { ["-p" $"MemorySwapMax=($swap)"] } else { [] }
+     mut telemetry_env_names = []
+     if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
+         $telemetry_env_names = ($telemetry_env_names | append "TEMPO_TELEMETRY_URL")
+@@ -662,6 +663,7 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
+         "--unit" $unit
+         ...$telemetry_env
+         ...$memory_args
++        ...$swap_args
+         "bash"
+         "-lc"
+         $script
+@@ -689,6 +691,7 @@ def start-e2e-local-node [
+     results_dir: string,
+     cpus: string,
+     memory: string,
++    swap: string,
+ ] {
+     let profile_label = $"($phase)-($role)"
+     let full_samply_args = if $samply {
+@@ -699,7 +702,7 @@ def start-e2e-local-node [
+     let node_cmd_str = ($node_cmd | str join " ")
+     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
+     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
+-    let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
++    let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $swap $script)
+     print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
+     job spawn {
+         run-external ($runner | first) ...($runner | skip 1)
+@@ -1181,6 +1184,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
+ 
+     let a_rpc = "http://127.0.0.1:8545"
+     let b_rpc = "http://127.0.0.1:8645"
++    if $ctx.cache_evict_tool != "" {
++        for node in [a b] {
++            let file = ($ctx | get $node | get datadir | path join "db" "mdbx.dat")
++            if ($file | str contains ".virgin") { error make {msg: "Refusing to evict a source snapshot"} }
++            let result = (^sudo -n $ctx.cache_evict_tool $file | complete)
++            if $result.exit_code != 0 { error make {msg: $"Scratch cache eviction failed: ($result.stderr) ($result.stdout)"} }
++            {file: $file, measurement: ($result.stdout | from json)} | to json
++                | save -f $"($ctx.results_dir)/cache-eviction-($phase)-($node).json"
++        }
++    }
+     let a_role_args = if $ctx.isolated_roles { ["--disable-tx-gossip"] } else { [] }
+     let b_role_args = if $ctx.isolated_roles {
+         [
+@@ -1230,8 +1243,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     mark-schelk-dirty-at $ctx.a.state_path
+     mark-schelk-dirty-at $ctx.b.state_path
+ 
+-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
+-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
++    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory $ctx.node_swap_limit
++    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory $ctx.node_swap_limit
+ 
+     sleep 2sec
+     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
+@@ -1247,12 +1260,18 @@ def run-local-e2e-phase [run: record, ctx: record] {
+     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
+     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
+ 
+-    if $phase_exit == 0 and $ctx.observe_state_paths and $ctx.preset in ["state_access_dependent" "history_code" "history_write"] {
++    if $phase_exit == 0 and $ctx.observe_state_paths and $ctx.preset in ["state_access_dependent" "history_read" "history_code" "history_write" "history_read_max" "history_code_max"] {
+         print "  Persisting ordinary blocks before the history workload (avoids genesis Merkle rebuild)..."
+         ^node contrib/bench/state-path-observer.cjs prime --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --output $"($ctx.results_dir)/state-path-priming-($phase).json"
+         if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
+     }
+ 
++    if $phase_exit == 0 and $ctx.preset in ["history_read_max" "history_code_max"] {
++        print "  Checking near-cap calls on the populated fixture before timed load..."
++        ^node contrib/bench/max-state-access-preflight.cjs $ctx.preset $ctx.a.datadir $"($ctx.results_dir)/max-tx-preflight-($phase).json"
++        if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
++    }
++
+     let tracy_output = $"($ctx.results_dir)/tracy-profile-($phase).tracy"
+     let tracy_log = $"($ctx.results_dir)/tracy-capture-($phase).log"
+     mut tracy_capture_started = false
+@@ -1369,7 +1388,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
+ 
+     if $phase_exit == 0 and $observe_state_paths {
+         print "  Auditing contract access paths and waiting for durable state/trie persistence..."
+-        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --warmup-seconds ($ctx.summary_warmup_seconds | into string) --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json"
++        let diagnostic_args = if $ctx.allow_first_sload_samples { ["--allow-first-sload-samples"] } else { [] }
++        ^node contrib/bench/state-path-observer.cjs audit --tempo $ctx.regenesis_tempo --a-datadir $ctx.a.datadir --b-datadir $ctx.b.datadir --phase $phase --warmup-seconds ($ctx.summary_warmup_seconds | into string) --report $"($ctx.results_dir)/report-($phase).json" --output $"($ctx.results_dir)/correctness-($phase).json" ...$diagnostic_args
+         if $env.LAST_EXIT_CODE != 0 { $phase_exit = 1 }
+     }
+     if $observe_state_paths { "stop" | save -f $observer_stop }
+@@ -1550,6 +1570,10 @@ def "main e2e" [
+     --validate-state-access                               # Audit sampled receipts and traces after the measured load
+     --observe-state-paths                                 # Audit ordinary read/write controls and observe durable persistence
+     --isolated-roles                                      # A proposes; B follows certified blocks with no mempool ingress
++    --node-memory: string = ""                          # Override both nodes' systemd MemoryMax; empty preserves defaults
++    --node-swap-limit: string = ""                      # Override both nodes' MemorySwapMax; 0 disables swap
++    --cache-evict-tool: string = ""                     # Optional targeted cold-start helper, after restore and before nodes start
++    --allow-first-sload-samples                         # Diagnostic 4096-SLOAD control only: allow first-transaction cold-read samples
+     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
+     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
+     --general-gas-limit: string = $E2E_GAS_LIMIT        # General (non-payment) gas limit override
+@@ -1592,6 +1616,21 @@ def "main e2e" [
+     --skip-summary                                       # Leave summary generation to a later workflow step
+ ] {
+     let feature_binary = if $feature_binary == "" { "" } else { $feature_binary | path expand }
++    if $allow_first_sload_samples and ($preset != "state_access_dependent" or not $observe_state_paths or not $isolated_roles) {
++        error make {msg: "First-transaction samples require the isolated observed 4096-SLOAD diagnostic control"}
++    }
++    let cache_evict_tool = if $cache_evict_tool == "" { "" } else { $cache_evict_tool | path expand }
++    if $cache_evict_tool != "" and (not $single_restore or not ($cache_evict_tool | path exists)) {
++        error make {msg: "Targeted cache eviction requires a helper and one dedicated single-restore phase"}
++    }
++    if ($node_memory != "" or $node_swap_limit != "") and ((^uname | str trim) != "Linux" or ((which systemd-run | length) == 0)) {
++        error make {msg: "Explicit node memory controls require Linux systemd scopes"}
++    }
++    for limit in [$node_memory $node_swap_limit] {
++        if $limit != "" and not ($limit =~ '^[0-9]+[KMGT]?$') {
++            error make {msg: "Memory controls must be integer bytes or use K/M/G/T suffixes"}
++        }
++    }
+     let xtask_binary = if $xtask_binary == "" { "" } else { $xtask_binary | path expand }
+     if $snapshot_suffix != "" and not ($snapshot_suffix =~ '^[a-zA-Z0-9_-]+$') {
+         error make { msg: "--snapshot-suffix requires a simple filename suffix" }
+@@ -1619,10 +1658,10 @@ def "main e2e" [
+         }
+     }
+     let preset_path = $preset_spec.spec_path
+-    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write" "state_access_dependent" "history_code" "history_write"]) {
++    if $observe_state_paths and (not $isolated_roles or $preset not-in ["state_paths_read" "state_paths_write" "state_access_dependent" "history_read" "history_code" "history_write" "history_read_max" "history_code_max"]) {
+         error make { msg: "--observe-state-paths requires an isolated supported state-path preset" }
+     }
+-    if ($preset in ["history_code" "history_write"] or ($preset == "state_access_dependent" and $observe_state_paths)) and (not $state_access_bloat or $snapshot_suffix != "history_paths" or not $observe_state_paths) {
++    if ($preset in ["history_read" "history_code" "history_write" "history_read_max" "history_code_max"] or ($preset == "state_access_dependent" and $observe_state_paths)) and (not $state_access_bloat or $snapshot_suffix != "history_paths" or not $observe_state_paths) {
+         error make { msg: "History presets require the dedicated history_paths state-access fixture and observer" }
+     }
+     if not ($preset_path | path exists) {
+@@ -1955,7 +1994,7 @@ def "main e2e" [
+             ip: $a_ip
+             consensus_port: $a_consensus_port
+             cpus: $E2E_A_CPUS
+-            memory: $E2E_A_MEMORY
++            memory: (if $node_memory == "" { $E2E_A_MEMORY } else { $node_memory })
+         }
+         b: {
+             state_path: $E2E_B_STATE_PATH
+@@ -1965,8 +2004,11 @@ def "main e2e" [
+             ip: $b_ip
+             consensus_port: $b_consensus_port
+             cpus: $E2E_B_CPUS
+-            memory: $E2E_B_MEMORY
++            memory: (if $node_memory == "" { $E2E_B_MEMORY } else { $node_memory })
+         }
++        node_swap_limit: $node_swap_limit
++        cache_evict_tool: $cache_evict_tool
++        allow_first_sload_samples: $allow_first_sload_samples
+         preset: $preset
+         preset_path: $preset_path
+         tps: $tps
+@@ -2128,6 +2170,10 @@ def run-state-access-case [options: record, config: record, workload: record] {
+         --bloat ($config.fixture_requirements.bloat_mib // 1000)
+         --state-access-bloat --snapshot-suffix $config.fixture_requirements.snapshot_suffix
+         --isolated-roles --observe-state-paths --token-count 1
++        --node-memory ($options.node_memory? | default "")
++        --node-swap-limit ($options.node_swap_limit? | default "")
++        --cache-evict-tool ($options.cache_evict_tool? | default "")
++        --allow-first-sload-samples=($options.allow_first_sload_samples? | default false)
+         --gas-limit $config.gas_limit --general-gas-limit $config.gas_limit
+         --run-pairs $options.run_pairs --run-side $options.run_side
+         --baseline-args $baseline_args --feature-args $feature_args
+@@ -2200,6 +2246,7 @@ def "main state-access-bloat-worst-case" [
+     --baseline: string = "HEAD"                         # Baseline git SHA/ref
+     --feature: string = "HEAD"                          # Feature git SHA/ref
+     --case: string = "all"                              # all, sload, bytecode, or writes
++    --max-transaction-size                              # Near-30M-gas SLOAD/bytecode variants, with 20GiB/no-swap cold-start controls
+     --list                                              # List saved workloads without touching databases
+     --dry-run                                           # Print the resolved suite plan without building or running
+     --tps: int                                          # Offered TPS; defaults to the saved configuration (1000)
+@@ -2217,6 +2264,7 @@ def "main state-access-bloat-worst-case" [
+     --no-cache                                          # Skip binary cache
+ ] {
+     mut config_args = ["--resolve" "--ignore-env"]
++    if $max_transaction_size { $config_args = ($config_args | append ["--config" "contrib/bench/configs/state-access-max-tx.json"]) }
+     if $case != "all" { $config_args = ($config_args | append ["--case" $case]) }
+     if $tps != null { $config_args = ($config_args | append ["--tps" ($tps | into string)]) }
+     if $duration != null { $config_args = ($config_args | append ["--duration" ($duration | into string)]) }
+@@ -2231,10 +2279,19 @@ def "main state-access-bloat-worst-case" [
+     if $feature_binary != "" and $run_side != "feature" {
+         error make {msg: "--feature-binary requires --run-side feature"}
+     }
+-    let options = {baseline: $baseline, feature: $feature, baseline_label: $baseline, feature_label: $feature,
++    mut options = {baseline: $baseline, feature: $feature, baseline_label: $baseline, feature_label: $feature,
+         feature_binary: $feature_binary, run_pairs: $run_pairs, run_side: $run_side, profile: $profile,
+         baseline_args: $baseline_args, feature_args: $feature_args, baseline_env: $baseline_env,
+         feature_env: $feature_env, bench_env: $bench_env, no_cache: $no_cache}
++    if $max_transaction_size {
++        let eviction = ($env.STATE_PATH_CACHE_EVICT_TOOL? | default "")
++        if not $dry_run and ($eviction == "" or not ($eviction | path exists)) {
++            error make {msg: "--max-transaction-size requires STATE_PATH_CACHE_EVICT_TOOL; see contrib/bench/max-state-access.md"}
++        }
++        $options = ($options | merge {node_memory: "20G", node_swap_limit: "0", cache_evict_tool: $eviction,
++            baseline_env: ($"($baseline_env) RETH_BYTECODE_PREFETCH=1" | str trim),
++            feature_env: ($"($feature_env) RETH_BYTECODE_PREFETCH=1" | str trim)})
++    }
+     let timestamp = (date now | format date "%Y%m%d-%H%M%S-%3f")
+     let benchmark_id = $"state-access-bloat-($timestamp)"
+     let plan = {kind: native-e2e-state-access-suite, benchmark_id: $benchmark_id, configuration: $config, options: $options}
+diff --git a/contrib/bench/analyze-history-state-paths.cjs b/contrib/bench/analyze-history-state-paths.cjs
+index 77a6f29..5fd25d6 100644
+--- a/contrib/bench/analyze-history-state-paths.cjs
++++ b/contrib/bench/analyze-history-state-paths.cjs
+@@ -68,6 +68,10 @@ async function main() {
+   lines.push('','## Validation','');
+   for(const run of runs) {
+     const audit=run.correctness;
++    if (audit.measured_history_coverage) {
++      const h=audit.measured_history_coverage;
++      lines.push(`- ${run.label}: measured-window history coverage ${(100*h.fraction).toFixed(2)}% (${h.non_first_transactions}/${h.transactions}); required ${(100*h.minimum_required).toFixed(0)}%; transactions/block histogram ${JSON.stringify(h.transactions_per_block)}.`);
++    }
+     lines.push(`- ${run.label}: ${(audit.cursor_check.history_advanced_fraction * 100).toFixed(2)}% of all included workload transactions have a preceding transaction in their block; first transactions are not claimed to evade matching parent-state prewarming.`);
+     lines.push(`- ${run.label}: ${audit.sampled_receipts} successful sampled receipts; ${audit.traces.length} actual access-set/opcode-replay checks; parent-state mismatch fractions ${audit.traces.map(t=>f(t.parent_state_mismatch_fraction)).join(', ')}; both persistence frontiers reached ${audit.quiet_target_block}.`);
+     lines.push(`- ${run.label}: builder stop reasons ${JSON.stringify(run.builder.stop_reasons)}; pending pool ${JSON.stringify(run.builder.pending_pool)}; code-cache misses/Mgas (builder/follower) ${f(run.builder.other_caches.code.misses_per_mgas)}/${f(run.follower.other_caches.code.misses_per_mgas)}.`);
+diff --git a/contrib/bench/configs/README.md b/contrib/bench/configs/README.md
+index 789e1e4..8a20e73 100644
+--- a/contrib/bench/configs/README.md
++++ b/contrib/bench/configs/README.md
+@@ -32,10 +32,19 @@ Use `--tps`, `--duration`, and `--summary-warmup-seconds` instead.
+ 
+ | Name | Preset | Accesses per transaction |
+ | --- | --- | --- |
+-| `sload` | `state_access_dependent` | Original 4,096 cold SLOADs |
++| `sload` | `history_read` | 128 cold SLOADs, covering the full populated corpus |
+ | `bytecode` | `history_code` | 128 EXTCODECOPYs over unique 24 KiB contracts |
+ | `writes` | `history_write` | 1,024 populated-slot reads and nonzero-to-nonzero writes |
+ 
++For the separate near-30M-gas SLOAD and bytecode variants, add
++`--max-transaction-size`. The [max-size registry](state-access-max-tx.json)
++selects 13,800 SLOADs or 10,800 EXTCODECOPYs, with verified 20 GiB/no-swap
++cold-start controls. This requires the targeted eviction helper; see
++[preparation and reproduction](../max-state-access.md). The ordinary registry
++and defaults above are unchanged. Max-size cases report actual history coverage
++and explicitly permit first-transaction samples rather than claiming that
++mostly single-transaction blocks establish within-block prewarming bypass.
++
+ All cases use the same node binary per side, 1,000 offered TPS, 1,000
+ signers, 1,200 seconds of load, and a 600-second excluded warmup. The same
+ block-zero fixture is restored before each case: the original 100,000 MiB
+@@ -58,9 +67,12 @@ bash contrib/bench/txgen/compile-history-state-paths.sh --test
+ bash contrib/bench/update-history-router.sh
+ ```
+ 
+-This preserves both corpora and the original snapshots. The shared router
+-inherits the original SLOAD implementation, so its access selection, 4,096-read
+-loop, and cursor semantics are unchanged; router dispatch overhead can differ.
++This updates only the router in the dedicated history fixtures, preserving both
++corpora and the original source snapshots. The shared router retains the legacy
++4,096-read entry point, but the saved SLOAD case uses `touchReads`: 128-slot chunks
++selected across all 32 chunks of every original 4,096-slot logical page. Merely
++reading the first 128 slots of each old page would incorrectly shrink the working
++set by 32x.
+ The runner verifies the installed router hash before starting expensive copies.
+ It also requires the `read_finish_checkpoint` example under
+ `target/PROFILE/examples/` (or `STATE_PATH_CHECKPOINT_TOOL`) and verifies both
+@@ -82,8 +94,10 @@ Phase reports retain builder/follower/chain throughput counters and the observer
+ evidence needed for durable throughput, backlog, I/O and major faults per gas.
+ History audits record within-block history coverage and deliberately sample
+ non-first transactions; their mismatch rate is not the fraction of all workload
+-transactions that defeat prewarming. SLOAD's large transactions may substantially
+-reduce the share of non-first transactions, which is reported rather than hidden.
++transactions that defeat prewarming. The small SLOAD case requires at least 90%
++of measured-window workload transactions to have a predecessor in their block;
++otherwise its audit fails. The original 4,096-read run achieved only 0.39% and
++must not be treated as a verified prewarming-resistant worst case.
+ 
+ Different offered loads, durations, fixtures, or binaries must not be combined as
+ a matched comparison. At least 270 measured seconds are required. One run per
+diff --git a/contrib/bench/configs/state-access-bloated.json b/contrib/bench/configs/state-access-bloated.json
+index 68fc9d6..875105f 100644
+--- a/contrib/bench/configs/state-access-bloated.json
++++ b/contrib/bench/configs/state-access-bloated.json
+@@ -19,9 +19,10 @@
+   "cases": [
+     {
+       "id": "sload",
+-      "scenario": "state_access_dependent",
+-      "description": "Original 4096 cold SLOADs from a history-selected populated logical page",
+-      "operations_per_transaction": 4096
++      "scenario": "history_read",
++      "description": "128 cold SLOADs from a history-selected chunk across the full populated storage corpus",
++      "operations_per_transaction": 128,
++      "minimum_history_advanced_fraction": 0.9
+     },
+     {
+       "id": "bytecode",
+diff --git a/contrib/bench/history-state-path-validation.cjs b/contrib/bench/history-state-path-validation.cjs
+index f734a28..165ae54 100644
+--- a/contrib/bench/history-state-path-validation.cjs
++++ b/contrib/bench/history-state-path-validation.cjs
+@@ -36,7 +36,7 @@ function checkWriteDiff(diff) {
+   return slots.length;
+ }
+ 
+-function inspectOpcodes(trace, writing, reading = false) {
++function inspectOpcodes(trace, writing, reading = false, readCount = 4096, codeCount = 128) {
+   assert.equal(trace.failed,false,'router replay reverted');
+   const targets = new Set(), costs = {};
+   let accesses = 0, cursorWrites = 0, dataWrites = 0;
+@@ -54,7 +54,12 @@ function inspectOpcodes(trace, writing, reading = false) {
+       else assert.ok([2603,103].includes(Number(log.gasCost)),'unexpected EXTCODECOPY gas');
+     }
+   }
+-  assert.equal(accesses,reading ? 4096 : writing ? 1024 : 128);
++  assert.equal(accesses,reading ? readCount : writing ? 1024 : codeCount);
++  if (reading) assert.equal(targets.size, readCount, 'data SLOAD targets are not unique');
++  if (!reading && !writing && codeCount > 128) {
++    assert.ok(targets.size >= codeCount * 0.99, 'too many repeated bytecode targets');
++    assert.ok((costs[2603] || 0) >= codeCount * 0.99, 'bytecode accesses are not predominantly cold');
++  }
+   assert.equal(cursorWrites,1);
+   assert.equal(dataWrites,writing ? 1024 : 0);
+   return {targets,accesses,costs,data_writes:dataWrites};
+@@ -65,34 +70,66 @@ function routerCall(trace) {
+   for (const child of trace.calls || []) { const found = routerCall(child); if (found) return found; }
+ }
+ 
++function measuredHistoryCoverage(blocks, timing, minimum = 0) {
++  const start = Math.min(...blocks.map(block => block.timestamp_ms));
++  const measured = blocks.filter(block => block.timestamp_ms >= start + timing.from_ms &&
++    block.timestamp_ms <= start + timing.to_ms);
++  const transactions = measured.reduce((sum, block) => sum + block.tx_count, 0);
++  assert.ok(transactions > 0, 'no measured workload transactions');
++  const afterFirst = measured.reduce((sum, block) => sum + Math.max(0, block.tx_count - 1), 0);
++  const histogram = {};
++  for (const block of measured) histogram[block.tx_count] = (histogram[block.tx_count] || 0) + 1;
++  const result = {blocks: measured.length, transactions, non_first_transactions: afterFirst,
++    fraction: afterFirst / transactions, minimum_required: minimum, transactions_per_block: histogram};
++  assert.ok(result.fraction >= minimum,
++    `insufficient measured history coverage: ${(100 * result.fraction).toFixed(2)}% < ${100 * minimum}%`);
++  return result;
++}
++
++function replayStateOverrides(scenario, sender, cursor) {
++  const overrides = {};
++  if (['history_read_max','history_code_max'].includes(scenario)) {
++    assert.notEqual(sender.toLowerCase(), ROUTER, 'router cannot be the replay sender');
++    // These AA transactions do not create a legacy EOA nonce. A legacy RPC
++    // replay otherwise charges new-account gas and spuriously exceeds 30M.
++    // The router ignores sender nonce; actual receipts/prestate stay authoritative.
++    overrides[sender] = {nonce:'0x1'};
++  }
++  if (cursor !== undefined) overrides[ROUTER] = {stateDiff:{[CURSOR]:word(cursor)}};
++  return overrides;
++}
++
+ async function auditTransaction(rpc, hash, number, scenario, fixture, outputDirectory) {
+-  assert.ok(['state_access_dependent','history_write','history_code'].includes(scenario));
+-  const writing = scenario === 'history_write', reading = scenario === 'state_access_dependent';
++  assert.ok(['state_access_dependent','history_read','history_write','history_code','history_read_max','history_code_max'].includes(scenario));
++  const legacyRead = scenario === 'state_access_dependent';
++  const maxRead = scenario === 'history_read_max', maxCode = scenario === 'history_code_max';
++  const writing = scenario === 'history_write', reading = legacyRead || scenario === 'history_read' || maxRead;
+   const storage = writing || reading;
+   const callTrace = await rpc('b','debug_traceTransaction',[hash,{tracer:'callTracer'}]);
+   const call = routerCall(callTrace);
+   assert.ok(call && !call.error,'missing/successless router call');
+-  const signature = reading ? 'touchStateDependent(bytes32,uint256)' : writing ? 'touchWrites(bytes32,uint256,bool)' : 'touchCode(bytes32,uint256,bool)';
++  const signature = maxRead ? 'touchMaxReads(bytes32,uint256,bool)' : maxCode ? 'touchMaxCode(bytes32,uint256,bool)' : legacyRead ? 'touchStateDependent(bytes32,uint256)' : reading ? 'touchReads(bytes32,uint256,bool)' : writing ? 'touchWrites(bytes32,uint256,bool)' : 'touchCode(bytes32,uint256,bool)';
+   const selector = (await rpc('b','web3_sha3',['0x'+Buffer.from(signature).toString('hex')])).slice(0,10);
+   assert.equal(call.input.slice(0,10),selector);
+-  assert.equal(call.input.length,reading ? 138 : 202,'wrong calldata length');
++  assert.equal(call.input.length,legacyRead ? 138 : 202,'wrong calldata length');
+   const count = BigInt('0x'+call.input.slice(74,138));
+   assert.equal(count,BigInt(storage ? fixture.page_count : fixture.code_count));
+-  if (!reading) assert.equal(BigInt('0x'+call.input.slice(138,202)),1n,'dependent mode required');
++  if (!legacyRead) assert.equal(BigInt('0x'+call.input.slice(138,202)),1n,'dependent mode required');
+   const prestateOptions = {tracer:'prestateTracer',tracerConfig:{disableCode:true}};
+   const actual = await rpc('b','debug_traceTransaction',[hash,prestateOptions]);
+   const cursor = actual[ROUTER]?.storage?.[CURSOR] || '0x0';
+   const parent = '0x'+(number-1).toString(16);
+   const parentCursor = await rpc('b','eth_getStorageAt',[ROUTER,CURSOR,parent]);
+-  const request = {from:call.from,to:ROUTER,data:call.input,gas:'0x989680'};
+-  const speculative = await rpc('b','debug_traceCall',[request,parent,prestateOptions]);
++  const request = {from:call.from,to:ROUTER,data:call.input,gas:maxRead || maxCode ? '0x1c9c380' : '0x989680'};
++  const speculative = await rpc('b','debug_traceCall',[request,parent,{...prestateOptions,
++    stateOverrides:replayStateOverrides(scenario,call.from)}]);
+   const actualTargets = targetSet(actual,storage,fixture.code_count);
+   const mismatch = overlap(actualTargets,targetSet(speculative,storage,fixture.code_count));
+   // Reproduce the actual transaction's cursor in a parent-state replay. The
+   // real transaction's prestate and diff remain authoritative for stored values.
+   const replay = await rpc('b','debug_traceCall',[request,parent,{disableStorage:true,disableMemory:true,
+-    disableStack:false,stateOverrides:{[ROUTER]:{stateDiff:{[CURSOR]:word(cursor)}}}}]);
+-  const opcodes = inspectOpcodes(replay,writing,reading);
++    disableStack:false,stateOverrides:replayStateOverrides(scenario,call.from,cursor)}]);
++  const opcodes = inspectOpcodes(replay,writing,reading,maxRead ? 13800 : legacyRead ? 4096 : 128,maxCode ? 10800 : 128);
+   assert.deepEqual([...opcodes.targets].sort(),[...actualTargets].sort(),'replay differs from actual access set');
+   let changed = 0, diff;
+   if (writing) {
+@@ -122,9 +159,10 @@ async function auditTransaction(rpc, hash, number, scenario, fixture, outputDire
+   const traceFile = path.join(outputDirectory,`history-trace-${hash}.json.gz`);
+   fs.writeFileSync(traceFile,zlib.gzipSync(JSON.stringify({callTrace,actual,speculative,replay,diff})));
+   return {hash,cursor_before:BigInt(cursor).toString(),parent_cursor:BigInt(parentCursor).toString(),
++    replay_sender_nonce_override:maxRead || maxCode,
+     history_advanced:BigInt(cursor)>BigInt(parentCursor),...mismatch,accesses:opcodes.accesses,
+     gas_cost_histogram:opcodes.costs,changed_contract_slots:changed,trace_file:traceFile,
+     caveat:'Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets.'};
+ }
+ 
+-module.exports = {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes,auditTransaction};
++module.exports = {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes,auditTransaction,measuredHistoryCoverage,replayStateOverrides};
+diff --git a/contrib/bench/history-state-paths.md b/contrib/bench/history-state-paths.md
+index 41e926c..dc724a7 100644
+--- a/contrib/bench/history-state-paths.md
++++ b/contrib/bench/history-state-paths.md
+@@ -122,9 +122,13 @@ attempt; the run was stopped and rejected. Priming evidence is archived per case
+ At least eight distributed blocks' receipts reconcile canonical gas and success. Three
+ non-first transactions (when available) have actual prestate/call/diff traces
+ compared with parent-state replay and cursor-overridden opcode replay. The audit
+-checks populated code/values, 128 code accesses or 1,024 writes, cold gas charges, changed nonzero
+-storage, and access-set agreement. The replay models prewarming's state; it is
+-not direct instrumentation of speculative worker accesses.
++checks populated code/values, 128 storage reads, 128 code accesses or 1,024 writes,
++cold gas charges, changed nonzero storage, and access-set agreement. The saved
++SLOAD case also requires at least 90% of measured transactions to have a preceding
++transaction in their block, so mostly single-transaction blocks cannot silently
++pass as a history-bypass workload. This fraction measures bypass eligibility;
++the sampled replay validates access-set divergence. The replay models prewarming's
++state; it is not direct instrumentation of speculative worker accesses.
+ 
+ Reports separate canonical wall gas/s, execution-only gas/s, application-cache
+ misses, follower payload-thread major faults, whole-node cgroup major faults/file
+diff --git a/contrib/bench/history-state-paths.test.cjs b/contrib/bench/history-state-paths.test.cjs
+index 2037e94..89f4f8c 100644
+--- a/contrib/bench/history-state-paths.test.cjs
++++ b/contrib/bench/history-state-paths.test.cjs
+@@ -1,13 +1,13 @@
+ 'use strict';
+ const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path');
+ const {execFileSync,spawnSync}=require('node:child_process');
+-const {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes}=require('./history-state-path-validation.cjs');
++const {ROUTER,CURSOR,targetSet,overlap,checkWriteDiff,inspectOpcodes,measuredHistoryCoverage}=require('./history-state-path-validation.cjs');
+ const root=path.resolve(__dirname,'../..'),runner=path.join(__dirname,'run-history-state-paths.sh');
+ const word=n=>'0x'+BigInt(n).toString(16).padStart(64,'0');
+ 
+ test('history presets share the valid public test signer pool',()=>{
+   const fs=require('node:fs');
+-  for(const name of ['history_code','history_write']) {
++  for(const name of ['history_read','history_code','history_write']) {
+     const preset=fs.readFileSync(path.join(__dirname,'txgen/presets',name+'.yml'),'utf8');
+     assert.equal(/mnemonic: "([^"]+)"/.exec(preset)?.[1],Array(11).fill('test').concat('junk').join(' '));
+   }
+@@ -21,14 +21,14 @@ test('history runner uses isolated populated fixtures and leaves prewarming/caps
+   assert.match(output,/--state-access-bloat/);
+   assert.match(output,/--preset history_code/);
+   assert.match(output,/--preset history_write/);
+-  assert.match(output,/--preset state_access_dependent/);
++  assert.match(output,/--preset history_read/);
+   assert.doesNotMatch(output,/--builder\.max-transactions|--force-bloat|--disable.*prewarm/);
+ });
+ test('named configurations are discoverable and support a single-case dry run',()=>{
+   const list=execFileSync('bash',[runner,'--list'],{cwd:root,encoding:'utf8'});
+   for(const id of ['sload','bytecode','writes']) assert.match(list,new RegExp('^'+id+'\\t','m'));
+   const output=execFileSync('bash',[runner,'--case','sload','--dry-run'],{cwd:root,encoding:'utf8'});
+-  assert.match(output,/--preset state_access_dependent/);
++  assert.match(output,/--preset history_read/);
+   assert.doesNotMatch(output,/--preset history_(code|write)/);
+   assert.match(output,/--tps 1000 --duration 1200 --accounts 1000/);
+ });
+@@ -84,3 +84,32 @@ test('SLOAD audit requires all 4096 reads cold and only the cursor written',()=>
+   assert.throws(()=>inspectOpcodes({failed:false,structLogs:warm},false,true),/not cold/);
+   assert.throws(()=>inspectOpcodes({failed:false,structLogs:[...logs,{op:'SSTORE',stack:['1','0']}]},false,true));
+ });
++
++test('small SLOAD audit requires exactly 128 unique cold reads',()=>{
++  const preset=require('node:fs').readFileSync(path.join(__dirname,'txgen/presets/history_read.yml'),'utf8');
++  assert.match(preset,/gas_limit: 10000000/,'initial cursor allocation must not hit the gas limit');
++  const logs=[{op:'SSTORE',stack:['1',CURSOR.slice(2)]}];
++  for(let i=0;i<128;i++) logs.push({op:'SLOAD',gasCost:2100,stack:[i.toString(16)]});
++  assert.equal(inspectOpcodes({failed:false,structLogs:logs},false,true,128).targets.size,128);
++  assert.throws(()=>inspectOpcodes({failed:false,structLogs:logs.slice(0,-1)},false,true,128));
++  const repeated=structuredClone(logs);repeated.at(-1).stack=['0'];
++  assert.throws(()=>inspectOpcodes({failed:false,structLogs:repeated},false,true,128),/not unique/);
++  const warm=structuredClone(logs);warm[1].gasCost=100;
++  assert.throws(()=>inspectOpcodes({failed:false,structLogs:warm},false,true,128),/not cold/);
++});
++
++test('history coverage gate excludes warmup and rejects mostly single-transaction blocks',()=>{
++  const timing={from_ms:600000,to_ms:1200000};
++  const blocks=[{timestamp_ms:0,tx_count:1},{timestamp_ms:100000,tx_count:1},
++    {timestamp_ms:600000,tx_count:10},{timestamp_ms:900000,tx_count:10},
++    {timestamp_ms:1200001,tx_count:1}];
++  const result=measuredHistoryCoverage(blocks,timing,0.9);
++  assert.equal(result.transactions,20);
++  assert.equal(result.non_first_transactions,18);
++  assert.equal(result.fraction,0.9);
++  assert.deepEqual(result.transactions_per_block,{'10':2});
++  assert.throws(()=>measuredHistoryCoverage(blocks.map(b=>({...b,tx_count:1})),timing,0.9),/insufficient measured history/);
++  assert.throws(()=>measuredHistoryCoverage(blocks.map(b=>({...b,tx_count:0})),timing,0.9),/no measured/);
++  // Passing warmup must not hide failing steady-state packing.
++  assert.throws(()=>measuredHistoryCoverage(blocks.map(b=>({...b,tx_count:b.timestamp_ms<600000?1000:1})),timing,0.9),/insufficient measured history/);
++});
+diff --git a/contrib/bench/run-history-state-paths.sh b/contrib/bench/run-history-state-paths.sh
+index 57c2c26..4ae2ab2 100644
+--- a/contrib/bench/run-history-state-paths.sh
++++ b/contrib/bench/run-history-state-paths.sh
+@@ -85,6 +85,7 @@ cp --parents bench-e2e.nu tempo.nu bin/tempo/examples/prepare_history_state_path
+     contrib/bench/txgen/HistoryStatePaths.sol contrib/bench/txgen/HistoryStatePaths.t.sol \
+     contrib/bench/txgen/StateAccessBenchmark.sol contrib/bench/txgen/state-access-benchmark.json \
+     contrib/bench/txgen/presets/state_access_dependent.yml \
++    contrib/bench/txgen/presets/history_read.yml \
+     contrib/bench/txgen/history-state-paths.json contrib/bench/txgen/presets/history_code.yml \
+     contrib/bench/txgen/presets/history_write.yml "$suite/source/"
+ node - "$suite" "$binary" "$revision" "$configuration" "$a.virgin" <<'JS'
+diff --git a/contrib/bench/state-access-config.cjs b/contrib/bench/state-access-config.cjs
+index d69e825..d04b467 100644
+--- a/contrib/bench/state-access-config.cjs
++++ b/contrib/bench/state-access-config.cjs
+@@ -5,12 +5,14 @@ const path = require('node:path');
+ const {parseArgs} = require('node:util');
+ const {execFileSync} = require('node:child_process');
+ const defaultFile = path.join(__dirname, 'configs/state-access-bloated.json');
+-const scenarios = {sload: 'state_access_dependent', bytecode: 'history_code', writes: 'history_write'};
++const scenarios = {sload: 'history_read', bytecode: 'history_code', writes: 'history_write'};
+ 
+ function resolveConfig(file = defaultFile, selected = [], env = process.env) {
+   const source = JSON.parse(fs.readFileSync(file));
+   assert.equal(source.schema_version, 1, 'unsupported configuration schema');
+   assert.match(source.id, /^[a-z0-9-]+$/);
++  const maxTx = source.id === 'state-access-max-tx';
++  const expectedScenarios = maxTx ? {sload: 'history_read_max', bytecode: 'history_code_max'} : scenarios;
+   const common = {...source.common};
+   for (const [key, variable] of Object.entries({duration: 'HISTORY_DURATION', warmup: 'HISTORY_WARMUP', tps: 'HISTORY_TPS'})) {
+     if (env[variable] !== undefined) {
+@@ -24,10 +26,14 @@ function resolveConfig(file = defaultFile, selected = [], env = process.env) {
+   assert.equal(common.gas_limit, '1000000000000', 'comparison uses nonbinding gas limits');
+   assert.equal(common.node_args, '--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128', 'comparison node settings must match');
+   assert.deepEqual(source.fixture, {snapshot_suffix: 'history_paths', bloat_mib: 100000, code_count: 4266667, code_bytes: 24576});
+-  assert.deepEqual(source.cases.map(c => c.id).sort(), Object.keys(scenarios).sort(), 'registry must contain each workload exactly once');
+-  for (const item of source.cases) assert.equal(item.scenario, scenarios[item.id], 'unexpected workload preset');
++  assert.deepEqual(source.cases.map(c => c.id).sort(), Object.keys(expectedScenarios).sort(), 'registry must contain each workload exactly once');
++  for (const item of source.cases) assert.equal(item.scenario, expectedScenarios[item.id], 'unexpected workload preset');
++  const sload = source.cases.find(item => item.id === 'sload');
++  assert.equal(sload.operations_per_transaction, maxTx ? 13800 : 128);
++  assert.equal(sload.minimum_history_advanced_fraction, maxTx ? 0 : 0.9);
++  if (maxTx) assert.equal(source.cases.find(c => c.id === 'bytecode').operations_per_transaction, 10800);
+   assert.equal(new Set(selected).size, selected.length, 'duplicate case selection');
+-  for (const id of selected) assert.ok(Object.hasOwn(scenarios, id), `unknown case ${id}; choose sload, bytecode, writes`);
++  for (const id of selected) assert.ok(Object.hasOwn(expectedScenarios, id), `unknown case ${id}; choose ${Object.keys(expectedScenarios).join(', ')}`);
+   return {id: source.id, schema_version: source.schema_version, ...common,
+     fixture_requirements: source.fixture,
+     transaction_cap: null, prewarming: 'unchanged/default enabled',
+diff --git a/contrib/bench/state-access-config.test.cjs b/contrib/bench/state-access-config.test.cjs
+index 927f827..8b932fd 100644
+--- a/contrib/bench/state-access-config.test.cjs
++++ b/contrib/bench/state-access-config.test.cjs
+@@ -8,6 +8,9 @@ test('registry resolves all three workloads with shared comparable defaults',()=
+   assert.deepEqual([c.duration,c.warmup,c.tps,c.accounts],[1200,600,1000,1000]);
+   assert.equal(c.transaction_cap,null);
+   assert.equal(c.fixture_requirements.code_count,4266667);
++  assert.equal(c.cases[0].scenario,'history_read');
++  assert.equal(c.cases[0].operations_per_transaction,128);
++  assert.equal(c.cases[0].minimum_history_advanced_fraction,0.9);
+ });
+ test('case selection preserves requested order and rejects unknown or duplicate cases',()=>{
+   assert.deepEqual(resolveConfig(undefined,['writes','sload'],{}).cases.map(x=>x.id),['writes','sload']);
+@@ -19,7 +22,7 @@ test('common overrides cannot create invalid or too-short measurement windows',(
+     assert.throws(()=>resolveConfig(undefined,[],env));
+ });
+ test('comparison rejects drift in run settings, actual sender metadata, or fixture',()=>{
+-  const configuration=resolveConfig(undefined,[],{}),entry={scenario:'state_access_dependent'};
++  const configuration=resolveConfig(undefined,[],{}),entry={scenario:'history_read'};
+   const fixture={state_root:'root',router_code_hash:'router',code_count:4266667,code_bytes:24576,hashed_storage_entries:1638400975};
+   const manifest={configuration,build:{revision:'revision'},fixture};
+   const summary={preset:entry.scenario,tps:1000,duration:1200,summary_warmup_seconds:600,summary_warmup_blocks:0,bloat_mib:100000,run_side:'feature',benchmark_id:'id'};
+diff --git a/contrib/bench/state-path-observer.cjs b/contrib/bench/state-path-observer.cjs
+index 2c11bb9..fe6d0a9 100644
+--- a/contrib/bench/state-path-observer.cjs
++++ b/contrib/bench/state-path-observer.cjs
+@@ -69,6 +69,11 @@ function selectedMetrics(text) {
+     const match = /^(\w+)(\{[^}]*\})?\s+([\d.eE+-]+)$/.exec(line);
+     if (!match) continue;
+     const [, name, labels = '', value] = match;
++    if (/^reth_db_bytecode_prefetch_(enabled|requests|requests_rw|bytes|errors|skipped_dirty)$/.test(name)) {
++      assert.ok(Number.isFinite(Number(value)));
++      values[name + labels] = Number(value);
++      continue;
++    }
+     if (!/^(reth_tempo_payload_builder_(gas_used_sum|total_transactions_sum|block_build_stop_total|(total_normal_transaction_fill|total_transaction_execution|payload_finalization|sparse_trie_state_root_wait|builder_finish|payload_build)_duration_seconds_(sum|count))|reth_sync_execution_gas_processed_total|reth_consensus_engine_beacon_(executed_blocks|backpressure_active|backpressure_stall_duration_sum|persistence_duration_sum)|reth_sync_caching_(code|storage|account)_cache_(hits|misses)|reth_transaction_pool_aa_2d_pending_transactions)$/.test(name)) continue;
+     const number = Number(value);
+     assert.ok(Number.isFinite(number));
+@@ -94,6 +99,13 @@ async function observation(options, withCheckpoint = true) {
+       catch (error) { sample.io_error = String(error); }
+       try { sample.memory = parseMemory(fs.readFileSync(`/sys/fs/cgroup/system.slice/${unit}/memory.stat`, 'utf8')); }
+       catch (error) { sample.memory_error = String(error); }
++      try {
++        const group = `/sys/fs/cgroup/system.slice/${unit}`;
++        sample.memory_limits = Object.fromEntries(['memory.max', 'memory.current', 'memory.swap.max', 'memory.swap.current']
++          .map(file => [file, fs.readFileSync(`${group}/${file}`, 'utf8').trim()]));
++        sample.memory_events = Object.fromEntries(fs.readFileSync(`${group}/memory.events`, 'utf8').trim().split('\n')
++          .map(line => { const [key, value] = line.split(/\s+/); return [key, Number(value)]; }));
++      } catch (error) { sample.memory_limits_error = String(error); }
+       if (withCheckpoint) {
+         sample.checkpoint_tool = options['checkpoint-tool'] || 'tempo db get';
+         try {
+@@ -192,10 +204,32 @@ function changedStorage(diff) {
+     .filter(key => BigInt(before[key] || '0x0') !== BigInt(after[key] || '0x0'));
+ }
+ 
++function selectTraceCandidates(candidates, history, scenario, allowFirstSload = false) {
++  if (allowFirstSload) assert.equal(scenario, 'state_access_dependent', 'first-transaction allowance is only for the 4096-SLOAD diagnostic control');
++  let selected = history ? candidates.filter(block => block.tx_count > 1) : candidates;
++  let policy = history ? 'non-first-required' : 'ordinary';
++  const maxTx = ['history_read_max', 'history_code_max'].includes(scenario);
++  if (selected.length < 3 && (allowFirstSload || maxTx)) {
++    selected = candidates;
++    policy = maxTx ? 'max-size-first-allowed' : 'large-sload-control-first-allowed';
++  }
++  assert.ok(selected.length >= 3, 'insufficient non-first transaction samples for history audit');
++  return {candidates: selected, policy};
++}
++
++function validateHistorySamples(traces, policy) {
++  const advanced = traces.filter(trace => trace.history_advanced);
++  if (!['large-sload-control-first-allowed', 'max-size-first-allowed'].includes(policy))
++    assert.ok(advanced.length > 0, 'no within-block history change sampled');
++  if (advanced.length) assert.ok(advanced.reduce((sum, trace) => sum + trace.parent_state_mismatch_fraction, 0) / advanced.length > 0.9,
++    'sampled parent-state access mismatch is not established');
++}
++
+ async function audit(options) {
+   await guardLocalChain();
+   const report = JSON.parse(fs.readFileSync(options.report));
+-  const history = ['state_access_dependent', 'history_code', 'history_write'].includes(report.metadata.scenario);
++  const maxTx = ['history_read_max', 'history_code_max'].includes(report.metadata.scenario);
++  const history = maxTx || ['state_access_dependent', 'history_read', 'history_code', 'history_write'].includes(report.metadata.scenario);
+   const writing = ['state_paths_write', 'history_write'].includes(report.metadata.scenario);
+   assert.ok(history || writing || report.metadata.scenario === 'state_paths_read', 'unexpected control scenario');
+   const contract = history ? historyValidation.ROUTER : CONTRACT;
+@@ -222,11 +256,13 @@ async function audit(options) {
+     cursorCheck.history_advanced_fraction = cursorCheck.transactions_with_prior_workload_in_block / Number(cursorCheck.transactions);
+   } else assert.ok((code.length - 2) / 2 > 4096, 'expected an ordinary multi-page deployed contract');
+   const timing = measurementTiming(report.metadata.run_duration_secs, options['warmup-seconds'] ?? 600);
++  const historyCoverage = history ? historyValidation.measuredHistoryCoverage(blocks, timing,
++    report.metadata.scenario === 'history_read' ? 0.9 : 0) : null;
+   const candidates = blocks.filter(block => block.tx_count > 0 && block.timestamp_ms >= blocks[0].timestamp_ms + timing.from_ms);
+   assert.ok(candidates.length >= 8, 'insufficient steady-state receipt samples');
+   const receiptBlocks = Array.from({length:8},(_,i)=>candidates[Math.floor(i*(candidates.length-1)/7)]);
+-  const traceCandidates = history ? candidates.filter(block=>block.tx_count>1) : candidates;
+-  assert.ok(traceCandidates.length>=3,'insufficient non-first transaction samples for history audit');
++  const traceSelection = selectTraceCandidates(candidates, history, report.metadata.scenario, !!options['allow-first-sload-samples']);
++  const traceCandidates = traceSelection.candidates;
+   const traceBlocks = new Set([0,0.5,1].map(fraction=>traceCandidates[Math.floor(fraction*(traceCandidates.length-1))].number));
+   const sampledBlocks = [...new Map([...receiptBlocks,...candidates.filter(block=>traceBlocks.has(block.number))].map(block=>[block.number,block])).values()];
+   const receipts = [], traces = [];
+@@ -238,6 +274,7 @@ async function audit(options) {
+     let gas = 0n;
+     for (const receipt of list) {
+       assert.equal(BigInt(receipt.status), 1n, `revert: ${receipt.transactionHash}`);
++      if (maxTx) assert.ok(BigInt(receipt.gasUsed) >= 29700000n && BigInt(receipt.gasUsed) <= 30000000n, 'transaction is not near the 30M gas cap');
+       assert.equal(receipt.blockHash, block.hash);
+       gas += BigInt(receipt.gasUsed);
+     }
+@@ -261,12 +298,7 @@ async function audit(options) {
+       traces.push({hash, selectors, changed_contract_slots: changed.length, trace_file: traceFile});
+     }
+   }
+-  if (history) {
+-    assert.ok(traces.some(trace => trace.history_advanced), 'no within-block history change sampled');
+-    const advanced = traces.filter(trace => trace.history_advanced);
+-    assert.ok(advanced.reduce((sum, trace) => sum + trace.parent_state_mismatch_fraction, 0) / advanced.length > 0.9,
+-      'sampled parent-state access mismatch is not established');
+-  }
++  if (history) validateHistorySamples(traces, traceSelection.policy);
+   // Wait for actual empty blocks, not just the legacy nonce-pool count (AA has a separate pool).
+   let quietSince = null, quietTarget = null, previousHead = endBlock, quietBlocks = 0;
+   while (Date.now() < deadline) {
+@@ -290,12 +322,18 @@ async function audit(options) {
+     drain.push(sample);
+     if (['a', 'b'].every(node => sample.nodes[node].persisted?.state >= quietTarget)) {
+       const result = {ok: true, scenario: report.metadata.scenario, contract, fixture, timing, cursor_check: cursorCheck,
++        measured_history_coverage: historyCoverage,
++        trace_sampling: {policy: traceSelection.policy, non_first_samples: traces.filter(trace => trace.history_advanced).length},
+         runtime_code_bytes: (code.length - 2) / 2, receipts, traces,
+         sampled_receipts: receipts.reduce((sum, row) => sum + row.count, 0),
+         workload_end_block: endBlock, quiet_target_block: quietTarget,
+         persisted_through_workload: true, drain,
+         audited_at: new Date().toISOString(),
+-        caveat: history
++        caveat: traceSelection.policy === 'max-size-first-allowed'
++          ? 'Near-cap transactions may be the first or only transaction in a block. Cold-access and gas-cap checks passed; report actual history coverage rather than claiming within-block prewarming bypass.'
++          : traceSelection.policy === 'large-sload-control-first-allowed'
++          ? 'Large-SLOAD diagnostic control: first transactions may be sampled. Cold-read correctness is verified, but history-bypass coverage must not be inferred from these traces. Timed I/O and persistence are reported separately.'
++          : history
+           ? 'History-dependent targets verified by actual transaction traces and parent-state replays. Not a direct log of prewarming worker accesses or proof of a universal worst case. Physical I/O is measured separately. Quiet-tail persistence includes post-load transactions.'
+           : 'Ordinary resident-working-set controls. Sampled correctness, not exhaustive. No cache-evasion or cold-code claim. Quiet-tail persistence includes post-load transactions; metrics during load are separate.'};
+       fs.writeFileSync(options.output, JSON.stringify(result, null, 2) + '\n');
+@@ -310,7 +348,8 @@ async function audit(options) {
+ 
+ async function main() {
+   const {positionals, values: options} = parseArgs({allowPositionals: true, options:
+-    Object.fromEntries(['tempo', 'checkpoint-tool', 'a-datadir', 'b-datadir', 'phase', 'seconds', 'warmup-seconds', 'stop', 'output', 'report'].map(key => [key, {type: 'string'}]))});
++    {...Object.fromEntries(['tempo', 'checkpoint-tool', 'a-datadir', 'b-datadir', 'phase', 'seconds', 'warmup-seconds', 'stop', 'output', 'report'].map(key => [key, {type: 'string'}])),
++      'allow-first-sload-samples': {type: 'boolean'}}});
+   assert.ok(['watch', 'audit', 'prime'].includes(positionals[0]));
+   for (const key of ['tempo', 'a-datadir', 'b-datadir', 'phase', 'output']) assert.ok(options[key], `missing ${key}`);
+   const bundledCheckpointTool = path.join(path.dirname(options.tempo), 'read_finish_checkpoint');
+@@ -324,5 +363,5 @@ async function main() {
+   } else { assert.ok(options.report); await audit(options); }
+ }
+ 
+-module.exports = {frontier, checkpointCommand, parseIo, selectedMetrics, checkCalls, changedStorage, primed};
++module.exports = {frontier, checkpointCommand, parseIo, selectedMetrics, checkCalls, changedStorage, primed, selectTraceCandidates, validateHistorySamples};
+ if (require.main === module) main().catch(error => {console.error(error); process.exitCode = 1;});
+diff --git a/contrib/bench/state-path-observer.test.cjs b/contrib/bench/state-path-observer.test.cjs
+index 90e3cf7..45b6c9a 100644
+--- a/contrib/bench/state-path-observer.test.cjs
++++ b/contrib/bench/state-path-observer.test.cjs
+@@ -14,6 +14,15 @@ require('node:test')('pre-load priming requires both durable state/trie frontier
+ const test = require('node:test');
+ const assert = require('node:assert/strict');
+ const {frontier, checkpointCommand, parseIo, selectedMetrics, checkCalls, changedStorage} = require('./state-path-observer.cjs');
++
++test('metrics retain targeted prefetch evidence separately from actual disk reads', () => {
++  assert.deepEqual(selectedMetrics('reth_db_bytecode_prefetch_enabled 1\nreth_db_bytecode_prefetch_requests 12\nreth_db_bytecode_prefetch_bytes 344064\nreth_db_bytecode_prefetch_errors 0\n'), {
++    reth_db_bytecode_prefetch_enabled: 1,
++    reth_db_bytecode_prefetch_requests: 12,
++    reth_db_bytecode_prefetch_bytes: 344064,
++    reth_db_bytecode_prefetch_errors: 0,
++  });
++});
+ const target = '0x5fbdb2315678afecb367f032d93f642f64180aa3';
+ 
+ test('direct checkpoint helper only opens the existing MDBX directory', () => {
+diff --git a/contrib/bench/txgen/HistoryStatePaths.sol b/contrib/bench/txgen/HistoryStatePaths.sol
+index 2979710..5b5f2b4 100644
+--- a/contrib/bench/txgen/HistoryStatePaths.sol
++++ b/contrib/bench/txgen/HistoryStatePaths.sol
+@@ -7,6 +7,9 @@ contract HistoryStatePaths is StateAccessBenchmark {
+     uint256 private constant CURSOR = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+     uint256 public constant ACCESSES = 1024;
+     uint256 public constant CODE_ACCESSES = 128;
++    uint256 public constant READ_ACCESSES = 128;
++    uint256 public constant MAX_READ_ACCESSES = 13800;
++    uint256 public constant MAX_CODE_ACCESSES = 10800;
+     uint256 private constant CODE_BASE = 0x006000000000000000000000000000000000000000;
+ 
+     function sequence() external view returns (uint256 value) {
+@@ -39,6 +42,50 @@ contract HistoryStatePaths is StateAccessBenchmark {
+         }
+     }
+ 
++    /// Small transactions retain the entire original 4096-slot-page working set.
++    function touchReads(bytes32 salt, uint256 pageCount, bool dependent)
++        external returns (bytes32 accumulator)
++    {
++        require(pageCount > 0 && pageCount <= type(uint256).max / 4096, "bad pages");
++        uint256 chunks = pageCount * (4096 / READ_ACCESSES);
++        uint256 start = (_select(salt, dependent) % chunks) * READ_ACCESSES;
++        assembly {
++            for { let i := 0 } lt(i, READ_ACCESSES) { i := add(i, 1) } {
++                accumulator := xor(accumulator, sload(add(start, i)))
++            }
++        }
++    }
++
++    /// Near the 30M gas cap, without shrinking or extending the populated domain.
++    function touchMaxReads(bytes32 salt, uint256 pageCount, bool dependent)
++        external returns (bytes32 accumulator)
++    {
++        require(pageCount >= 4 && pageCount <= type(uint256).max / 4096, "bad pages");
++        uint256 start = _select(salt, dependent) % (pageCount * 4096 - MAX_READ_ACCESSES + 1);
++        assembly {
++            for { let i := 0 } lt(i, MAX_READ_ACCESSES) { i := add(i, 1) } {
++                accumulator := xor(accumulator, sload(add(start, i)))
++            }
++        }
++    }
++
++    /// Same 32-byte copy as the small case: fetched code, not copy gas, is the load.
++    function touchMaxCode(bytes32 salt, uint256 count, bool dependent)
++        external returns (bytes32 accumulator)
++    {
++        require(count >= MAX_CODE_ACCESSES, "small corpus");
++        uint256 seed = _select(salt, dependent);
++        assembly {
++            for { let i := 0 } lt(i, MAX_CODE_ACCESSES) { i := add(i, 1) } {
++                mstore(0, seed)
++                mstore(32, i)
++                let target := add(CODE_BASE, mod(keccak256(0, 64), count))
++                extcodecopy(target, 0, 1, 32)
++                accumulator := xor(accumulator, mload(0))
++            }
++        }
++    }
++
+     /// Existing nonzero storage is updated, not newly allocated or cleared.
+     /// The 4096-slot logical pages match the original SLOAD fixture exactly.
+     function touchWrites(bytes32 salt, uint256 pageCount, bool dependent)
+diff --git a/contrib/bench/txgen/HistoryStatePaths.t.sol b/contrib/bench/txgen/HistoryStatePaths.t.sol
+index 3de66ec..6f09a1a 100644
+--- a/contrib/bench/txgen/HistoryStatePaths.t.sol
++++ b/contrib/bench/txgen/HistoryStatePaths.t.sol
+@@ -6,14 +6,71 @@ interface VmHistory {
+     function store(address, bytes32, bytes32) external;
+     function load(address, bytes32) external view returns (bytes32);
+     function etch(address, bytes calldata) external;
++    function cool(address) external;
++    function coolSlot(address, bytes32) external;
+ }
+ 
+ contract HistoryStatePathsTest {
++    event MeasuredGas(string workload, uint256 gasUsed);
+     VmHistory private constant vm = VmHistory(address(uint160(uint256(keccak256("hevm cheat code")))));
+     HistoryStatePaths private router;
+     bytes32 private constant SALT = bytes32(uint256(19));
++    bytes32 private maxCodeExpected;
+ 
+-    function setUp() public { router = new HistoryStatePaths(); }
++    function setUp() public {
++        router = new HistoryStatePaths();
++        uint256 seed = uint256(keccak256(abi.encode(SALT, uint256(0))));
++        // Install code in a separate transaction: etch in the measured test
++        // leaves accounts warm despite cool(), unlike the restored fixture.
++        for (uint256 i; i < router.MAX_CODE_ACCESSES(); ++i) {
++            uint256 index = uint256(keccak256(abi.encode(seed, i))) % 4266667;
++            address target = address(uint160(0x6000000000000000000000000000000000000000) + uint160(index));
++            vm.etch(target, abi.encodePacked(bytes1(0), bytes32(index + 1)));
++            maxCodeExpected ^= bytes32(index + 1);
++        }
++    }
++
++    function testMaxReadsAreColdPopulatedAndBelowGasCap() public {
++        uint256 count = router.MAX_READ_ACCESSES();
++        uint256 start = uint256(keccak256(abi.encode(SALT, uint256(0)))) % (399999 * 4096 - count + 1);
++        bytes32 expected;
++        for (uint256 i; i < count; ++i) {
++            bytes32 slot = bytes32(start + i);
++            bytes32 value = bytes32(start + i + 1);
++            vm.store(address(router), slot, value);
++            vm.coolSlot(address(router), slot);
++            expected ^= value;
++        }
++        uint256 before = gasleft();
++        bytes32 actual = router.touchMaxReads(SALT, 399999, true);
++        uint256 used = before - gasleft();
++        emit MeasuredGas("sload", used);
++        require(actual == expected && router.sequence() == 1, "read/cursor mismatch");
++        require(used > 29_800_000 && used < 29_960_000, "near-cap SLOAD gas budget");
++    }
++
++    function testMaxCodeIsColdPopulatedAndBelowGasCap() public {
++        uint256 accesses = router.MAX_CODE_ACCESSES();
++        uint256 count = 4266667;
++        uint256 seed = uint256(keccak256(abi.encode(SALT, uint256(0))));
++        for (uint256 i; i < accesses; ++i) {
++            uint256 index = uint256(keccak256(abi.encode(seed, i))) % count;
++            address target = address(uint160(0x6000000000000000000000000000000000000000) + uint160(index));
++            vm.cool(target);
++        }
++        uint256 before = gasleft();
++        bytes32 actual = router.touchMaxCode(SALT, count, true);
++        uint256 used = before - gasleft();
++        emit MeasuredGas("bytecode", used);
++        require(actual == maxCodeExpected && router.sequence() == 1, "code/cursor mismatch");
++        require(used > 29_700_000 && used < 29_960_000, "near-cap bytecode gas budget");
++    }
++
++    function testMaxReadsRejectUnpopulatedRange() public {
++        (bool small,) = address(router).call(abi.encodeCall(router.touchMaxReads, (SALT, 3, true)));
++        (bool overflow,) = address(router).call(abi.encodeCall(router.touchMaxReads, (SALT, type(uint256).max, true)));
++        require(!small && !overflow && router.sequence() == 0);
++    }
+ 
+     function testOriginalSloadImplementationIsPreserved() public {
+         StateAccessBenchmark original = new StateAccessBenchmark();
+@@ -31,6 +88,44 @@ contract HistoryStatePathsTest {
+         }
+     }
+ 
++    function testSmallReadsCoverAllChunksAndFollowHistory() public {
++        uint256 chunksSeen;
++        for (uint256 sequence; sequence < 256; ++sequence) {
++            uint256 chunk = uint256(keccak256(abi.encode(SALT, sequence))) % 32;
++            uint256 start = chunk * 128;
++            chunksSeen |= 1 << chunk;
++            bytes32 expected;
++            for (uint256 i; i < 128; ++i) {
++                bytes32 value = keccak256(abi.encode(start + i));
++                vm.store(address(router), bytes32(start + i), value);
++                expected ^= value;
++            }
++            require(router.touchReads(SALT, 1, true) == expected);
++            require(router.sequence() == sequence + 1);
++            for (uint256 i; i < 128; ++i) {
++                require(vm.load(address(router), bytes32(start + i)) == keccak256(abi.encode(start + i)));
++            }
++        }
++        require(chunksSeen == type(uint32).max, "must reach all 32 chunks, not only the first");
++    }
++
++    function testSmallReadControlIgnoresHistoryAndRejectsBadPages() public {
++        uint256 pages = 399999;
++        uint256 start = (uint256(keccak256(abi.encode(SALT, uint256(0))))) % (pages * 32) * 128;
++        bytes32 expected;
++        for (uint256 i; i < 128; ++i) {
++            bytes32 value = keccak256(abi.encode(start + i));
++            vm.store(address(router), bytes32(start + i), value);
++            expected ^= value;
++        }
++        require(router.touchReads(SALT, pages, false) == expected);
++        require(router.touchReads(SALT, pages, false) == expected);
++        require(router.sequence() == 2);
++        (bool empty,) = address(router).call(abi.encodeCall(router.touchReads, (SALT, 0, true)));
++        (bool overflow,) = address(router).call(abi.encodeCall(router.touchReads, (SALT, type(uint256).max, true)));
++        require(!empty && !overflow && router.sequence() == 2);
++    }
++
+     function codeExpected(uint256 sequence, uint256 count) private pure returns (bytes32 result) {
+         uint256 seed = uint256(keccak256(abi.encode(SALT, sequence)));
+         for (uint256 i; i < 128; ++i) {
+diff --git a/contrib/bench/txgen/history-state-paths.json b/contrib/bench/txgen/history-state-paths.json
+index 1b1fd0c..221831d 100644
+--- a/contrib/bench/txgen/history-state-paths.json
++++ b/contrib/bench/txgen/history-state-paths.json
+@@ -26,6 +26,32 @@
+       ],
+       "stateMutability": "view"
+     },
++    {
++      "type": "function",
++      "name": "MAX_CODE_ACCESSES",
++      "inputs": [],
++      "outputs": [
++        {
++          "name": "",
++          "type": "uint256",
++          "internalType": "uint256"
++        }
++      ],
++      "stateMutability": "view"
++    },
++    {
++      "type": "function",
++      "name": "MAX_READ_ACCESSES",
++      "inputs": [],
++      "outputs": [
++        {
++          "name": "",
++          "type": "uint256",
++          "internalType": "uint256"
++        }
++      ],
++      "stateMutability": "view"
++    },
+     {
+       "type": "function",
+       "name": "READS_PER_TX",
+@@ -39,6 +65,19 @@
+       ],
+       "stateMutability": "view"
+     },
++    {
++      "type": "function",
++      "name": "READ_ACCESSES",
++      "inputs": [],
++      "outputs": [
++        {
++          "name": "",
++          "type": "uint256",
++          "internalType": "uint256"
++        }
++      ],
++      "stateMutability": "view"
++    },
+     {
+       "type": "function",
+       "name": "sequence",
+@@ -81,6 +120,64 @@
+       ],
+       "stateMutability": "nonpayable"
+     },
++    {
++      "type": "function",
++      "name": "touchMaxCode",
++      "inputs": [
++        {
++          "name": "salt",
++          "type": "bytes32",
++          "internalType": "bytes32"
++        },
++        {
++          "name": "count",
++          "type": "uint256",
++          "internalType": "uint256"
++        },
++        {
++          "name": "dependent",
++          "type": "bool",
++          "internalType": "bool"
++        }
++      ],
++      "outputs": [
++        {
++          "name": "accumulator",
++          "type": "bytes32",
++          "internalType": "bytes32"
++        }
++      ],
++      "stateMutability": "nonpayable"
++    },
++    {
++      "type": "function",
++      "name": "touchMaxReads",
++      "inputs": [
++        {
++          "name": "salt",
++          "type": "bytes32",
++          "internalType": "bytes32"
++        },
++        {
++          "name": "pageCount",
++          "type": "uint256",
++          "internalType": "uint256"
++        },
++        {
++          "name": "dependent",
++          "type": "bool",
++          "internalType": "bool"
++        }
++      ],
++      "outputs": [
++        {
++          "name": "accumulator",
++          "type": "bytes32",
++          "internalType": "bytes32"
++        }
++      ],
++      "stateMutability": "nonpayable"
++    },
+     {
+       "type": "function",
+       "name": "touchPredictable",
+@@ -105,6 +202,35 @@
+       ],
+       "stateMutability": "nonpayable"
+     },
++    {
++      "type": "function",
++      "name": "touchReads",
++      "inputs": [
++        {
++          "name": "salt",
++          "type": "bytes32",
++          "internalType": "bytes32"
++        },
++        {
++          "name": "pageCount",
++          "type": "uint256",
++          "internalType": "uint256"
++        },
++        {
++          "name": "dependent",
++          "type": "bool",
++          "internalType": "bool"
++        }
++      ],
++      "outputs": [
++        {
++          "name": "accumulator",
++          "type": "bytes32",
++          "internalType": "bytes32"
++        }
++      ],
++      "stateMutability": "nonpayable"
++    },
+     {
+       "type": "function",
+       "name": "touchStateDependent",
+@@ -165,13 +291,13 @@
+     }
+   ],
+   "bytecode": {
+-    "object": "0x6080604052348015600e575f5ffd5b506104558061001c5f395ff3fe608060405234801561000f575f5ffd5b5060043610610085575f3560e01c806347ff58011161005857806347ff5801146100dc57806350638a7b146100ef578063529d15cc146100f8578063b1b5c73c14610100575f5ffd5b80630398a71d1461008957806312a0c540146100ae5780631a130db8146100c15780631a2c2ef0146100c9575b5f5ffd5b61009c610097366004610368565b610109565b60405190815260200160405180910390f35b61009c6100bc366004610388565b61012b565b61009c608081565b61009c6100d7366004610388565b6101bd565b61009c6100ea366004610368565b61026f565b61009c61040081565b5f195461009c565b61009c61100081565b5f1980546001810182555f9161012085838661028d565b925050505b92915050565b5f6104008310156101725760405162461bcd60e51b815260206004820152600c60248201526b736d616c6c20636f7270757360a01b60448201526064015b60405180910390fd5b5f61017d858461031a565b90505f5b60808110156101b457815f52806020528460405f20066003609d1b01602060015f833c505f519290921891600101610181565b50509392505050565b5f5f831180156101d957506101d56110005f196103d6565b8311155b6102115760405162461bcd60e51b815260206004820152600960248201526862616420706167657360b81b6044820152606401610169565b5f8361021d868561031a565b61022791906103e9565b610233906110006103fc565b90505f5b6104008110156101b45780820180548061024f575f5ffd5b600160ff1b188061025e575f5ffd5b908190559290921891600101610237565b5f19805460010181555f9061028584838561028d565b949350505050565b5f815f036102ae5760405163755934b160e01b815260040160405180910390fd5b5f6110008386866040516020016102cf929190918252602082015260400190565b604051602081830303815290604052805190602001205f1c6102f191906103e9565b6102fb91906103fc565b90505f5b6110008110156101b4578181015492909218916001016102ff565b5f5f5f19549050600181015f19558383610334575f610336565b815b60408051602081019390935282015260600160408051601f198184030181529190528051602090910120949350505050565b5f5f60408385031215610379575f5ffd5b50508035926020909101359150565b5f5f5f6060848603121561039a575f5ffd5b8335925060208401359150604084013580151581146103b7575f5ffd5b809150509250925092565b634e487b7160e01b5f52601260045260245ffd5b5f826103e4576103e46103c2565b500490565b5f826103f7576103f76103c2565b500690565b808202811582820484141761012557634e487b7160e01b5f52601160045260245ffdfea2646970667358221220411bead8e27250eb4a4627c520954141d2cca48c0bc39b052650bc3d928ac1c364736f6c634300081c0033",
+-    "sourceMap": "176:2487:0:-:0;;;;;;;;;;;;;;;;;;;",
++    "object": "0x6080604052348015600e575f5ffd5b506106e88061001c5f395ff3fe608060405234801561000f575f5ffd5b50600436106100e5575f3560e01c806350638a7b116100885780636f914d54116100635780636f914d541461017c5780637ed819981461018f578063b1b5c73c146101a2578063ea0c1e5b146101ab575f5ffd5b806350638a7b14610162578063529d15cc1461016b5780636a0df87e14610173575f5ffd5b80631a130db8116100c35780631a130db8146101215780631a2c2ef01461012957806347ff58011461013c57806349a4a80c1461014f575f5ffd5b80630398a71d146100e957806312a0c5401461010e57806317da51d514610121575b5f5ffd5b6100fc6100f73660046105aa565b6101b4565b60405190815260200160405180910390f35b6100fc61011c3660046105ca565b6101d6565b6100fc608081565b6100fc6101373660046105ca565b610268565b6100fc61014a3660046105aa565b6102fe565b6100fc61015d3660046105ca565b61031c565b6100fc61040081565b5f19546100fc565b6100fc6135e881565b6100fc61018a3660046105ca565b6103ae565b6100fc61019d3660046105ca565b610433565b6100fc61100081565b6100fc612a3081565b5f1980546001810182555f916101cb8583866104cf565b925050505b92915050565b5f61040083101561021d5760405162461bcd60e51b815260206004820152600c60248201526b736d616c6c20636f7270757360a01b60448201526064015b60405180910390fd5b5f610228858461055c565b90505f5b608081101561025f57815f52806020528460405f20066003609d1b01602060015f833c505f51929092189160010161022c565b50509392505050565b5f5f8311801561028457506102806110005f1961062c565b8311155b6102a05760405162461bcd60e51b81526004016102149061063f565b5f836102ac868561055c565b6102b69190610662565b6102c290611000610675565b90505f5b61040081101561025f578082018054806102de575f5ffd5b600160ff1b18806102ed575f5ffd5b9081905592909218916001016102c6565b5f19805460010181555f906103148483856104cf565b949350505050565b5f6004831015801561033a57506103366110005f1961062c565b8311155b6103565760405162461bcd60e51b81526004016102149061063f565b5f6135e861036685611000610675565b610370919061068c565b61037b90600161069f565b610385868561055c565b61038f9190610662565b90505f5b6135e881101561025f57818101549290921891600101610393565b5f612a308310156103f05760405162461bcd60e51b815260206004820152600c60248201526b736d616c6c20636f7270757360a01b6044820152606401610214565b5f6103fb858461055c565b90505f5b612a3081101561025f57815f52806020528460405f20066003609d1b01602060015f833c505f5192909218916001016103ff565b5f5f8311801561044f575061044b6110005f1961062c565b8311155b61046b5760405162461bcd60e51b81526004016102149061063f565b5f610479608061100061062c565b6104839085610675565b90505f608082610493888761055c565b61049d9190610662565b6104a79190610675565b90505f5b60808110156104c5578181015493909318926001016104ab565b5050509392505050565b5f815f036104f05760405163755934b160e01b815260040160405180910390fd5b5f611000838686604051602001610511929190918252602082015260400190565b604051602081830303815290604052805190602001205f1c6105339190610662565b61053d9190610675565b90505f5b61100081101561025f57818101549290921891600101610541565b5f5f5f19549050600181015f19558383610576575f610578565b815b60408051602081019390935282015260600160408051601f198184030181529190528051602090910120949350505050565b5f5f604083850312156105bb575f5ffd5b50508035926020909101359150565b5f5f5f606084860312156105dc575f5ffd5b8335925060208401359150604084013580151581146105f9575f5ffd5b809150509250925092565b634e487b7160e01b5f52601260045260245ffd5b634e487b7160e01b5f52601160045260245ffd5b5f8261063a5761063a610604565b500490565b60208082526009908201526862616420706167657360b81b604082015260600190565b5f8261067057610670610604565b500690565b80820281158282048414176101d0576101d0610618565b818103818111156101d0576101d0610618565b808201808211156101d0576101d061061856fea264697066735822122094c2aadc883c8a929af7f63f09a97c99a6057125a2f492fb6bd91ae65861f25e64736f6c634300081c0033",
++    "sourceMap": "176:4550:0:-:0;;;;;;;;;;;;;;;;;;;",
+     "linkReferences": {}
+   },
+   "deployedBytecode": {
+-    "object": "0x608060405234801561000f575f5ffd5b5060043610610085575f3560e01c806347ff58011161005857806347ff5801146100dc57806350638a7b146100ef578063529d15cc146100f8578063b1b5c73c14610100575f5ffd5b80630398a71d1461008957806312a0c540146100ae5780631a130db8146100c15780631a2c2ef0146100c9575b5f5ffd5b61009c610097366004610368565b610109565b60405190815260200160405180910390f35b61009c6100bc366004610388565b61012b565b61009c608081565b61009c6100d7366004610388565b6101bd565b61009c6100ea366004610368565b61026f565b61009c61040081565b5f195461009c565b61009c61100081565b5f1980546001810182555f9161012085838661028d565b925050505b92915050565b5f6104008310156101725760405162461bcd60e51b815260206004820152600c60248201526b736d616c6c20636f7270757360a01b60448201526064015b60405180910390fd5b5f61017d858461031a565b90505f5b60808110156101b457815f52806020528460405f20066003609d1b01602060015f833c505f519290921891600101610181565b50509392505050565b5f5f831180156101d957506101d56110005f196103d6565b8311155b6102115760405162461bcd60e51b815260206004820152600960248201526862616420706167657360b81b6044820152606401610169565b5f8361021d868561031a565b61022791906103e9565b610233906110006103fc565b90505f5b6104008110156101b45780820180548061024f575f5ffd5b600160ff1b188061025e575f5ffd5b908190559290921891600101610237565b5f19805460010181555f9061028584838561028d565b949350505050565b5f815f036102ae5760405163755934b160e01b815260040160405180910390fd5b5f6110008386866040516020016102cf929190918252602082015260400190565b604051602081830303815290604052805190602001205f1c6102f191906103e9565b6102fb91906103fc565b90505f5b6110008110156101b4578181015492909218916001016102ff565b5f5f5f19549050600181015f19558383610334575f610336565b815b60408051602081019390935282015260600160408051601f198184030181529190528051602090910120949350505050565b5f5f60408385031215610379575f5ffd5b50508035926020909101359150565b5f5f5f6060848603121561039a575f5ffd5b8335925060208401359150604084013580151581146103b7575f5ffd5b809150509250925092565b634e487b7160e01b5f52601260045260245ffd5b5f826103e4576103e46103c2565b500490565b5f826103f7576103f76103c2565b500690565b808202811582820484141761012557634e487b7160e01b5f52601160045260245ffdfea2646970667358221220411bead8e27250eb4a4627c520954141d2cca48c0bc39b052650bc3d928ac1c364736f6c634300081c0033",
+-    "sourceMap": "176:2487:0:-:0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;385:366:1;;;;;;:::i;:::-;;:::i;:::-;;;511:25:2;;;499:2;484:18;385:366:1;;;;;;;1019:580:0;;;;;;:::i;:::-;;:::i;384:43::-;;424:3;384:43;;1760:901;;;;;;:::i;:::-;;:::i;834:334:1:-;;;;;;:::i;:::-;;:::i;339:39:0:-;;374:4;339:39;;521:109;-1:-1:-1;;609:13:0;521:109;;173:43:1;;212:4;173:43;;385:366;-1:-1:-1;;619:17:1;;682:1;668:16;;649:36;;481:19;;711:33;718:4;619:17;734:9;711:6;:33::i;:::-;704:40;;;;385:366;;;;;:::o;1019:580:0:-;1109:19;374:4;1152:5;:17;;1144:42;;;;-1:-1:-1;;;1144:42:0;;1451:2:2;1144:42:0;;;1433:21:2;1490:2;1470:18;;;1463:30;-1:-1:-1;;;1509:18:2;;;1502:42;1561:18;;1144:42:0;;;;;;;;;1196:12;1211:24;1219:4;1225:9;1211:7;:24::i;:::-;1196:39;;1283:1;1268:315;1293:13;1290:1;1287:20;1268:315;;;1355:4;1352:1;1345:15;1388:1;1384:2;1377:13;1458:5;1453:2;1450:1;1440:16;1436:28;-1:-1:-1;;;1421:44:0;1508:2;1505:1;1502;1494:6;1482:29;-1:-1:-1;1566:1:0;1560:8;1543:26;;;;;1322:1;1315:9;1268:315;;;1272:14;1254:339;1019:580;;;;;:::o;1760:901::-;1856:19;1911:1;1899:9;:13;:54;;;;-1:-1:-1;1929:24:0;1949:4;-1:-1:-1;;1929:24:0;:::i;:::-;1916:9;:37;;1899:54;1891:76;;;;-1:-1:-1;;;1891:76:0;;2049:2:2;1891:76:0;;;2031:21:2;2088:1;2068:18;;;2061:29;-1:-1:-1;;;2106:18:2;;;2099:39;2155:18;;1891:76:0;1847:332:2;1891:76:0;1977:13;2021:9;1994:24;2002:4;2008:9;1994:7;:24::i;:::-;:36;;;;:::i;:::-;1993:45;;2034:4;1993:45;:::i;:::-;1977:61;;2086:1;2071:574;2096:8;2093:1;2090:15;2071:574;;;2166:1;2159:5;2155:13;2205:4;2199:11;2392:6;2382:34;;2412:1;2409;2402:12;2382:34;-1:-1:-1;;;2451:24:0;;2492:38;;2526:1;2523;2516:12;2492:38;2547:24;;;;2603:28;;;;;2120:1;2113:9;2071:574;;834:334:1;-1:-1:-1;;1043:17:1;;1106:1;1092:16;1073:36;;927:19;;1135:26;1142:4;927:19;1151:9;1135:6;:26::i;:::-;1128:33;834:334;-1:-1:-1;;;;834:334:1:o;1174:490::-;1287:19;1326:9;1339:1;1326:14;1322:36;;1349:9;;-1:-1:-1;;;1349:9:1;;;;;;;;;;;1322:36;1369:13;212:4;1435:9;1415:4;1421:8;1404:26;;;;;;;;2745:25:2;;;2801:2;2786:18;;2779:34;2733:2;2718:18;;2571:248;1404:26:1;;;;;;;;;;;;;1394:37;;;;;;1386:46;;:58;;;;:::i;:::-;1385:87;;;;:::i;:::-;1369:103;;1520:1;1505:143;1530:12;1527:1;1524:19;1505:143;;;1619:13;;;1613:20;1596:38;;;;;1558:1;1551:9;1505:143;;636:294:0;700:12;724:14;-1:-1:-1;;781:13:0;771:23;;834:1;826:6;822:14;-1:-1:-1;;807:30:0;892:4;898:9;:22;;919:1;898:22;;;910:6;898:22;881:40;;;;;;2745:25:2;;;;2786:18;;2779:34;2718:18;;881:40:0;;;-1:-1:-1;;881:40:0;;;;;;;;;871:51;;881:40;871:51;;;;;636:294;-1:-1:-1;;;;636:294:0:o;14:346:2:-;82:6;90;143:2;131:9;122:7;118:23;114:32;111:52;;;159:1;156;149:12;111:52;-1:-1:-1;;204:23:2;;;324:2;309:18;;;296:32;;-1:-1:-1;14:346:2:o;547:515::-;621:6;629;637;690:2;678:9;669:7;665:23;661:32;658:52;;;706:1;703;696:12;658:52;751:23;;;-1:-1:-1;871:2:2;856:18;;843:32;;-1:-1:-1;953:2:2;938:18;;925:32;995:15;;988:23;976:36;;966:64;;1026:1;1023;1016:12;966:64;1049:7;1039:17;;;547:515;;;;;:::o;1590:127::-;1651:10;1646:3;1642:20;1639:1;1632:31;1682:4;1679:1;1672:15;1706:4;1703:1;1696:15;1722:120;1762:1;1788;1778:35;;1793:18;;:::i;:::-;-1:-1:-1;1827:9:2;;1722:120::o;2184:112::-;2216:1;2242;2232:35;;2247:18;;:::i;:::-;-1:-1:-1;2281:9:2;;2184:112::o;2301:265::-;2374:9;;;2405;;2422:15;;;2416:22;;2402:37;2392:168;;2482:10;2477:3;2473:20;2470:1;2463:31;2517:4;2514:1;2507:15;2545:4;2542:1;2535:15",
++    "object": "0x608060405234801561000f575f5ffd5b50600436106100e5575f3560e01c806350638a7b116100885780636f914d54116100635780636f914d541461017c5780637ed819981461018f578063b1b5c73c146101a2578063ea0c1e5b146101ab575f5ffd5b806350638a7b14610162578063529d15cc1461016b5780636a0df87e14610173575f5ffd5b80631a130db8116100c35780631a130db8146101215780631a2c2ef01461012957806347ff58011461013c57806349a4a80c1461014f575f5ffd5b80630398a71d146100e957806312a0c5401461010e57806317da51d514610121575b5f5ffd5b6100fc6100f73660046105aa565b6101b4565b60405190815260200160405180910390f35b6100fc61011c3660046105ca565b6101d6565b6100fc608081565b6100fc6101373660046105ca565b610268565b6100fc61014a3660046105aa565b6102fe565b6100fc61015d3660046105ca565b61031c565b6100fc61040081565b5f19546100fc565b6100fc6135e881565b6100fc61018a3660046105ca565b6103ae565b6100fc61019d3660046105ca565b610433565b6100fc61100081565b6100fc612a3081565b5f1980546001810182555f916101cb8583866104cf565b925050505b92915050565b5f61040083101561021d5760405162461bcd60e51b815260206004820152600c60248201526b736d616c6c20636f7270757360a01b60448201526064015b60405180910390fd5b5f610228858461055c565b90505f5b608081101561025f57815f52806020528460405f20066003609d1b01602060015f833c505f51929092189160010161022c565b50509392505050565b5f5f8311801561028457506102806110005f1961062c565b8311155b6102a05760405162461bcd60e51b81526004016102149061063f565b5f836102ac868561055c565b6102b69190610662565b6102c290611000610675565b90505f5b61040081101561025f578082018054806102de575f5ffd5b600160ff1b18806102ed575f5ffd5b9081905592909218916001016102c6565b5f19805460010181555f906103148483856104cf565b949350505050565b5f6004831015801561033a57506103366110005f1961062c565b8311155b6103565760405162461bcd60e51b81526004016102149061063f565b5f6135e861036685611000610675565b610370919061068c565b61037b90600161069f565b610385868561055c565b61038f9190610662565b90505f5b6135e881101561025f57818101549290921891600101610393565b5f612a308310156103f05760405162461bcd60e51b815260206004820152600c60248201526b736d616c6c20636f7270757360a01b6044820152606401610214565b5f6103fb858461055c565b90505f5b612a3081101561025f57815f52806020528460405f20066003609d1b01602060015f833c505f5192909218916001016103ff565b5f5f8311801561044f575061044b6110005f1961062c565b8311155b61046b5760405162461bcd60e51b81526004016102149061063f565b5f610479608061100061062c565b6104839085610675565b90505f608082610493888761055c565b61049d9190610662565b6104a79190610675565b90505f5b60808110156104c5578181015493909318926001016104ab565b5050509392505050565b5f815f036104f05760405163755934b160e01b815260040160405180910390fd5b5f611000838686604051602001610511929190918252602082015260400190565b604051602081830303815290604052805190602001205f1c6105339190610662565b61053d9190610675565b90505f5b61100081101561025f57818101549290921891600101610541565b5f5f5f19549050600181015f19558383610576575f610578565b815b60408051602081019390935282015260600160408051601f198184030181529190528051602090910120949350505050565b5f5f604083850312156105bb575f5ffd5b50508035926020909101359150565b5f5f5f606084860312156105dc575f5ffd5b8335925060208401359150604084013580151581146105f9575f5ffd5b809150509250925092565b634e487b7160e01b5f52601260045260245ffd5b634e487b7160e01b5f52601160045260245ffd5b5f8261063a5761063a610604565b500490565b60208082526009908201526862616420706167657360b81b604082015260600190565b5f8261067057610670610604565b500690565b80820281158282048414176101d0576101d0610618565b818103818111156101d0576101d0610618565b808201808211156101d0576101d061061856fea264697066735822122094c2aadc883c8a929af7f63f09a97c99a6057125a2f492fb6bd91ae65861f25e64736f6c634300081c0033",
++    "sourceMap": "176:4550:0:-:0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;385:366:1;;;;;;:::i;:::-;;:::i;:::-;;;511:25:2;;;499:2;484:18;385:366:1;;;;;;;1178:580:0;;;;;;:::i;:::-;;:::i;433:43::-;;473:3;433:43;;3823:901;;;;;;:::i;:::-;;:::i;834:334:1:-;;;;;;:::i;:::-;;:::i;2472:502:0:-;;;;;;:::i;:::-;;:::i;339:39::-;;374:4;339:39;;680:109;-1:-1:-1;;768:13:0;680:109;;482:49;;526:5;482:49;;3066:596;;;;;;:::i;:::-;;:::i;1846:537::-;;;;;;:::i;:::-;;:::i;173:43:1:-;;212:4;173:43;;537:49:0;;581:5;537:49;;385:366:1;-1:-1:-1;;619:17:1;;682:1;668:16;;649:36;;481:19;;711:33;718:4;619:17;734:9;711:6;:33::i;:::-;704:40;;;;385:366;;;;;:::o;1178:580:0:-;1268:19;374:4;1311:5;:17;;1303:42;;;;-1:-1:-1;;;1303:42:0;;1451:2:2;1303:42:0;;;1433:21:2;1490:2;1470:18;;;1463:30;-1:-1:-1;;;1509:18:2;;;1502:42;1561:18;;1303:42:0;;;;;;;;;1355:12;1370:24;1378:4;1384:9;1370:7;:24::i;:::-;1355:39;;1442:1;1427:315;1452:13;1449:1;1446:20;1427:315;;;1514:4;1511:1;1504:15;1547:1;1543:2;1536:13;1617:5;1612:2;1609:1;1599:16;1595:28;-1:-1:-1;;;1580:44:0;1667:2;1664:1;1661;1653:6;1641:29;-1:-1:-1;1725:1:0;1719:8;1702:26;;;;;1481:1;1474:9;1427:315;;;1431:14;1413:339;1178:580;;;;;:::o;3823:901::-;3919:19;3974:1;3962:9;:13;:54;;;;-1:-1:-1;3992:24:0;4012:4;-1:-1:-1;;3992:24:0;:::i;:::-;3979:9;:37;;3962:54;3954:76;;;;-1:-1:-1;;;3954:76:0;;;;;;;:::i;:::-;4040:13;4084:9;4057:24;4065:4;4071:9;4057:7;:24::i;:::-;:36;;;;:::i;:::-;4056:45;;4097:4;4056:45;:::i;:::-;4040:61;;4149:1;4134:574;4159:8;4156:1;4153:15;4134:574;;;4229:1;4222:5;4218:13;4268:4;4262:11;4455:6;4445:34;;4475:1;4472;4465:12;4445:34;-1:-1:-1;;;4514:24:0;;4555:38;;4589:1;4586;4579:12;4555:38;4610:24;;;;4666:28;;;;;4183:1;4176:9;4134:574;;834:334:1;-1:-1:-1;;1043:17:1;;1106:1;1092:16;1073:36;;927:19;;1135:26;1142:4;927:19;1151:9;1135:6;:26::i;:::-;1128:33;834:334;-1:-1:-1;;;;834:334:1:o;2472:502:0:-;2570:19;2626:1;2613:9;:14;;:55;;;;-1:-1:-1;2644:24:0;2664:4;-1:-1:-1;;2644:24:0;:::i;:::-;2631:9;:37;;2613:55;2605:77;;;;-1:-1:-1;;;2605:77:0;;;;;;;:::i;:::-;2692:13;526:5;2736:16;:9;2748:4;2736:16;:::i;:::-;:36;;;;:::i;:::-;:40;;2775:1;2736:40;:::i;:::-;2708:24;2716:4;2722:9;2708:7;:24::i;:::-;:69;;;;:::i;:::-;2692:85;;2825:1;2810:148;2835:17;2832:1;2829:24;2810:148;;;2929:13;;;2923:20;2906:38;;;;;2868:1;2861:9;2810:148;;3066:596;3159:19;581:5;3202;:26;;3194:51;;;;-1:-1:-1;;;3194:51:0;;1451:2:2;3194:51:0;;;1433:21:2;1490:2;1470:18;;;1463:30;-1:-1:-1;;;1509:18:2;;;1502:42;1561:18;;3194:51:0;1249:336:2;3194:51:0;3255:12;3270:24;3278:4;3284:9;3270:7;:24::i;:::-;3255:39;;3342:1;3327:319;3352:17;3349:1;3346:24;3327:319;;;3418:4;3415:1;3408:15;3451:1;3447:2;3440:13;3521:5;3516:2;3513:1;3503:16;3499:28;-1:-1:-1;;;3484:44:0;3571:2;3568:1;3565;3557:6;3545:29;-1:-1:-1;3629:1:0;3623:8;3606:26;;;;;3385:1;3378:9;3327:319;;1846:537;1941:19;1996:1;1984:9;:13;:54;;;;-1:-1:-1;2014:24:0;2034:4;-1:-1:-1;;2014:24:0;:::i;:::-;2001:9;:37;;1984:54;1976:76;;;;-1:-1:-1;;;1976:76:0;;;;;;;:::i;:::-;2062:14;2092:20;473:3;2092:4;:20;:::i;:::-;2079:34;;:9;:34;:::i;:::-;2062:51;;2123:13;473:3;2167:6;2140:24;2148:4;2154:9;2140:7;:24::i;:::-;:33;;;;:::i;:::-;2139:51;;;;:::i;:::-;2123:67;;2238:1;2223:144;2248:13;2245:1;2242:20;2223:144;;;2338:13;;;2332:20;2315:38;;;;;2277:1;2270:9;2223:144;;;2227:14;2209:168;;1846:537;;;;;:::o;1174:490:1:-;1287:19;1326:9;1339:1;1326:14;1322:36;;1349:9;;-1:-1:-1;;;1349:9:1;;;;;;;;;;;1322:36;1369:13;212:4;1435:9;1415:4;1421:8;1404:26;;;;;;;;3043:25:2;;;3099:2;3084:18;;3077:34;3031:2;3016:18;;2869:248;1404:26:1;;;;;;;;;;;;;1394:37;;;;;;1386:46;;:58;;;;:::i;:::-;1385:87;;;;:::i;:::-;1369:103;;1520:1;1505:143;1530:12;1527:1;1524:19;1505:143;;;1619:13;;;1613:20;1596:38;;;;;1558:1;1551:9;1505:143;;795:294:0;859:12;883:14;-1:-1:-1;;940:13:0;930:23;;993:1;985:6;981:14;-1:-1:-1;;966:30:0;1051:4;1057:9;:22;;1078:1;1057:22;;;1069:6;1057:22;1040:40;;;;;;3043:25:2;;;;3084:18;;3077:34;3016:18;;1040:40:0;;;-1:-1:-1;;1040:40:0;;;;;;;;;1030:51;;1040:40;1030:51;;;;;795:294;-1:-1:-1;;;;795:294:0:o;14:346:2:-;82:6;90;143:2;131:9;122:7;118:23;114:32;111:52;;;159:1;156;149:12;111:52;-1:-1:-1;;204:23:2;;;324:2;309:18;;;296:32;;-1:-1:-1;14:346:2:o;547:515::-;621:6;629;637;690:2;678:9;669:7;665:23;661:32;658:52;;;706:1;703;696:12;658:52;751:23;;;-1:-1:-1;871:2:2;856:18;;843:32;;-1:-1:-1;953:2:2;938:18;;925:32;995:15;;988:23;976:36;;966:64;;1026:1;1023;1016:12;966:64;1049:7;1039:17;;;547:515;;;;;:::o;1590:127::-;1651:10;1646:3;1642:20;1639:1;1632:31;1682:4;1679:1;1672:15;1706:4;1703:1;1696:15;1722:127;1783:10;1778:3;1774:20;1771:1;1764:31;1814:4;1811:1;1804:15;1838:4;1835:1;1828:15;1854:120;1894:1;1920;1910:35;;1925:18;;:::i;:::-;-1:-1:-1;1959:9:2;;1854:120::o;1979:332::-;2181:2;2163:21;;;2220:1;2200:18;;;2193:29;-1:-1:-1;;;2253:2:2;2238:18;;2231:39;2302:2;2287:18;;1979:332::o;2316:112::-;2348:1;2374;2364:35;;2379:18;;:::i;:::-;-1:-1:-1;2413:9:2;;2316:112::o;2433:168::-;2506:9;;;2537;;2554:15;;;2548:22;;2534:37;2524:71;;2575:18;;:::i;2606:128::-;2673:9;;;2694:11;;;2691:37;;;2708:18;;:::i;2739:125::-;2804:9;;;2825:10;;;2822:36;;;2838:18;;:::i",
+     "linkReferences": {}
+   },
+   "compiler": {
+diff --git a/crates/consensus/src/executor/mod.rs b/crates/consensus/src/executor/mod.rs
+index e136ae6..b6f3cd1 100644
+--- a/crates/consensus/src/executor/mod.rs
++++ b/crates/consensus/src/executor/mod.rs
+@@ -200,10 +200,12 @@ impl ExecutionLayer for Arc<TempoFullNode> {
+         &self,
+         payload_id: PayloadId,
+     ) -> impl Future<Output = Option<eyre::Result<TempoBuiltPayload>>> + Send + 'static {
+-        let builder = self.payload_builder_handle.clone();
++        // Register resolution eagerly so dropping even an unpolled future cancels the job.
++        let resolution = self
++            .payload_builder_handle
++            .resolve_kind(payload_id, PayloadKind::WaitForPending);
+         async move {
+-            builder
+-                .resolve_kind(payload_id, PayloadKind::WaitForPending)
++            resolution
+                 .await
+                 .map(|resolved| resolved.map_err(Into::into))
+         }
+diff --git a/crates/payload/builder/Cargo.toml b/crates/payload/builder/Cargo.toml
+index d2b916f..8997cc4 100644
+--- a/crates/payload/builder/Cargo.toml
++++ b/crates/payload/builder/Cargo.toml
+@@ -49,7 +49,6 @@ alloy-rlp.workspace = true
+ metrics.workspace = true
+ tracing.workspace = true
+ crossbeam-channel.workspace = true
+-tokio.workspace = true
+ 
+ [dev-dependencies]
+ proptest.workspace = true
+diff --git a/crates/payload/builder/src/lib.rs b/crates/payload/builder/src/lib.rs
+index 45992c4..06a3b2a 100644
+--- a/crates/payload/builder/src/lib.rs
++++ b/crates/payload/builder/src/lib.rs
+@@ -4,6 +4,7 @@
+ #![cfg_attr(docsrs, feature(doc_cfg))]
+ 
+ mod budget;
++mod completion;
+ mod encode;
+ mod metrics;
+ mod prewarming;
+@@ -78,7 +79,6 @@ use tempo_transaction_pool::{
+     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+     transaction::TempoPoolTransactionError,
+ };
+-use tokio::sync::oneshot;
+ use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+ 
+ /// Conservative estimate for non-transaction execution block RLP bytes.
+@@ -321,6 +321,17 @@ where
+             };
+         }
+ 
++        macro_rules! await_completion {
++            ($receiver:expr) => {
++                match completion::recv($receiver, &cancel) {
++                    Err(completion::CompletionError::Cancelled) => {
++                        return Ok(BuildOutcome::Cancelled);
++                    }
++                    result => result,
++                }
++            };
++        }
++
+         check_cancel!();
+ 
+         let start = Instant::now();
+@@ -809,11 +820,14 @@ where
+         // merge all transitions into bundle state before deriving the hashed post-state
+         db.merge_transitions(BundleRetention::Reverts);
+ 
+-        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
++        let hashed_state = match state_root_handle
+             .as_mut()
+             .and_then(|handle| handle.try_take_hashed_state_rx())
+-            .map(|rx| rx.recv())
+         {
++            Some(rx) => await_completion!(rx).ok(),
++            None => None,
++        };
++        let hashed_state = if let Some(hashed_state) = hashed_state {
+             hashed_state
+         } else {
+             Arc::new(
+@@ -835,7 +849,10 @@ where
+             } else if let Some(mut handle) = state_root_handle {
+                 let state_root_wait_start = Instant::now();
+                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
+-                match handle.state_root() {
++                let outcome = await_completion!(handle.take_state_root_rx())
++                    .map_err(|err| err.to_string())
++                    .and_then(|outcome| outcome.map_err(|err| err.to_string()));
++                match outcome {
+                     Ok(outcome) => {
+                         let elapsed = state_root_wait_start.elapsed();
+                         self.metrics
+@@ -865,7 +882,7 @@ where
+             .unzip();
+ 
+         let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
+-            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
++            let (bal, bal_hash) = await_completion!(bal_rx).map_err(PayloadBuilderError::other)?;
+             (Some(bal), Some(bal_hash))
+         } else {
+             (None, None)
+@@ -890,9 +907,9 @@ where
+             transactions,
+             senders,
+             encoded_block_transactions,
+-        } = roots_rx
+-            .blocking_recv()
+-            .map_err(PayloadBuilderError::other)?;
++        } = await_completion!(roots_rx).map_err(PayloadBuilderError::other)?;
++
++        check_cancel!();
+ 
+         let block = self.evm_config.block_assembler.assemble_block(
+             BlockAssemblerInput::new(
+@@ -1097,14 +1114,14 @@ where
+         &self,
+     ) -> (
+         Sender<(BestTransaction, TempoReceipt)>,
+-        oneshot::Receiver<RootsTaskResult>,
++        mpsc::Receiver<RootsTaskResult>,
+     ) {
+         let (transactions_tx, transactions_rx) =
+             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+-        let (result_tx, result_rx) = oneshot::channel();
++        let (result_tx, result_rx) = mpsc::channel();
+ 
+         self.executor
+-            .spawn_blocking_named("builder-roots-task", || {
++            .spawn_blocking_named("builder-roots-task", move || {
+                 let mut transactions = Vec::new();
+                 let mut senders = Vec::new();
+ 
+@@ -1148,32 +1165,33 @@ where
+ 
+     fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
+-        let (bal_tx, bal_rx) = oneshot::channel();
+-        self.executor.spawn_blocking_named("builder-bal-task", || {
+-            let mut bal_state =
+-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+-            for msg in task_rx {
+-                match msg {
+-                    BalMessage::BumpIndex => {
+-                        bal_state.bump_bal_index();
+-                    }
+-                    BalMessage::State(state) => {
+-                        bal_state.commit(&state);
+-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
+-                            state_root_task_hook.on_state(state);
++        let (bal_tx, bal_rx) = mpsc::channel();
++        self.executor
++            .spawn_blocking_named("builder-bal-task", move || {
++                let mut bal_state =
++                    reth_revm::database_interface::bal::BalState::new().with_bal_builder();
++                for msg in task_rx {
++                    match msg {
++                        BalMessage::BumpIndex => {
++                            bal_state.bump_bal_index();
++                        }
++                        BalMessage::State(state) => {
++                            bal_state.commit(&state);
++                            if let Some(state_root_task_hook) = &mut state_root_task_hook {
++                                state_root_task_hook.on_state(state);
++                            }
+                         }
+                     }
+                 }
+-            }
+ 
+-            drop(state_root_task_hook);
+-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+-            let mut encoded = Vec::new();
+-            bal.encode(&mut encoded);
+-            let bal_hash = keccak256(&encoded);
++                drop(state_root_task_hook);
++                let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
++                let mut encoded = Vec::new();
++                bal.encode(&mut encoded);
++                let bal_hash = keccak256(&encoded);
+ 
+-            let _ = bal_tx.send((encoded.into(), bal_hash));
+-        });
++                let _ = bal_tx.send((encoded.into(), bal_hash));
++            });
+ 
+         BalTaskHandle {
+             msg_tx: task_tx,
+@@ -1184,7 +1202,7 @@ where
+ 
+ struct BalTaskHandle {
+     msg_tx: mpsc::Sender<BalMessage>,
+-    bal_rx: oneshot::Receiver<(Bytes, B256)>,
++    bal_rx: mpsc::Receiver<(Bytes, B256)>,
+ }
+ 
+ impl BalTaskHandle {
+@@ -1199,7 +1217,7 @@ impl BalTaskHandle {
+         let _ = self.msg_tx.send(BalMessage::BumpIndex);
+     }
+ 
+-    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
++    fn into_bal_rx(self) -> mpsc::Receiver<(Bytes, B256)> {
+         self.bal_rx
+     }
+ }
+diff --git a/crates/payload/builder/src/prewarming.rs b/crates/payload/builder/src/prewarming.rs
+index 217e7f1..25254ca 100644
+--- a/crates/payload/builder/src/prewarming.rs
++++ b/crates/payload/builder/src/prewarming.rs
+@@ -908,7 +908,6 @@ mod tests {
+         context.evm_env.block_env.basefee = 0;
+ 
+         let pool = WorkerPool::new(1, "prewarm-actions-test");
+-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+ 
+         pool.install_fn(|| {
+             let failed_action = StorageAction::Sstore(
+@@ -917,9 +916,15 @@ mod tests {
+                 U256::from(2),
+                 U256::from(3),
+             );
+-            WorkerPool::with_worker_mut(|worker| {
+-                let evm = worker
+-                    .get_mut::<PrewarmEvmState>()
++            PREWARM_EVM.with_borrow_mut(|slot| {
++                *slot = Some(ThreadPrewarmEvm {
++                    generation: context.generation,
++                    evm: context.evm_for_ctx(),
++                });
++                let evm = slot
++                    .as_mut()
++                    .expect("thread prewarm state")
++                    .evm
+                     .as_mut()
+                     .expect("prewarm EVM");
+                 // Model an action recorded before the failed execution returned an error.
+@@ -933,22 +938,25 @@ mod tests {
+                 None,
+             );
+             assert!(failed.replay.is_none());
+-            WorkerPool::with_worker_mut(|worker| {
+-                let evm = worker
+-                    .get_mut::<PrewarmEvmState>()
++            PREWARM_EVM.with_borrow_mut(|slot| {
++                let evm = slot
++                    .as_mut()
++                    .expect("thread prewarm state")
++                    .evm
+                     .as_mut()
+                     .expect("prewarm EVM");
+                 assert_eq!(evm.take_actions(), Some(Vec::new()));
+             });
+ 
+             let successful = BestTransactionsPrewarming::prewarm_transaction(
+-                context,
++                context.clone(),
+                 test_payment_tx(sender, 500_000),
+                 None,
+             );
+             let replay = successful.replay.expect("successful prewarm replay");
+             assert!(!replay.actions.is_empty());
+             assert!(!replay.actions.contains(&failed_action));
++            clear_prewarm_evm(context.generation);
+         });
+ 
+         pool.clear();

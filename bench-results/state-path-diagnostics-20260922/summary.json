@@ -1,0 +1,190 @@
+{
+  "metadata": {
+    "kind": "metadata",
+    "mdbx": "0.13.12",
+    "pid": 811593,
+    "writemap": true,
+    "durability": "default_durable",
+    "records": 2048,
+    "batch": 128,
+    "rounds": 8,
+    "trials": 3
+  },
+  "checks": {
+    "row_count": 130,
+    "cold_residency_controls": 21,
+    "all_cold_controls_passed": true,
+    "cold_total_accounting_verified": true,
+    "all_warm_reads_no_faults_or_storage_reads": true
+  },
+  "groups": [
+    {
+      "key": "cold_total/32/false/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 84,
+      "read_bytes": 491520,
+      "write_bytes": 24576,
+      "ms": 2.092469,
+      "major_faults_per_record": 0.013671875,
+      "read_bytes_per_record": 80,
+      "write_bytes_per_record": 4
+    },
+    {
+      "key": "warm_read/32/false/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 0,
+      "read_bytes": 0,
+      "write_bytes": 0,
+      "ms": 0.645208,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 0,
+      "write_bytes_per_record": 0
+    },
+    {
+      "key": "cold_total/32/true/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 0,
+      "read_bytes": 491520,
+      "write_bytes": 24576,
+      "ms": 1.322336,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 80,
+      "write_bytes_per_record": 4
+    },
+    {
+      "key": "warm_read/32/true/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 0,
+      "read_bytes": 0,
+      "write_bytes": 0,
+      "ms": 0.615843,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 0,
+      "write_bytes_per_record": 0
+    },
+    {
+      "key": "durable_update/32/false/first",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 39,
+      "read_bytes": 344064,
+      "write_bytes": 7335936,
+      "ms": 6.858281999999999,
+      "major_faults_per_record": 0.00634765625,
+      "read_bytes_per_record": 56,
+      "write_bytes_per_record": 1194
+    },
+    {
+      "key": "durable_update/32/false/later",
+      "samples": 21,
+      "records": 43008,
+      "major_faults": 0,
+      "read_bytes": 0,
+      "write_bytes": 51351552,
+      "ms": 36.323306,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 0,
+      "write_bytes_per_record": 1194
+    },
+    {
+      "key": "cold_total/1024/false/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 2553,
+      "read_bytes": 10604544,
+      "write_bytes": 24576,
+      "ms": 163.197897,
+      "major_faults_per_record": 0.41552734375,
+      "read_bytes_per_record": 1726,
+      "write_bytes_per_record": 4
+    },
+    {
+      "key": "warm_read/1024/false/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 0,
+      "read_bytes": 0,
+      "write_bytes": 0,
+      "ms": 4.503042,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 0,
+      "write_bytes_per_record": 0
+    },
+    {
+      "key": "cold_total/1024/true/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 87,
+      "read_bytes": 10604544,
+      "write_bytes": 24576,
+      "ms": 25.876034000000004,
+      "major_faults_per_record": 0.01416015625,
+      "read_bytes_per_record": 1726,
+      "write_bytes_per_record": 4
+    },
+    {
+      "key": "warm_read/1024/true/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 0,
+      "read_bytes": 0,
+      "write_bytes": 0,
+      "ms": 4.032641,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 0,
+      "write_bytes_per_record": 0
+    },
+    {
+      "key": "cold_total/24576/false/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 43035,
+      "read_bytes": 176418816,
+      "write_bytes": 24576,
+      "ms": 2865.0707599999996,
+      "major_faults_per_record": 7.00439453125,
+      "read_bytes_per_record": 28714,
+      "write_bytes_per_record": 4
+    },
+    {
+      "key": "warm_read/24576/false/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 0,
+      "read_bytes": 0,
+      "write_bytes": 0,
+      "ms": 81.817248,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 0,
+      "write_bytes_per_record": 0
+    },
+    {
+      "key": "cold_total/24576/true/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 1311,
+      "read_bytes": 176422912,
+      "write_bytes": 24576,
+      "ms": 426.05553499999996,
+      "major_faults_per_record": 0.21337890625,
+      "read_bytes_per_record": 28714.666666666668,
+      "write_bytes_per_record": 4
+    },
+    {
+      "key": "warm_read/24576/true/",
+      "samples": 3,
+      "records": 6144,
+      "major_faults": 0,
+      "read_bytes": 0,
+      "write_bytes": 0,
+      "ms": 80.799823,
+      "major_faults_per_record": 0,
+      "read_bytes_per_record": 0,
+      "write_bytes_per_record": 0
+    }
+  ]
+}

@@ -8,6 +8,11 @@ scripts/data
 coverage/
 
 # Benchmarking artifacts
+# Selected reports under bench-results are explicitly tracked; raw runs stay local.
+/bench-results/
+/minio/
+/tmp.*
+/contrib/bench/payload-cancel-patches.toml
 .bench-tmp/
 contrib/bench/logs/
 report.json

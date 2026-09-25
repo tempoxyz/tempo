@@ -1,0 +1,170 @@
+TAP version 13
+# Subtest: uses counter deltas, not the sum of cumulative samples
+ok 1 - uses counter deltas, not the sum of cumulative samples
+  ---
+  duration_ms: 0.615185
+  ...
+# Subtest: rejects resets and duplicate scrapes
+ok 2 - rejects resets and duplicate scrapes
+  ---
+  duration_ms: 0.5594
+  ...
+# Subtest: rejects insufficient coverage
+ok 3 - rejects insufficient coverage
+  ---
+  duration_ms: 0.151064
+  ...
+# Subtest: keeps execution sources and device counters separate
+ok 4 - keeps execution sources and device counters separate
+  ---
+  duration_ms: 0.115547
+  ...
+# Subtest: selects additive sums rather than histogram quantiles
+ok 5 - selects additive sums rather than histogram quantiles
+  ---
+  duration_ms: 0.389841
+  ...
+# Subtest: detects pipeline work that invalidates payload-only normalization
+ok 6 - detects pipeline work that invalidates payload-only normalization
+  ---
+  duration_ms: 0.155512
+  ...
+# Subtest: suppresses incomplete ratios but preserves raw counters and valid direct-path ratios
+ok 7 - suppresses incomplete ratios but preserves raw counters and valid direct-path ratios
+  ---
+  duration_ms: 1.000037
+  ...
+# Subtest: patched controls must match the separately recorded binary hash
+ok 8 - patched controls must match the separately recorded binary hash
+  ---
+  duration_ms: 1.186678
+  ...
+# Subtest: selects correct node-exporter disk write counters
+ok 9 - selects correct node-exporter disk write counters
+  ---
+  duration_ms: 0.118132
+  ...
+# Subtest: canonical throughput sums gas in a half-open time window, not per-block rates
+ok 10 - canonical throughput sums gas in a half-open time window, not per-block rates
+  ---
+  duration_ms: 0.287659
+  ...
+# Subtest: normalizes cgroup deltas with matching observer gas endpoints
+ok 11 - normalizes cgroup deltas with matching observer gas endpoints
+  ---
+  duration_ms: 1.057094
+  ...
+# Subtest: rejects gas and cgroup counter resets
+ok 12 - rejects gas and cgroup counter resets
+  ---
+  duration_ms: 0.26121
+  ...
+# Subtest: rejects missing I/O or inadequate frontier coverage
+ok 13 - rejects missing I/O or inadequate frontier coverage
+  ---
+  duration_ms: 0.197561
+  ...
+# Subtest: rejects non-advancing persistent state and truncated time coverage
+ok 14 - rejects non-advancing persistent state and truncated time coverage
+  ---
+  duration_ms: 0.233829
+  ...
+# Subtest: verifies the populated page, cold reads, and cursor
+ok 15 - verifies the populated page, cold reads, and cursor
+  ---
+  duration_ms: 7.445113
+  ...
+# Subtest: rejects reverted executions
+ok 16 - rejects reverted executions
+  ---
+  duration_ms: 2.601252
+  ...
+# Subtest: rejects nonexistent fixture values
+ok 17 - rejects nonexistent fixture values
+  ---
+  duration_ms: 3.76215
+  ...
+# Subtest: rejects warm data reads
+ok 18 - rejects warm data reads
+  ---
+  duration_ms: 2.608926
+  ...
+# Subtest: rejects duplicate storage reads
+ok 19 - rejects duplicate storage reads
+  ---
+  duration_ms: 2.57355
+  ...
+# Subtest: rejects an incorrect cursor increment
+ok 20 - rejects an incorrect cursor increment
+  ---
+  duration_ms: 2.02455
+  ...
+# Subtest: verifies actual transaction access-set values independently of opcode replay
+ok 21 - verifies actual transaction access-set values independently of opcode replay
+  ---
+  duration_ms: 7.863138
+  ...
+# Subtest: samples endpoints and the middle without duplication
+ok 22 - samples endpoints and the middle without duplication
+  ---
+  duration_ms: 0.204143
+  ...
+# Subtest: checks the entire report against the committed cursor, including multi-transaction blocks
+ok 23 - checks the entire report against the committed cursor, including multi-transaction blocks
+  ---
+  duration_ms: 0.279074
+  ...
+# Subtest: waits for follower catchup and fails a stalled follower
+ok 24 - waits for follower catchup and fails a stalled follower
+  ---
+  duration_ms: 4.693118
+  ...
+# Subtest: direct checkpoint helper only opens the existing MDBX directory
+ok 25 - direct checkpoint helper only opens the existing MDBX directory
+  ---
+  duration_ms: 1.065349
+  ...
+# Subtest: legacy and split Finish frontiers retain state lag
+ok 26 - legacy and split Finish frontiers retain state lag
+  ---
+  duration_ms: 0.499328
+  ...
+# Subtest: I/O parsing preserves per-device counters
+ok 27 - I/O parsing preserves per-device counters
+  ---
+  duration_ms: 0.417564
+  ...
+# Subtest: metrics retain source labels and exclude unrelated histograms
+ok 28 - metrics retain source labels and exclude unrelated histograms
+  ---
+  duration_ms: 0.374693
+  ...
+# Subtest: read audit checks all real getter calls and call success
+ok 29 - read audit checks all real getter calls and call success
+  ---
+  duration_ms: 0.230072
+  ...
+# Subtest: metrics preserve execution and completion progress separately
+ok 30 - metrics preserve execution and completion progress separately
+  ---
+  duration_ms: 0.067527
+  ...
+# Subtest: write audit checks ordinary spender, bounded amount, and return value
+ok 31 - write audit checks ordinary spender, bounded amount, and return value
+  ---
+  duration_ms: 0.299753
+  ...
+# Subtest: storage diff distinguishes actual contract writes from fee-account writes
+ok 32 - storage diff distinguishes actual contract writes from fee-account writes
+  ---
+  duration_ms: 0.129443
+  ...
+1..32
+# tests 32
+# suites 0
+# pass 32
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 101.387236

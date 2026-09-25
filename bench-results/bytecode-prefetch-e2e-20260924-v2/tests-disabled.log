@@ -1,0 +1,107 @@
+warning: struct `LazyTrieDataProducer` is never constructed
+   --> crates/trie/common/src/trie_data.rs:205:12
+    |
+205 | pub struct LazyTrieDataProducer {
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `compute_and_publish` and `sort` are never used
+   --> crates/trie/common/src/trie_data.rs:220:12
+    |
+218 | impl LazyTrieDataProducer {
+    | ------------------------- associated items in this implementation
+219 |     /// Computes sorted trie data, publishes it to waiters, and returns it to the task owner.
+220 |     pub fn compute_and_publish(self) -> ComputedTrieData {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+228 |     pub fn sort(
+    |            ^^^^
+
+warning: struct `PendingInputs` is never constructed
+   --> crates/trie/common/src/trie_data.rs:262:8
+    |
+262 | struct PendingInputs {
+    |        ^^^^^^^^^^^^^
+
+warning: unreachable `pub` item
+   --> crates/trie/common/src/trie_data.rs:205:1
+    |
+205 | pub struct LazyTrieDataProducer {
+    | ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | help: consider restricting its visibility: `pub(crate)`
+    |
+    = help: or consider exporting it for use by other crates
+    = note: requested on the command line with `-W unreachable-pub`
+
+warning: unreachable `pub` item
+   --> crates/trie/common/src/trie_data.rs:220:5
+    |
+220 |     pub fn compute_and_publish(self) -> ComputedTrieData {
+    |     ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     help: consider restricting its visibility: `pub(crate)`
+
+warning: unreachable `pub` item
+   --> crates/trie/common/src/trie_data.rs:228:5
+    |
+228 |       pub fn sort(
+    |       ^--
+    |       |
+    |  _____help: consider restricting its visibility: `pub(crate)`
+    | |
+229 | |         hashed_state: Arc<HashedPostState>,
+230 | |         trie_updates: Arc<TrieUpdates>,
+231 | |     ) -> ComputedTrieData {
+    | |_________________________^
+
+warning: `reth-trie-common` (lib) generated 6 warnings (run `cargo fix --lib -p reth-trie-common` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/reth_db-52c17104e3f1d169)
+
+running 41 tests
+test implementation::mdbx::bytecode_prefetch::tests::bytecode_prefetch_mapped_value ... ok
+test implementation::mdbx::bytecode_prefetch::tests::bytecode_prefetch_page_range ... ok
+test implementation::mdbx::cursor::tests::test_import_table_with_range_works_on_dupsort ... ok
+test implementation::mdbx::tests::db_closure_put_get ... ok
+test implementation::mdbx::tests::db_creation ... ok
+test implementation::mdbx::tests::db_cursor_append ... ok
+test implementation::mdbx::tests::db_cursor_append_failure ... ok
+test implementation::mdbx::tests::db_cursor_delete_current_non_existent ... ok
+test implementation::mdbx::tests::db_cursor_dupsort_append ... ok
+test implementation::mdbx::tests::db_cursor_insert ... ok
+test implementation::mdbx::tests::db_cursor_insert_dup ... ok
+test implementation::mdbx::tests::db_cursor_insert_wherever_cursor_is ... ok
+test implementation::mdbx::tests::db_cursor_seek_exact_or_previous_key ... ok
+test implementation::mdbx::tests::db_cursor_upsert ... ok
+test implementation::mdbx::tests::db_cursor_walk ... ok
+test implementation::mdbx::tests::db_cursor_walk_range ... ok
+test implementation::mdbx::tests::db_cursor_walk_range_invalid ... ok
+test implementation::mdbx::tests::db_cursor_walk_range_on_dup_table ... ok
+test implementation::mdbx::tests::db_drop_orphan_table ... ok
+test implementation::mdbx::tests::db_dup_cursor_delete_first ... ok
+test implementation::mdbx::tests::db_dup_sort ... ok
+test implementation::mdbx::tests::db_iterate_over_all_dup_values ... ok
+test implementation::mdbx::tests::db_manual_put_get ... ok
+test implementation::mdbx::tests::db_reverse_walker ... ok
+test implementation::mdbx::tests::db_sharded_key ... ok
+test implementation::mdbx::tests::db_walk_back ... ok
+test implementation::mdbx::tests::db_walk_dup_with_not_existing_key ... ok
+test implementation::mdbx::tests::db_walker ... ok
+test implementation::mdbx::tests::dup_value_with_same_subkey ... ok
+test implementation::mdbx::tx::tests::bytecode_prefetch_round_trip ... ok
+test implementation::mdbx::tx::tests::long_read_transaction_safety_disabled ... ok
+test implementation::mdbx::tx::tests::long_read_transaction_safety_enabled ... ok
+test lockfile::tests::test_drop_lock ... ok
+test lockfile::tests::test_lock ... ok
+test tests::db_client_version ... ok
+test tests::db_version ... ok
+test tests::test_temp_database_cleanup ... ok
+test utils::tests::is_database_empty_false_if_db_path_is_a_file ... ok
+test version::tests::malformed_file ... ok
+test version::tests::missing_file ... ok
+test version::tests::version_mismatch ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.24s
+

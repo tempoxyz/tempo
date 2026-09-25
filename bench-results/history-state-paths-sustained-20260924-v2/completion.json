@@ -1,0 +1,17 @@
+{
+  "completed_at": "2026-09-24T08:06:40.015Z",
+  "status": "complete",
+  "benchmark_case_exit_codes": [
+    0,
+    0
+  ],
+  "initial_wrapper_exit_code": 2,
+  "resumed_analysis_exit_code": 0,
+  "correctness_and_persistence": "both passed",
+  "tests": {
+    "javascript": 54,
+    "solidity": 4,
+    "rust": 1
+  },
+  "note": "Report generation resumed from unchanged saved measurements after the active wrapper file was edited. See amendments.md and exit-code.initial."
+}

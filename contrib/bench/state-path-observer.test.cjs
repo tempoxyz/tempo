@@ -14,6 +14,15 @@ require('node:test')('pre-load priming requires both durable state/trie frontier
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {frontier, checkpointCommand, parseIo, selectedMetrics, checkCalls, changedStorage} = require('./state-path-observer.cjs');
+
+test('metrics retain targeted prefetch evidence separately from actual disk reads', () => {
+  assert.deepEqual(selectedMetrics('reth_db_bytecode_prefetch_enabled 1\nreth_db_bytecode_prefetch_requests 12\nreth_db_bytecode_prefetch_bytes 344064\nreth_db_bytecode_prefetch_errors 0\n'), {
+    reth_db_bytecode_prefetch_enabled: 1,
+    reth_db_bytecode_prefetch_requests: 12,
+    reth_db_bytecode_prefetch_bytes: 344064,
+    reth_db_bytecode_prefetch_errors: 0,
+  });
+});
 const target = '0x5fbdb2315678afecb367f032d93f642f64180aa3';
 
 test('direct checkpoint helper only opens the existing MDBX directory', () => {

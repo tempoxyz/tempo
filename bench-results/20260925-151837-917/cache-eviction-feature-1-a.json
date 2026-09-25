@@ -1,0 +1,9 @@
+{
+  "file": "/reth-bench-a/tempo_e2e_100000mb_state_access_isolated_roles_history_paths/db/mdbx.dat",
+  "measurement": {
+    "bytes": 231928233984,
+    "page_size": 4096,
+    "resident_before": 986,
+    "resident_after": 0
+  }
+}

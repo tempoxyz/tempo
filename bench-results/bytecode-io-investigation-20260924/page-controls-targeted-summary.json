@@ -1,0 +1,178 @@
+{
+  "tables": [
+    {
+      "kind": "table",
+      "scope": "source_read_only",
+      "table": "Bytecodes",
+      "page_bytes": 4096,
+      "entries": 4266680,
+      "depth": 4,
+      "branch_pages": 1088,
+      "leaf_pages": 70619,
+      "overflow_pages": 29866686
+    },
+    {
+      "kind": "table",
+      "scope": "source_read_only",
+      "table": "HashedAccounts",
+      "page_bytes": 4096,
+      "entries": 4266695,
+      "depth": 4,
+      "branch_pages": 2090,
+      "leaf_pages": 119644,
+      "overflow_pages": 0
+    },
+    {
+      "kind": "table",
+      "scope": "source_read_only",
+      "table": "HashedStorages",
+      "page_bytes": 4096,
+      "entries": 1638418048,
+      "depth": 1,
+      "branch_pages": 214020,
+      "leaf_pages": 18618606,
+      "overflow_pages": 0
+    },
+    {
+      "kind": "table",
+      "scope": "source_read_only",
+      "table": "StoragesTrie",
+      "page_bytes": 4096,
+      "entries": 179683440,
+      "depth": 1,
+      "branch_pages": 475674,
+      "leaf_pages": 6469399,
+      "overflow_pages": 0
+    },
+    {
+      "kind": "table",
+      "scope": "private_control",
+      "table": "Bytecodes",
+      "page_bytes": 4096,
+      "entries": 512,
+      "depth": 2,
+      "branch_pages": 1,
+      "leaf_pages": 9,
+      "overflow_pages": 3584
+    }
+  ],
+  "encoding": {
+    "runtime_bytes": 24576,
+    "jump_table_bytes": 3072,
+    "encoded_min": 27662,
+    "encoded_max": 27693,
+    "value_pages": 7
+  },
+  "groups": [
+    {
+      "group": "prefix_32_bytes/cold_including_open/false",
+      "trials": 3,
+      "major_faults_per_record": 1.015625,
+      "process_read_bytes_per_record": 4256,
+      "read_ios_per_record": 1.01953125,
+      "cgroup_read_bytes_per_record": 4256,
+      "ms_per_record": 0.06751733138020834
+    },
+    {
+      "group": "prefix_32_bytes/warm/false",
+      "trials": 3,
+      "major_faults_per_record": 0,
+      "process_read_bytes_per_record": 0,
+      "read_ios_per_record": 0,
+      "cgroup_read_bytes_per_record": 0,
+      "ms_per_record": 0.00011467382812499999
+    },
+    {
+      "group": "full_serialized_value/cold_including_open/false",
+      "trials": 3,
+      "major_faults_per_record": 7.00390625,
+      "process_read_bytes_per_record": 28784,
+      "read_ios_per_record": 7.0078125,
+      "cgroup_read_bytes_per_record": 28784,
+      "ms_per_record": 0.4654239700520833
+    },
+    {
+      "group": "full_serialized_value/warm/false",
+      "trials": 3,
+      "major_faults_per_record": 0,
+      "process_read_bytes_per_record": 0,
+      "read_ios_per_record": 0,
+      "cgroup_read_bytes_per_record": 0,
+      "ms_per_record": 0.0015904518229166668
+    },
+    {
+      "group": "full_value_targeted_prefetch/cold_including_open/false",
+      "trials": 3,
+      "major_faults_per_record": 1.015625,
+      "process_read_bytes_per_record": 28784,
+      "read_ios_per_record": 2.017578125,
+      "cgroup_read_bytes_per_record": 28784,
+      "ms_per_record": 0.16566489388020833
+    },
+    {
+      "group": "full_value_targeted_prefetch/warm/false",
+      "trials": 3,
+      "major_faults_per_record": 0,
+      "process_read_bytes_per_record": 0,
+      "read_ios_per_record": 0,
+      "cgroup_read_bytes_per_record": 0,
+      "ms_per_record": 0.0015933411458333333
+    },
+    {
+      "group": "prefix_32_bytes/cold_including_open/true",
+      "trials": 3,
+      "major_faults_per_record": 0.294921875,
+      "process_read_bytes_per_record": 28656,
+      "read_ios_per_record": 0.314453125,
+      "cgroup_read_bytes_per_record": 28656,
+      "ms_per_record": 0.066501095703125
+    },
+    {
+      "group": "prefix_32_bytes/warm/true",
+      "trials": 3,
+      "major_faults_per_record": 0,
+      "process_read_bytes_per_record": 0,
+      "read_ios_per_record": 0,
+      "cgroup_read_bytes_per_record": 0,
+      "ms_per_record": 0.00012781770833333333
+    },
+    {
+      "group": "full_serialized_value/cold_including_open/true",
+      "trials": 3,
+      "major_faults_per_record": 0.052734375,
+      "process_read_bytes_per_record": 28784,
+      "read_ios_per_record": 0.25390625,
+      "cgroup_read_bytes_per_record": 28784,
+      "ms_per_record": 0.022096763671875002
+    },
+    {
+      "group": "full_serialized_value/warm/true",
+      "trials": 3,
+      "major_faults_per_record": 0,
+      "process_read_bytes_per_record": 0,
+      "read_ios_per_record": 0,
+      "cgroup_read_bytes_per_record": 0,
+      "ms_per_record": 0.0012348502604166668
+    },
+    {
+      "group": "full_value_targeted_prefetch/cold_including_open/true",
+      "trials": 3,
+      "major_faults_per_record": 0.052734375,
+      "process_read_bytes_per_record": 28784,
+      "read_ios_per_record": 0.255859375,
+      "cgroup_read_bytes_per_record": 28784,
+      "ms_per_record": 0.02219783203125
+    },
+    {
+      "group": "full_value_targeted_prefetch/warm/true",
+      "trials": 3,
+      "major_faults_per_record": 0,
+      "process_read_bytes_per_record": 0,
+      "read_ios_per_record": 0,
+      "cgroup_read_bytes_per_record": 0,
+      "ms_per_record": 0.0013442740885416667
+    }
+  ],
+  "cold_checks": 18,
+  "warm_checks": 18
+}

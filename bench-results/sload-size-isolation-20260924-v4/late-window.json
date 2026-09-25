@@ -1,0 +1,4222 @@
+{
+  "from_seconds": 900,
+  "to_seconds": 1200,
+  "runs": [
+    {
+      "label": "1-4096-on",
+      "reads": 4096,
+      "prewarming": true,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 900002,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295.001,
+        "gas": 5323176549,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900002,
+            "unix_ms": 1790283835104,
+            "value": 16339658530
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790284130105,
+            "value": 21662835079
+          },
+          "delta": 5323176549,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 18.04460509964373,
+        "other_caches": {
+          "account": {
+            "misses": 11784,
+            "hits": 733,
+            "misses_per_mgas": 2.213715793855027
+          },
+          "code": {
+            "misses": 879,
+            "hits": 313,
+            "misses_per_mgas": 0.16512696731148754
+          }
+        },
+        "storage_misses": 2394487,
+        "storage_hits": 63940,
+        "storage_misses_per_mgas": 449.82295401226605,
+        "storage_miss_percent": 97.39914994425297,
+        "execution_seconds": 291.60182131100146,
+        "execution_ms_per_mgas": 54.77966372649825,
+        "aggregate_execution_mgas_per_second": 18.25494959211069,
+        "payload_build_seconds": 293.2014825790011,
+        "payload_build_ms_per_mgas": 55.08017250227803,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 596
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 21920,
+          "median": 21941,
+          "max": 21955
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 45956744,
+          "read_bytes_total": 188238819328,
+          "writes_completed_total": 33193,
+          "written_bytes_total": 288620544,
+          "reads_per_mgas": 8633.330789795678,
+          "bytes_per_gas": 35.362122145537725,
+          "writes_per_mgas": 6.2355624868830555,
+          "written_bytes_per_mgas": 54219.60766156058,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 7262688
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 9657175
+            },
+            "delta": 2394487,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 188177
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 252117
+            },
+            "delta": 63940,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 922.0536055450002
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 1213.6554268560017
+            },
+            "delta": 291.60182131100146,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 926.920721201001
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 1220.122203780002
+            },
+            "delta": 293.2014825790011,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 36836
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 48620
+            },
+            "delta": 11784,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 2136
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 2869
+            },
+            "delta": 733,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 2718
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 3597
+            },
+            "delta": 879,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 964
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 1277
+            },
+            "delta": 313,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 31.464000000000006
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 31.464000000000006
+            },
+            "delta": 0,
+            "samples": 60
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 900002,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295.001,
+        "gas": 5323176549,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900002,
+            "unix_ms": 1790283835104,
+            "value": 16339658530
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790284130105,
+            "value": 21662835079
+          },
+          "delta": 5323176549,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 18.04460509964373,
+        "other_caches": {
+          "account": {
+            "misses": 7153,
+            "hits": 5364,
+            "misses_per_mgas": 1.3437465269386466
+          },
+          "code": {
+            "misses": 1192,
+            "hits": 0,
+            "misses_per_mgas": 0.22392644486381472
+          }
+        },
+        "storage_misses": 2447698,
+        "storage_hits": 5961,
+        "storage_misses_per_mgas": 459.8190530539174,
+        "storage_miss_percent": 99.75705670592369,
+        "execution_seconds": 130.12882786499972,
+        "execution_ms_per_mgas": 24.445709562168368,
+        "aggregate_execution_mgas_per_second": 40.906973776190874,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 1617090,
+        "major_faults_per_mgas": 303.78289825908234,
+        "minor_faults": 73819,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 5.80918100000002,
+        "payload_thread_system_cpu_seconds": 7.188152000000027,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 0,
+          "transaction_errors": 0,
+          "execution_duration_sum": 0,
+          "total_runtime_sum": 0
+        },
+        "device_io": {
+          "reads_completed_total": 1836501,
+          "read_bytes_total": 7522308096,
+          "writes_completed_total": 20229,
+          "written_bytes_total": 167661568,
+          "reads_per_mgas": 345.0009563077522,
+          "bytes_per_gas": 1.4131239170365528,
+          "writes_per_mgas": 3.800174541233312,
+          "written_bytes_per_mgas": 31496.52589138651,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 7404881
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 9852579
+            },
+            "delta": 2447698,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 30984
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 36945
+            },
+            "delta": 5961,
+            "samples": 60
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 463.06990743100107
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 593.1987352960008
+            },
+            "delta": 130.12882786499972,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 5882489
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 7499579
+            },
+            "delta": 1617090,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 722328
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 796147
+            },
+            "delta": 73819,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 20.852787000000014
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 26.661968000000034
+            },
+            "delta": 5.80918100000002,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 18.54521700000001
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 25.73336900000004
+            },
+            "delta": 7.188152000000027,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 3979
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 3979
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0.25681788200000005
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0.25681788200000005
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 0.27788913200000004
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 0.27788913200000004
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 22438
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 29591
+            },
+            "delta": 7153,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 16534
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 21898
+            },
+            "delta": 5364,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 3680
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 4872
+            },
+            "delta": 1192,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790283835104,
+              "value": 2
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790284130105,
+              "value": 2
+            },
+            "delta": 0,
+            "samples": 60
+          }
+        }
+      },
+      "nodes": {
+        "a": {
+          "observer": {
+            "from_unix_ms": 1790283837608,
+            "to_unix_ms": 1790284125383,
+            "gas": 5198344931,
+            "device": "259:0",
+            "io": {
+              "rbytes": 183765458944,
+              "wbytes": 116342784,
+              "rios": 44864614,
+              "wios": 19679
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 87152588,
+                "pgmajfault": 46233684,
+                "workingset_refault_file": 44862669
+              },
+              "per_mgas": {
+                "pgfault": 16765.449226016357,
+                "pgmajfault": 8893.92385724317,
+                "workingset_refault_file": 8630.18318243261
+              },
+              "gauges": {
+                "file": {
+                  "first": 18035875840,
+                  "last": 17783799808,
+                  "max": 18165637120
+                },
+                "file_mapped": {
+                  "first": 18028412928,
+                  "last": 17775865856,
+                  "max": 18157879296
+                },
+                "file_dirty": {
+                  "first": 290816,
+                  "last": 475136,
+                  "max": 651264
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 35350762.86456606,
+              "wbytes": 22380.735704204082,
+              "rios": 8630.557339981948,
+              "wios": 3.785627976059367
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790283837608,
+                "head": 1880,
+                "block": 1870,
+                "state": 1840,
+                "lag": 40
+              },
+              {
+                "unix_ms": 1790283867873,
+                "head": 1942,
+                "block": 1934,
+                "state": 1904,
+                "lag": 38
+              },
+              {
+                "unix_ms": 1790283898152,
+                "head": 2003,
+                "block": 1998,
+                "state": 1968,
+                "lag": 35
+              },
+              {
+                "unix_ms": 1790283928416,
+                "head": 2064,
+                "block": 2046,
+                "state": 2016,
+                "lag": 48
+              },
+              {
+                "unix_ms": 1790283958697,
+                "head": 2125,
+                "block": 2110,
+                "state": 2080,
+                "lag": 45
+              },
+              {
+                "unix_ms": 1790283989043,
+                "head": 2187,
+                "block": 2174,
+                "state": 2144,
+                "lag": 43
+              },
+              {
+                "unix_ms": 1790284019336,
+                "head": 2248,
+                "block": 2238,
+                "state": 2208,
+                "lag": 40
+              },
+              {
+                "unix_ms": 1790284049669,
+                "head": 2310,
+                "block": 2302,
+                "state": 2272,
+                "lag": 38
+              },
+              {
+                "unix_ms": 1790284079937,
+                "head": 2370,
+                "block": 2350,
+                "state": 2320,
+                "lag": 50
+              },
+              {
+                "unix_ms": 1790284110244,
+                "head": 2431,
+                "block": 2414,
+                "state": 2384,
+                "lag": 47
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 40,
+              "last": 47,
+              "min": 35,
+              "median": 43,
+              "max": 50
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790283837608,
+            "to_unix_ms": 1790284110244,
+            "duration_seconds": 272.636,
+            "first_state": 1840,
+            "last_state": 2384,
+            "persisted_gas": 4859516329,
+            "produced_gas": 4921932096,
+            "persisted_mgas_per_second": 17.824191702489763,
+            "produced_mgas_per_second": 18.05312613154536,
+            "producer_backlog_blocks": {
+              "first": 40,
+              "last": 47,
+              "max": 50
+            },
+            "producer_backlog_gas": {
+              "first": 356661752,
+              "last": 419077519,
+              "max": 445827190
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790283837608,
+                "blocks": 40,
+                "gas": 356661752
+              },
+              {
+                "unix_ms": 1790283867873,
+                "blocks": 38,
+                "gas": 338828686
+              },
+              {
+                "unix_ms": 1790283898152,
+                "blocks": 35,
+                "gas": 312079003
+              },
+              {
+                "unix_ms": 1790283928416,
+                "blocks": 48,
+                "gas": 427994124
+              },
+              {
+                "unix_ms": 1790283958697,
+                "blocks": 45,
+                "gas": 410161022
+              },
+              {
+                "unix_ms": 1790283989043,
+                "blocks": 43,
+                "gas": 383411399
+              },
+              {
+                "unix_ms": 1790284019336,
+                "blocks": 40,
+                "gas": 356661692
+              },
+              {
+                "unix_ms": 1790284049669,
+                "blocks": 38,
+                "gas": 338828626
+              },
+              {
+                "unix_ms": 1790284079937,
+                "blocks": 50,
+                "gas": 445827190
+              },
+              {
+                "unix_ms": 1790284110244,
+                "blocks": 47,
+                "gas": 419077519
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 16.797218322753906,
+            "last": 16.562454223632812,
+            "min": 16.51386260986328,
+            "max": 16.918067932128906
+          },
+          "read_requests_per_canonical_workload_sload": 18.787778563196827
+        },
+        "b": {
+          "observer": {
+            "from_unix_ms": 1790283837631,
+            "to_unix_ms": 1790284125399,
+            "gas": 5189428386,
+            "device": "259:1",
+            "io": {
+              "rbytes": 7337652224,
+              "wbytes": 82808832,
+              "rios": 1791419,
+              "wios": 12743
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 2782318,
+                "pgmajfault": 1791398,
+                "workingset_refault_file": 280404
+              },
+              "per_mgas": {
+                "pgfault": 536.1511505787643,
+                "pgmajfault": 345.20141078212384,
+                "workingset_refault_file": 54.0336968049259
+              },
+              "gauges": {
+                "file": {
+                  "first": 20572504064,
+                  "last": 20594036736,
+                  "max": 20606603264
+                },
+                "file_mapped": {
+                  "first": 20512665600,
+                  "last": 20530110464,
+                  "max": 20543004672
+                },
+                "file_dirty": {
+                  "first": 348160,
+                  "last": 167936,
+                  "max": 376832
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 1413961.5537995403,
+              "wbytes": 15957.21644861716,
+              "rios": 345.2054574705909,
+              "wios": 2.4555691016717693
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790283837631,
+                "head": 1880,
+                "block": 1870,
+                "state": 1840,
+                "lag": 40
+              },
+              {
+                "unix_ms": 1790283867898,
+                "head": 1942,
+                "block": 1934,
+                "state": 1904,
+                "lag": 38
+              },
+              {
+                "unix_ms": 1790283898175,
+                "head": 2003,
+                "block": 1998,
+                "state": 1968,
+                "lag": 35
+              },
+              {
+                "unix_ms": 1790283928439,
+                "head": 2063,
+                "block": 2046,
+                "state": 2016,
+                "lag": 47
+              },
+              {
+                "unix_ms": 1790283958722,
+                "head": 2125,
+                "block": 2110,
+                "state": 2080,
+                "lag": 45
+              },
+              {
+                "unix_ms": 1790283989071,
+                "head": 2187,
+                "block": 2174,
+                "state": 2144,
+                "lag": 43
+              },
+              {
+                "unix_ms": 1790284019361,
+                "head": 2248,
+                "block": 2238,
+                "state": 2208,
+                "lag": 40
+              },
+              {
+                "unix_ms": 1790284049687,
+                "head": 2309,
+                "block": 2302,
+                "state": 2272,
+                "lag": 37
+              },
+              {
+                "unix_ms": 1790284079959,
+                "head": 2370,
+                "block": 2350,
+                "state": 2320,
+                "lag": 50
+              },
+              {
+                "unix_ms": 1790284110267,
+                "head": 2430,
+                "block": 2414,
+                "state": 2384,
+                "lag": 46
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 40,
+              "last": 46,
+              "min": 35,
+              "median": 43,
+              "max": 50
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790283837631,
+            "to_unix_ms": 1790284110267,
+            "duration_seconds": 272.636,
+            "first_state": 1840,
+            "last_state": 2384,
+            "persisted_gas": 4859516329,
+            "produced_gas": 4921932096,
+            "persisted_mgas_per_second": 17.824191702489763,
+            "produced_mgas_per_second": 18.05312613154536,
+            "producer_backlog_blocks": {
+              "first": 40,
+              "last": 47,
+              "max": 50
+            },
+            "producer_backlog_gas": {
+              "first": 356661752,
+              "last": 419077519,
+              "max": 445827190
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790283837631,
+                "blocks": 40,
+                "gas": 356661752
+              },
+              {
+                "unix_ms": 1790283867898,
+                "blocks": 38,
+                "gas": 338828686
+              },
+              {
+                "unix_ms": 1790283898175,
+                "blocks": 35,
+                "gas": 312079003
+              },
+              {
+                "unix_ms": 1790283928439,
+                "blocks": 48,
+                "gas": 427994124
+              },
+              {
+                "unix_ms": 1790283958722,
+                "blocks": 45,
+                "gas": 410161022
+              },
+              {
+                "unix_ms": 1790283989071,
+                "blocks": 43,
+                "gas": 383411399
+              },
+              {
+                "unix_ms": 1790284019361,
+                "blocks": 40,
+                "gas": 356661692
+              },
+              {
+                "unix_ms": 1790284049687,
+                "blocks": 38,
+                "gas": 338828626
+              },
+              {
+                "unix_ms": 1790284079959,
+                "blocks": 50,
+                "gas": 445827190
+              },
+              {
+                "unix_ms": 1790284110267,
+                "blocks": 47,
+                "gas": 419077519
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 19.159637451171875,
+            "last": 19.179691314697266,
+            "min": 19.148880004882812,
+            "max": 19.191394805908203
+          },
+          "read_requests_per_canonical_workload_sload": 0.7501855133737135
+        }
+      },
+      "canonical": {
+        "from_unix_ms": 1790283835104,
+        "to_unix_ms": 1790284130105,
+        "duration_seconds": 295.001,
+        "gas": "5323176549",
+        "blocks": 596,
+        "transactions": 597,
+        "mgas_per_second": 18.04460509964373,
+        "source": "Canonical reported blocks with timestamps in (start,end]; not submitted transactions or builder attempts."
+      },
+      "workload_reads_per_second": 8289.165121474165
+    },
+    {
+      "label": "2-128-on",
+      "reads": 128,
+      "prewarming": true,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 900003,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295,
+        "gas": 11114156336,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900003,
+            "unix_ms": 1790285583962,
+            "value": 34135101108
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790285878962,
+            "value": 45249257444
+          },
+          "delta": 11114156336,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 37.67510622372881,
+        "other_caches": {
+          "account": {
+            "misses": 23994,
+            "hits": 33349,
+            "misses_per_mgas": 2.1588683184418365
+          },
+          "code": {
+            "misses": 1721,
+            "hits": 571,
+            "misses_per_mgas": 0.15484756089182297
+          }
+        },
+        "storage_misses": 4488601,
+        "storage_hits": 105376,
+        "storage_misses_per_mgas": 403.8634030601961,
+        "storage_miss_percent": 97.70621402762791,
+        "execution_seconds": 288.57462082499944,
+        "execution_ms_per_mgas": 25.96459975016492,
+        "aggregate_execution_mgas_per_second": 38.513977092739445,
+        "payload_build_seconds": 291.08804753099594,
+        "payload_build_ms_per_mgas": 26.190746173700028,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 1146
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 19277,
+          "median": 19293,
+          "max": 19332
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 62070552,
+          "read_bytes_total": 254241079296,
+          "writes_completed_total": 160641,
+          "written_bytes_total": 1159196672,
+          "reads_per_mgas": 5584.819047303349,
+          "bytes_per_gas": 22.875427662690385,
+          "writes_per_mgas": 14.453728663116404,
+          "written_bytes_per_mgas": 104299.11519646631,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 13694820
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 18183421
+            },
+            "delta": 4488601,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 330704
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 436080
+            },
+            "delta": 105376,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 912.7096159709998
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1201.2842367959993
+            },
+            "delta": 288.57462082499944,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 920.3002649639982
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1211.3883124949941
+            },
+            "delta": 291.08804753099594,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 74078
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 98072
+            },
+            "delta": 23994,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 101776
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 135125
+            },
+            "delta": 33349,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 5322
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 7043
+            },
+            "delta": 1721,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 1742
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 2313
+            },
+            "delta": 571,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 30.59999999999999
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 30.59999999999999
+            },
+            "delta": 0,
+            "samples": 60
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 900003,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295,
+        "gas": 11114156348,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900003,
+            "unix_ms": 1790285583962,
+            "value": 37542008020
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790285878962,
+            "value": 48656164368
+          },
+          "delta": 11114156348,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 37.67510626440678,
+        "other_caches": {
+          "account": {
+            "misses": 16066,
+            "hits": 41277,
+            "misses_per_mgas": 1.445543817897711
+          },
+          "code": {
+            "misses": 1159,
+            "hits": 1133,
+            "misses_per_mgas": 0.10428141945371884
+          }
+        },
+        "storage_misses": 4444460,
+        "storage_hits": 140349,
+        "storage_misses_per_mgas": 399.8918011262082,
+        "storage_miss_percent": 96.9388255868456,
+        "execution_seconds": 259.96098605299903,
+        "execution_ms_per_mgas": 23.390078195164065,
+        "aggregate_execution_mgas_per_second": 42.753170453562305,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 3147276,
+        "major_faults_per_mgas": 283.17722924298744,
+        "minor_faults": 47477,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 12.295881000000044,
+        "payload_thread_system_cpu_seconds": 12.820273999999973,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 34906,
+          "transaction_errors": 0,
+          "execution_duration_sum": 294.1649291579978,
+          "total_runtime_sum": 294.3918778669995
+        },
+        "device_io": {
+          "reads_completed_total": 7203951,
+          "read_bytes_total": 29507432448,
+          "writes_completed_total": 136959,
+          "written_bytes_total": 924409856,
+          "reads_per_mgas": 648.1779430155628,
+          "bytes_per_gas": 2.654941277059674,
+          "writes_per_mgas": 12.322932637585746,
+          "written_bytes_per_mgas": 83174.09140697829,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 12021188
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 16465648
+            },
+            "delta": 4444460,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 333239
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 473588
+            },
+            "delta": 140349,
+            "samples": 60
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 819.8804773080012
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1079.8414633610003
+            },
+            "delta": 259.96098605299903,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 6812259
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 9959535
+            },
+            "delta": 3147276,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 148688
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 196165
+            },
+            "delta": 47477,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 26.492421000000036
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 38.78830200000008
+            },
+            "delta": 12.295881000000044,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 28.00219100000002
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 40.822464999999994
+            },
+            "delta": 12.820273999999973,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 21
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 21
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 105.75442917
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 105.75442917
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 738
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 738
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 97985
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 132891
+            },
+            "delta": 34906,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 799.452529969997
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1093.6174591279948
+            },
+            "delta": 294.1649291579978,
+            "samples": 60
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 800.0660494879899
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 1094.4579273549894
+            },
+            "delta": 294.3918778669995,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 44095
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 60161
+            },
+            "delta": 16066,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 111290
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 152567
+            },
+            "delta": 41277,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 3194
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 4353
+            },
+            "delta": 1159,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790285583962,
+              "value": 3054
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790285878962,
+              "value": 4187
+            },
+            "delta": 1133,
+            "samples": 60
+          }
+        }
+      },
+      "nodes": {
+        "a": {
+          "observer": {
+            "from_unix_ms": 1790285584153,
+            "to_unix_ms": 1790285877338,
+            "gas": 11046655060,
+            "device": "259:0",
+            "io": {
+              "rbytes": 252697419776,
+              "wbytes": 765464576,
+              "rios": 61693705,
+              "wios": 134028
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 130382531,
+                "pgmajfault": 61780772,
+                "workingset_refault_file": 61693419
+              },
+              "per_mgas": {
+                "pgfault": 11802.896921450538,
+                "pgmajfault": 5592.713057883786,
+                "workingset_refault_file": 5584.805415296456
+              },
+              "gauges": {
+                "file": {
+                  "first": 17771208704,
+                  "last": 17846431744,
+                  "max": 17946009600
+                },
+                "file_mapped": {
+                  "first": 17745776640,
+                  "last": 17815752704,
+                  "max": 17920274432
+                },
+                "file_dirty": {
+                  "first": 565248,
+                  "last": 430080,
+                  "max": 1122304
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 22875469.398064107,
+              "wbytes": 69293.78819582694,
+              "rios": 5584.831305486604,
+              "wios": 12.132903514414615
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790285589220,
+                "head": 3585,
+                "block": 3566,
+                "state": 3536,
+                "lag": 49
+              },
+              {
+                "unix_ms": 1790285619517,
+                "head": 3703,
+                "block": 3694,
+                "state": 3664,
+                "lag": 39
+              },
+              {
+                "unix_ms": 1790285649830,
+                "head": 3821,
+                "block": 3806,
+                "state": 3776,
+                "lag": 45
+              },
+              {
+                "unix_ms": 1790285680136,
+                "head": 3939,
+                "block": 3934,
+                "state": 3904,
+                "lag": 35
+              },
+              {
+                "unix_ms": 1790285710467,
+                "head": 4057,
+                "block": 4046,
+                "state": 4016,
+                "lag": 41
+              },
+              {
+                "unix_ms": 1790285740768,
+                "head": 4174,
+                "block": 4158,
+                "state": 4128,
+                "lag": 46
+              },
+              {
+                "unix_ms": 1790285771091,
+                "head": 4292,
+                "block": 4286,
+                "state": 4256,
+                "lag": 36
+              },
+              {
+                "unix_ms": 1790285801404,
+                "head": 4410,
+                "block": 4398,
+                "state": 4368,
+                "lag": 42
+              },
+              {
+                "unix_ms": 1790285831778,
+                "head": 4528,
+                "block": 4510,
+                "state": 4480,
+                "lag": 48
+              },
+              {
+                "unix_ms": 1790285862144,
+                "head": 4646,
+                "block": 4638,
+                "state": 4608,
+                "lag": 38
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 49,
+              "last": 38,
+              "min": 35,
+              "median": 42,
+              "max": 49
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790285589220,
+            "to_unix_ms": 1790285862144,
+            "duration_seconds": 272.924,
+            "first_state": 3536,
+            "last_state": 4608,
+            "persisted_gas": 10393929632,
+            "produced_gas": 10288538592,
+            "persisted_mgas_per_second": 38.08360434406649,
+            "produced_mgas_per_second": 37.697449077398836,
+            "producer_backlog_blocks": {
+              "first": 49,
+              "last": 38,
+              "max": 49
+            },
+            "producer_backlog_gas": {
+              "first": 477922268,
+              "last": 372531228,
+              "max": 477922268
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790285589220,
+                "blocks": 49,
+                "gas": 477922268
+              },
+              {
+                "unix_ms": 1790285619517,
+                "blocks": 39,
+                "gas": 377943592
+              },
+              {
+                "unix_ms": 1790285649830,
+                "blocks": 45,
+                "gas": 439713788
+              },
+              {
+                "unix_ms": 1790285680136,
+                "blocks": 35,
+                "gas": 337506380
+              },
+              {
+                "unix_ms": 1790285710467,
+                "blocks": 41,
+                "gas": 401823880
+              },
+              {
+                "unix_ms": 1790285740768,
+                "blocks": 46,
+                "gas": 444808264
+              },
+              {
+                "unix_ms": 1790285771091,
+                "blocks": 36,
+                "gas": 352789820
+              },
+              {
+                "unix_ms": 1790285801404,
+                "blocks": 42,
+                "gas": 405963372
+              },
+              {
+                "unix_ms": 1790285831778,
+                "blocks": 48,
+                "gas": 464230596
+              },
+              {
+                "unix_ms": 1790285862144,
+                "blocks": 38,
+                "gas": 372531228
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 16.55072784423828,
+            "last": 16.620784759521484,
+            "min": 16.455615997314453,
+            "max": 16.713523864746094
+          },
+          "read_requests_per_canonical_workload_sload": 13.89277578510074
+        },
+        "b": {
+          "observer": {
+            "from_unix_ms": 1790285584185,
+            "to_unix_ms": 1790285877366,
+            "gas": 11045699848,
+            "device": "259:1",
+            "io": {
+              "rbytes": 29314703360,
+              "wbytes": 705048576,
+              "rios": 7156898,
+              "wios": 121380
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 8536945,
+                "pgmajfault": 7247645,
+                "workingset_refault_file": 5373119
+              },
+              "per_mgas": {
+                "pgfault": 772.8749755540161,
+                "pgmajfault": 656.1508188466937,
+                "workingset_refault_file": 486.4444149252244
+              },
+              "gauges": {
+                "file": {
+                  "first": 18369351680,
+                  "last": 18321932288,
+                  "max": 18371796992
+                },
+                "file_mapped": {
+                  "first": 18274533376,
+                  "last": 18221871104,
+                  "max": 18279489536
+                },
+                "file_dirty": {
+                  "first": 794624,
+                  "last": 282624,
+                  "max": 8593408
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 2653947.125433423,
+              "wbytes": 63830.14075180218,
+              "rios": 647.9352235246434,
+              "wios": 10.988891756096177
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790285589247,
+                "head": 3585,
+                "block": 3580,
+                "state": 3550,
+                "lag": 35
+              },
+              {
+                "unix_ms": 1790285619542,
+                "head": 3702,
+                "block": 3692,
+                "state": 3662,
+                "lag": 40
+              },
+              {
+                "unix_ms": 1790285649859,
+                "head": 3820,
+                "block": 3804,
+                "state": 3774,
+                "lag": 46
+              },
+              {
+                "unix_ms": 1790285680162,
+                "head": 3938,
+                "block": 3932,
+                "state": 3902,
+                "lag": 36
+              },
+              {
+                "unix_ms": 1790285710493,
+                "head": 4056,
+                "block": 4044,
+                "state": 4014,
+                "lag": 42
+              },
+              {
+                "unix_ms": 1790285740795,
+                "head": 4174,
+                "block": 4156,
+                "state": 4126,
+                "lag": 48
+              },
+              {
+                "unix_ms": 1790285771126,
+                "head": 4291,
+                "block": 4284,
+                "state": 4254,
+                "lag": 37
+              },
+              {
+                "unix_ms": 1790285801432,
+                "head": 4409,
+                "block": 4396,
+                "state": 4366,
+                "lag": 43
+              },
+              {
+                "unix_ms": 1790285831807,
+                "head": 4527,
+                "block": 4508,
+                "state": 4478,
+                "lag": 49
+              },
+              {
+                "unix_ms": 1790285862174,
+                "head": 4645,
+                "block": 4636,
+                "state": 4606,
+                "lag": 39
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 35,
+              "last": 39,
+              "min": 35,
+              "median": 42,
+              "max": 49
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790285589247,
+            "to_unix_ms": 1790285862174,
+            "duration_seconds": 272.927,
+            "first_state": 3550,
+            "last_state": 4606,
+            "persisted_gas": 10235683636,
+            "produced_gas": 10288538592,
+            "persisted_mgas_per_second": 37.503375027021875,
+            "produced_mgas_per_second": 37.69703470891484,
+            "producer_backlog_blocks": {
+              "first": 35,
+              "last": 40,
+              "max": 50
+            },
+            "producer_backlog_gas": {
+              "first": 339417188,
+              "last": 392272144,
+              "max": 483653156
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790285589247,
+                "blocks": 35,
+                "gas": 339417188
+              },
+              {
+                "unix_ms": 1790285619542,
+                "blocks": 41,
+                "gas": 397047664
+              },
+              {
+                "unix_ms": 1790285649859,
+                "blocks": 47,
+                "gas": 459454668
+              },
+              {
+                "unix_ms": 1790285680162,
+                "blocks": 37,
+                "gas": 356928904
+              },
+              {
+                "unix_ms": 1790285710493,
+                "blocks": 43,
+                "gas": 421246464
+              },
+              {
+                "unix_ms": 1790285740795,
+                "blocks": 48,
+                "gas": 464230812
+              },
+              {
+                "unix_ms": 1790285771126,
+                "blocks": 38,
+                "gas": 372212344
+              },
+              {
+                "unix_ms": 1790285801432,
+                "blocks": 44,
+                "gas": 425385920
+              },
+              {
+                "unix_ms": 1790285831807,
+                "blocks": 50,
+                "gas": 483653156
+              },
+              {
+                "unix_ms": 1790285862174,
+                "blocks": 40,
+                "gas": 392272144
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 17.107791900634766,
+            "last": 17.063629150390625,
+            "min": 17.055896759033203,
+            "max": 17.110069274902344
+          },
+          "read_requests_per_canonical_workload_sload": 1.611658421727726
+        }
+      },
+      "canonical": {
+        "from_unix_ms": 1790285583962,
+        "to_unix_ms": 1790285878962,
+        "duration_seconds": 295,
+        "gas": "11114793120",
+        "blocks": 1146,
+        "transactions": 34908,
+        "mgas_per_second": 37.677264813559326,
+        "source": "Canonical reported blocks with timestamps in (start,end]; not submitted transactions or builder attempts."
+      },
+      "workload_reads_per_second": 15146.522033898305
+    },
+    {
+      "label": "3-128-off",
+      "reads": 128,
+      "prewarming": false,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 900003,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295,
+        "gas": 12802328452,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900003,
+            "unix_ms": 1790287337981,
+            "value": 35985974764
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790287632981,
+            "value": 48788303216
+          },
+          "delta": 12802328452,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 43.39772356610169,
+        "other_caches": {
+          "account": {
+            "misses": 56875,
+            "hits": 5600,
+            "misses_per_mgas": 4.442551229117614
+          },
+          "code": {
+            "misses": 2298,
+            "hits": 0,
+            "misses_per_mgas": 0.179498597354062
+          }
+        },
+        "storage_misses": 5261801,
+        "storage_hits": 26565,
+        "storage_misses_per_mgas": 411.00343736127104,
+        "storage_miss_percent": 99.49767092519693,
+        "execution_seconds": 290.95109724200165,
+        "execution_ms_per_mgas": 22.72642030181227,
+        "aggregate_execution_mgas_per_second": 44.00165035759095,
+        "payload_build_seconds": 291.7993477729991,
+        "payload_build_ms_per_mgas": 22.79267782162031,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 1149
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 18837,
+          "median": 18926,
+          "max": 19007
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 4146984,
+          "read_bytes_total": 16986165248,
+          "writes_completed_total": 168932,
+          "written_bytes_total": 1214119936,
+          "reads_per_mgas": 323.9241998475794,
+          "bytes_per_gas": 1.3268028008878645,
+          "writes_per_mgas": 13.195412118457964,
+          "written_bytes_per_mgas": 94835.86837754723,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 14710795
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 19972596
+            },
+            "delta": 5261801,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 76208
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 102773
+            },
+            "delta": 26565,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 920.5756318439992
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 1211.5267290860008
+            },
+            "delta": 290.95109724200165,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 924.4753609620001
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 1216.2747087349992
+            },
+            "delta": 291.7993477729991,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 164306
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 221181
+            },
+            "delta": 56875,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 17325
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 22925
+            },
+            "delta": 5600,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 7072
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 9370
+            },
+            "delta": 2298,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 3
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 3
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 32.572
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 32.572
+            },
+            "delta": 0,
+            "samples": 60
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 900003,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295,
+        "gas": 17926062040,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900003,
+            "unix_ms": 1790287337981,
+            "value": 42820802016
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790287632981,
+            "value": 60746864056
+          },
+          "delta": 17926062040,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 60.766312,
+        "other_caches": {
+          "account": {
+            "misses": 23676,
+            "hits": 2270,
+            "misses_per_mgas": null
+          },
+          "code": {
+            "misses": 956,
+            "hits": 0,
+            "misses_per_mgas": null
+          }
+        },
+        "storage_misses": 2183729,
+        "storage_hits": 6315,
+        "storage_misses_per_mgas": null,
+        "storage_miss_percent": 99.71164962895723,
+        "execution_seconds": 292.27115361500023,
+        "execution_ms_per_mgas": 16.30425873584672,
+        "aggregate_execution_mgas_per_second": 61.333668472850555,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 56555,
+        "major_faults_per_mgas": null,
+        "minor_faults": 306,
+        "execution_coverage": {
+          "pipeline_runs": 31,
+          "pipeline_execution_seconds": 174.75089407000002,
+          "syncing_payloads": 1129,
+          "mixed_paths": true,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": true,
+          "payload_fault_ratio_suppressed": true
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 0.2309519999999985,
+        "payload_thread_system_cpu_seconds": 0.22253800000000012,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 0,
+          "transaction_errors": 0,
+          "execution_duration_sum": 0,
+          "total_runtime_sum": 0
+        },
+        "device_io": {
+          "reads_completed_total": 4086199,
+          "read_bytes_total": 16737198080,
+          "writes_completed_total": 128471,
+          "written_bytes_total": 1019613184,
+          "reads_per_mgas": 227.94738693206043,
+          "bytes_per_gas": 0.9336795801918356,
+          "writes_per_mgas": 7.1667162432736955,
+          "written_bytes_per_mgas": 56878.815978927625,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 11777443
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 13961172
+            },
+            "delta": 2183729,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 87498
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 93813
+            },
+            "delta": 6315,
+            "samples": 60
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 853.7379093039999
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 1146.0090629190001
+            },
+            "delta": 292.27115361500023,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 4451615
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 4508170
+            },
+            "delta": 56555,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 374345
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 374651
+            },
+            "delta": 306,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 17.172276
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 17.403228
+            },
+            "delta": 0.2309519999999985,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 13.833394000000007
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 14.055932000000007
+            },
+            "delta": 0.22253800000000012,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 32
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 63
+            },
+            "delta": 31,
+            "samples": 60
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 162.077599642
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 336.828493712
+            },
+            "delta": 174.75089407000002,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 990
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 2119
+            },
+            "delta": 1129,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 128018
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 151694
+            },
+            "delta": 23676,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 19231
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 21501
+            },
+            "delta": 2270,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 5804
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 6760
+            },
+            "delta": 956,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900003,
+              "unix_ms": 1790287337981,
+              "value": 3
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790287632981,
+              "value": 3
+            },
+            "delta": 0,
+            "samples": 60
+          }
+        }
+      },
+      "nodes": {
+        "a": {
+          "observer": {
+            "from_unix_ms": 1790287339448,
+            "to_unix_ms": 1790287632294,
+            "gas": 12701394888,
+            "device": "259:0",
+            "io": {
+              "rbytes": 16862310400,
+              "wbytes": 832077824,
+              "rios": 4116746,
+              "wios": 144335
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 5445484,
+                "pgmajfault": 4116622,
+                "workingset_refault_file": 2054483
+              },
+              "per_mgas": {
+                "pgfault": 428.7311785845485,
+                "pgmajfault": 324.1078666004861,
+                "workingset_refault_file": 161.75254907955272
+              },
+              "gauges": {
+                "file": {
+                  "first": 19454390272,
+                  "last": 19221823488,
+                  "max": 19504214016
+                },
+                "file_mapped": {
+                  "first": 19305816064,
+                  "last": 19067928576,
+                  "max": 19354173440
+                },
+                "file_dirty": {
+                  "first": 299008,
+                  "last": 196608,
+                  "max": 1142784
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 1327595.1616881972,
+              "wbytes": 65510.743610225756,
+              "rios": 324.1176293077394,
+              "wios": 11.363712511321458
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790287339448,
+                "head": 3578,
+                "block": 3566,
+                "state": 3536,
+                "lag": 42
+              },
+              {
+                "unix_ms": 1790287369755,
+                "head": 3696,
+                "block": 3678,
+                "state": 3648,
+                "lag": 48
+              },
+              {
+                "unix_ms": 1790287400029,
+                "head": 3814,
+                "block": 3806,
+                "state": 3776,
+                "lag": 38
+              },
+              {
+                "unix_ms": 1790287430313,
+                "head": 3932,
+                "block": 3918,
+                "state": 3888,
+                "lag": 44
+              },
+              {
+                "unix_ms": 1790287460619,
+                "head": 4050,
+                "block": 4030,
+                "state": 4000,
+                "lag": 50
+              },
+              {
+                "unix_ms": 1790287490934,
+                "head": 4168,
+                "block": 4158,
+                "state": 4128,
+                "lag": 40
+              },
+              {
+                "unix_ms": 1790287521246,
+                "head": 4286,
+                "block": 4270,
+                "state": 4240,
+                "lag": 46
+              },
+              {
+                "unix_ms": 1790287551555,
+                "head": 4404,
+                "block": 4398,
+                "state": 4368,
+                "lag": 36
+              },
+              {
+                "unix_ms": 1790287581842,
+                "head": 4522,
+                "block": 4510,
+                "state": 4480,
+                "lag": 42
+              },
+              {
+                "unix_ms": 1790287612119,
+                "head": 4640,
+                "block": 4622,
+                "state": 4592,
+                "lag": 48
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 42,
+              "last": 48,
+              "min": 36,
+              "median": 44,
+              "max": 50
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790287339448,
+            "to_unix_ms": 1790287612119,
+            "duration_seconds": 272.671,
+            "first_state": 3536,
+            "last_state": 4592,
+            "persisted_gas": 11765928292,
+            "produced_gas": 11828016880,
+            "persisted_mgas_per_second": 43.15064048615365,
+            "produced_mgas_per_second": 43.378345625314026,
+            "producer_backlog_blocks": {
+              "first": 42,
+              "last": 48,
+              "max": 50
+            },
+            "producer_backlog_gas": {
+              "first": 472190828,
+              "last": 534279416,
+              "max": 552428624
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790287339448,
+                "blocks": 42,
+                "gas": 472190828
+              },
+              {
+                "unix_ms": 1790287369755,
+                "blocks": 48,
+                "gas": 544467984
+              },
+              {
+                "unix_ms": 1790287400029,
+                "blocks": 38,
+                "gas": 432390700
+              },
+              {
+                "unix_ms": 1790287430313,
+                "blocks": 44,
+                "gas": 495434224
+              },
+              {
+                "unix_ms": 1790287460619,
+                "blocks": 50,
+                "gas": 552428624
+              },
+              {
+                "unix_ms": 1790287490934,
+                "blocks": 40,
+                "gas": 436529652
+              },
+              {
+                "unix_ms": 1790287521246,
+                "blocks": 46,
+                "gas": 502757744
+              },
+              {
+                "unix_ms": 1790287551555,
+                "blocks": 36,
+                "gas": 395774372
+              },
+              {
+                "unix_ms": 1790287581842,
+                "blocks": 42,
+                "gas": 467414960
+              },
+              {
+                "unix_ms": 1790287612119,
+                "blocks": 48,
+                "gas": 534279416
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 18.11831283569336,
+            "last": 17.901718139648438,
+            "min": 17.843647003173828,
+            "max": 18.164714813232422
+          },
+          "read_requests_per_canonical_workload_sload": 0.805522030831267
+        },
+        "b": {
+          "observer": {
+            "from_unix_ms": 1790287339466,
+            "to_unix_ms": 1790287632314,
+            "gas": 17824173324,
+            "device": "259:1",
+            "io": {
+              "rbytes": 16617365504,
+              "wbytes": 802590720,
+              "rios": 4056943,
+              "wios": 111295
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 5599547,
+                "pgmajfault": 4056820,
+                "workingset_refault_file": 2005811
+              },
+              "per_mgas": {
+                "pgfault": 314.15465380715796,
+                "pgmajfault": 227.6021404334948,
+                "workingset_refault_file": 112.53318532866842
+              },
+              "gauges": {
+                "file": {
+                  "first": 19752128512,
+                  "last": 19575857152,
+                  "max": 19752128512
+                },
+                "file_mapped": {
+                  "first": 19587694592,
+                  "last": 19421405184,
+                  "max": 19587694592
+                },
+                "file_dirty": {
+                  "first": 1257472,
+                  "last": 757760,
+                  "max": 1495040
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 932293.7564585365,
+              "wbytes": 45028.21563787886,
+              "rios": 227.60904117429016,
+              "wios": 6.244048348101667
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790287339466,
+                "head": 3522,
+                "block": 3522,
+                "state": 3522,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287369783,
+                "head": 3635,
+                "block": 3635,
+                "state": 3635,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287400055,
+                "head": 3777,
+                "block": 3777,
+                "state": 3777,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287430342,
+                "head": 3880,
+                "block": 3880,
+                "state": 3880,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287460645,
+                "head": 4025,
+                "block": 4025,
+                "state": 4025,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287490967,
+                "head": 4135,
+                "block": 4135,
+                "state": 4135,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287521274,
+                "head": 4235,
+                "block": 4235,
+                "state": 4235,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287551580,
+                "head": 4342,
+                "block": 4342,
+                "state": 4342,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287581867,
+                "head": 4452,
+                "block": 4452,
+                "state": 4452,
+                "lag": 0
+              },
+              {
+                "unix_ms": 1790287612140,
+                "head": 4577,
+                "block": 4577,
+                "state": 4577,
+                "lag": 0
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 0,
+              "last": 0,
+              "min": 0,
+              "median": 0,
+              "max": 0
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790287339466,
+            "to_unix_ms": 1790287612140,
+            "duration_seconds": 272.674,
+            "first_state": 3522,
+            "last_state": 4577,
+            "persisted_gas": 11754784092,
+            "produced_gas": 11828016880,
+            "persisted_mgas_per_second": 43.10929568642408,
+            "produced_mgas_per_second": 43.37786837028833,
+            "producer_backlog_blocks": {
+              "first": 56,
+              "last": 63,
+              "max": 70
+            },
+            "producer_backlog_gas": {
+              "first": 629481684,
+              "last": 702714472,
+              "max": 780086092
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790287339466,
+                "blocks": 56,
+                "gas": 629481684
+              },
+              {
+                "unix_ms": 1790287369783,
+                "blocks": 61,
+                "gas": 690933032
+              },
+              {
+                "unix_ms": 1790287400055,
+                "blocks": 37,
+                "gas": 420928192
+              },
+              {
+                "unix_ms": 1790287430342,
+                "blocks": 52,
+                "gas": 585223792
+              },
+              {
+                "unix_ms": 1790287460645,
+                "blocks": 25,
+                "gas": 273507800
+              },
+              {
+                "unix_ms": 1790287490967,
+                "blocks": 33,
+                "gas": 360431312
+              },
+              {
+                "unix_ms": 1790287521274,
+                "blocks": 51,
+                "gas": 556886136
+              },
+              {
+                "unix_ms": 1790287551580,
+                "blocks": 62,
+                "gas": 681381440
+              },
+              {
+                "unix_ms": 1790287581867,
+                "blocks": 70,
+                "gas": 780086092
+              },
+              {
+                "unix_ms": 1790287612140,
+                "blocks": 63,
+                "gas": 702714472
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 18.39560317993164,
+            "last": 18.23143768310547,
+            "min": 18.229202270507812,
+            "max": 18.39560317993164
+          },
+          "read_requests_per_canonical_workload_sload": 0.7938204019210058
+        }
+      },
+      "canonical": {
+        "from_unix_ms": 1790287337981,
+        "to_unix_ms": 1790287632981,
+        "duration_seconds": 295,
+        "gas": "12802328476",
+        "blocks": 1149,
+        "transactions": 40208,
+        "mgas_per_second": 43.39772364745763,
+        "source": "Canonical reported blocks with timestamps in (start,end]; not submitted transactions or builder attempts."
+      },
+      "workload_reads_per_second": 17446.183050847456
+    },
+    {
+      "label": "4-4096-off",
+      "reads": 4096,
+      "prewarming": false,
+      "builder": {
+        "node": "a",
+        "source": "builder",
+        "from_offset_ms": 900002,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295.001,
+        "gas": 11431008926,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900002,
+            "unix_ms": 1790289102755,
+            "value": 33486171625
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790289397756,
+            "value": 44917180551
+          },
+          "delta": 11431008926,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 38.74905144728323,
+        "other_caches": {
+          "account": {
+            "misses": 12545,
+            "hits": 3595,
+            "misses_per_mgas": 1.0974534340067053
+          },
+          "code": {
+            "misses": 1486,
+            "hits": 0,
+            "misses_per_mgas": 0.1299972740481438
+          }
+        },
+        "storage_misses": 5266090,
+        "storage_hits": 2943,
+        "storage_misses_per_mgas": 460.68461971210604,
+        "storage_miss_percent": 99.94414534887142,
+        "execution_seconds": 292.1459072050003,
+        "execution_ms_per_mgas": 25.557315989886956,
+        "aggregate_execution_mgas_per_second": 39.12773940720929,
+        "payload_build_seconds": 292.9186301059991,
+        "payload_build_ms_per_mgas": 25.62491482617526,
+        "major_faults": null,
+        "major_faults_per_mgas": null,
+        "minor_faults": null,
+        "execution_coverage": {
+          "pipeline_runs": null,
+          "pipeline_execution_seconds": null,
+          "syncing_payloads": null,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": null,
+        "payload_thread_system_cpu_seconds": null,
+        "builder_faults_not_measured": true,
+        "builder_reverted_transactions": 0,
+        "invalid_execution_attempts": 0,
+        "parallel_transactions_replayed": 0,
+        "fill_idle_seconds": 0,
+        "stop_reasons": {
+          "build_budget": 743
+        },
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 21530,
+          "median": 21554,
+          "max": 22552
+        },
+        "prewarm": {
+          "transactions_histogram_sum": null,
+          "transaction_errors": null,
+          "execution_duration_sum": null,
+          "total_runtime_sum": null
+        },
+        "device_io": {
+          "reads_completed_total": 4177733,
+          "read_bytes_total": 17111998464,
+          "writes_completed_total": 42700,
+          "written_bytes_total": 371761152,
+          "reads_per_mgas": 365.47368889702153,
+          "bytes_per_gas": 1.4969805880457765,
+          "writes_per_mgas": 3.7354532986916156,
+          "written_bytes_per_mgas": 32522.16443943314,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 15334630
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 20600720
+            },
+            "delta": 5266090,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 9323
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 12266
+            },
+            "delta": 2943,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 924.7026104359985
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 1216.8485176409988
+            },
+            "delta": 292.1459072050003,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_payload_build_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 927.436338954
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 1220.3549690599991
+            },
+            "delta": 292.9186301059991,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 40446
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 52991
+            },
+            "delta": 12545,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 11735
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 15330
+            },
+            "delta": 3595,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 4808
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 6294
+            },
+            "delta": 1486,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:builder": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 2
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 2
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_reverted_transactions_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_parallel_transactions_executed_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 32.55100000000001
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 32.55100000000001
+            },
+            "delta": 0,
+            "samples": 60
+          }
+        }
+      },
+      "follower": {
+        "node": "b",
+        "source": "engine",
+        "from_offset_ms": 900002,
+        "to_offset_ms": 1195003,
+        "duration_seconds": 295.001,
+        "gas": 11395342734,
+        "gas_counter": {
+          "first": {
+            "offset_ms": 900002,
+            "unix_ms": 1790289102755,
+            "value": 33397006199
+          },
+          "last": {
+            "offset_ms": 1195003,
+            "unix_ms": 1790289397756,
+            "value": 44792348933
+          },
+          "delta": 11395342734,
+          "samples": 60
+        },
+        "wall_clock_mgas_per_second": 38.62814951135759,
+        "other_caches": {
+          "account": {
+            "misses": 10168,
+            "hits": 5928,
+            "misses_per_mgas": 0.8922943554529511
+          },
+          "code": {
+            "misses": 1482,
+            "hits": 0,
+            "misses_per_mgas": 0.13005313087935422
+          }
+        },
+        "storage_misses": 5242431,
+        "storage_hits": 4240,
+        "storage_misses_per_mgas": 460.0503137442536,
+        "storage_miss_percent": 99.91918685200578,
+        "execution_seconds": 290.3564542700004,
+        "execution_ms_per_mgas": 25.48027391959621,
+        "aggregate_execution_mgas_per_second": 39.24604590812213,
+        "payload_build_seconds": null,
+        "payload_build_ms_per_mgas": null,
+        "major_faults": 1335406,
+        "major_faults_per_mgas": 117.18875256077926,
+        "minor_faults": 42662,
+        "execution_coverage": {
+          "pipeline_runs": 0,
+          "pipeline_execution_seconds": 0,
+          "syncing_payloads": 0,
+          "mixed_paths": false,
+          "unknown_pipeline_coverage": false,
+          "engine_cache_ratio_suppressed": false,
+          "payload_fault_ratio_suppressed": false
+        },
+        "optional_metric_coverage": [],
+        "payload_thread_user_cpu_seconds": 4.204813999999995,
+        "payload_thread_system_cpu_seconds": 5.626010000000004,
+        "builder_faults_not_measured": false,
+        "builder_reverted_transactions": null,
+        "invalid_execution_attempts": null,
+        "parallel_transactions_replayed": null,
+        "fill_idle_seconds": null,
+        "stop_reasons": {},
+        "pending_pool": {
+          "kind": "aa_2d",
+          "min": 0,
+          "median": 0,
+          "max": 0
+        },
+        "prewarm": {
+          "transactions_histogram_sum": 0,
+          "transaction_errors": 0,
+          "execution_duration_sum": 0,
+          "total_runtime_sum": 0
+        },
+        "device_io": {
+          "reads_completed_total": 4130108,
+          "read_bytes_total": 16916959232,
+          "writes_completed_total": 26822,
+          "written_bytes_total": 218705920,
+          "reads_per_mgas": 362.43824309707685,
+          "bytes_per_gas": 1.4845502787314409,
+          "writes_per_mgas": 2.35376860758842,
+          "written_bytes_per_mgas": 19192.57060583642,
+          "scope": "device-wide, not execution-attributed"
+        },
+        "counters": {
+          "reth_sync_caching_storage_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 15270214
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 20512645
+            },
+            "delta": 5242431,
+            "samples": 60
+          },
+          "reth_sync_caching_storage_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 13174
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 17414
+            },
+            "delta": 4240,
+            "samples": 60
+          },
+          "reth_sync_execution_execution_histogram_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 888.5435689899992
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 1178.9000232599997
+            },
+            "delta": 290.3564542700004,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_major_page_faults_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 7707079
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 9042485
+            },
+            "delta": 1335406,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_minor_page_faults_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 559620
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 602282
+            },
+            "delta": 42662,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_user_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 25.165456999999968
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 29.370270999999963
+            },
+            "delta": 4.204813999999995,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_thread_system_cpu_seconds_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 27.392886
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 33.018896000000005
+            },
+            "delta": 5.626010000000004,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_pipeline_runs": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_total_elapsed": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_consensus_engine_beacon_new_payload_syncing": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transactions_histogram_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_transaction_errors": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_execution_duration_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_prewarm_total_runtime_sum": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 0
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 0
+            },
+            "delta": 0,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 32878
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 43046
+            },
+            "delta": 10168,
+            "samples": 60
+          },
+          "reth_sync_caching_account_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 19193
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 25121
+            },
+            "delta": 5928,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_misses:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 4798
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 6280
+            },
+            "delta": 1482,
+            "samples": 60
+          },
+          "reth_sync_caching_code_cache_hits:engine": {
+            "first": {
+              "offset_ms": 900002,
+              "unix_ms": 1790289102755,
+              "value": 2
+            },
+            "last": {
+              "offset_ms": 1195003,
+              "unix_ms": 1790289397756,
+              "value": 2
+            },
+            "delta": 0,
+            "samples": 60
+          }
+        }
+      },
+      "nodes": {
+        "a": {
+          "observer": {
+            "from_unix_ms": 1790289103558,
+            "to_unix_ms": 1790289396072,
+            "gas": 11324010398,
+            "device": "259:0",
+            "io": {
+              "rbytes": 16968355840,
+              "wbytes": 156958720,
+              "rios": 4142664,
+              "wios": 26826
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 5274093,
+                "pgmajfault": 4142610,
+                "workingset_refault_file": 2139262
+              },
+              "per_mgas": {
+                "pgfault": 465.7442738600354,
+                "pgmajfault": 365.8253440611156,
+                "workingset_refault_file": 188.91381452438685
+              },
+              "gauges": {
+                "file": {
+                  "first": 20272533504,
+                  "last": 20235993088,
+                  "max": 20324089856
+                },
+                "file_mapped": {
+                  "first": 20215787520,
+                  "last": 20178649088,
+                  "max": 20267130880
+                },
+                "file_dirty": {
+                  "first": 176128,
+                  "last": 557056,
+                  "max": 1019904
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 1498440.5032864402,
+              "wbytes": 13860.700801521818,
+              "rios": 365.83011268972876,
+              "wios": 2.368948725509639
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790289103558,
+                "head": 2442,
+                "block": 2430,
+                "state": 2400,
+                "lag": 42
+              },
+              {
+                "unix_ms": 1790289133812,
+                "head": 2511,
+                "block": 2494,
+                "state": 2464,
+                "lag": 47
+              },
+              {
+                "unix_ms": 1790289164058,
+                "head": 2580,
+                "block": 2574,
+                "state": 2544,
+                "lag": 36
+              },
+              {
+                "unix_ms": 1790289194294,
+                "head": 2649,
+                "block": 2638,
+                "state": 2608,
+                "lag": 41
+              },
+              {
+                "unix_ms": 1790289224553,
+                "head": 2719,
+                "block": 2702,
+                "state": 2672,
+                "lag": 47
+              },
+              {
+                "unix_ms": 1790289254812,
+                "head": 2787,
+                "block": 2782,
+                "state": 2752,
+                "lag": 35
+              },
+              {
+                "unix_ms": 1790289285083,
+                "head": 2872,
+                "block": 2862,
+                "state": 2832,
+                "lag": 40
+              },
+              {
+                "unix_ms": 1790289315357,
+                "head": 2985,
+                "block": 2974,
+                "state": 2944,
+                "lag": 41
+              },
+              {
+                "unix_ms": 1790289345625,
+                "head": 3068,
+                "block": 3054,
+                "state": 3024,
+                "lag": 44
+              },
+              {
+                "unix_ms": 1790289375900,
+                "head": 3134,
+                "block": 3118,
+                "state": 3088,
+                "lag": 46
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 42,
+              "last": 46,
+              "min": 35,
+              "median": 42,
+              "max": 47
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790289103558,
+            "to_unix_ms": 1790289375900,
+            "duration_seconds": 272.342,
+            "first_state": 2400,
+            "last_state": 3088,
+            "persisted_gas": 10450189120,
+            "produced_gas": 10521521528,
+            "persisted_mgas_per_second": 38.371566339382106,
+            "produced_mgas_per_second": 38.633488510769546,
+            "producer_backlog_blocks": {
+              "first": 42,
+              "last": 46,
+              "max": 47
+            },
+            "producer_backlog_gas": {
+              "first": 748989612,
+              "last": 820322020,
+              "max": 838155086
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790289103558,
+                "blocks": 42,
+                "gas": 748989612
+              },
+              {
+                "unix_ms": 1790289133812,
+                "blocks": 47,
+                "gas": 838155074
+              },
+              {
+                "unix_ms": 1790289164058,
+                "blocks": 36,
+                "gas": 641991156
+              },
+              {
+                "unix_ms": 1790289194294,
+                "blocks": 41,
+                "gas": 731156618
+              },
+              {
+                "unix_ms": 1790289224553,
+                "blocks": 47,
+                "gas": 838155086
+              },
+              {
+                "unix_ms": 1790289254812,
+                "blocks": 35,
+                "gas": 624158030
+              },
+              {
+                "unix_ms": 1790289285083,
+                "blocks": 40,
+                "gas": 356661752
+              },
+              {
+                "unix_ms": 1790289315357,
+                "blocks": 41,
+                "gas": 365578309
+              },
+              {
+                "unix_ms": 1790289345625,
+                "blocks": 44,
+                "gas": 731156606
+              },
+              {
+                "unix_ms": 1790289375900,
+                "blocks": 46,
+                "gas": 820322020
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 18.880268096923828,
+            "last": 18.846237182617188,
+            "min": 18.837543487548828,
+            "max": 18.92828369140625
+          },
+          "read_requests_per_canonical_workload_sload": 0.7951199513561321
+        },
+        "b": {
+          "observer": {
+            "from_unix_ms": 1790289103584,
+            "to_unix_ms": 1790289396092,
+            "gas": 11288344242,
+            "device": "259:1",
+            "io": {
+              "rbytes": 16772694016,
+              "wbytes": 113922048,
+              "rios": 4094887,
+              "wios": 17728
+            },
+            "memory": {
+              "counters": {
+                "pgfault": 5207271,
+                "pgmajfault": 4094830,
+                "workingset_refault_file": 2094958
+              },
+              "per_mgas": {
+                "pgfault": 461.29626173390045,
+                "pgmajfault": 362.7485052027881,
+                "workingset_refault_file": 185.58594202021146
+              },
+              "gauges": {
+                "file": {
+                  "first": 20570443776,
+                  "last": 20571148288,
+                  "max": 20588707840
+                },
+                "file_mapped": {
+                  "first": 20531220480,
+                  "last": 20531736576,
+                  "max": 20550119424
+                },
+                "file_dirty": {
+                  "first": 331776,
+                  "last": 364544,
+                  "max": 688128
+                },
+                "file_writeback": {
+                  "first": 0,
+                  "last": 0,
+                  "max": 0
+                }
+              },
+              "scope": "Whole node cgroup memory.stat, including all execution paths, prewarming, trie and persistence threads. pgmajfault is not a count of unique pages, and pgfault includes anonymous/minor faults. File refaults are separate counters, not a cache-miss percentage."
+            },
+            "io_per_mgas": {
+              "rbytes": 1485841.8255526477,
+              "wbytes": 10092.006901785979,
+              "rios": 362.753554659004,
+              "wios": 1.5704694700964454
+            },
+            "persistence_frontiers": [
+              {
+                "unix_ms": 1790289103584,
+                "head": 2436,
+                "block": 2431,
+                "state": 2401,
+                "lag": 35
+              },
+              {
+                "unix_ms": 1790289133834,
+                "head": 2504,
+                "block": 2495,
+                "state": 2465,
+                "lag": 39
+              },
+              {
+                "unix_ms": 1790289164083,
+                "head": 2576,
+                "block": 2559,
+                "state": 2529,
+                "lag": 47
+              },
+              {
+                "unix_ms": 1790289194319,
+                "head": 2645,
+                "block": 2631,
+                "state": 2601,
+                "lag": 44
+              },
+              {
+                "unix_ms": 1790289224578,
+                "head": 2716,
+                "block": 2699,
+                "state": 2669,
+                "lag": 47
+              },
+              {
+                "unix_ms": 1790289254839,
+                "head": 2786,
+                "block": 2779,
+                "state": 2749,
+                "lag": 37
+              },
+              {
+                "unix_ms": 1790289285111,
+                "head": 2871,
+                "block": 2859,
+                "state": 2829,
+                "lag": 42
+              },
+              {
+                "unix_ms": 1790289315384,
+                "head": 2984,
+                "block": 2971,
+                "state": 2941,
+                "lag": 43
+              },
+              {
+                "unix_ms": 1790289345647,
+                "head": 3062,
+                "block": 3051,
+                "state": 3021,
+                "lag": 41
+              },
+              {
+                "unix_ms": 1790289375927,
+                "head": 3126,
+                "block": 3109,
+                "state": 3079,
+                "lag": 47
+              }
+            ],
+            "persistence_lag_blocks": {
+              "first": 35,
+              "last": 47,
+              "min": 35,
+              "median": 43,
+              "max": 47
+            },
+            "backpressure_stall_seconds": 0,
+            "scope": "Node cgroup, database device only; includes prewarming, trie/persistence, and other node work, not execution-only. Observer gas endpoints align with its I/O snapshots."
+          },
+          "durability": {
+            "from_unix_ms": 1790289103584,
+            "to_unix_ms": 1790289375927,
+            "duration_seconds": 272.343,
+            "first_state": 2401,
+            "last_state": 3079,
+            "persisted_gas": 10271858244,
+            "produced_gas": 10521521528,
+            "persisted_mgas_per_second": 37.71662294973618,
+            "produced_mgas_per_second": 38.6333466547699,
+            "producer_backlog_blocks": {
+              "first": 41,
+              "last": 55,
+              "max": 55
+            },
+            "producer_backlog_gas": {
+              "first": 731156522,
+              "last": 980819806,
+              "max": 980819806
+            },
+            "backlog": [
+              {
+                "unix_ms": 1790289103584,
+                "blocks": 41,
+                "gas": 731156522
+              },
+              {
+                "unix_ms": 1790289133834,
+                "blocks": 46,
+                "gas": 820321984
+              },
+              {
+                "unix_ms": 1790289164083,
+                "blocks": 51,
+                "gas": 909487434
+              },
+              {
+                "unix_ms": 1790289194319,
+                "blocks": 48,
+                "gas": 855988236
+              },
+              {
+                "unix_ms": 1790289224578,
+                "blocks": 50,
+                "gas": 891654356
+              },
+              {
+                "unix_ms": 1790289254839,
+                "blocks": 38,
+                "gas": 677657288
+              },
+              {
+                "unix_ms": 1790289285111,
+                "blocks": 43,
+                "gas": 383411387
+              },
+              {
+                "unix_ms": 1790289315384,
+                "blocks": 44,
+                "gas": 392327944
+              },
+              {
+                "unix_ms": 1790289345647,
+                "blocks": 47,
+                "gas": 757906241
+              },
+              {
+                "unix_ms": 1790289375927,
+                "blocks": 55,
+                "gas": 980819806
+              }
+            ],
+            "scope": "Canonical gas crossed by the durable state/trie frontier in the observed wall window. Batched commits are stepwise; a growing producer-to-durable backlog is not sustainable chain throughput. This is not an EVM execution-only rate."
+          },
+          "file_gib": {
+            "first": 19.157718658447266,
+            "last": 19.158374786376953,
+            "min": 19.13455581665039,
+            "max": 19.174728393554688
+          },
+          "read_requests_per_canonical_workload_sload": 0.7859498989657037
+        }
+      },
+      "canonical": {
+        "from_unix_ms": 1790289102755,
+        "to_unix_ms": 1790289397756,
+        "duration_seconds": 295.001,
+        "gas": "11431008926",
+        "blocks": 743,
+        "transactions": 1282,
+        "mgas_per_second": 38.74905144728323,
+        "source": "Canonical reported blocks with timestamps in (start,end]; not submitted transactions or builder attempts."
+      },
+      "workload_reads_per_second": 17800.183728190754
+    }
+  ]
+}

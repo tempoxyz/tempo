@@ -1,0 +1,271 @@
+diff --git a/README.md b/README.md
+index 69e5fef..aa90305 100644
+--- a/README.md
++++ b/README.md
+@@ -2008,6 +2008,32 @@ All Ethereum types plus Tempo-native transactions:
+ |------|-------------|
+ | `tempo` | Native 0x76 transactions with protocol, 2D, or expiring nonces |
+ 
++#### Access lists
++
++`txgen-tempo` accepts `access_list` on `tempo`, `eip2930`, and `eip1559`
++templates. Legacy transactions reject nonempty lists. Each entry has an
++`address` and `storage_keys`, which can be an explicit array of 32-byte keys
++or a consecutive range expanded before signing:
++
++```yaml
++access_list:
++  - address: "0x1111111111111111111111111111111111111111"
++    storage_keys:
++      range:
++        start: { var: start }
++        count: 128
++```
++
++Bind `start` once in a sequence to reuse the exact value in calldata. Using two
++independent random generators would produce unrelated values. Explicit keys
++and addresses also support normal generators and sequence substitution. The
++list is retained for both immediate and deferred signing. Range counts must
++be positive and cannot overflow uint256; generated lists are limited to 65,536
++keys as an allocation guard. Chain and transaction-pool limits still apply
++(for example, Tempo currently allows 256 storage keys per account). Access
++lists mark EVM accesses warm; physical disk prefetch depends on the node.
++
++
+ **Tempo-specific fields:**
+ 
+ ```yaml
+diff --git a/crates/txgen-tempo/src/lib.rs b/crates/txgen-tempo/src/lib.rs
+index 3f5f12d..b47003f 100644
+--- a/crates/txgen-tempo/src/lib.rs
++++ b/crates/txgen-tempo/src/lib.rs
+@@ -1,3 +1,5 @@
++mod access_list;
++pub use access_list::{AccessListEntry, StorageKeyRange, StorageKeys};
+ pub mod auth_token_map;
+ pub mod late_sign;
+ mod nonce;
+@@ -477,6 +479,12 @@ impl NetworkAdapter for TempoAdapter {
+         req.set_chain_id(ctx.chain_id);
+         req.set_nonce(nonce);
+         req.set_gas_limit(template.gas_limit);
++        if template.tx_type == TempoTxType::Legacy && !template.access_list.is_empty() {
++            bail!("legacy transactions do not support access lists");
++        }
++        if !template.access_list.is_empty() || template.tx_type == TempoTxType::Eip2930 {
++            req.set_access_list(access_list::resolve_access_list(&template.access_list, ctx)?);
++        }
+         let mut sign_context = TempoSignContext::Standard;
+         let mut deferred_key_authorization = None;
+         let mut deferred_sponsor = None;
+@@ -596,7 +604,6 @@ impl NetworkAdapter for TempoAdapter {
+             }
+             TempoTxType::Eip2930 => {
+                 req.set_gas_price(template.gas_price.unwrap_or(ctx.gas.max_fee_per_gas));
+-                req.set_access_list(Default::default());
+                 req.set_kind(to);
+                 req.set_value(value);
+                 if !input.is_empty() {
+@@ -1346,6 +1353,7 @@ mod tests {
+             to: Some(GenValue::Literal(Address::ZERO)),
+             input: None,
+             call: None,
++            access_list: Vec::new(),
+             gas_price: None,
+             max_fee_per_gas: Some(1_000_000_000),
+             max_priority_fee_per_gas: Some(1_000_000_000),
+@@ -1371,6 +1379,97 @@ mod tests {
+         template
+     }
+ 
++    #[test]
++    fn access_lists_survive_signing_for_supported_transaction_types() {
++        use alloy_consensus::Transaction;
++        for tx_type in [TempoTxType::Tempo, TempoTxType::Eip2930, TempoTxType::Eip1559] {
++            let accounts = test_accounts();
++            let artifacts = ArtifactManager::empty();
++            let gas = GasConfig::default();
++            let mut nonces = NonceTracker::new();
++            let mut rng = StdRng::seed_from_u64(42);
++            let mut ctx = BuildContext::new(1, &gas, &accounts, &artifacts, &mut nonces, &mut rng);
++            let mut template = base_template(tx_type);
++            template.access_list = serde_yaml::from_str(
++                r#"
++- address: "0x1111111111111111111111111111111111111111"
++  storage_keys:
++    range: { start: "0xfe", count: 3 }
++"#,
++            )
++            .unwrap();
++            let raw = sign_and_encode(&TempoAdapter::new(), template, &mut ctx);
++            let envelope = TempoTxEnvelope::decode_2718(&mut raw.as_ref()).unwrap();
++            let list = envelope.access_list().unwrap();
++            assert_eq!(list.len(), 1);
++            assert_eq!(list[0].address, Address::repeat_byte(0x11));
++            let actual: Vec<_> =
++                list[0].storage_keys.iter().map(|k| U256::from_be_slice(k.as_slice())).collect();
++            assert_eq!(actual, [U256::from(254), U256::from(255), U256::from(256)]);
++        }
++    }
++
++    #[test]
++    fn access_list_rejects_legacy_and_invalid_ranges() {
++        for (kind, start, count) in [
++            (TempoTxType::Legacy, U256::ZERO, 1),
++            (TempoTxType::Tempo, U256::MAX, 2),
++            (TempoTxType::Tempo, U256::ZERO, 0),
++            (TempoTxType::Tempo, U256::ZERO, 65_537),
++        ] {
++            let accounts = test_accounts();
++            let artifacts = ArtifactManager::empty();
++            let gas = GasConfig::default();
++            let mut nonces = NonceTracker::new();
++            let mut rng = StdRng::seed_from_u64(42);
++            let mut ctx = BuildContext::new(1, &gas, &accounts, &artifacts, &mut nonces, &mut rng);
++            let mut template = base_template(kind);
++            template.access_list = vec![AccessListEntry {
++                address: GenValue::Literal(Address::ZERO),
++                storage_keys: StorageKeys::Range {
++                    range: StorageKeyRange { start: GenValue::Literal(start), count },
++                },
++            }];
++            assert!(TempoAdapter::new().build_request(template, &mut ctx).is_err());
++        }
++    }
++
++    #[test]
++    fn access_list_explicit_keys_and_deferred_request_are_preserved() {
++        let accounts = test_accounts();
++        let artifacts = ArtifactManager::empty();
++        let gas = GasConfig::default();
++        let mut nonces = NonceTracker::new();
++        let mut rng = StdRng::seed_from_u64(42);
++        let mut ctx = BuildContext::new(1, &gas, &accounts, &artifacts, &mut nonces, &mut rng);
++        ctx.set_defer_signing(true);
++        let mut template = base_template(TempoTxType::Tempo);
++        template.expiring_nonce = true;
++        template.valid_for_secs = Some(25);
++        template.access_list = serde_yaml::from_str(
++            r#"
++- address: "0x1111111111111111111111111111111111111111"
++  storage_keys:
++    - "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
++"#,
++        )
++        .unwrap();
++        let result = TempoAdapter::new().build_request(template, &mut ctx).unwrap();
++        assert!(result.late_sign.is_some());
++        assert_eq!(
++            result.request.access_list().unwrap()[0].storage_keys,
++            [alloy_primitives::B256::repeat_byte(0xff)]
++        );
++        use alloy_consensus::Transaction;
++        let payload = TempoExpiringPayload::from_spec(&result.late_sign.unwrap()).unwrap();
++        let raw = sign_tempo_expiring(&payload, &accounts).unwrap();
++        let envelope = TempoTxEnvelope::decode_2718(&mut raw.as_ref()).unwrap();
++        let list = envelope.access_list().unwrap();
++        assert_eq!(list.len(), 1);
++        assert_eq!(list[0].address, Address::repeat_byte(0x11));
++        assert_eq!(list[0].storage_keys, [alloy_primitives::B256::repeat_byte(0xff)]);
++    }
++
+     #[test]
+     fn test_build_tempo_transfer() {
+         let accounts = test_accounts();
+diff --git a/crates/txgen-tempo/src/template.rs b/crates/txgen-tempo/src/template.rs
+index 272e072..374fdc9 100644
+--- a/crates/txgen-tempo/src/template.rs
++++ b/crates/txgen-tempo/src/template.rs
+@@ -47,6 +47,10 @@ pub struct TempoTemplate {
+     #[serde(default)]
+     pub call: Option<CallDef>,
+ 
++    /// EIP-2930 access list, also supported by native Tempo and EIP-1559 transactions.
++    #[serde(default)]
++    pub access_list: Vec<crate::AccessListEntry>,
++
+     /// Gas price for legacy/eip2930 transactions.
+     #[serde(default)]
+     pub gas_price: Option<u128>,
+diff --git a/crates/txgen-tempo/src/access_list.rs b/crates/txgen-tempo/src/access_list.rs
+new file mode 100644
+index 0000000..d713e7e
+--- /dev/null
++++ b/crates/txgen-tempo/src/access_list.rs
+@@ -0,0 +1,76 @@
++use alloy_eips::eip2930::{AccessList, AccessListItem};
++use alloy_primitives::{Address, B256, U256};
++use eyre::{bail, Result};
++use serde::Deserialize;
++use txgen_core::{BuildContext, GenValue};
++
++/// A transaction access-list entry. Sequence bindings can share keys with calldata.
++#[derive(Debug, Clone, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct AccessListEntry {
++    pub address: GenValue<Address>,
++    #[serde(default)]
++    pub storage_keys: StorageKeys,
++}
++
++/// Explicit keys or a bounded consecutive range, expanded before signing.
++#[derive(Debug, Clone, Deserialize)]
++#[serde(untagged)]
++pub enum StorageKeys {
++    Keys(Vec<GenValue<B256>>),
++    Range { range: StorageKeyRange },
++}
++
++impl Default for StorageKeys {
++    fn default() -> Self {
++        Self::Keys(Vec::new())
++    }
++}
++
++#[derive(Debug, Clone, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct StorageKeyRange {
++    pub start: GenValue<U256>,
++    pub count: usize,
++}
++
++const MAX_GENERATED_KEYS: usize = 65_536;
++
++pub(crate) fn resolve_access_list(
++    entries: &[AccessListEntry],
++    ctx: &mut BuildContext<'_>,
++) -> Result<AccessList> {
++    let mut items = Vec::with_capacity(entries.len());
++    let mut total = 0usize;
++    for entry in entries {
++        let count = match &entry.storage_keys {
++            StorageKeys::Keys(keys) => keys.len(),
++            StorageKeys::Range { range } => range.count,
++        };
++        total = total.checked_add(count).ok_or_else(|| eyre::eyre!("access list is too large"))?;
++        if total > MAX_GENERATED_KEYS {
++            bail!("access list exceeds {MAX_GENERATED_KEYS} generated storage keys");
++        }
++        let address = ctx.resolve_value(&entry.address)?;
++        let storage_keys = match &entry.storage_keys {
++            StorageKeys::Keys(keys) => {
++                keys.iter().map(|key| ctx.resolve_value(key)).collect::<Result<_>>()?
++            }
++            StorageKeys::Range { range } => {
++                if range.count == 0 {
++                    bail!("storage key range must contain at least one key");
++                }
++                let start = ctx.resolve_value(&range.start)?;
++                // Check the final key before allocating, including the valid single MAX key.
++                start
++                    .checked_add(U256::from(range.count - 1))
++                    .ok_or_else(|| eyre::eyre!("storage key range overflows uint256"))?;
++                (0..range.count)
++                    .map(|offset| B256::from((start + U256::from(offset)).to_be_bytes::<32>()))
++                    .collect()
++            }
++        };
++        items.push(AccessListItem { address, storage_keys });
++    }
++    Ok(AccessList(items))
++}

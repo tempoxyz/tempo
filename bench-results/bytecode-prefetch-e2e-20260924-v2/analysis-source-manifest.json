@@ -1,0 +1,8 @@
+{
+  "created_at": "2026-09-24T16:42:26.529Z",
+  "files": {
+    "contrib/bench/analyze-bytecode-prefetch.cjs": "9f86cc53d31aebba0cd096c7d710694e028fd6254a4f43c1f85287b48f1f555c",
+    "contrib/bench/analyze-bytecode-prefetch.test.cjs": "455be04e7a6e453c89a64a7a23fa59108f042aae7cc28d2224a7095cc2a90dbf",
+    "contrib/bench/bytecode-prefetch.md": "9a6a95e7ed94af3be5b8beea0066081611aac6dbe0588d3677e76e1f31cc42ff"
+  }
+}

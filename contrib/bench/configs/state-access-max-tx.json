@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "state-access-max-tx",
+  "description": "Near-30M-gas history-dependent state-access transactions on the populated fixture",
+  "common": {
+    "duration": 1200,
+    "warmup": 600,
+    "tps": 1000,
+    "accounts": 1000,
+    "gas_limit": "1000000000000",
+    "node_args": "--rpc-cache.max-blocks 128 --rpc-cache.max-receipts 128"
+  },
+  "fixture": {
+    "snapshot_suffix": "history_paths",
+    "bloat_mib": 100000,
+    "code_count": 4266667,
+    "code_bytes": 24576
+  },
+  "cases": [
+    {"id": "sload", "scenario": "history_read_max", "description": "13800 cold SLOADs, approximately 29.95M gas, full populated domain", "operations_per_transaction": 13800, "minimum_history_advanced_fraction": 0},
+    {"id": "bytecode", "scenario": "history_code_max", "description": "10800 EXTCODECOPY accesses, approximately 29.85M gas, unique 24 KiB code corpus", "operations_per_transaction": 10800, "minimum_history_advanced_fraction": 0}
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "builder_stalled_after_load": {
+    "from_unix_ms": 1790366341334,
+    "to_unix_ms": 1790366456927,
+    "seconds": 115.593,
+    "head": 551,
+    "execution_counter_deltas": {
+      "reth_sync_execution_gas_processed_total": 0,
+      "reth_tempo_payload_builder_gas_used_sum": 0,
+      "reth_tempo_payload_builder_total_transactions_sum": 0,
+      "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0
+    },
+    "io": {
+      "rbytes": 6653435904,
+      "wbytes": 6905118720,
+      "rios": 1624374,
+      "wios": 1489245
+    },
+    "read_MB_s": 57.55915932625678,
+    "write_MB_s": 59.73647816044224,
+    "read_IOPS": 14052.52913238691,
+    "mean_read_bytes": 4096.0,
+    "major_faults": 1624374,
+    "file_refaults": 1624095,
+    "file_cache_GiB": [
+      11.89590072631836,
+      12.551406860351562
+    ]
+  },
+  "follower_merkle_after_load": {
+    "from_unix_ms": 1790366880120,
+    "to_unix_ms": 1790366995884,
+    "seconds": 115.764,
+    "head": 411,
+    "execution_counter_deltas": {
+      "reth_sync_execution_gas_processed_total": 0,
+      "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0,
+      "reth_tempo_payload_builder_gas_used_sum": 0,
+      "reth_tempo_payload_builder_total_transactions_sum": 0
+    },
+    "io": {
+      "rbytes": 7010697216,
+      "wbytes": 24256512,
+      "rios": 1711594,
+      "wios": 3258
+    },
+    "read_MB_s": 60.56025375764487,
+    "write_MB_s": 0.20953415569607134,
+    "read_IOPS": 14785.200926021907,
+    "mean_read_bytes": 4096.004786181769,
+    "major_faults": 1711587,
+    "file_refaults": 1396907,
+    "file_cache_GiB": [
+      12.194461822509766,
+      11.886367797851562
+    ]
+  },
+  "follower_merkle_stages": [
+    {
+      "range": "337..=411",
+      "start": "2026-09-25T19:53:12.198098Z",
+      "end": "2026-09-25T20:04:18.653350Z",
+      "wall_seconds": 666.4552521972656,
+      "final_commit_duration": "135.12881ms",
+      "start_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-192547-004/logs-feature-1-b/dev/reth.log",
+      "start_line": 1412,
+      "end_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-192547-004/logs-feature-1-b/dev/reth.log",
+      "end_line": 7238,
+      "scope": "Incremental root calculation, update application, and commit together; no internal CPU-vs-I/O or read-vs-write time split."
+    },
+    {
+      "range": "412..=885",
+      "start": "2026-09-25T20:06:26.039883Z",
+      "end": "2026-09-25T20:16:19.554931Z",
+      "wall_seconds": 593.5150480957032,
+      "final_commit_duration": "76.365933ms",
+      "start_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-192547-004/logs-feature-1-b/dev/reth.log",
+      "start_line": 11237,
+      "end_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-192547-004/logs-feature-1-b/dev/reth.log",
+      "end_line": 28939,
+      "scope": "Incremental root calculation, update application, and commit together; no internal CPU-vs-I/O or read-vs-write time split."
+    },
+    {
+      "range": "886..=2393",
+      "start": "2026-09-25T20:16:24.254075Z",
+      "end": "2026-09-25T20:16:24.262254Z",
+      "wall_seconds": 0.008178955078125,
+      "final_commit_duration": "121.736\u00b5s",
+      "start_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-192547-004/logs-feature-1-b/dev/reth.log",
+      "start_line": 29268,
+      "end_source": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/20260925-192547-004/logs-feature-1-b/dev/reth.log",
+      "end_line": 29275,
+      "scope": "Incremental root calculation, update application, and commit together; no internal CPU-vs-I/O or read-vs-write time split."
+    }
+  ]
+}

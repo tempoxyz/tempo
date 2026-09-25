@@ -1,0 +1,10 @@
+{
+  "created_at": "2026-09-23T18:54:09.383Z",
+  "source": "contrib/bench/resident-state-paths-brief.md",
+  "source_sha256": "e8d6955cd59c6630a556da7dc220a615783943681d5175548f8cfd4676f08f4a",
+  "document": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/resident-state-paths-brief.docx",
+  "document_sha256": "ef844b488112a079e80b12d780e1dcf06f79e714d39bdb6870190a66489f4cad",
+  "validation": "ZIP integrity, XML parse, expected metrics and publication-status text",
+  "published_to_google_docs": false,
+  "publication_blocker": "No Google Docs connector is available in this session."
+}

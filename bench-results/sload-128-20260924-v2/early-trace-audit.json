@@ -1,0 +1,17 @@
+{
+  "hash": "0xe1f857adf1c26273f5d2007de8a3f2d6f502cd73cb2674f7690224d5f7937753",
+  "cursor_before": "4164",
+  "parent_cursor": "4128",
+  "history_advanced": true,
+  "actual_unique": 128,
+  "parent_state_unique": 128,
+  "overlap": 0,
+  "parent_state_mismatch_fraction": 1,
+  "accesses": 128,
+  "gas_cost_histogram": {
+    "2100": 128
+  },
+  "changed_contract_slots": 0,
+  "trace_file": "bench-results/sload-128-20260924-v2/history-trace-0xe1f857adf1c26273f5d2007de8a3f2d6f502cd73cb2674f7690224d5f7937753.json.gz",
+  "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+}

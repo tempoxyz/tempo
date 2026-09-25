@@ -1,0 +1,8 @@
+{
+  "recorded_at": "2026-09-25T19:55:33.412832+00:00",
+  "command": "node --test contrib/bench/*.test.cjs",
+  "exit_code": 0,
+  "tests": 100,
+  "passed": 100,
+  "failed": 0
+}
