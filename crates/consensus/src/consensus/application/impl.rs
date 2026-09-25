@@ -13,16 +13,19 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epoch, Epocher as _, FixedEpocher},
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_cryptography::{
+    bls12381::{dkg::feldman_desmedt::Output, primitives::variant::MinSig},
+    ed25519::PublicKey,
+};
 use commonware_runtime::{
     Clock, Spawner,
     telemetry::metrics::{Counter, MetricsExt as _},
 };
 use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
-use futures::{FutureExt as _, StreamExt as _};
+use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -127,43 +130,41 @@ impl Inner {
             parent: (parent_view, parent_digest),
         } = context;
 
-        let parent_epoch_info = self
-            .epoch_strategy
-            .containing(parent.height())
-            .expect("epoch strategy is for all heights");
-
-        let (extra_data, deferred_extra_data) =
-            if parent_epoch_info.last() == parent.height().next() {
-                // The boundary block carries the DKG outcome.
-                //
-                // Part of it is read from the post-state of the parent,
-                // so the executor resolves it only after the parent returned VALID.
-                (
-                    Bytes::default(),
-                    Some(self.boundary_dkg_outcome(round.epoch())),
-                )
-            } else {
-                // Regular block: try to include DKG dealer log.
-                let extra_data = match self.dkg_manager.get_dealer_log(round.epoch()).await {
-                    Err(error) => {
-                        warn!(
-                            %error,
-                            "failed getting signed dealer log for current epoch \
-                            because actor dropped response channel",
-                        );
-                        Bytes::default()
-                    }
-                    Ok(None) => Bytes::default(),
-                    Ok(Some(log)) => {
-                        info!(
-                            "received signed dealer log; will include in payload \
+        let (extra_data, deferred_extra_data) = if self.is_boundary(parent.height().next()) {
+            // The boundary block carries the DKG outcome.
+            //
+            // Part of it is read from the post-state of the parent,
+            // so the executor resolves it only after the parent returned VALID.
+            //
+            // The DKG actor reads no chain state, so it starts on the
+            // ceremony output now, while the executor works on the parent.
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(parent));
+            (
+                Bytes::default(),
+                Some(self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)),
+            )
+        } else {
+            // Regular block: try to include DKG dealer log.
+            let extra_data = match self.dkg_manager.get_dealer_log(round.epoch()).await {
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "failed getting signed dealer log for current epoch \
+                        because actor dropped response channel",
+                    );
+                    Bytes::default()
+                }
+                Ok(None) => Bytes::default(),
+                Ok(Some(log)) => {
+                    info!(
+                        "received signed dealer log; will include in payload \
                             builder attributes"
-                        );
-                        log.encode().into()
-                    }
-                };
-                (extra_data, None)
+                    );
+                    log.encode().into()
+                }
             };
+            (extra_data, None)
+        };
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
         let mut epoch_millis = runtime.current().epoch_millis();
@@ -259,14 +260,26 @@ impl Inner {
     /// Returns the DKG outcome of a boundary block in `epoch` as deferred
     /// extra data. The executor resolves it with the parent once the parent
     /// returned VALID, so the post-state of the parent is available.
-    fn boundary_dkg_outcome(&self, epoch: Epoch) -> DeferredExtraData {
-        let dkg_manager = self.dkg_manager.clone();
+    ///
+    /// `ceremony` is the request for the ceremony output on the parent
+    /// `parent_digest`.
+    fn boundary_dkg_outcome(
+        &self,
+        epoch: Epoch,
+        parent_digest: Digest,
+        ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
+    ) -> DeferredExtraData {
         let parent_state = self.parent_state.clone();
         let epoch_strategy = self.epoch_strategy.clone();
         DeferredExtraData::new(move |parent| {
             async move {
-                let output = dkg_manager
-                    .subscribe_dkg_ceremony(Arc::clone(&parent))
+                ensure!(
+                    parent.digest() == parent_digest,
+                    "the executor built on `{}`, but the DKG ceremony was requested \
+                    for `{parent_digest}`",
+                    parent.digest(),
+                );
+                let output = ceremony
                     .await
                     .wrap_err("failed getting public dkg ceremony outcome")?;
                 let outcome = parent_state.boundary_outcome(&epoch_strategy, &parent, output)?;
@@ -291,6 +304,16 @@ impl Inner {
         })
     }
 
+    /// Returns whether the block at `height` is the last block of its epoch,
+    /// which carries the DKG outcome.
+    fn is_boundary(&self, height: Height) -> bool {
+        self.epoch_strategy
+            .containing(height)
+            .expect("epoch strategy is for all heights")
+            .last()
+            == height
+    }
+
     /// Checks the header of a proposal before it is handed to the execution
     /// layer: the consensus context it claims and the DKG data in `extra_data`.
     ///
@@ -302,10 +325,6 @@ impl Inner {
         block: &Block,
         context: &Context<Digest, PublicKey>,
     ) -> eyre::Result<Option<OnchainDkgOutcome>> {
-        let epoch_info = self
-            .epoch_strategy
-            .containing(block.height())
-            .expect("epoch strategy is for all heights");
         let round = context.round;
         let proposer = &context.leader;
 
@@ -329,7 +348,7 @@ impl Inner {
             block.digest()
         );
 
-        if epoch_info.last() == block.height() {
+        if self.is_boundary(block.height()) {
             let proposed_outcome =
                 OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref()).wrap_err(
                     "failed decoding extra data header as DKG ceremony \
@@ -371,18 +390,17 @@ impl Inner {
     /// boundary block. If this node cannot calculate the outcome, that says
     /// nothing about the block. The future then stays pending and the vote is
     /// not cast.
+    ///
+    /// `ceremony` is the request for the ceremony output on `parent`.
     #[instrument(skip_all, err(Display))]
     async fn verify_boundary_outcome(
         &self,
-        parent: Arc<Block>,
+        parent: &Block,
+        ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
         proposed_outcome: &OnchainDkgOutcome,
     ) -> eyre::Result<()> {
         info!("verifying that the boundary block contains the correct DKG outcome");
-        let output = match self
-            .dkg_manager
-            .subscribe_dkg_ceremony(Arc::clone(&parent))
-            .await
-        {
+        let output = match ceremony.await {
             Ok(output) => output,
             Err(reason) => {
                 warn!(%reason, "DKG ceremony output unavailable; abstaining");
@@ -392,7 +410,7 @@ impl Inner {
         let our_outcome =
             match self
                 .parent_state
-                .boundary_outcome(&self.epoch_strategy, &parent, output)
+                .boundary_outcome(&self.epoch_strategy, parent, output)
             {
                 Ok(outcome) => outcome,
                 Err(reason) => {
@@ -491,6 +509,20 @@ where
         };
         tracing::Span::current().record("digest", tracing::field::display(block.digest()));
 
+        // Only a boundary block needs its parent. The DKG actor reads no chain
+        // state, so it can work on the ceremony output of a boundary block
+        // while the header is checked and the block is executed.
+        let boundary = if self.is_boundary(block.height()) {
+            let Some(parent) = ancestry.next().await else {
+                warn!("ancestry ended before yielding the parent; abstaining");
+                return std::future::pending().await;
+            };
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(&parent));
+            Some((parent, ceremony))
+        } else {
+            None
+        };
+
         let proposed_outcome = match self.verify_header(&block, &context).await {
             Ok(proposed_outcome) => proposed_outcome,
             Err(reason) => {
@@ -523,18 +555,17 @@ where
             }
         }
 
-        // Only a boundary block carries a DKG outcome, and only its check
-        // needs the parent. Compare it after `verify_block`: our outcome reads
-        // the parent's state, which the engine has only once it has executed
-        // the block.
+        // Only a boundary block carries a DKG outcome. Compare it after
+        // `verify_block`: our outcome reads the parent's state, which the
+        // engine has only once it has executed the block.
         match proposed_outcome {
             None => true,
             Some(outcome) => {
-                let Some(parent) = ancestry.next().await else {
-                    warn!("ancestry ended before yielding the parent; abstaining");
-                    return std::future::pending().await;
-                };
-                self.verify_boundary_outcome(parent, &outcome).await.is_ok()
+                let (parent, ceremony) =
+                    boundary.expect("`verify_header` decodes an outcome only for a boundary block");
+                self.verify_boundary_outcome(&parent, ceremony, &outcome)
+                    .await
+                    .is_ok()
             }
         }
     }
