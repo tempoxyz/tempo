@@ -1,11 +1,8 @@
 use super::*;
 use crate::{
     ExecutionContext, FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
-    TempoTxEnv,
-    evm::TempoEvm,
-    gas_params::tempo_gas_params,
-    signature_gas::{P256_VERIFY_GAS, primitive_signature_verification_gas},
-    tx::TempoBatchCallEnv,
+    TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
+    signature_gas::primitive_signature_verification_gas, tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_sol_types::SolCall;
@@ -947,8 +944,8 @@ fn test_aa_gas_p256_signature() {
     // Calculate base gas for normal tx
     let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0, None);
 
-    // Expected: normal tx + P256_VERIFY_GAS
-    let expected = base_gas.initial_total_gas() + P256_VERIFY_GAS;
+    // P256 adds 5k beyond the secp256k1 verification included in base gas.
+    let expected = base_gas.initial_total_gas() + 5_000;
     assert_eq!(gas.initial_total_gas(), expected,);
 }
 
