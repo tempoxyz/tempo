@@ -4,9 +4,8 @@ use crate::{SIGNATURE_VERIFIER_ADDRESS, account_keychain::AccountKeychain, error
 use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{
-    SignatureType,
-    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+use tempo_primitives::transaction::tt_signature::{
+    AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature,
 };
 
 /// Gas cost for secp256k1 signature verification.
@@ -32,10 +31,10 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        let verify_gas = match sig.signature_type() {
-            SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
-            SignatureType::P256 => P256_VERIFY_GAS,
-            SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
+        let verify_gas = match &sig {
+            PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+            PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+            PrimitiveSignature::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
         };
         self.storage.deduct_gas(verify_gas)?;
 
@@ -82,9 +81,12 @@ impl SignatureVerifier {
         if keychain_sig.is_legacy() {
             return Err(SignatureVerifierError::invalid_format().into());
         }
+        let AccountSignature::Primitive(signature) = &keychain_sig.signature else {
+            return Err(SignatureVerifierError::invalid_format().into());
+        };
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let key_id = self.recover(signing_hash, keychain_sig.signature.to_bytes())?;
+        let key_id = self.recover(signing_hash, signature.to_bytes())?;
         Ok((keychain_sig.user_address, key_id))
     }
 }
@@ -93,15 +95,55 @@ impl SignatureVerifier {
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use alloy::primitives::Signature;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::transaction::tt_signature::{
-        SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN,
+    use tempo_primitives::transaction::{
+        MultisigConfig, MultisigOwner, MultisigSignature,
+        tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN},
     };
 
     fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
         SignatureVerifier::new().recover(hash, Bytes::from(signature))
+    }
+
+    #[test]
+    fn keychain_verification_rejects_multisig() -> eyre::Result<()> {
+        let account = Address::repeat_byte(1);
+        let multisig = MultisigSignature::try_new(
+            Address::repeat_byte(2),
+            MultisigConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: Address::repeat_byte(3),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature())],
+        )
+        .unwrap();
+        let signature = TempoSignature::Keychain(KeychainSignature::new(account, multisig));
+        // Multisig keychain signatures are not supported on any hardfork yet.
+        for spec in TempoHardfork::VARIANTS.iter().copied() {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut verifier = SignatureVerifier::new();
+                for result in [
+                    verifier.verify_keychain(account, B256::ZERO, signature.to_bytes()),
+                    verifier.verify_keychain_admin(account, B256::ZERO, signature.to_bytes()),
+                ] {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        SignatureVerifierError::invalid_format().into(),
+                        "{spec}"
+                    );
+                }
+            });
+        }
+        Ok(())
     }
 
     #[test]

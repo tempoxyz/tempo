@@ -1,13 +1,22 @@
 use super::*;
 use crate::transaction::{
-    KeychainSignature, PrimitiveSignature, TempoSignature,
-    tt_authorization::tests::generate_secp256k1_keypair, tt_signature::WebAuthnSignature,
+    AccountSignature, KeychainSignature, KeychainVersion, PrimitiveSignature, TempoSignature,
+    derive_p256_address,
+    tt_authorization::tests::generate_secp256k1_keypair,
+    tt_signature::{
+        P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, WebAuthnSignature, normalize_p256_s,
+    },
 };
 use alloy_primitives::{Bytes, Signature, U256, address};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_signer_local::PrivateKeySigner;
 use arbitrary::{Arbitrary, Unstructured};
+use p256::{
+    ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
+    elliptic_curve::rand_core::OsRng,
+};
 use proptest::prelude::*;
+use sha2::{Digest, Sha256};
 
 // Deliberately non-production factory fixture: TIP-1110 has not selected its public address.
 const TEST_FACTORY: Address = Address::repeat_byte(0x99);
@@ -132,6 +141,35 @@ fn current_config(owner: Address) -> MultisigConfig {
     }
 }
 
+fn generate_p256_keypair() -> (P256SigningKey, B256, B256, Address) {
+    let signing_key = P256SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let encoded_point = verifying_key.to_encoded_point(false);
+    let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
+    let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
+    let owner = derive_p256_address(&pub_key_x, &pub_key_y);
+    (signing_key, pub_key_x, pub_key_y, owner)
+}
+
+fn sign_p256_owner_approval_with_prehash(
+    signing_key: &P256SigningKey,
+    digest: B256,
+    pub_key_x: B256,
+    pub_key_y: B256,
+) -> Bytes {
+    let prehashed = B256::from_slice(Sha256::digest(digest).as_ref());
+    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(prehashed.as_slice()).unwrap();
+    let (r, s) = signature.split_bytes();
+    PrimitiveSignature::P256(P256SignatureWithPreHash {
+        r: B256::from_slice(&r),
+        s: normalize_p256_s(&s).expect("p256 crate produces valid s"),
+        pub_key_x,
+        pub_key_y,
+        pre_hash: true,
+    })
+    .to_bytes()
+}
+
 fn encoded_multisig(
     account: Address,
     config: &MultisigConfig,
@@ -174,6 +212,12 @@ fn nested_multisig_encoding(levels: usize) -> Vec<u8> {
 fn assert_multisig_decode_rejected(encoded: &[u8]) {
     let mut input = encoded;
     assert!(MultisigSignature::decode(&mut input).is_err());
+
+    let tempo_encoded = [SIGNATURE_TYPE_MULTISIG]
+        .into_iter()
+        .chain(encoded.iter().copied())
+        .collect::<Vec<_>>();
+    assert!(TempoSignature::from_bytes(&tempo_encoded).is_err());
 }
 
 #[cfg(feature = "serde")]
@@ -250,6 +294,46 @@ fn quorum_rejects_approvals_after_threshold() {
         accumulator.record_owner(indexed_owner(2), 1),
         Err(MultisigQuorumError::ExcessSignatures)
     );
+}
+
+#[test]
+fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
+    let multisig = initial_multisig_signature();
+    let parent = indexed_owner(3);
+    let envelope = TempoSignature::Keychain(KeychainSignature::new(parent, multisig.clone()));
+    let encoded = envelope.to_bytes();
+    assert_eq!(TempoSignature::from_bytes(&encoded).unwrap(), envelope);
+    assert_eq!(
+        envelope.as_keychain().unwrap().key_id(&B256::ZERO).unwrap(),
+        multisig.account()
+    );
+    // Changing the version must reject the envelope even with a cached key ID.
+    let mut keychain = envelope.as_keychain().unwrap().clone();
+    keychain.version = KeychainVersion::V1;
+    assert!(keychain.key_id(&B256::ZERO).is_err());
+    assert!(
+        envelope
+            .as_keychain()
+            .unwrap()
+            .signature
+            .recover_signer(&B256::ZERO)
+            .is_err()
+    );
+    let mut legacy = encoded.to_vec();
+    legacy[0] = SIGNATURE_TYPE_KEYCHAIN;
+    assert!(TempoSignature::from_bytes(&legacy).is_err());
+    assert!(AccountSignature::from_bytes(&encoded).is_err());
+    #[cfg(feature = "serde")]
+    {
+        let mut json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(
+            serde_json::from_value::<TempoSignature>(json.clone()).unwrap(),
+            envelope
+        );
+        json["version"] = serde_json::to_value(KeychainVersion::V1).unwrap();
+        let legacy = serde_json::from_value::<TempoSignature>(json).unwrap();
+        assert!(legacy.as_keychain().unwrap().key_id(&B256::ZERO).is_err());
+    }
 }
 
 #[test]
@@ -745,6 +829,47 @@ fn verifies_weighted_owner_signatures_in_sorted_order() {
 }
 
 #[test]
+fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
+    // Preserve lenient P256 flag decoding inside a multisig envelope while ensuring its
+    // re-encoding uses the canonical flag and its owner approval remains valid.
+    let (signer, pub_key_x, pub_key_y, owner) = generate_p256_keypair();
+    let config = sorted_secp_config(&[(owner, 1)], 1);
+    let account = config.derive_account(TEST_FACTORY).unwrap();
+    let digest = multisig_digest(B256::repeat_byte(0x42), account, 0);
+
+    let canonical_signature =
+        sign_p256_owner_approval_with_prehash(&signer, digest, pub_key_x, pub_key_y);
+    assert_eq!(
+        canonical_signature[canonical_signature.len() - 1],
+        1,
+        "test setup should use canonical pre_hash=true encoding"
+    );
+
+    let mut noncanonical_signature = canonical_signature.to_vec();
+    let flag_index = noncanonical_signature.len() - 1;
+    noncanonical_signature[flag_index] = 2;
+
+    let envelope = |approval| {
+        let mut encoded = vec![SIGNATURE_TYPE_MULTISIG];
+        encoded.extend(encoded_multisig(account, &config, vec![approval]));
+        encoded
+    };
+    let decoded = TempoSignature::from_bytes(&envelope(noncanonical_signature))
+        .expect("noncanonical pre_hash flag decodes leniently");
+    assert_eq!(
+        decoded.to_bytes().as_ref(),
+        envelope(canonical_signature.to_vec()),
+        "noncanonical owner approval re-encodes to the canonical multisig envelope"
+    );
+    assert_eq!(
+        decoded.as_multisig().unwrap().signatures()[0]
+            .recover_signer(&digest)
+            .unwrap(),
+        owner
+    );
+}
+
+#[test]
 fn multisig_signature_encodes_complete_config() {
     let config = current_config(indexed_owner(2));
     let account = Address::repeat_byte(0x11);
@@ -865,6 +990,46 @@ fn multisig_signature_shape_rejects_oversized_owner_signature() {
     );
 }
 
+#[test]
+fn multisig_signature_roundtrips_complete_encoding() {
+    let (signer, owner) = generate_secp256k1_keypair();
+    let mut config = sorted_secp_config(&[(owner, 1)], 1);
+    config.salt = B256::repeat_byte(0x33);
+    let account = config.derive_account(TEST_FACTORY).unwrap();
+    let signature_hash = B256::ZERO;
+    let digest = multisig_digest(signature_hash, account, 0);
+    let signatures = vec![sign_hash(&signer, &digest)];
+    let signature =
+        MultisigSignature::try_new(account, config.clone(), signatures.clone()).unwrap();
+    let tempo_signature = TempoSignature::Multisig(signature.clone());
+
+    let encoded = tempo_signature.to_bytes();
+    assert_eq!(encoded[0], SIGNATURE_TYPE_MULTISIG);
+    assert_eq!(
+        &encoded[1..],
+        encoded_multisig(
+            account,
+            &config,
+            signatures
+                .iter()
+                .map(|signature| signature.to_bytes().to_vec())
+                .collect(),
+        )
+    );
+    let decoded = TempoSignature::from_bytes(&encoded).unwrap();
+    assert_eq!(decoded.as_multisig(), Some(&signature));
+    assert_eq!(
+        decoded.recover_signer(&signature_hash).unwrap(),
+        signature.account()
+    );
+    let mut trailing = encoded.to_vec();
+    trailing.push(0x80);
+    assert_eq!(
+        TempoSignature::from_bytes(&trailing),
+        Err("Invalid Multisig signature RLP")
+    );
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn multisig_signature_serde_roundtrips_rlp_bytes() {
@@ -883,12 +1048,41 @@ fn multisig_signature_serde_roundtrips_rlp_bytes() {
         serde_json::to_value(Bytes::from(encoded.clone())).unwrap()
     );
     assert_eq!(
-        serde_json::from_value::<MultisigSignature>(json).unwrap(),
+        serde_json::from_value::<MultisigSignature>(json.clone()).unwrap(),
         signature
+    );
+    assert_eq!(
+        serde_json::from_value::<TempoSignature>(json).unwrap(),
+        TempoSignature::Multisig(signature)
     );
     encoded.push(0x80);
     let json = serde_json::to_value(Bytes::from(encoded)).unwrap();
     assert!(serde_json::from_value::<MultisigSignature>(json).is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn multisig_signature_json_bytes_reject_malformed_shapes() {
+    for encoded in malformed_multisig_encodings() {
+        let json = serde_json::to_value(Bytes::from(encoded)).unwrap();
+        assert!(serde_json::from_value::<TempoSignature>(json).is_err());
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn multisig_signature_json_rejects_structured_form() {
+    let json = serde_json::json!({
+        "account": Address::repeat_byte(0x11),
+        "signatures": [],
+    });
+    let error = serde_json::from_value::<TempoSignature>(json)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("did not match any variant") || error.contains("missing field"),
+        "unexpected error: {error}"
+    );
 }
 
 #[cfg(feature = "serde")]
