@@ -237,6 +237,7 @@ async fn test_tip20_channel_reserve_gas_snapshots(hardfork: TempoHardfork) -> ey
 
     let setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(hardfork))
+        .with_instant_mining()
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

@@ -43,6 +43,7 @@ use futures::{
     stream::{FusedStream, FuturesOrdered},
 };
 use rand_core::CryptoRng;
+use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
 use tokio::select;
@@ -50,6 +51,7 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
+mod startup;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -127,6 +129,9 @@ pub(crate) struct Actor<
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
 
+    /// Opened during initialization, before authenticating the tip. Taken when the actor starts.
+    storage: Option<state::Unverified<TContext>>,
+
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
@@ -152,12 +157,32 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
-        let context = ContextCell::new(context);
+        let mut context = ContextCell::new(context);
         let metrics = Metrics::init(context.as_present());
+
+        let storage = state::builder()
+            .partition_prefix(&config.partition_prefix)
+            .init_unverified(context.child("state"))
+            .await?;
+
+        // Authenticate with the original persisted identity before healing can
+        // replace stale state with an outcome supplied by the snapshot.
+        startup::verify_finalized_tip(
+            &mut *context,
+            &config.network_identity,
+            storage.state(),
+            config
+                .finalized_tip
+                .as_ref()
+                .map(|(height, certificate)| (*height, certificate)),
+            config.last_finalized_height,
+            &config.scheme_provider,
+        )?;
 
         Ok(Self {
             config,
             context,
+            storage: Some(storage),
             mailbox,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
@@ -183,14 +208,10 @@ where
     ) {
         // NOTE: The instrumented fns emits on error events
 
-        let Ok(opened) = state::builder()
-            .partition_prefix(&self.config.partition_prefix)
-            .init_unverified(self.context.child("state"))
-            .await
-        else {
-            return;
-        };
-
+        let opened = self
+            .storage
+            .take()
+            .expect("storage opened during initialization");
         let Ok(mut storage) = self.heal(opened).await else {
             return;
         };
@@ -226,6 +247,29 @@ where
         });
     }
 
+    #[instrument(skip_all, err)]
+    async fn is_state_v1_activated(&self, state: &State) -> eyre::Result<bool> {
+        let chain_spec = self.config.execution_node.chain_spec();
+
+        // Reveal versions bind ACKs and dealer logs to different round transcripts, so the
+        // version must stay fixed throughout the ceremony. The entire epoch must be activated,
+        // hence checking the last boundary.
+        let boundary = state.epoch.previous().map_or(Height::zero(), |epoch| {
+            self.config
+                .epoch_strategy
+                .last(epoch)
+                .expect("epoch strategy covers all epochs")
+        });
+
+        let boundary_timestamp =
+            get_header(&self.config.execution_node, &self.config.marshal, boundary)
+                .await?
+                .timestamp();
+
+        Ok(chain_spec.tempo_hardfork_at(boundary_timestamp).is_t12())
+    }
+
+    #[instrument(skip_all, fields(epoch = %storage.current().epoch))]
     async fn run_dkg_loop<TStorageContext, TSender, TReceiver>(
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
@@ -256,7 +300,13 @@ where
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
 
         // TODO: emit an event with round info
-        let round = Round::from_state(&state, &self.config.namespace);
+        let round = Round::from_state(
+            &state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
+        );
 
         let mut dealer_state = storage
             .create_dealer_for_round(
@@ -509,12 +559,11 @@ where
                 .epoch_strategy
                 .containing(self.config.last_finalized_height.next())
                 .expect("epoch strategy is covering all heights");
-            let round = Round::from_state(state, &self.config.namespace);
-            if round.epoch() < epoch_info.epoch() {
+            if state.epoch < epoch_info.epoch() {
                 warn!(
                     "latest DKG state is for `{}`, but the next block will be \
                     for epoch `{}`. Resetting DKG initial state",
-                    round.epoch(),
+                    state.epoch,
                     epoch_info.epoch(),
                 );
                 share_candidate = state.share.clone();
@@ -540,7 +589,6 @@ where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let state = storage.current();
-        let round = Round::from_state(&state, &self.config.namespace);
         let target_height = self.config.last_finalized_height;
         let epoch_info = self
             .config
@@ -550,9 +598,17 @@ where
 
         // The DKG actor may have persisted the new epoch before the finalized floor caught up
         // during shutdown. Do not replay prior-epoch headers against the newer DKG round.
-        if round.epoch() > epoch_info.epoch() {
+        if state.epoch > epoch_info.epoch() {
             return Ok(());
         }
+
+        let round = Round::from_state(
+            &state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
+        );
 
         let mut height = storage
             .get_latest_finalized_block_for_epoch(&round.epoch())
@@ -1373,7 +1429,13 @@ where
             is_full_dkg: ceremony_outcome.is_next_full_dkg,
         };
 
-        let round = Round::from_state(&ceremony_state, &self.config.namespace);
+        let round = Round::from_state(
+            &ceremony_state,
+            &self.config.namespace,
+            self.is_state_v1_activated(&ceremony_state)
+                .await
+                .wrap_err("failed to check v1 activation")?,
+        );
         ensure!(
             round.players().position(&public_key).is_some(),
             "our identity is in the current output but was not a player in ceremony epoch \
