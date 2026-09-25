@@ -1,13 +1,8 @@
 use revm::interpreter::gas::{
     COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
 };
+use tempo_precompiles::{ECRECOVER_GAS, signature_verifier::multisig_verification_gas};
 use tempo_primitives::transaction::{AccountSignature, PrimitiveSignature, TempoSignature};
-
-/// Additional gas for P256 signature verification.
-///
-/// This includes the P256 precompile cost, the extra signature calldata, and the ecrecover savings
-/// already included in the base transaction cost.
-pub(crate) const P256_VERIFY_GAS: u64 = 5_000;
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
@@ -20,14 +15,13 @@ const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 /// - WebAuthn: 5000 gas + calldata cost for `webauthn_data`
 #[inline]
 pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature {
-        PrimitiveSignature::Secp256k1(_) => 0,
-        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-        PrimitiveSignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
-            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
+    let webauthn_data_gas = match signature {
+        PrimitiveSignature::WebAuthn(sig) => {
+            get_tokens_in_calldata_istanbul(&sig.webauthn_data) * STANDARD_TOKEN_COST
         }
-    }
+        _ => 0,
+    };
+    signature.base_verification_gas() - ECRECOVER_GAS + webauthn_data_gas
 }
 
 /// Verification cost beyond the baseline signature charge, without keychain processing.
@@ -35,8 +29,9 @@ pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignatur
 pub(crate) fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
     match signature {
         AccountSignature::Primitive(signature) => primitive_signature_verification_gas(signature),
-        // TODO: Multisig verification gas is implemented in #7578.
-        AccountSignature::Multisig(_) => 0,
+        AccountSignature::Multisig(signature) => {
+            multisig_verification_gas(signature).saturating_sub(ECRECOVER_GAS)
+        }
     }
 }
 
@@ -51,7 +46,8 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
         TempoSignature::Keychain(keychain_sig) => {
             account_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
-        // TODO: Multisig verification gas is implemented in #7578.
-        TempoSignature::Multisig(_) => 0,
+        TempoSignature::Multisig(signature) => {
+            multisig_verification_gas(signature).saturating_sub(ECRECOVER_GAS)
+        }
     }
 }

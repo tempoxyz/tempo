@@ -2,7 +2,10 @@
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{Precompile, charge_input_cost, dispatch, mutate_void, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{
+    primitives::{Address, U256},
+    sol_types::SolCall,
+};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{AccountKeychainError, IAccountKeychain};
 
@@ -10,6 +13,23 @@ impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
+        }
+
+        // T11's strict ABI decoder rejected enum value 3 before Multisig existed.
+        // All authorization entrypoints put signatureType in the second ABI word.
+        if self.storage.spec().is_t11()
+            && !self.storage.spec().is_t14()
+            && [
+                IAccountKeychain::authorizeKey_0Call::SELECTOR,
+                IAccountKeychain::authorizeKey_1Call::SELECTOR,
+                IAccountKeychain::authorizeKey_2Call::SELECTOR,
+                IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
+            ]
+            .iter()
+            .any(|selector| calldata.starts_with(selector))
+            && calldata.get(36..68) == Some(U256::from(3).to_be_bytes::<32>().as_slice())
+        {
+            return Ok(self.storage.revert_output(Default::default()));
         }
 
         dispatch!(
@@ -112,6 +132,73 @@ mod tests {
     use tempo_contracts::precompiles::{
         IAccountKeychain::IAccountKeychainCalls, UnknownFunctionSelector, legacyAuthorizeKeyCall,
     };
+
+    #[test]
+    fn multisig_key_type_preserves_pre_t14_rejection() -> eyre::Result<()> {
+        for spec in TempoHardfork::VARIANTS
+            .iter()
+            .copied()
+            .filter(|spec| !spec.is_t14())
+        {
+            for key_id in [Address::ZERO, Address::repeat_byte(2)] {
+                for expiry in [0, u64::MAX] {
+                    let signature_type = IAccountKeychain::SignatureType::Multisig;
+                    let config = KeyRestrictions {
+                        expiry,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    };
+                    let calls = [
+                        IAccountKeychain::authorizeKey_0Call {
+                            keyId: key_id,
+                            signatureType: signature_type,
+                            expiry,
+                            enforceLimits: false,
+                            limits: vec![],
+                        }
+                        .abi_encode(),
+                        IAccountKeychain::authorizeKey_1Call {
+                            keyId: key_id,
+                            signatureType: signature_type,
+                            config: config.clone(),
+                        }
+                        .abi_encode(),
+                        IAccountKeychain::authorizeKey_2Call {
+                            keyId: key_id,
+                            signatureType: signature_type,
+                            config,
+                            witness: B256::ZERO,
+                        }
+                        .abi_encode(),
+                        IAccountKeychain::authorizeAdminKeyCall {
+                            keyId: key_id,
+                            signatureType: signature_type,
+                            witness: B256::ZERO,
+                        }
+                        .abi_encode(),
+                    ];
+                    for mut calldata in calls {
+                        let mut run = |signature_type| {
+                            calldata[67] = signature_type;
+                            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                            StorageCtx::enter(&mut storage, || {
+                                let mut keychain = AccountKeychain::new();
+                                keychain.set_tx_origin(Address::repeat_byte(1)).unwrap();
+                                keychain.call(&calldata, Address::repeat_byte(1))
+                            })
+                        };
+                        let actual = run(3)?;
+                        let legacy = run(4)?;
+                        assert!(!actual.is_success(), "{spec}: {calldata:?}");
+                        assert_eq!(actual, legacy, "{spec}: {calldata:?}");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
