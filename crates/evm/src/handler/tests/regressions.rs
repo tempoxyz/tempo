@@ -42,6 +42,92 @@ fn test_resolve_fee_context_warms_balance_without_fee_collection() {
 }
 
 #[test]
+fn test_resolve_fee_context_validates_max_fee_when_collection_is_disabled() {
+    let fee_payer = Address::random();
+    let gas_limit = 100_000;
+    let gas_price = 1_000_000_000_000_u128;
+    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+    let mut evm = storage_evm(TempoHardfork::T7);
+    let mut version = *evm.version();
+    version.features.remove(EvmFeatures::FEE_CHARGE);
+    evm.set_execution_config(
+        ExecutionConfig::for_spec_and_version(TempoHardfork::T7, version),
+        TempoHardfork::T7,
+        tempo_tx_registry(SpecId::OSAKA),
+        NoPrecompiles::default(),
+    );
+
+    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+        TIP20Setup::path_usd(fee_payer)
+            .with_issuer(fee_payer)
+            .with_mint(fee_payer, max_fee - U256::ONE)
+            .apply()
+    })
+    .expect("pathUSD setup succeeds");
+
+    let tx = fee_tx_env(fee_payer, PATH_USD_ADDRESS, gas_limit, gas_price);
+    let result = TempoHandlerHooks::resolve_fee_context(&mut evm, &tx);
+
+    assert!(
+        matches!(
+            result,
+            Err(ref error)
+                if matches!(
+                    error.external_ref::<TempoInvalidTransaction>(),
+                    Some(TempoInvalidTransaction::CollectFeePreTx(
+                        FeePaymentError::InsufficientFeeTokenBalance { fee, balance },
+                    )) if *fee == max_fee && *balance == max_fee - U256::ONE
+                )
+        ),
+        "disabled fee collection must still validate max-fee balance, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_resolve_fee_context_validates_fee_token_when_collection_is_disabled() {
+    let fee_payer = Address::random();
+    let admin = Address::random();
+    let gas_limit = 100_000;
+    let gas_price = 1_000_000_000_000_u128;
+    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+    let mut evm = storage_evm(TempoHardfork::T7);
+    let mut version = *evm.version();
+    version.features.remove(EvmFeatures::FEE_CHARGE);
+    evm.set_execution_config(
+        ExecutionConfig::for_spec_and_version(TempoHardfork::T7, version),
+        TempoHardfork::T7,
+        tempo_tx_registry(SpecId::OSAKA),
+        NoPrecompiles::default(),
+    );
+
+    let fee_token = StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+        TIP20Setup::create("Euro", "EUR", admin)
+            .currency("EUR")
+            .with_issuer(admin)
+            .with_mint(fee_payer, max_fee)
+            .apply()
+            .map(|token| token.address())
+    })
+    .expect("EUR token setup succeeds");
+
+    let tx = fee_tx_env(fee_payer, fee_token, gas_limit, gas_price);
+    let result = TempoHandlerHooks::resolve_fee_context(&mut evm, &tx);
+
+    assert!(
+        matches!(
+            result,
+            Err(ref error)
+                if matches!(
+                    error.external_ref::<TempoInvalidTransaction>(),
+                    Some(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address, currency })
+                        if *address == fee_token && currency == "EUR"
+                )
+        ),
+        "disabled fee collection must still validate the fee token, got: {result:?}"
+    );
+}
+
+#[test]
 fn test_collect_fee_pre_tx_requires_max_fee_balance() {
     let fee_payer = Address::random();
     let gas_limit = 100_000;

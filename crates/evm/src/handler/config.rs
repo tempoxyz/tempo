@@ -295,17 +295,13 @@ impl TempoHandlerHooks {
         let base_fee = u64::try_from(host.block().basefee)
             .map_err(|_| HandlerError::Fatal("block base fee does not fit u64".into()))?;
         let gas_price = envelope.evm_tx().effective_gas_price(Some(base_fee));
-        let (collected, max_fee) = if host.feature(EvmFeatures::FEE_CHARGE) {
-            (
-                calc_gas_balance_spending(envelope.evm_tx().gas_limit(), gas_price),
-                calc_gas_balance_spending(
-                    envelope.evm_tx().gas_limit(),
-                    envelope.max_fee_per_gas(),
-                ),
-            )
+        let collected = if host.feature(EvmFeatures::FEE_CHARGE) {
+            calc_gas_balance_spending(envelope.evm_tx().gas_limit(), gas_price)
         } else {
-            (U256::ZERO, U256::ZERO)
+            U256::ZERO
         };
+        let max_fee =
+            calc_gas_balance_spending(envelope.evm_tx().gas_limit(), envelope.max_fee_per_gas());
         let spec = host.config_spec_id();
 
         StorageCtx::enter_evm_without_tip1060_accounting(host, || {

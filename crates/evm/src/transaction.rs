@@ -28,14 +28,21 @@ pub enum ExecutionContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TempoAaTx {
     transaction: Box<Recovered<AASigned>>,
+    fee_payer: Option<Address>,
     expiring_nonce_idx: Option<usize>,
     override_key_id: Option<Address>,
 }
 
 impl TempoAaTx {
     fn new(transaction: Recovered<AASigned>) -> Self {
+        let fee_payer = transaction
+            .inner()
+            .tx()
+            .recover_fee_payer(transaction.signer())
+            .ok();
         Self {
             transaction: Box::new(transaction),
+            fee_payer,
             expiring_nonce_idx: None,
             override_key_id: None,
         }
@@ -155,7 +162,9 @@ impl TempoEvmTx {
     pub fn fee_payer(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         let sender = self.signer();
         match self {
-            Self::AA(transaction) => transaction.inner().tx().recover_fee_payer(sender),
+            Self::AA(transaction) => transaction
+                .fee_payer
+                .ok_or_else(alloy_consensus::crypto::RecoveryError::new),
             Self::Legacy { .. } | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip7702(_) => {
                 Ok(sender)
             }
@@ -840,6 +849,7 @@ mod tests {
             SIGNER,
         );
         assert!(tx_env.fee_payer().is_err());
+        assert_eq!(tx_env.as_aa().unwrap().fee_payer, None);
     }
 
     #[test]
