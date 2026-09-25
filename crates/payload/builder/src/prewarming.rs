@@ -8,7 +8,7 @@ use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
@@ -372,7 +372,7 @@ where
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+        let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -384,6 +384,8 @@ where
                 return None;
             }
         };
+        let mut state_provider: EvmStateProviderBox =
+            Box::new(state_provider.into_evm_state_provider());
 
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(

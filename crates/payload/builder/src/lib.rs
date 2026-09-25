@@ -45,7 +45,10 @@ use reth_evm::{
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
+use reth_storage_api::{
+    EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
+    StateRootProvider,
+};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -324,19 +327,29 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
-                state_provider,
+        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let evm_state_provider = state_provider.as_ref().into_evm_state_provider();
+        let cached_state_provider = execution_cache.as_ref().map(|execution_cache| {
+            CachedStateProvider::new(
+                &evm_state_provider,
                 execution_cache.cache().clone(),
                 Some(self.cache_metrics.clone()),
-            ));
-        }
-        if self.config.state_provider_metrics {
-            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
-        }
+            )
+        });
+        let evm_state_provider = cached_state_provider
+            .as_ref()
+            .map(|provider| provider as &dyn EvmStateProvider)
+            .unwrap_or(&evm_state_provider);
+        let instrumented_state_provider = self
+            .config
+            .state_provider_metrics
+            .then(|| InstrumentedStateProvider::new(evm_state_provider, "builder"));
+        let evm_state_provider = instrumented_state_provider
+            .as_ref()
+            .map(|provider| provider as &dyn EvmStateProvider)
+            .unwrap_or(evm_state_provider);
 
-        let mut db = StateProviderDatabase::new(&state_provider);
+        let mut db = StateProviderDatabase::new(evm_state_provider);
         drop(_state_setup_span);
         self.metrics
             .state_setup_duration_seconds
@@ -1027,6 +1040,8 @@ where
             execution_block_encoded,
         );
 
+        drop(instrumented_state_provider);
+        drop(cached_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }
