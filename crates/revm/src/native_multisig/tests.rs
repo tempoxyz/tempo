@@ -62,7 +62,7 @@ fn native_hash_gas_layout_matches_all_owner_counts() {
             * revm::interpreter::gas::STANDARD_TOKEN_COST;
         assert_eq!(MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8, 84);
         assert_eq!(
-            crate::signature_gas::multisig_verification_gas(&signature),
+            tempo_precompiles::signature_verifier::multisig_verification_gas(&signature),
             calldata + keccak_cost(63 + 21 * count) + keccak_cost(84) + 3_000,
             "verification gas for {count} owners"
         );
