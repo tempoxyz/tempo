@@ -2785,7 +2785,8 @@ mod tests {
             ]),
         );
 
-        let mut state = StateProviderDatabase::new(provider.latest().unwrap());
+        let mut state =
+            StateProviderDatabase::new(provider.latest().unwrap().into_evm_state_provider());
         let spec = provider.chain_spec().tempo_hardfork_at(0);
 
         // Create AMM cache with the paused token in unique_tokens (simulating a validator's
