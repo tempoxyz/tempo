@@ -3,7 +3,7 @@ use crate::transaction::{
     KeychainSignature, PrimitiveSignature, TempoSignature,
     tt_authorization::tests::generate_secp256k1_keypair, tt_signature::WebAuthnSignature,
 };
-use alloy_primitives::{Signature, U256, address};
+use alloy_primitives::{Bytes, Signature, U256, address};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_signer_local::PrivateKeySigner;
 use arbitrary::{Arbitrary, Unstructured};
@@ -694,9 +694,9 @@ fn binary_multisig_deserializer_roundtrips_bytes() {
     .unwrap();
 
     let encoded = alloy_rlp::encode(signature);
-    let decoded = MultisigSignature::deserialize(serde::de::value::BorrowedBytesDeserializer::<
-        serde::de::value::Error,
-    >::new(&encoded))
+    let decoded = <MultisigSignature as serde::Deserialize>::deserialize(
+        serde::de::value::BorrowedBytesDeserializer::<serde::de::value::Error>::new(&encoded),
+    )
     .unwrap();
 
     assert_eq!(&decoded, signature);
@@ -706,7 +706,9 @@ fn binary_multisig_deserializer_roundtrips_bytes() {
 #[test]
 fn binary_multisig_deserializer_bounds_shape_before_typed_recursion() {
     fn decode(bytes: &[u8]) -> Result<MultisigSignature, serde::de::value::Error> {
-        MultisigSignature::deserialize(serde::de::value::BorrowedBytesDeserializer::new(bytes))
+        <MultisigSignature as serde::Deserialize>::deserialize(
+            serde::de::value::BorrowedBytesDeserializer::new(bytes),
+        )
     }
 
     for encoded in malformed_multisig_encodings() {

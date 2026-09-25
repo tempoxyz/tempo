@@ -1,13 +1,8 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
 use alloc::vec::Vec;
-#[cfg(any(test, feature = "serde"))]
-use alloy_primitives::Bytes;
 use alloy_primitives::{Address, B256, Keccak256, b256, keccak256};
 use core::mem::size_of;
 use tempo_contracts::SAFE_DEPLOYER_ADDRESS;
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 /// Tempo signature type byte for native multisig signatures.
 pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x05;
@@ -415,23 +410,26 @@ impl MultisigSignature {
 }
 
 #[cfg(feature = "serde")]
-impl Serialize for MultisigSignature {
+impl serde::Serialize for MultisigSignature {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::Serializer,
     {
-        Bytes::from(alloy_rlp::encode(self)).serialize(serializer)
+        serde::Serialize::serialize(
+            &alloy_primitives::Bytes::from(alloy_rlp::encode(self)),
+            serializer,
+        )
     }
 }
 
 #[cfg(feature = "serde")]
-impl<'de> Deserialize<'de> for MultisigSignature {
+impl<'de> serde::Deserialize<'de> for MultisigSignature {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::Deserializer<'de>,
     {
-        let encoded = Bytes::deserialize(deserializer)?;
-        alloy_rlp::decode_exact(&encoded).map_err(D::Error::custom)
+        let encoded = <alloy_primitives::Bytes as serde::Deserialize>::deserialize(deserializer)?;
+        alloy_rlp::decode_exact(&encoded).map_err(serde::de::Error::custom)
     }
 }
 
