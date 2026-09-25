@@ -3,7 +3,7 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoEvmExt,
-    TempoEvmTx, TempoFeeManager, tempo_tx_registry,
+    TempoEvmTx, TempoFeeManager, signature_gas::P256_VERIFY_GAS, tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -17,7 +17,7 @@ use evm2::{
 use proptest::prelude::*;
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, test_util::TIP20Setup};
 use tempo_primitives::{
-    AASigned, TempoTransaction,
+    AASigned, TempoSignature, TempoTransaction,
     subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
     transaction::{
         Call, CallScope, KeyAuthorization, KeychainSignature, SelectorRule, SignatureType,

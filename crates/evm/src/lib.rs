@@ -16,6 +16,7 @@ pub mod evm;
 mod fee_manager;
 mod handler;
 mod instructions;
+mod signature_gas;
 #[cfg(test)]
 mod test_utils;
 mod transaction;

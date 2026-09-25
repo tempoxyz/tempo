@@ -8,7 +8,12 @@ pub use self::config::{
     tempo_tx_registry,
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks, invalid};
-use crate::{FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv};
+use crate::{
+    FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
+    signature_gas::{
+        calldata_tokens, primitive_signature_verification_gas, tempo_signature_verification_gas,
+    },
+};
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
     Evm, EvmFeatures, TxResult,
@@ -42,20 +47,11 @@ use tempo_precompiles::{
     storage::{Handler as _, StorageCtx},
 };
 use tempo_primitives::transaction::{
-    PrimitiveSignature, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-    validate_calls,
+    SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
 };
 
-/// Additional gas for P256 signature verification
-/// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
-const P256_VERIFY_GAS: u64 = 5_000;
-
 const COLD_SLOAD_COST: u64 = 2_100;
-const STANDARD_TOKEN_COST: u64 = 4;
 const WARM_SSTORE_RESET: u64 = 2_900;
-
-/// Additional gas for Keychain signatures (key validation overhead: COLD_SLOAD_COST + 900 processing)
-const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
@@ -88,45 +84,6 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
-
-fn calldata_tokens(input: &[u8]) -> u64 {
-    input
-        .iter()
-        .map(|byte| if *byte == 0 { 1 } else { 4 })
-        .sum()
-}
-
-/// Calculates the gas cost for verifying a primitive signature.
-///
-/// Returns the additional gas required beyond the base transaction cost:
-/// - Secp256k1: 0 (already included in base 21k)
-/// - P256: 5000 gas
-/// - WebAuthn: 5000 gas + calldata cost for webauthn_data
-#[inline]
-fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature {
-        PrimitiveSignature::Secp256k1(_) => 0,
-        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-        PrimitiveSignature::WebAuthn(webauthn_sig) => {
-            P256_VERIFY_GAS + calldata_tokens(&webauthn_sig.webauthn_data) * STANDARD_TOKEN_COST
-        }
-    }
-}
-
-/// Calculates the gas cost for verifying an AA signature.
-///
-/// For Keychain signatures, adds key validation overhead to the inner signature cost
-/// Returns the additional gas required beyond the base transaction cost.
-#[inline]
-fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
-    match signature {
-        TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
-        TempoSignature::Keychain(keychain_sig) => {
-            // Keychain = inner signature + key validation overhead (SLOAD + processing)
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
-        }
-    }
-}
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
