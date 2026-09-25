@@ -15,11 +15,12 @@ use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use reth_execution_cache::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
 };
-use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
+use reth_primitives_traits::{Account as RethAccount, AccountExtension, Bytecode as RethBytecode};
 use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{
-    AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
-    StateProvider, StateRootProvider, StorageRootProvider,
+    AccountReader, BlockHashReader, BytecodeReader, EvmStateProviderAdapter,
+    HashedPostStateProvider, StateProofProvider, StateProvider, StateRootProvider,
+    StorageRootProvider,
     errors::{ProviderError, ProviderResult},
 };
 use reth_trie::{
@@ -85,13 +86,14 @@ pub(crate) struct ExecutionFixture {
     metrics: CachedStateMetrics,
 }
 
-pub(crate) type FixedCacheDb =
-    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
+pub(crate) type FixedCacheDb = State<
+    StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>,
+>;
 
 impl ExecutionFixture {
     pub(crate) fn state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new(
-            self.provider.clone(),
+            self.provider.clone().into_evm_state_provider(),
             self.cache.clone(),
             Some(self.metrics.clone()),
         );
@@ -102,7 +104,10 @@ impl ExecutionFixture {
     }
 
     pub(crate) fn prewarm_state_db(&self) -> FixedCacheDb {
-        let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
+        let provider = CachedStateProvider::new_prewarm(
+            self.provider.clone().into_evm_state_provider(),
+            self.cache.clone(),
+        );
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
@@ -112,7 +117,7 @@ impl ExecutionFixture {
 
 impl AccountReader for InMemoryStateProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
-        Ok(self.accounts.get(address).copied())
+        Ok(self.accounts.get(address).cloned())
     }
 }
 impl StateProvider for InMemoryStateProvider {
@@ -378,8 +383,9 @@ fn insert_account(
         nonce: info.nonce,
         balance: info.balance,
         bytecode_hash: Some(bytecode_hash),
+        extension: AccountExtension::from_shared(info.extension.into_shared()),
     };
-    cache.insert_account(address, Some(account));
+    cache.insert_account(address, Some(account.clone()));
     accounts.insert(address, account);
 }
 

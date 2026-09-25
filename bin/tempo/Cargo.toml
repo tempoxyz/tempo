@@ -134,8 +134,6 @@ default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 localnet = ["dep:nix"]
 
-bal = ["tempo-consensus/bal", "tempo-node/bal"]
-
 asm-keccak = [
 	"alloy/asm-keccak",
 	"alloy-primitives/asm-keccak",
