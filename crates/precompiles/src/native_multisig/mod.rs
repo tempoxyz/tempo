@@ -146,9 +146,9 @@ fn map_config_error(error: MultisigConfigError) -> TempoPrecompileError {
         | MultisigConfigError::ZeroOwner
         | MultisigConfigError::AccountIsOwner => NativeMultisigError::invalid_multisig_owner(),
         MultisigConfigError::TooManyOwners => NativeMultisigError::too_many_owners(),
-        MultisigConfigError::ZeroThreshold
-        | MultisigConfigError::ThresholdExceedsMax
-        | MultisigConfigError::ThresholdExceedsWeight => NativeMultisigError::invalid_threshold(),
+        MultisigConfigError::ZeroThreshold | MultisigConfigError::ThresholdExceedsWeight => {
+            NativeMultisigError::invalid_threshold()
+        }
         MultisigConfigError::ZeroWeight | MultisigConfigError::TotalWeightExceedsMax => {
             NativeMultisigError::invalid_weight()
         }
