@@ -41,7 +41,7 @@ use reth_engine_tree::tree::{
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError, TxResult},
     execute::BlockAssemblerInput,
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -668,7 +668,11 @@ where
             );
             let gas_before_execution = cumulative_gas_used;
             let used_replay = pool_tx.replay.is_some();
+            let mut zone_failure = None;
             let result_closure = |result: &TempoTxResult| {
+                if zone_kind.is_some() && !result.result().result.is_success() {
+                    zone_failure = Some(format!("{:?}", result.result().result));
+                }
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
@@ -720,6 +724,9 @@ where
                     used_replay,
                     execution_ok = execution_result.is_ok(),
                     success = execution_result.is_ok() && executor.receipts().last().is_some_and(|r| r.success),
+                    failure = ?zone_failure,
+                    execution_error = ?execution_result.as_ref().err(),
+                    receipt_logs = ?executor.receipts().last().filter(|_| execution_result.is_ok()).map(|r| &r.logs),
                     "Zone transaction timing"
                 );
             }
