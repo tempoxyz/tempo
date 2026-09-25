@@ -49,6 +49,7 @@ use reth_trie::{
 use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
+use zstd::zstd_safe::{MAGIC_SKIPPABLE_MASK, MAGIC_SKIPPABLE_START, MAGICNUMBER};
 
 /// Magic bytes for the state bloat binary format (8 bytes)
 const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
@@ -58,9 +59,6 @@ const VERSION: u16 = 1;
 
 /// Read-ahead over the dump file, and again over what a compressed one unpacks to.
 const READ_BUFFER: usize = 64 * 1024 * 1024;
-
-/// A zstd frame's first four bytes.
-const ZSTD_MAGIC: [u8; 4] = zstd::zstd_safe::MAGICNUMBER.to_le_bytes();
 
 /// ETL collector file size (200 MiB per temp file before spilling a new one).
 const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
@@ -600,8 +598,18 @@ fn open_dump(path: &Path) -> eyre::Result<Box<dyn BufRead>> {
     let head = reader
         .fill_buf()
         .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    if head.starts_with(&ZSTD_MAGIC) {
-        let decoder = zstd::Decoder::with_buffer(reader).wrap_err("failed to open zstd dump")?;
+    // `pzstd` puts a skippable frame ahead of each frame.
+    let compressed = head
+        .first_chunk()
+        .map(|magic| u32::from_le_bytes(*magic))
+        .is_some_and(|magic| {
+            magic == MAGICNUMBER || magic & MAGIC_SKIPPABLE_MASK == MAGIC_SKIPPABLE_START
+        });
+    if compressed {
+        let mut decoder =
+            zstd::Decoder::with_buffer(reader).wrap_err("failed to open zstd dump")?;
+        // zstd's largest window, for dumps made with `zstd --long`.
+        decoder.window_log_max(31)?;
         return Ok(Box::new(BufReader::with_capacity(READ_BUFFER, decoder)));
     }
     Ok(Box::new(reader))
@@ -618,10 +626,13 @@ fn next_header(reader: &mut impl BufRead) -> eyre::Result<Option<[u8; 40]>> {
         return Ok(None);
     }
     let mut header = [0u8; 40];
-    reader
-        .read_exact(&mut header)
-        .wrap_err("dump ends partway through a block header")?;
-    Ok(Some(header))
+    match reader.read_exact(&mut header) {
+        Ok(()) => Ok(Some(header)),
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(err).wrap_err("dump ends partway through a block header")
+        }
+        Err(err) => Err(err).wrap_err("failed to read block header"),
+    }
 }
 
 /// Storage change sets and history for the loaded slots: what each held before block 0, which
@@ -1023,21 +1034,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dump: Vec<u8> = (0..200_000u32).flat_map(|n| n.to_be_bytes()).collect();
 
-        let plain = dir.path().join("dump.bin");
-        std::fs::write(&plain, &dump).unwrap();
-
-        let squeezed = dir.path().join("dump.bin.zst");
         let (first, second) = dump.split_at(dump.len() / 2);
-        let mut frames = zstd::encode_all(first, 3).unwrap();
-        frames.extend(zstd::encode_all(second, 3).unwrap());
-        assert!(frames.len() < dump.len(), "the fixture has to compress");
-        std::fs::write(&squeezed, &frames).unwrap();
+        let frames = [first, second].map(|half| zstd::encode_all(half, 3).unwrap());
+        assert!(
+            frames.concat().len() < dump.len(),
+            "the fixture has to compress"
+        );
+        // `pzstd` writes a skippable frame ahead of each frame.
+        let skippable = [0x50, 0x2a, 0x4d, 0x18, 4, 0, 0, 0, 0, 0, 0, 0];
+        let pzstd = frames
+            .iter()
+            .flat_map(|frame| [&skippable[..], frame].concat())
+            .collect();
+        // As `zstd --long=28` does, past the window a decoder allows by default.
+        let mut long = zstd::Encoder::new(Vec::new(), 3).unwrap();
+        long.window_log(28).unwrap();
+        std::io::Write::write_all(&mut long, &dump).unwrap();
 
-        for path in [plain, squeezed] {
+        for (name, bytes) in [
+            ("plain", dump.clone()),
+            ("frames", frames.concat()),
+            ("pzstd", pzstd),
+            ("long", long.finish().unwrap()),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
             let mut read = Vec::new();
             open_dump(&path).unwrap().read_to_end(&mut read).unwrap();
-            assert_eq!(read.len(), dump.len(), "{}", path.display());
-            assert!(read == dump, "{}", path.display());
+            assert_eq!(read.len(), dump.len(), "{name}");
+            assert!(read == dump, "{name}");
         }
     }
 
@@ -1065,6 +1090,16 @@ mod tests {
                 "{short} bytes: {err}"
             );
         }
+
+        // A read that fails partway is not a short file.
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("bad block"))
+            }
+        }
+        let err = next_header(&mut BufReader::new(header[..1].chain(Broken))).unwrap_err();
+        assert!(!err.to_string().contains("partway through"), "{err}");
     }
 
     /// Times the history write over `TEMPO_HISTORY_BENCH_SLOTS` slots (default 32M);
