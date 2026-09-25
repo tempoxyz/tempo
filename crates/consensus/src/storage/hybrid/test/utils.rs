@@ -19,7 +19,7 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{Header, Sealable as _};
 use alloy_primitives::B256;
 use commonware_consensus::Heightable as _;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
@@ -99,6 +99,8 @@ pub(in crate::storage) fn make_chain(start: u64, count: usize) -> Vec<Block> {
 pub(in crate::storage::hybrid) struct StubProvider {
     by_number: Arc<Mutex<HashMap<u64, Block>>>,
     by_hash: Arc<Mutex<HashMap<B256, Block>>>,
+    headers_by_number: Arc<Mutex<HashMap<u64, TempoHeader>>>,
+    headers_by_hash: Arc<Mutex<HashMap<B256, TempoHeader>>>,
     fail: Arc<AtomicBool>,
     /// Reth's finalized block height. `None` means reth has not yet
     /// finalized anything (fresh chain). Drives [`Hybrid`]'s cache
@@ -120,6 +122,17 @@ impl StubProvider {
         let hash = block.digest().0;
         self.by_number.lock().insert(height, block.clone());
         self.by_hash.lock().insert(hash, block.clone());
+        self.add_header(block.block().header().clone());
+    }
+
+    /// Seed an execution header without requiring a stored block body.
+    pub(in crate::storage::hybrid) fn add_header(&self, header: TempoHeader) {
+        self.headers_by_number
+            .lock()
+            .insert(header.inner.number, header.clone());
+        self.headers_by_hash
+            .lock()
+            .insert(header.hash_slow(), header);
     }
 
     /// Configure the stub to start failing every read with
@@ -169,6 +182,23 @@ impl FinalizedBlocksProvider for StubProvider {
             return err;
         }
         Ok(self.by_hash.lock().get(&hash).cloned())
+    }
+
+    fn header_by_height(&self, height: u64) -> ProviderResult<Option<TempoHeader>> {
+        if let Some(err) = self.err_if_failing() {
+            return err;
+        }
+        if height > self.finalized_height().unwrap_or_default() {
+            return Ok(None);
+        }
+        Ok(self.headers_by_number.lock().get(&height).cloned())
+    }
+
+    fn header_by_hash(&self, hash: B256) -> ProviderResult<Option<TempoHeader>> {
+        if let Some(err) = self.err_if_failing() {
+            return err;
+        }
+        Ok(self.headers_by_hash.lock().get(&hash).cloned())
     }
 }
 

@@ -993,7 +993,7 @@ pub(super) struct Round {
 }
 
 impl Round {
-    pub(super) fn from_state(state: &State, namespace: &[u8]) -> Self {
+    pub(super) fn from_state(state: &State, namespace: &[u8], v1_active: bool) -> Self {
         // For full DKG, don't pass the previous output - this creates a new polynomial
         let previous_output = if state.is_full_dkg {
             None
@@ -1003,6 +1003,14 @@ impl Round {
 
         let dealers = state.dealers().clone();
         let players = state.players().clone();
+        let reveal = if v1_active {
+            Reveal::V1
+        } else {
+            #[expect(deprecated, reason = "preserve pre-T12 ceremony transcripts")]
+            {
+                Reveal::V0
+            }
+        };
 
         Self {
             epoch: state.epoch,
@@ -1011,12 +1019,7 @@ impl Round {
                 state.epoch.get(),
                 previous_output,
                 Mode::NonZeroCounter,
-                #[expect(
-                    deprecated,
-                    reason = "switching the revealed-share calculation to V1 changes the round \
-                              summary and requires a coordinated protocol change"
-                )]
-                Reveal::V0,
+                reveal,
                 dealers.clone(),
                 players.clone(),
             )
@@ -1374,7 +1377,7 @@ mod tests {
         deterministic::Runner::default().start(|mut context| async move {
             let mut state = make_test_state(&mut context, 1);
             state.is_full_dkg = true;
-            let round = Round::from_state(&state, crate::config::NAMESPACE);
+            let round = Round::from_state(&state, crate::config::NAMESPACE, false);
             let dealer_key = PrivateKey::from_seed(100);
             let player_key = PrivateKey::from_seed(101);
             let mut storage = builder()

@@ -65,15 +65,14 @@ pub(crate) fn walk_resting_orders(
     mut order: Order,
     mut amount: u128,
     is_bid: bool,
-    step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
+    step: impl Fn(u128, &Order, bool) -> Option<OrderStep>,
     mut settle: impl FnMut(Order, Fill) -> Result<Option<Order>>,
 ) -> Result<u128> {
     let mut total: u128 = 0;
 
     while amount > 0 {
         let remaining = order.remaining();
-        let s = step(amount, remaining, order.tick(), is_bid)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let s = step(amount, &order, is_bid).ok_or(TempoPrecompileError::under_overflow())?;
         // Preserve historical settlement-before-overflow ordering for replay gas.
         if s.fill_amount < remaining {
             // Partial fill terminates the trade.
@@ -176,12 +175,12 @@ pub fn taker_output(fill_amount: u128, tick: i16, is_bid: bool) -> Option<u128> 
 /// Per-order arithmetic for an exact-input trade. Pure: depends only on the
 /// order's `remaining`, `tick`, and side. The caller compares `fill_amount`
 /// against `remaining` to decide whether the order is partially or fully consumed.
-pub fn step_exact_in(
-    amount_in: u128,
-    remaining: u128,
-    tick: i16,
-    is_bid: bool,
-) -> Option<OrderStep> {
+///
+/// NOTE: Fill arithmetic uses the route's `is_bid`, while taker payout uses `order.is_bid()`.
+/// They are equal for valid books, but can differ in some Moderato testnet DEX books whose
+/// corrupted linked lists contain dangling pointers to missing order state ("ghost orders").
+pub fn step_exact_in(amount_in: u128, order: &Order, is_bid: bool) -> Option<OrderStep> {
+    let (remaining, tick) = (order.remaining(), order.tick());
     let (fill_amount, next_amount) = if is_bid {
         // Selling base: input is base, fill in base.
         (
@@ -203,19 +202,18 @@ pub fn step_exact_in(
 
     Some(OrderStep {
         fill_amount,
-        accumulate: taker_output(fill_amount, tick, is_bid)?,
+        accumulate: taker_output(fill_amount, tick, order.is_bid())?,
         next_amount,
     })
 }
 
 /// Per-order arithmetic for an exact-output trade. Pure: depends only on the
 /// order's `remaining`, `tick`, and side.
-pub fn step_exact_out(
-    amount_out: u128,
-    remaining: u128,
-    tick: i16,
-    is_bid: bool,
-) -> Option<OrderStep> {
+///
+/// NOTE: Output carried after a full fill uses `order.is_bid()` for the same
+/// Moderato compatibility reasons described in [`step_exact_in`].
+pub fn step_exact_out(amount_out: u128, order: &Order, is_bid: bool) -> Option<OrderStep> {
+    let (remaining, tick) = (order.remaining(), order.tick());
     let (fill_amount, accumulate, demand) = if is_bid {
         // Receiving quote: round up the base needed to cover the exact output.
         let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
@@ -232,7 +230,7 @@ pub fn step_exact_out(
     // bid that is the base needed to cover the output, for an ask the output
     // itself. The carried amount is the output still owed after this full fill.
     let next_amount = if demand > remaining {
-        let amount_out_received = taker_output(remaining, tick, is_bid)?;
+        let amount_out_received = taker_output(remaining, tick, order.is_bid())?;
         amount_out.checked_sub(amount_out_received)?
     } else {
         0
@@ -743,7 +741,8 @@ mod tests {
                 first,
                 3,
                 false,
-                |amount, remaining, _, _| {
+                |amount, order, _| {
+                    let remaining = order.remaining();
                     Some(OrderStep {
                         fill_amount: amount.min(remaining),
                         accumulate: if remaining == 1 { u128::MAX } else { 1 },

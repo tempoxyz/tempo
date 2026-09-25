@@ -2,9 +2,7 @@
 
 use std::{collections::BTreeSet, fs, path::Path};
 
-use alloy_json_abi::{
-    ContractObject, Error, Event, EventParam, Function, JsonAbi, Param, StateMutability,
-};
+use alloy_json_abi::{ContractObject, Error, Event, EventParam, Function, JsonAbi, Param};
 use itertools::Itertools;
 
 /// List of `(kind, signature)` pairs.
@@ -23,7 +21,7 @@ impl AbiSurface {
     pub fn from_abi(abi: &JsonAbi) -> Self {
         Self {
             functions: abi.functions().map(function_signature).collect(),
-            errors: abi.errors().map(error_signature).collect(),
+            errors: abi.errors().map(Error::signature).collect(),
             events: abi.events().map(event_signature).collect(),
         }
     }
@@ -109,27 +107,15 @@ pub fn compare_abi(
 }
 
 fn function_signature(function: &Function) -> String {
-    let inputs = function.inputs.iter().map(param_type).join(",");
-    let mut signature = format!("{}({inputs})", function.name);
+    let mut signature = function.signature();
     if !function.outputs.is_empty() {
         signature.push_str(&format!(
             " returns ({})",
             canonical_output_types(&function.outputs)
         ));
     }
-    signature.push_str(&format!(
-        " [{}]",
-        state_mutability(function.state_mutability)
-    ));
+    signature.push_str(&format!(" [{}]", function.state_mutability.as_json_str()));
     signature
-}
-
-fn error_signature(error: &Error) -> String {
-    format!(
-        "{}({})",
-        error.name,
-        error.inputs.iter().map(param_type).join(",")
-    )
 }
 
 fn event_signature(event: &Event) -> String {
@@ -142,45 +128,21 @@ fn event_signature(event: &Event) -> String {
 }
 
 fn event_param_signature(param: &EventParam) -> String {
-    let ty = canonical_param_type(&param.ty, &param.components);
+    let ty = param.selector_type();
     if param.indexed {
         format!("indexed {ty}")
     } else {
-        ty
+        ty.into_owned()
     }
-}
-
-fn param_type(param: &Param) -> String {
-    canonical_param_type(&param.ty, &param.components)
 }
 
 fn canonical_output_types(outputs: &[Param]) -> String {
+    // Solidity emits multiple outputs where the Rust binding may expose one tuple.
     match outputs {
-        [output] if output.ty == "tuple" => output.components.iter().map(param_type).join(","),
-        _ => outputs.iter().map(param_type).join(","),
-    }
-}
-
-fn canonical_param_type(ty: &str, components: &[Param]) -> String {
-    if components.is_empty() {
-        return ty.to_string();
-    }
-    let tuple = format!("({})", components.iter().map(param_type).join(","));
-    if ty == "tuple" {
-        tuple
-    } else if let Some(suffix) = ty.strip_prefix("tuple") {
-        format!("{tuple}{suffix}")
-    } else {
-        ty.to_string()
-    }
-}
-
-fn state_mutability(state: StateMutability) -> &'static str {
-    match state {
-        StateMutability::Pure => "pure",
-        StateMutability::View => "view",
-        StateMutability::NonPayable => "nonpayable",
-        StateMutability::Payable => "payable",
+        [output] if output.ty == "tuple" => {
+            output.components.iter().map(Param::selector_type).join(",")
+        }
+        _ => outputs.iter().map(Param::selector_type).join(","),
     }
 }
 
@@ -219,6 +181,34 @@ mod tests {
                 .contains("Bar(indexed address,uint256) [anonymous]")
         );
         assert!(surface.errors.contains("BadPerson((string,uint16))"));
+    }
+
+    #[test]
+    fn preserves_nested_tuple_arrays_and_event_indexing() {
+        let abi = JsonAbi::parse([
+            "function batch((address,(uint256,bool)[])[] items) external payable returns ((uint256,bool)[] results)",
+            "function reset() external",
+            "event Batch((address,uint256)[] indexed items)",
+            "error BadBatch((address,(uint256,bool)[])[] items)",
+        ])
+        .unwrap();
+        let surface = AbiSurface::from_abi(&abi);
+        assert!(
+            surface.functions.contains(
+                "batch((address,(uint256,bool)[])[]) returns ((uint256,bool)[]) [payable]"
+            )
+        );
+        assert!(surface.functions.contains("reset() [nonpayable]"));
+        assert!(
+            surface
+                .events
+                .contains("Batch(indexed (address,uint256)[])")
+        );
+        assert!(
+            surface
+                .errors
+                .contains("BadBatch((address,(uint256,bool)[])[])")
+        );
     }
 
     #[test]
