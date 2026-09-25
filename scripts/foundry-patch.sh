@@ -100,11 +100,21 @@ fi
 
 # ── 4. Patch [patch.crates-io] ──────────────────────────────────────────────
 # Upstream foundry pins some tempo crates to git revisions in [patch.crates-io].
-# Replace those with local paths so Cargo doesn't conflict.
-while IFS=$'\t' read -r crate path; do
-  [[ -n "$crate" ]] || continue
-  local_path="${TEMPO_ROOT}/${path}"
-  replacement="${crate} = { path = \"${local_path}\" }"
+# Cargo ignores patches in dependencies, so also carry Tempo's companion pins
+# into the root workspace (notably the account-ext crates).
+CRATES_IO_PATCHES="$({
+  while IFS=$'\t' read -r crate path; do
+    [[ -n "$crate" ]] || continue
+    printf '%s = { path = "%s/%s" }\n' "$crate" "$TEMPO_ROOT" "$path"
+  done <<< "$PATCHES"
+  awk '
+    /^\[patch\.crates-io\]/ { in_section = 1; next }
+    in_section && /^\[/ { exit }
+    in_section && /^[a-zA-Z0-9_-]+ = / { print }
+  ' "$TEMPO_CARGO"
+})"
+while IFS= read -r replacement; do
+  crate="${replacement%% = *}"
   tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
   awk -v crate="$crate" -v replacement="$replacement" '
     /^\[patch\.crates-io\]/ {
@@ -139,7 +149,7 @@ while IFS=$'\t' read -r crate path; do
     }
   ' "$FOUNDRY_CARGO" > "$tmp_cargo"
   mv "$tmp_cargo" "$FOUNDRY_CARGO"
-done <<< "$PATCHES"
+done <<< "$CRATES_IO_PATCHES"
 
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"

@@ -10,11 +10,17 @@ use reth_rpc_convert::{
 use reth_rpc_eth_types::EthApiError;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
 use tempo_revm::TempoTxEnv;
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
+        if self.has_configurable_simulation() {
+            return Err(ValueError::new(
+                self,
+                "configurable roles are unsupported in simulateV1 until evolving-position state validation is available",
+            ));
+        }
         match self.output_tx_type() {
             TempoTxType::AA => {
                 let tx = self.build_aa()?;
@@ -38,6 +44,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
+                    multisig_simulation,
+                    key_authorization_simulation,
+                    multisig_simulation_signature,
+                    multisig_simulation_prepared,
                     valid_before,
                     valid_after,
                     fee_payer_signature,
@@ -57,6 +67,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_simulation,
+                            key_authorization_simulation,
+                            multisig_simulation_signature,
+                            multisig_simulation_prepared,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -76,6 +90,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_simulation,
+                            key_authorization_simulation,
+                            multisig_simulation_signature,
+                            multisig_simulation_prepared,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -105,6 +123,14 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
+        if self.multisig_simulation.is_some()
+            || self.key_authorization_simulation.is_some()
+            || self.multisig_simulation_signature.is_some()
+            || self.multisig_simulation_prepared
+            || self.key_type == Some(SignatureType::Multisig)
+        {
+            return Err(SignTxRequestError::InvalidTransactionRequest);
+        }
         if self.output_tx_type() == TempoTxType::AA {
             let mut tx = self
                 .build_aa()
@@ -118,7 +144,7 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
 }
 
 impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
-    fn from_consensus_header(header: SealedHeader<TempoHeader>, block_size: usize) -> Self {
+    fn from_consensus_header(header: SealedHeader<TempoHeader>, block_size: Option<usize>) -> Self {
         Self {
             timestamp_millis: header.timestamp_millis(),
             inner: FromConsensusHeader::from_consensus_header(header, block_size),
@@ -281,7 +307,8 @@ mod tests {
         // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
         let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes().to_vec());
         let sig =
-            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data))
+                .unwrap();
 
         // Extract webauthn_data and verify it's clamped to MAX_WEBAUTHN_SIZE (8192)
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
@@ -300,7 +327,8 @@ mod tests {
     fn test_webauthn_size_respects_minimum() {
         // Attempt to create a signature with size 0
         let key_data = Bytes::from(vec![0u8]);
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let sig =
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data)).unwrap();
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");
@@ -317,7 +345,7 @@ mod tests {
     #[test]
     fn test_webauthn_default_size() {
         // No key_data should use default size (800)
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None);
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None).unwrap();
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");

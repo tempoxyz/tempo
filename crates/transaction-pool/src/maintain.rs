@@ -15,8 +15,12 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
-use std::time::Instant;
+use reth_transaction_pool::{AllPoolTransactions, TransactionPool, ValidPoolTransaction};
+use revm::database::BundleAccount;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -28,6 +32,25 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
+
+/// Accounts whose native configuration commitment changed in this block.
+fn changed_commitments(state: &AddressMap<BundleAccount>) -> AddressSet {
+    let mut changed = AddressSet::default();
+    for (address, account) in state {
+        let previous = account
+            .original_info
+            .as_ref()
+            .map_or(&[][..], |info| info.extension.as_ref());
+        let current = account
+            .info
+            .as_ref()
+            .map_or(&[][..], |info| info.extension.as_ref());
+        if previous != current {
+            changed.insert(*address);
+        }
+    }
+    changed
+}
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -482,16 +505,28 @@ where
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
+    let chain_events = pool.client().canonical_state_stream();
+    maintain_tempo_pool_with_events(pool, chain_events).await;
+}
+
+pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
+    pool: TempoTransactionPool<Client, EvmConfig>,
+    mut chain_events: impl futures::Stream<Item = CanonStateNotification<TempoPrimitives>> + Unpin,
+) where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + HeaderProvider<Header = TempoHeader>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
     let mut pending_staleness = PendingStalenessTracker::default();
     let metrics = TempoPoolMaintenanceMetrics::default();
-
-    // Subscribe to canonical chain events.
-    let mut chain_events = pool.client().canonical_state_stream();
 
     let amm_cache = pool.amm_liquidity_cache();
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
+        let reorg = matches!(&event, CanonStateNotification::Reorg { .. });
         let new = match event {
             CanonStateNotification::Reorg { old: _, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
@@ -547,6 +582,59 @@ where
         // normal mined path rather than being discarded from the pool.
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
+        let readd = |removed: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+                     reason: &'static str,
+                     wait_for_head: bool| {
+            let count = removed.len();
+            let pool = pool.clone();
+            let tip_hash = tip.tip().hash();
+            let tip_number = tip.tip().number();
+            tokio::spawn(async move {
+                if wait_for_head {
+                    // Reth and Tempo receive the same notification independently. Validate only
+                    // after Reth has updated its validator and pool head.
+                    loop {
+                        let head = pool.block_info();
+                        if head.last_seen_block_number > tip_number
+                            || (head.last_seen_block_number == tip_number
+                                && head.last_seen_block_hash == tip_hash)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+                let transactions = removed
+                    .into_iter()
+                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                    .collect();
+                let results = pool.add_transactions_with_origins(transactions).await;
+                let success = results.iter().filter(|result| result.is_ok()).count();
+                debug!(target: "txpool", total = count, success, reason, "Re-validated transactions");
+            });
+        };
+
+        let changed = changed_commitments(bundle_state);
+        if reorg || !changed.is_empty() {
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| {
+                        tx.transaction
+                            .needs_configurable_revalidation(&changed, reorg)
+                    })
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let removed = pool.remove_transactions(hashes);
+                removed_this_iteration.extend(removed.iter().map(|tx| *tx.hash()));
+                readd(removed, "configurable account change", true);
+            }
+        }
+
         // 4. Handle potentially invalidating updates
         // When a cached value changes of a token (transfer policy, or quote token) changes,
         // pending transactions using that token may become invalid. We need to remove them
@@ -590,23 +678,7 @@ where
 
                 counter.increment(count as u64);
 
-                let pool_clone = pool.clone();
-                tokio::spawn(async move {
-                    let txs: Vec<_> = removed_txs
-                        .into_iter()
-                        .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
-                        .collect();
-
-                    let results = pool_clone.add_transactions_with_origins(txs).await;
-                    let success = results.iter().filter(|r| r.is_ok()).count();
-                    debug!(
-                        target: "txpool",
-                        total = count,
-                        success,
-                        reason,
-                        "Re-validated transactions"
-                    );
-                });
+                readd(removed_txs, reason, false);
             }
         }
 
@@ -683,10 +755,83 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
-    use alloy_primitives::{Address, B256, TxHash};
+    use alloy_primitives::{Address, B256, TxHash, U256};
     use reth_primitives_traits::RecoveredBlock;
+    use revm::state::{AccountExtension, AccountInfo};
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
+
+    #[test]
+    fn changed_commitments_include_registration_but_ignore_other_account_changes() {
+        let registration = Address::repeat_byte(1);
+        let code = Address::repeat_byte(2);
+        let balance_only = Address::repeat_byte(3);
+        let rotation = Address::repeat_byte(4);
+        let new_empty = Address::repeat_byte(5);
+        let original = AccountInfo::default();
+        let mut state = AddressMap::default();
+        let mut insert = |address, current: AccountInfo| {
+            state.insert(
+                address,
+                BundleAccount {
+                    original_info: Some(original.clone()),
+                    info: Some(current),
+                    storage: Default::default(),
+                    status: Default::default(),
+                },
+            );
+        };
+        insert(
+            registration,
+            AccountInfo {
+                extension: AccountExtension::copy_from_slice(&[1]),
+                ..original.clone()
+            },
+        );
+        insert(
+            code,
+            AccountInfo {
+                code_hash: B256::repeat_byte(2),
+                ..original.clone()
+            },
+        );
+        insert(
+            balance_only,
+            AccountInfo {
+                balance: U256::from(1),
+                ..original.clone()
+            },
+        );
+        state.insert(
+            rotation,
+            BundleAccount {
+                original_info: Some(AccountInfo {
+                    extension: AccountExtension::copy_from_slice(&[1]),
+                    ..original.clone()
+                }),
+                info: Some(AccountInfo {
+                    extension: AccountExtension::copy_from_slice(&[2]),
+                    ..original.clone()
+                }),
+                storage: Default::default(),
+                status: Default::default(),
+            },
+        );
+        state.insert(
+            new_empty,
+            BundleAccount {
+                original_info: None,
+                info: Some(original),
+                storage: Default::default(),
+                status: Default::default(),
+            },
+        );
+
+        assert_eq!(
+            changed_commitments(&state),
+            [registration, rotation].into_iter().collect()
+        );
+    }
 
     mod pending_staleness_tracker_tests {
         use super::*;
