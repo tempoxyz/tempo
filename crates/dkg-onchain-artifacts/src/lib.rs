@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
+use commonware_codec::{Decode as _, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
 #[cfg(feature = "commonware-consensus")]
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -17,6 +17,7 @@ use commonware_cryptography::{
     ed25519::PublicKey,
 };
 use commonware_utils::{NZU32, ordered};
+use tempo_hardfork::TempoHardfork;
 
 const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
@@ -35,13 +36,9 @@ pub struct OnchainDkgOutcome {
     /// epoch encoded with this output).
     pub output: Output<MinSig, PublicKey>,
 
-    /// The next players. These will be the players in the DKG ceremony running
-    /// during `epoch`.
-    pub next_players: ordered::Set<PublicKey>,
-
-    /// Whether the next DKG ceremony should be a full ceremony (new polynomial)
-    /// instead of a reshare. Set when `nextFullDkgCeremony == epoch`.
-    pub is_next_full_dkg: bool,
+    /// Configuration suffix present only before TIP-1123. After activation the
+    /// artifact contains exactly `epoch` and `output`, without an option tag.
+    pub legacy_config: Option<LegacyDkgConfig>,
 }
 
 impl OnchainDkgOutcome {
@@ -59,10 +56,6 @@ impl OnchainDkgOutcome {
         self.output.players()
     }
 
-    pub fn next_players(&self) -> &ordered::Set<PublicKey> {
-        &self.next_players
-    }
-
     pub fn sharing(&self) -> &Sharing<MinSig> {
         self.output.public()
     }
@@ -70,33 +63,54 @@ impl OnchainDkgOutcome {
     pub fn network_identity(&self) -> &<MinSig as Variant>::Public {
         self.sharing().public()
     }
+
+    /// Decode a boundary using its hardfork's historical acceptance rules.
+    /// Legacy boundaries allowed trailing bytes; TIP-1123 artifacts must contain
+    /// exactly the epoch and output, so even a legacy configuration suffix is rejected.
+    pub fn decode_boundary(
+        mut bytes: &[u8],
+        fork: &TempoHardfork,
+    ) -> Result<Self, commonware_codec::Error> {
+        if fork.is_tip1123() {
+            Self::decode_cfg(bytes, fork)
+        } else {
+            Self::read_cfg(&mut bytes, fork)
+        }
+    }
 }
 
 impl Write for OnchainDkgOutcome {
     fn write(&self, buf: &mut impl BufMut) {
         UInt(self.epoch).write(buf);
         self.output.write(buf);
-        self.next_players.write(buf);
-        self.is_next_full_dkg.write(buf);
+        if let Some(config) = &self.legacy_config {
+            config.next_players.write(buf);
+            config.is_next_full_dkg.write(buf);
+        }
     }
 }
 
 impl Read for OnchainDkgOutcome {
-    type Cfg = ();
+    type Cfg = TempoHardfork;
 
-    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
+    fn read_cfg(buf: &mut impl Buf, fork: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let epoch = UInt::<u64>::read(buf)?.into();
         let output = Read::read_cfg(buf, &(MAX_VALIDATORS, ModeVersion::v0()))?;
-        let next_players = Read::read_cfg(
-            buf,
-            &(RangeCfg::from(1..=(MAX_VALIDATORS.get() as usize)), ()),
-        )?;
-        let is_next_full_dkg = ReadExt::read(buf)?;
+        let legacy_config = if fork.is_tip1123() {
+            None
+        } else {
+            Some(LegacyDkgConfig {
+                next_players: Read::read_cfg(
+                    buf,
+                    &(RangeCfg::from(1..=(MAX_VALIDATORS.get() as usize)), ()),
+                )?,
+                is_next_full_dkg: ReadExt::read(buf)?,
+            })
+        };
         Ok(Self {
             epoch,
             output,
-            next_players,
-            is_next_full_dkg,
+            legacy_config,
         })
     }
 }
@@ -105,16 +119,26 @@ impl EncodeSize for OnchainDkgOutcome {
     fn encode_size(&self) -> usize {
         UInt(self.epoch).encode_size()
             + self.output.encode_size()
-            + self.next_players.encode_size()
-            + self.is_next_full_dkg.encode_size()
+            + self.legacy_config.as_ref().map_or(0, |config| {
+                config.next_players.encode_size() + config.is_next_full_dkg.encode_size()
+            })
     }
+}
+
+/// The configuration encoded after the DKG output in pre-TIP-1123 boundaries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyDkgConfig {
+    /// Players in the ceremony running during the outcome's epoch.
+    pub next_players: ordered::Set<PublicKey>,
+    /// Whether that ceremony creates a new polynomial instead of resharing.
+    pub is_next_full_dkg: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use std::iter::repeat_with;
 
-    use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
+    use commonware_codec::Encode as _;
     use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         Signer as _,
@@ -125,7 +149,7 @@ mod tests {
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
     use rand::SeedableRng as _;
 
-    use super::OnchainDkgOutcome;
+    use super::*;
 
     #[test]
     fn onchain_dkg_outcome_roundtrip() {
@@ -145,11 +169,13 @@ mod tests {
         let mut on_chain = OnchainDkgOutcome {
             epoch: 42,
             output,
-            next_players: ordered::Set::try_from_iter(
-                player_keys.iter().map(|key| key.public_key()),
-            )
-            .unwrap(),
-            is_next_full_dkg: false,
+            legacy_config: Some(LegacyDkgConfig {
+                next_players: ordered::Set::try_from_iter(
+                    player_keys.iter().map(|key| key.public_key()),
+                )
+                .unwrap(),
+                is_next_full_dkg: false,
+            }),
         };
         // Preserve Commonware Epoch's wire encoding, including varint boundaries.
         let payload = on_chain.encode()[Epoch::new(on_chain.epoch).encode_size()..].to_vec();
@@ -163,9 +189,55 @@ mod tests {
             assert_eq!(&bytes[prefix.len()..], payload);
             assert_eq!(bytes.len(), on_chain.encode_size());
             assert_eq!(
-                OnchainDkgOutcome::read(&mut bytes.as_ref()).unwrap(),
+                OnchainDkgOutcome::decode_boundary(bytes.as_ref(), &TempoHardfork::T12).unwrap(),
                 on_chain
             );
+            let mut compact = on_chain.clone();
+            compact.legacy_config = None;
+            let compact_bytes = compact.encode();
+            assert_eq!(&bytes[..compact_bytes.len()], compact_bytes.as_ref());
+            assert_eq!(compact_bytes.len(), compact.encode_size());
+            assert_eq!(
+                OnchainDkgOutcome::decode_boundary(compact_bytes.as_ref(), &TempoHardfork::Tip1123)
+                    .unwrap(),
+                compact,
+            );
+            assert!(
+                OnchainDkgOutcome::decode_boundary(bytes.as_ref(), &TempoHardfork::Tip1123)
+                    .is_err()
+            );
+            assert!(
+                OnchainDkgOutcome::decode_boundary(compact_bytes.as_ref(), &TempoHardfork::T12)
+                    .is_err()
+            );
+            let mut legacy_with_trailing_bytes = bytes.to_vec();
+            legacy_with_trailing_bytes.push(0xff);
+            assert_eq!(
+                OnchainDkgOutcome::decode_boundary(
+                    &legacy_with_trailing_bytes,
+                    &TempoHardfork::T13,
+                )
+                .unwrap(),
+                on_chain,
+            );
+            let mut compact_with_trailing_bytes = compact_bytes.to_vec();
+            compact_with_trailing_bytes.push(0xff);
+            assert!(
+                OnchainDkgOutcome::decode_boundary(
+                    &compact_with_trailing_bytes,
+                    &TempoHardfork::Tip1123,
+                )
+                .is_err()
+            );
+            for length in 0..compact_bytes.len() {
+                assert!(
+                    OnchainDkgOutcome::decode_boundary(
+                        &compact_bytes[..length],
+                        &TempoHardfork::Tip1123
+                    )
+                    .is_err()
+                );
+            }
         }
     }
 }

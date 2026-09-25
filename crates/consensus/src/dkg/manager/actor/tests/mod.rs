@@ -2,6 +2,7 @@
 
 mod harness;
 mod startup;
+mod tip1123;
 
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
 use futures::channel::oneshot;
 use rand::{SeedableRng as _, rngs::StdRng};
+use tempo_chainspec::TempoHardfork;
 
 use super::*;
 use harness::{
@@ -294,6 +296,7 @@ fn exhausted_ancestry_releases_pending_outcome_request() {
         let request = GetDkgOutcome {
             digest: Digest(B256::repeat_byte(1)),
             height: Height::new(1),
+            fork: TempoHardfork::T12,
             response,
         };
         let mut ancestry = AncestorStream::new();
@@ -335,7 +338,11 @@ fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
         let response = context
             .timeout(Duration::from_secs(1), async move {
                 request_mailbox
-                    .get_dkg_outcome(Digest(B256::repeat_byte(1)), Height::new(11))
+                    .get_dkg_outcome(
+                        Digest(B256::repeat_byte(1)),
+                        Height::new(11),
+                        TempoHardfork::T12,
+                    )
                     .await
             })
             .await
@@ -534,7 +541,7 @@ fn failed_dkg_outcomes_carry_share_forward() {
         let first_digest = Digest(B256::repeat_byte(1));
         let first_outcome = harness
             .mailbox()
-            .get_dkg_outcome(first_digest, Height::new(10))
+            .get_dkg_outcome(first_digest, Height::new(10), TempoHardfork::T12)
             .await
             .unwrap();
         assert_eq!(first_outcome.epoch(), state.epoch.next());
@@ -556,7 +563,7 @@ fn failed_dkg_outcomes_carry_share_forward() {
         let second_digest = Digest(B256::repeat_byte(2));
         let second_outcome = harness
             .mailbox()
-            .get_dkg_outcome(second_digest, Height::new(20))
+            .get_dkg_outcome(second_digest, Height::new(20), TempoHardfork::T12)
             .await
             .unwrap();
         assert_eq!(second_outcome.epoch(), first_outcome.epoch().next());
@@ -812,7 +819,7 @@ fn epoch_shares_only_distributed_in_the_first_half() {
         let digest = Digest(B256::repeat_byte(1));
         let outcome = harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(15))
+            .get_dkg_outcome(digest, Height::new(15), TempoHardfork::T12)
             .await
             .unwrap();
 
@@ -931,8 +938,10 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
             let outcome = OnchainDkgOutcome {
                 epoch: state.epoch.next().get(),
                 output,
-                next_players: state.players().clone(),
-                is_next_full_dkg: false,
+                legacy_config: Some(LegacyDkgConfig {
+                    next_players: state.players().clone(),
+                    is_next_full_dkg: false,
+                }),
             };
             (signed, outcome)
         };
@@ -990,7 +999,11 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         assert!(selected_logs.next().is_none());
         let actual = harness
             .mailbox()
-            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .get_dkg_outcome(
+                Digest(previous.hash_slow()),
+                Height::new(18),
+                TempoHardfork::T12,
+            )
             .await
             .unwrap();
 
@@ -1010,7 +1023,11 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         harness.start().await;
         let restarted = harness
             .mailbox()
-            .get_dkg_outcome(Digest(previous.hash_slow()), Height::new(18))
+            .get_dkg_outcome(
+                Digest(previous.hash_slow()),
+                Height::new(18),
+                TempoHardfork::T12,
+            )
             .await
             .unwrap();
         assert_eq!(restarted, actual);
@@ -1098,12 +1115,12 @@ fn two_actors_produce_the_same_new_dkg_output() {
         let digest = Digest(B256::repeat_byte(1));
         let first_outcome = first_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .get_dkg_outcome(digest, Height::new(17), TempoHardfork::T12)
             .await
             .unwrap();
         let second_outcome = second_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .get_dkg_outcome(digest, Height::new(17), TempoHardfork::T12)
             .await
             .unwrap();
 
@@ -1204,12 +1221,12 @@ fn reshare_produces_new_shares() {
         let digest = Digest(B256::repeat_byte(1));
         let first_outcome = first_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .get_dkg_outcome(digest, Height::new(17), TempoHardfork::T12)
             .await
             .unwrap();
         let second_outcome = second_harness
             .mailbox()
-            .get_dkg_outcome(digest, Height::new(17))
+            .get_dkg_outcome(digest, Height::new(17), TempoHardfork::T12)
             .await
             .unwrap();
 
@@ -1423,7 +1440,11 @@ fn outcome_requests_use_reshare_fallback_and_require_next_players() {
 
         let outcome = harness
             .mailbox()
-            .get_dkg_outcome(Digest(B256::repeat_byte(1)), Height::new(10))
+            .get_dkg_outcome(
+                Digest(B256::repeat_byte(1)),
+                Height::new(10),
+                TempoHardfork::T12,
+            )
             .await
             .unwrap();
 
@@ -1432,15 +1453,22 @@ fn outcome_requests_use_reshare_fallback_and_require_next_players() {
         // The incomplete ceremony fails forward by carrying the prior output
         // into the next epoch.
         assert_eq!(outcome.output, state.output);
-        assert_eq!(outcome.next_players, state.players);
-        assert!(!outcome.is_next_full_dkg);
+        assert_eq!(
+            outcome.legacy_config.as_ref().unwrap().next_players,
+            state.players
+        );
+        assert!(!outcome.legacy_config.as_ref().unwrap().is_next_full_dkg);
 
         harness.execution.fail_next_players();
 
         assert!(
             harness
                 .mailbox()
-                .get_dkg_outcome(Digest(B256::repeat_byte(2)), Height::new(10))
+                .get_dkg_outcome(
+                    Digest(B256::repeat_byte(2)),
+                    Height::new(10),
+                    TempoHardfork::T12
+                )
                 .await
                 .is_err()
         );
@@ -1490,7 +1518,7 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
 
         let outcome = harness
             .mailbox()
-            .get_dkg_outcome(parent, Height::new(8))
+            .get_dkg_outcome(parent, Height::new(8), TempoHardfork::T12)
             .await
             .unwrap();
 
@@ -1549,7 +1577,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let first_outcome = harness
             .mailbox()
-            .get_dkg_outcome(first_parent, Height::new(8))
+            .get_dkg_outcome(first_parent, Height::new(8), TempoHardfork::T12)
             .await
             .unwrap();
 
@@ -1568,7 +1596,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let second_outcome = harness
             .mailbox()
-            .get_dkg_outcome(second_parent, Height::new(8))
+            .get_dkg_outcome(second_parent, Height::new(8), TempoHardfork::T12)
             .await
             .unwrap();
 
@@ -1589,7 +1617,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         // DKG Outcomes are cached, thus we can request the outcome without re-reading state
         let cached_first_outcome = harness
             .mailbox()
-            .get_dkg_outcome(first_parent, Height::new(8))
+            .get_dkg_outcome(first_parent, Height::new(8), TempoHardfork::T12)
             .await
             .unwrap();
 

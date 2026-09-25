@@ -184,6 +184,7 @@ dependencies = [
  "alloy-eips",
  "alloy-ens",
  "alloy-genesis",
+ "alloy-json-rpc",
  "alloy-network",
  "alloy-provider",
  "alloy-pubsub",
@@ -13535,6 +13536,7 @@ dependencies = [
  "tempo-validator-config",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
  "tracy-client",
  "url",
@@ -13725,6 +13727,7 @@ dependencies = [
  "commonware-utils",
  "modular-bitfield",
  "rand 0.10.2",
+ "tempo-hardfork",
 ]
 
 [[package]]

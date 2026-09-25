@@ -226,6 +226,8 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t13>.
         T13,
+        /// TIP-1123: derive DKG configuration at epoch entry. Activation is not scheduled.
+        Tip1123,
     }
 );
 
@@ -373,6 +375,7 @@ impl TempoHardfork {
             Self::T11 => None,
             Self::T12 => None,
             Self::T13 => None,
+            Self::Tip1123 => None,
         }
     }
 
@@ -398,6 +401,7 @@ impl TempoHardfork {
             Self::T11 => Some(MAINNET_T11_TIMESTAMP),
             Self::T12 => None,
             Self::T13 => None,
+            Self::Tip1123 => None,
         }
     }
 
@@ -423,6 +427,7 @@ impl TempoHardfork {
             Self::T11 => None,
             Self::T12 => None,
             Self::T13 => None,
+            Self::Tip1123 => None,
         }
     }
 
@@ -448,6 +453,7 @@ impl TempoHardfork {
             Self::T11 => Some(MODERATO_T11_TIMESTAMP),
             Self::T12 => None,
             Self::T13 => None,
+            Self::Tip1123 => None,
         }
     }
 }

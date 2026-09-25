@@ -74,9 +74,10 @@ fn validators_switch_dkg_reveal_version_at_t12() {
             );
 
             let input = read_outcome_from_validator(validator, boundary).unwrap();
+            let config = super::super::common::read_ceremony_configuration(validator, &input);
             let outcome = read_outcome_from_validator(validator, last).unwrap();
             assert_eq!(outcome.epoch, epoch.next().get());
-            assert!(!input.is_next_full_dkg);
+            assert!(!config.is_next_full_dkg);
 
             let info = |reveal| {
                 Info::<MinSig, PublicKey>::new::<N3f1>(
@@ -86,7 +87,7 @@ fn validators_switch_dkg_reveal_version_at_t12() {
                     Mode::NonZeroCounter,
                     reveal,
                     input.output.players().clone(),
-                    input.next_players.clone(),
+                    config.next_players.clone(),
                 )
                 .unwrap()
             };
@@ -113,7 +114,7 @@ fn validators_switch_dkg_reveal_version_at_t12() {
 
                 let signed = SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
                     &mut extra_data.as_ref(),
-                    &NZU32!(input.next_players.len() as u32),
+                    &NZU32!(config.next_players.len() as u32),
                 )
                 .unwrap();
                 assert!(

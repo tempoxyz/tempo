@@ -48,7 +48,7 @@ use tempo_contracts::{
         t13_zone_factory_state,
     },
 };
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{LegacyDkgConfig, OnchainDkgOutcome};
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -221,6 +221,9 @@ pub(crate) struct GenesisArgs {
     /// T13 hardfork activation time.
     #[arg(long, default_value = "0")]
     t13_time: u64,
+    /// Optional activation time for the unscheduled TIP-1123 fork.
+    #[arg(long)]
+    tip1123_time: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -233,11 +236,13 @@ impl ConsensusConfig {
         OnchainDkgOutcome {
             epoch: 0,
             output: self.output.clone(),
-            next_players: ordered::Set::try_from_iter(
-                self.validators.iter().map(Validator::public_key),
-            )
-            .unwrap(),
-            is_next_full_dkg: false,
+            legacy_config: Some(LegacyDkgConfig {
+                next_players: ordered::Set::try_from_iter(
+                    self.validators.iter().map(Validator::public_key),
+                )
+                .unwrap(),
+                is_next_full_dkg: false,
+            }),
         }
     }
 }
@@ -664,13 +669,22 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t13Time".to_string(), self.t13_time)?;
+        if let Some(time) = self.tip1123_time {
+            chain_config
+                .extra_fields
+                .insert_value("tip1123Time".to_string(), time)?;
+        }
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
             if self.no_dkg_in_genesis {
                 println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
             } else {
-                extra_data = consensus_config.to_genesis_dkg_outcome().encode().into();
+                let mut outcome = consensus_config.to_genesis_dkg_outcome();
+                if self.tip1123_time == Some(0) {
+                    outcome.legacy_config = None;
+                }
+                extra_data = outcome.encode().into();
             }
         }
 

@@ -23,10 +23,10 @@ use commonware_runtime::{Clock, Spawner};
 use commonware_utils::vec::NonEmptyVec;
 use reth_primitives_traits::NodePrimitives;
 use reth_provider::{
-    BlockIdReader, HeaderProvider,
+    BlockIdReader, ChainSpecProvider, HeaderProvider,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoHardfork, TempoHardforks};
 use tempo_primitives::TempoHeader;
 
 use crate::{
@@ -82,6 +82,7 @@ where
 pub(super) trait ExecutionProvider: Send + Sync {
     fn finalized_block_number(&self) -> eyre::Result<u64>;
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>>;
+    fn hardfork_at(&self, timestamp: u64) -> TempoHardfork;
 }
 
 /// Marshal operations used by the follower driver.
@@ -96,6 +97,7 @@ impl<N> ExecutionProvider for BlockchainProvider<N>
 where
     N: ProviderNodeTypes,
     N::Primitives: NodePrimitives<BlockHeader = TempoHeader>,
+    N::ChainSpec: TempoHardforks,
 {
     fn finalized_block_number(&self) -> eyre::Result<u64> {
         Ok(BlockIdReader::finalized_block_num_hash(self)?.map_or(0, |f| f.number))
@@ -103,6 +105,10 @@ where
 
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>> {
         HeaderProvider::header_by_number(self, number).map_err(eyre::Report::new)
+    }
+
+    fn hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        self.chain_spec().tempo_hardfork_at(timestamp)
     }
 }
 

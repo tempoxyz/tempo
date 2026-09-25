@@ -77,8 +77,9 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
         let outcome_before =
             wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
         assert!(
-            outcome_before.is_next_full_dkg,
-            "outcome.is_next_full_dkg should be `true`"
+            super::common::read_ceremony_configuration(&validators[0], &outcome_before)
+                .is_next_full_dkg,
+            "the boundary post-state should schedule a full DKG"
         );
 
         // wait for full DKG completion (-1 because late validator not started yet)

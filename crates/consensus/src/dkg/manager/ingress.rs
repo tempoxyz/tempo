@@ -12,6 +12,7 @@ use commonware_cryptography::{
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
+use tempo_chainspec::TempoHardfork;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tracing::{Span, warn};
 
@@ -51,12 +52,14 @@ impl Mailbox {
         &self,
         digest: Digest,
         height: Height,
+        fork: TempoHardfork,
     ) -> eyre::Result<OnchainDkgOutcome> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(GetDkgOutcome {
                 digest,
                 height,
+                fork,
                 response,
             }))
             .wrap_err("failed sending message to actor")?;
@@ -143,6 +146,7 @@ pub(super) struct GetDealerLog {
 pub(super) struct GetDkgOutcome {
     pub(super) digest: Digest,
     pub(super) height: Height,
+    pub(super) fork: TempoHardfork,
     pub(super) response: oneshot::Sender<OnchainDkgOutcome>,
 }
 

@@ -8,6 +8,7 @@ use std::{
     collections::VecDeque,
     num::NonZeroU64,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -17,13 +18,12 @@ use alloy_primitives::B256;
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{BlockNumHash, BlockNumberOrTag};
 use alloy_transport::TransportError;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use futures::{Stream, StreamExt as _, TryStreamExt as _, stream};
 use rand::rngs::StdRng;
 use reth_primitives_traits::SealedHeader;
 use tempo_alloy::TempoNetwork;
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardforks as _};
 use tempo_node::rpc::consensus::{CertifiedBlock, Query};
 use tempo_primitives::TempoHeader;
 use tracing::{instrument, warn};
@@ -40,6 +40,8 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Configuration for an RPC-backed finalized block stream.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Chain specification used to select each boundary's artifact format.
+    pub chain_spec: Arc<TempoChainSpec>,
     /// Hash of the last block already processed by the consumer. The stream starts at the next block.
     pub start_after: B256,
     /// Authoritative network identity to try before deriving one from `start_after`.
@@ -60,8 +62,10 @@ impl Config {
         start_after: B256,
         network_identity: Option<NetworkIdentity>,
         epoch_length: NonZeroU64,
+        chain_spec: Arc<TempoChainSpec>,
     ) -> Self {
         Self {
+            chain_spec,
             start_after,
             network_identity,
             epoch_length,
@@ -112,6 +116,7 @@ struct Chunk {
 }
 
 struct State<P> {
+    chain_spec: Arc<TempoChainSpec>,
     rpc: Rpc<P>,
     verifier: FinalizationVerifier,
     epoch_strategy: FixedEpocher,
@@ -151,7 +156,9 @@ where
             if start_block_epoch.epoch().get() >= identity.from_epoch {
                 if start_block_epoch.last().get() == start_after.number {
                     // Always fetch identity from start block if it's the last block in its epoch.
-                    verifier = verifier_from_start(&rpc, &epoch_strategy, start_after).await?;
+                    verifier =
+                        verifier_from_start(&rpc, &epoch_strategy, start_after, &config.chain_spec)
+                            .await?;
                 } else {
                     let latest_finalization = rpc.finalization(Query::Latest).await?;
 
@@ -162,7 +169,13 @@ where
                             .decode_and_verify(&mut rng, &latest_finalization)
                             .is_err_and(|error| error.is_signature_mismatch())
                     {
-                        verifier = verifier_from_start(&rpc, &epoch_strategy, start_after).await?;
+                        verifier = verifier_from_start(
+                            &rpc,
+                            &epoch_strategy,
+                            start_after,
+                            &config.chain_spec,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -170,7 +183,7 @@ where
             verifier
         } else {
             // If we don't have an initial identity, our only option is to fetch identity from the start block.
-            verifier_from_start(&rpc, &epoch_strategy, start_after).await?
+            verifier_from_start(&rpc, &epoch_strategy, start_after, &config.chain_spec).await?
         };
 
         if let Some(configured) = &config.network_identity {
@@ -189,6 +202,7 @@ where
 
         Ok(Self {
             rpc,
+            chain_spec: config.chain_spec,
             verifier,
             epoch_strategy,
             cursor: start_after,
@@ -265,7 +279,10 @@ where
             }
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(header.extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(
+                    header.extra_data().as_ref(),
+                    self.chain_spec.tempo_hardfork_at(header.timestamp()),
+                )
                 .map_err(|error| Error::MalformedBoundary {
                     height: header.number(),
                     reason: error.to_string(),
@@ -382,6 +399,7 @@ async fn verifier_from_start<P>(
     rpc: &Rpc<P>,
     strategy: &FixedEpocher,
     start: BlockNumHash,
+    chain_spec: &TempoChainSpec,
 ) -> Result<FinalizationVerifier, Error>
 where
     P: Provider<TempoNetwork>,
@@ -391,8 +409,9 @@ where
     let boundary_header = headers
         .first()
         .expect("a non-empty inclusive range always returns a header");
-    let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-        &mut boundary_header.extra_data().as_ref(),
+    let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode_boundary(
+        boundary_header.extra_data().as_ref(),
+        &chain_spec.tempo_hardfork_at(boundary_header.timestamp()),
     )
     .map_err(|error| Error::MalformedBoundary {
         height: boundary_header.number(),

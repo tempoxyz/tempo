@@ -53,7 +53,7 @@ use rand_core::CryptoRng;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{LegacyDkgConfig, OnchainDkgOutcome};
 use tempo_primitives::{BlockBody, TempoHeader};
 
 use super::super::{
@@ -578,7 +578,11 @@ pub(super) struct StubExecutionProvider {
     next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
     fail_next_players: Arc<AtomicBool>,
     fail_next_full_dkg_epoch: Arc<AtomicBool>,
+    configurations: Arc<Mutex<BoundaryConfigurations>>,
+    configuration_reads: Arc<Mutex<Vec<Digest>>>,
 }
+
+type BoundaryConfigurations = BTreeMap<Digest, (ordered::Set<PublicKey>, u64)>;
 
 impl Default for StubExecutionProvider {
     fn default() -> Self {
@@ -589,6 +593,8 @@ impl Default for StubExecutionProvider {
             next_players: Default::default(),
             fail_next_players: Default::default(),
             fail_next_full_dkg_epoch: Default::default(),
+            configurations: Default::default(),
+            configuration_reads: Default::default(),
         }
     }
 }
@@ -634,6 +640,32 @@ impl StubExecutionProvider {
     pub(super) fn fail_next_full_dkg_epoch(&self) {
         self.fail_next_full_dkg_epoch.store(true, Ordering::SeqCst);
     }
+
+    pub(super) fn set_tip1123_activation(&mut self, timestamp: u64) {
+        let mut genesis = self.chain_spec.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("tip1123Time".into(), timestamp)
+            .unwrap();
+        self.chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis));
+    }
+
+    pub(super) fn set_configuration(
+        &self,
+        header: &TempoHeader,
+        players: ordered::Set<PublicKey>,
+        rotation_epoch: u64,
+    ) {
+        self.configurations
+            .lock()
+            .unwrap()
+            .insert(Digest(header.hash_slow()), (players, rotation_epoch));
+    }
+
+    pub(super) fn configuration_reads(&self) -> Vec<Digest> {
+        self.configuration_reads.lock().unwrap().clone()
+    }
 }
 
 impl ExecutionLayer for StubExecutionProvider {
@@ -646,16 +678,32 @@ impl ExecutionLayer for StubExecutionProvider {
         Ok(self.headers.lock().unwrap().get(&height).cloned())
     }
 
-    fn next_players(&self, _digest: Digest) -> eyre::Result<ordered::Set<PublicKey>> {
+    fn next_players(&self, digest: Digest) -> eyre::Result<ordered::Set<PublicKey>> {
+        self.configuration_reads.lock().unwrap().push(digest);
         if self.fail_next_players.load(Ordering::SeqCst) {
             eyre::bail!("next players unavailable");
+        }
+        let configurations = self.configurations.lock().unwrap();
+        if !configurations.is_empty() {
+            return configurations
+                .get(&digest)
+                .map(|(players, _)| players.clone())
+                .ok_or_else(|| eyre::eyre!("no configuration for {digest}"));
         }
         Ok(self.next_players.lock().unwrap().clone())
     }
 
-    fn next_full_dkg_epoch(&self, _digest: Digest) -> eyre::Result<u64> {
+    fn next_full_dkg_epoch(&self, digest: Digest) -> eyre::Result<u64> {
+        self.configuration_reads.lock().unwrap().push(digest);
         if self.fail_next_full_dkg_epoch.load(Ordering::SeqCst) {
             eyre::bail!("full DKG schedule unavailable");
+        }
+        let configurations = self.configurations.lock().unwrap();
+        if !configurations.is_empty() {
+            return configurations
+                .get(&digest)
+                .map(|(_, epoch)| *epoch)
+                .ok_or_else(|| eyre::eyre!("no configuration for {digest}"));
         }
         Ok(0)
     }
@@ -790,8 +838,10 @@ pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {
     let outcome = OnchainDkgOutcome {
         epoch: state.epoch.get(),
         output: state.output.clone(),
-        next_players: state.players().clone(),
-        is_next_full_dkg: state.is_full_dkg,
+        legacy_config: Some(LegacyDkgConfig {
+            next_players: state.players().clone(),
+            is_next_full_dkg: state.is_full_dkg,
+        }),
     };
 
     let mut header = header(height);

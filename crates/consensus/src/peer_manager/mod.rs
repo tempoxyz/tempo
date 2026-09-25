@@ -33,7 +33,8 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::AddressableManager;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;
-use reth_provider::{BlockIdReader as _, HeaderProvider as _};
+use reth_provider::{BlockIdReader as _, ChainSpecProvider as _, HeaderProvider as _};
+use tempo_chainspec::{TempoHardfork, TempoHardforks as _};
 use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
 
@@ -81,9 +82,14 @@ where
 pub(crate) trait ExecutionLayer: ExecutionNode + Send + Sync + 'static {
     fn finalized_block_number(&self) -> eyre::Result<Option<u64>>;
     fn header_by_number(&self, height: u64) -> eyre::Result<Option<TempoHeader>>;
+    fn hardfork_at(&self, timestamp: u64) -> TempoHardfork;
 }
 
 impl ExecutionLayer for TempoFullNode {
+    fn hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        self.provider.chain_spec().tempo_hardfork_at(timestamp)
+    }
+
     fn finalized_block_number(&self) -> eyre::Result<Option<u64>> {
         self.provider
             .finalized_block_number()

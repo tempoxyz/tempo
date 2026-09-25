@@ -15,6 +15,7 @@ use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
 use futures::{Stream, channel::mpsc};
 use rand_core::CryptoRng;
+use reth_provider::HeaderProvider as _;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_node::TempoFullNode;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -105,7 +106,8 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
 ///
 /// During initialization, these reads provide the initial validator set and
 /// public polynomial. During normal operation, they provide the validator
-/// configuration used at the end of each epoch.
+/// configuration used at the end of each epoch. After TIP-1123, configuration
+/// is read only from the finalized boundary's post-state when entering an epoch.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Chain specification used to select the ceremony transcript version.
     fn chain_spec(&self) -> Arc<TempoChainSpec>;
@@ -116,19 +118,19 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Determines the validator set selected for the epoch after the block
     /// identified by `digest`.
     ///
-    /// This is used while constructing or verifying a proposal, so `digest`
-    /// must identify that proposal's parent. If the corresponding execution
-    /// state is unavailable, the proposal cannot be constructed or verified.
+    /// Before TIP-1123, `digest` identifies a boundary proposal's parent.
+    /// After activation it identifies the finalized boundary itself, and a
+    /// failed read prevents epoch initialization.
     fn next_players(&self, digest: Digest) -> eyre::Result<ordered::Set<PublicKey>>;
 
     /// Reads the epoch scheduled for the next full DKG ceremony from the
     /// validator configuration at `digest`.
     ///
     /// This determines whether the next ceremony creates a new polynomial
-    /// instead of resharing the current one. It is used while constructing or
-    /// verifying a proposal, so `digest` must identify that proposal's parent.
-    /// If the corresponding execution state is unavailable, the proposal
-    /// cannot be constructed or verified.
+    /// instead of resharing the current one. Before TIP-1123, `digest` identifies
+    /// a boundary proposal's parent and failures fall back to resharing. After
+    /// activation it identifies the finalized boundary, and failures prevent
+    /// epoch initialization.
     fn next_full_dkg_epoch(&self, digest: Digest) -> eyre::Result<u64>;
 }
 
@@ -181,8 +183,6 @@ impl ExecutionLayer for Arc<TempoFullNode> {
     }
 
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
-        use reth_provider::HeaderProvider as _;
-
         let finalized = self
             .provider
             .canonical_in_memory_state()

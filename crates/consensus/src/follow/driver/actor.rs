@@ -73,7 +73,7 @@ where
             )
         })?;
     let onchain_outcome = verifier
-        .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref())
+        .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref(), config.execution_provider.hardfork_at(boundary_header.timestamp()))
         .wrap_err_with(|| {
             format!(
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
@@ -193,6 +193,9 @@ where
                 .verifier
                 .decode_dkg_outcome_and_register_boundary(
                     boundary_block.header().extra_data().as_ref(),
+                    self.config
+                        .execution_provider
+                        .hardfork_at(boundary_block.header().timestamp()),
                 )
                 .wrap_err_with(|| {
                     format!(
@@ -373,7 +376,12 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(
+                    block.header().extra_data().as_ref(),
+                    self.config
+                        .execution_provider
+                        .hardfork_at(block.header().timestamp()),
+                )
                 .expect("boundary blocks must contain DKG outcomes");
 
             let network_identity = self.verifier.network_identity();

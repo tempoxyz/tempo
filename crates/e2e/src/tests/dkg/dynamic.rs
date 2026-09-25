@@ -94,7 +94,11 @@ impl AssertValidatorIsAdded {
                 "addValidator call returned receipt"
             );
 
-            let player_epoch = target_epoch(epoch_length, receipt.block_number.unwrap());
+            let player_epoch = target_epoch(
+                epoch_length,
+                receipt.block_number.unwrap(),
+                tempo_chainspec::TempoHardfork::Tip1123,
+            );
             let dealer_epoch = player_epoch.next();
 
             'becomes_signer: loop {
@@ -183,7 +187,11 @@ impl AssertValidatorIsRemoved {
                 .await
                 .unwrap();
 
-            let removal_epoch = target_epoch(epoch_length, receipt.block_number.unwrap());
+            let removal_epoch = target_epoch(
+                epoch_length,
+                receipt.block_number.unwrap(),
+                tempo_chainspec::TempoHardfork::Tip1123,
+            );
             let removed_epoch = removal_epoch.next();
 
             tracing::debug!(

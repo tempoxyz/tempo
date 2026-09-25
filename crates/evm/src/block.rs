@@ -14,7 +14,6 @@ use alloy_evm::{
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::ReadExt;
 use reth_chainspec::EthChainSpec as _;
 use reth_evm::block::StateDB;
 use reth_revm::{
@@ -303,13 +302,15 @@ where
             return Ok(());
         }
 
-        let outcome =
-            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut self.extra_data.as_ref())
-                .map_err(|err| {
-                    BlockValidationError::msg(format!(
-                        "failed decoding boundary block extra data as DKG outcome: {err}"
-                    ))
-                })?;
+        let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode_boundary(
+            self.extra_data.as_ref(),
+            &self.evm().cfg.spec,
+        )
+        .map_err(|err| {
+            BlockValidationError::msg(format!(
+                "failed decoding boundary block extra data as DKG outcome: {err}"
+            ))
+        })?;
         let epoch = outcome.epoch;
         let public_keys = outcome
             .players()
@@ -715,7 +716,7 @@ mod tests {
             ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
-    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+    use tempo_dkg_onchain_artifacts::{LegacyDkgConfig, OnchainDkgOutcome};
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -763,8 +764,10 @@ mod tests {
         OnchainDkgOutcome {
             epoch,
             output,
-            next_players: shares.keys().clone(),
-            is_next_full_dkg: false,
+            legacy_config: Some(LegacyDkgConfig {
+                next_players: shares.keys().clone(),
+                is_next_full_dkg: false,
+            }),
         }
     }
 

@@ -7,7 +7,7 @@ use std::{
 
 use alloy_consensus::Sealable as _;
 use alloy_primitives::{Address, B256, Bytes, LogData, U256, keccak256};
-use commonware_codec::{Encode as _, EncodeSize, RangeCfg, Read, ReadExt, Write};
+use commonware_codec::{DecodeExt as _, Encode as _, EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
@@ -41,10 +41,10 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use serde::Deserialize;
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{TempoChainSpec, TempoHardforks as _, hardfork::TempoHardfork};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase, SigningShare};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{LegacyDkgConfig, OnchainDkgOutcome};
 use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageCtx},
@@ -145,8 +145,10 @@ impl BootstrapShadowfork {
 
         let chainspec_path =
             write_shadow_chainspec(&manifest, manifest_dir, shadow_epoch_length, force)?;
+        let chain = tempo_chainspec::spec::chain_value_parser(&chainspec_path.to_string_lossy())?;
+        let fork = chain.tempo_hardfork_at(manifest.fork_timestamp);
         let outcome = if let Some(outcome) = &manifest.shadow_dkg_outcome {
-            decode_outcome(outcome)?
+            decode_outcome(outcome, fork)?
         } else {
             read_private_genesis_outcome(manifest_dir)?
         };
@@ -161,7 +163,7 @@ impl BootstrapShadowfork {
         let shadow_validator_config_v2_storage =
             shadow_validator_config_v2_storage(&manifest, manifest_dir)?;
         let target_node = target_nodes[0];
-        patch_execution_validator_registry(
+        let ceremony_config = patch_execution_validator_registry(
             &execution_datadir.db_path,
             manifest.source_chain_id,
             reanchor_block_number,
@@ -223,6 +225,7 @@ impl BootstrapShadowfork {
             seed_consensus_state(
                 &consensus_dir,
                 outcome.clone(),
+                ceremony_config.clone(),
                 signing_share,
                 seed.saturating_add(validator.index as u64),
                 force,
@@ -628,21 +631,21 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
     let genesis_path = manifest_dir.join("genesis.json");
     let json = std::fs::read_to_string(&genesis_path)
         .wrap_err_with(|| format!("failed reading `{}`", genesis_path.display()))?;
-    let genesis: serde_json::Value = serde_json::from_str(&json)
+    let genesis: alloy::genesis::Genesis = serde_json::from_str(&json)
         .wrap_err_with(|| format!("failed parsing `{}`", genesis_path.display()))?;
-    let extra_data = genesis
-        .get("extraData")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_eyre("shadow genesis JSON does not contain string field `extraData`")?;
-    let mut outcome = decode_outcome(extra_data)?;
+    let chain = TempoChainSpec::from_genesis(genesis.clone());
+    let mut outcome = OnchainDkgOutcome::decode_boundary(
+        genesis.extra_data.as_ref(),
+        &chain.tempo_hardfork_at(genesis.timestamp),
+    )?;
     outcome.epoch = SHADOW_EPOCH;
     Ok(outcome)
 }
 
-fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcome> {
+fn decode_outcome(hex: &str, fork: TempoHardfork) -> eyre::Result<OnchainDkgOutcome> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow_dkg_outcome hex")?;
-    OnchainDkgOutcome::read(&mut bytes.as_slice())
+    OnchainDkgOutcome::decode_boundary(bytes.as_slice(), &fork)
         .wrap_err("failed decoding shadow_dkg_outcome payload")
 }
 
@@ -753,7 +756,7 @@ fn patch_execution_validator_registry(
     validator_config_storage: &[(U256, U256)],
     validators: &[ShadowValidatorRegistration],
     outcome: &OnchainDkgOutcome,
-) -> eyre::Result<()> {
+) -> eyre::Result<LegacyDkgConfig> {
     ensure!(
         db_path.exists(),
         "execution database `{}` does not exist; pass --execution-datadir pointing at a stopped Tempo datadir, chain datadir, or db directory",
@@ -770,7 +773,7 @@ fn patch_execution_validator_registry(
         storage.write_db_storage(VALIDATOR_CONFIG_V2_ADDRESS, slot, value)?;
     }
 
-    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+    let ceremony_config = StorageCtx::enter(&mut storage, || -> eyre::Result<LegacyDkgConfig> {
         let config = ValidatorConfigV2::default();
         ensure!(
             config.is_initialized()?,
@@ -831,7 +834,17 @@ fn patch_execution_validator_registry(
             );
         }
 
-        Ok(())
+        if let Some(legacy) = &outcome.legacy_config {
+            return Ok(legacy.clone());
+        }
+        Ok(LegacyDkgConfig {
+            next_players: ordered::Set::from_iter_dedup(active.into_iter().filter_map(|v| {
+                v.ingress.parse::<SocketAddr>().ok()?;
+                v.egress.parse::<IpAddr>().ok()?;
+                PublicKey::decode(v.publicKey.as_ref()).ok()
+            })),
+            is_next_full_dkg: config.get_next_network_identity_rotation_epoch()? == outcome.epoch,
+        })
     })?;
 
     if let Some((old_hash, new_hash)) = patch_boundary_header(db_path, &tx, block_number, outcome)?
@@ -854,7 +867,7 @@ fn patch_execution_validator_registry(
         "reanchored execution safe/finalized block in `{}` to {block_number}",
         db_path.display(),
     );
-    Ok(())
+    Ok(ceremony_config)
 }
 
 fn reanchor_execution_finality<TX>(tx: &TX, block_number: u64) -> eyre::Result<()>
@@ -1014,20 +1027,13 @@ where
         "patched boundary block `{block_number}` has canonical hash `{canonical_hash}`, expected `{expected_hash}`",
     );
 
-    let decoded = OnchainDkgOutcome::read(&mut header.inner.extra_data.as_ref())
+    let fork = if expected_outcome.legacy_config.is_some() {
+        TempoHardfork::T12
+    } else {
+        TempoHardfork::Tip1123
+    };
+    let decoded = OnchainDkgOutcome::decode_boundary(header.inner.extra_data.as_ref(), &fork)
         .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
-    ensure!(
-        decoded.players() == expected_outcome.players()
-            && decoded.next_players() == expected_outcome.next_players()
-            && decoded.dealers() == expected_outcome.dealers(),
-        "patched boundary header DKG peers do not match generated shadow validators: dealers={:?}, players={:?}, next_players={:?}, expected_dealers={:?}, expected_players={:?}, expected_next_players={:?}",
-        decoded.dealers(),
-        decoded.players(),
-        decoded.next_players(),
-        expected_outcome.dealers(),
-        expected_outcome.players(),
-        expected_outcome.next_players(),
-    );
     ensure!(
         &decoded == expected_outcome,
         "patched boundary header DKG outcome does not match the generated shadow DKG outcome",
@@ -1080,6 +1086,7 @@ fn share_matches_outcome(outcome: &OnchainDkgOutcome, share: &Share) -> bool {
 fn seed_consensus_state(
     consensus_dir: &Path,
     outcome: OnchainDkgOutcome,
+    ceremony_config: LegacyDkgConfig,
     signing_share: Share,
     seed: u64,
     force: bool,
@@ -1135,8 +1142,8 @@ fn seed_consensus_state(
                     seed: Summary::random(&mut rng),
                     output: outcome.output,
                     share: BootstrapShareState::Plaintext(Some(signing_share)),
-                    players: outcome.next_players,
-                    is_full_dkg: outcome.is_next_full_dkg,
+                    players: ceremony_config.next_players,
+                    is_full_dkg: ceremony_config.is_next_full_dkg,
                 };
 
                 states
@@ -1158,6 +1165,7 @@ struct ShadowForkManifest {
     source_chain_id: u64,
     source_execution_datadir: Option<PathBuf>,
     fork_block_number: u64,
+    fork_timestamp: u64,
     shadow_epoch: Option<u64>,
     shadow_epoch_length: Option<u64>,
     shadow_dkg_outcome: Option<String>,

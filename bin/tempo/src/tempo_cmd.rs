@@ -7,11 +7,10 @@ use std::{
     sync::Arc,
 };
 
-use alloy::hex::ToHexExt;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_rpc_types_eth::{BlockId, TransactionRequest};
 use alloy_signer_aws::{AwsSigner, aws_config, aws_sdk_kms};
 use alloy_signer_gcp::{GcpKeyRingRef, GcpSigner, KeySpecifier, gcloud_sdk};
 use alloy_signer_ledger::{HDPath as LedgerHDPath, LedgerSigner};
@@ -19,7 +18,7 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_signer_trezor::{HDPath as TrezorHDPath, TrezorSigner};
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
-use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
     Signer as _,
@@ -33,14 +32,17 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
-use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
+use tempo_chainspec::{
+    TempoHardforks as _,
+    spec::{TempoChainSpec, TempoChainSpecParser},
+};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_contracts::precompiles::{
     IFeeManager,
     IValidatorConfigV2::{self, Validator},
     TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{LegacyDkgConfig, OnchainDkgOutcome};
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
@@ -224,6 +226,14 @@ async fn read_validator_from_contract(
     provider: &impl Provider<TempoNetwork>,
     lookup: ValidatorId,
 ) -> eyre::Result<Validator> {
+    read_validator_at_block(provider, lookup, BlockId::latest()).await
+}
+
+async fn read_validator_at_block(
+    provider: &impl Provider<TempoNetwork>,
+    lookup: ValidatorId,
+    block: BlockId,
+) -> eyre::Result<Validator> {
     let calldata: Vec<u8> = match lookup {
         ValidatorId::Address(addr) => IValidatorConfigV2::validatorByAddressCall {
             validatorAddress: addr,
@@ -243,6 +253,7 @@ async fn read_validator_from_contract(
 
     let resp = provider
         .call(tx.into())
+        .block(block)
         .await
         .wrap_err("failed to read contract")?;
 
@@ -1218,6 +1229,9 @@ struct ValidatorOutput {
     is_dkg_dealer: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     in_committee: Option<bool>,
+    /// Active in current execution state and therefore prospective for the next epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_next_dkg_player: Option<bool>,
 
     #[serde(flatten)]
     validator: Validator,
@@ -1263,18 +1277,19 @@ impl ValidatorInfo {
             .epoch_length()
             .ok_or_eyre("epochLength not found in chainspec")?;
 
-        let validator = read_validator_from_contract(&provider, self.id).await?;
-        let pubkey_bytes = validator.publicKey.0;
-
         let latest_block_number = provider
             .get_block_number()
             .await
             .wrap_err("failed to get latest block number")?;
 
+        let validator =
+            read_validator_at_block(&provider, self.id, latest_block_number.into()).await?;
+        let pubkey_bytes = validator.publicKey.0;
+
         let epoch_strategy = FixedEpocher::new(epoch_length);
         let current_height = Height::new(latest_block_number);
         let current_epoch_info = epoch_strategy
-            .containing(current_height)
+            .containing(current_height.next())
             .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
         let current_epoch = current_epoch_info.epoch();
 
@@ -1310,15 +1325,21 @@ impl ValidatorInfo {
                 ));
             }
 
-            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let dkg_outcome = OnchainDkgOutcome::decode_boundary(
+                extra_data.as_ref(),
+                &chain.tempo_hardfork_at(boundary_block.header.timestamp()),
+            )
+            .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let ceremony_config =
+                read_ceremony_configuration(&provider, &dkg_outcome, boundary_block.header.hash)
+                    .await?;
 
             let key = PublicKey::decode(&mut &pubkey_bytes[..])
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
             let committee = dkg_outcome.players().position(&key).is_some();
             is_dkg_dealer = Some(committee);
-            is_dkg_player = Some(dkg_outcome.next_players().position(&key).is_some());
+            is_dkg_player = Some(ceremony_config.next_players.position(&key).is_some());
             in_committee = Some(committee);
         }
 
@@ -1326,6 +1347,7 @@ impl ValidatorInfo {
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
             validator: ValidatorOutput {
+                is_next_dkg_player: Some(validator.deactivatedAtHeight == 0),
                 validator,
                 is_dkg_dealer,
                 is_dkg_player,
@@ -1413,7 +1435,7 @@ impl Info {
         let epoch_strategy = FixedEpocher::new(epoch_length);
         let current_height = Height::new(latest_block_number);
         let current_epoch_info = epoch_strategy
-            .containing(current_height)
+            .containing(current_height.next())
             .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
 
         let current_epoch = current_epoch_info.epoch();
@@ -1442,8 +1464,14 @@ impl Info {
             ));
         }
 
-        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to decode DKG outcome from extra_data")?;
+        let dkg_outcome = OnchainDkgOutcome::decode_boundary(
+            extra_data.as_ref(),
+            &chain.tempo_hardfork_at(boundary_block.header.timestamp()),
+        )
+        .wrap_err("failed to decode DKG outcome from extra_data")?;
+        let ceremony_config =
+            read_ceremony_configuration(&provider, &dkg_outcome, boundary_block.header.hash)
+                .await?;
 
         let next_dkg_result = provider
             .call(
@@ -1492,7 +1520,7 @@ impl Info {
             .collect::<std::collections::BTreeMap<_, _>>();
 
         let players = dkg_outcome.players();
-        let next_players = dkg_outcome.next_players();
+        let next_players = &ceremony_config.next_players;
         let dkg_players = ordered::Set::from_iter_dedup(players.iter().chain(next_players));
 
         // Add validators that are active onchain
@@ -1505,10 +1533,10 @@ impl Info {
                 validators_by_public_key.entry(key)
             {
                 let id = ValidatorId::PublicKey(key);
-                match read_validator_from_contract(&provider, id).await {
-                    Ok(v) => _ = e.insert(v),
-                    Err(e) => eprintln!("failed to lookup validator {}: {e}", key.encode_hex()),
-                }
+                let validator = read_validator_at_block(&provider, id, latest_block_number.into())
+                    .await
+                    .wrap_err_with(|| format!("failed to lookup DKG participant {key}"))?;
+                e.insert(validator);
             }
         }
 
@@ -1524,6 +1552,7 @@ impl Info {
             };
 
             validators.push(ValidatorOutput {
+                is_next_dkg_player: Some(active_validators_by_public_key.contains_key(&key)),
                 validator,
                 is_dkg_dealer: Some(players.position(&public_key).is_some()),
                 is_dkg_player: Some(next_players.position(&public_key).is_some()),
@@ -1537,15 +1566,66 @@ impl Info {
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
             epoch_length: epoch_length.get(),
-            epoch_blocks_remaining: epoch_length.get()
-                - (current_height.get() % epoch_length.get() + 1),
-            is_next_full_dkg: dkg_outcome.is_next_full_dkg,
+            epoch_blocks_remaining: epoch_length.get() - current_height.next().get() % epoch_length,
+            is_next_full_dkg: ceremony_config.is_next_full_dkg,
             next_full_dkg_epoch,
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
     }
+}
+
+/// Reconstruct the ceremony configuration using the finalized boundary's post-state.
+async fn read_ceremony_configuration(
+    provider: &impl Provider<TempoNetwork>,
+    outcome: &OnchainDkgOutcome,
+    boundary_hash: B256,
+) -> eyre::Result<LegacyDkgConfig> {
+    if let Some(config) = &outcome.legacy_config {
+        return Ok(config.clone());
+    }
+    let validators = provider
+        .call(
+            TransactionRequest::default()
+                .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                .input(IValidatorConfigV2::getActiveValidatorsCall {}.abi_encode().into())
+                .into(),
+        )
+        .block(boundary_hash.into())
+        .await
+        .wrap_err_with(|| {
+            format!("DKG configuration unavailable at finalized boundary {boundary_hash}; restore its post-state")
+        })?;
+    let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&validators)?;
+    // Match the consensus reader's public-key and network-address decoding rules.
+    let next_players = ordered::Set::from_iter_dedup(validators.into_iter().filter_map(|v| {
+        v.ingress.parse::<SocketAddr>().ok()?;
+        v.egress.parse::<IpAddr>().ok()?;
+        PublicKey::decode(v.publicKey.as_ref()).ok()
+    }));
+    let schedule = provider
+        .call(
+            TransactionRequest::default()
+                .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                .input(
+                    IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall {}
+                        .abi_encode()
+                        .into(),
+                )
+                .into(),
+        )
+        .block(boundary_hash.into())
+        .await
+        .wrap_err_with(|| {
+            format!("DKG rotation schedule unavailable at finalized boundary {boundary_hash}; restore its post-state")
+        })?;
+    let scheduled_epoch =
+        IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_decode_returns(&schedule)?;
+    Ok(LegacyDkgConfig {
+        next_players,
+        is_next_full_dkg: scheduled_epoch == outcome.epoch,
+    })
 }
 
 fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
@@ -1558,10 +1638,16 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::{
+        rpc::{client::RpcClient, json_rpc::RequestPacket},
+        transports::mock::MockTransport,
+    };
+    use alloy_provider::mock::Asserter;
     use clap::Parser;
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
     use tempo_chainspec::spec::TempoChainSpecParser;
+    use tower::ServiceExt as _;
 
     type TempoCli = Cli<
         TempoChainSpecParser,
@@ -2053,5 +2139,71 @@ mod tests {
         let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
 
         assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
+    }
+
+    #[tokio::test]
+    async fn ceremony_configuration_uses_boundary_hash() {
+        let chain = &tempo_chainspec::spec::PRESTO;
+        let mut outcome = OnchainDkgOutcome::decode_boundary(
+            chain.genesis().extra_data.as_ref(),
+            &chain.tempo_hardfork_at(chain.genesis().timestamp),
+        )
+        .unwrap();
+        let legacy = outcome.legacy_config.clone().unwrap();
+        let provider =
+            ProviderBuilder::<_, _, TempoNetwork>::default().connect_mocked_client(Asserter::new());
+        // Historical artifacts must not query execution configuration.
+        assert_eq!(
+            read_ceremony_configuration(&provider, &outcome, B256::ZERO)
+                .await
+                .unwrap(),
+            legacy,
+        );
+
+        outcome.legacy_config = None;
+        for is_full in [false, true] {
+            let player = PrivateKey::from_seed(1123).public_key();
+            let validator = Validator {
+                publicKey: B256::from_slice(player.as_ref()),
+                validatorAddress: Address::ZERO,
+                ingress: TEST_INGRESS.to_owned(),
+                egress: TEST_EGRESS.to_owned(),
+                feeRecipient: Address::ZERO,
+                index: 0,
+                addedAtHeight: 0,
+                deactivatedAtHeight: 0,
+            };
+            let mut invalid_address = validator.clone();
+            invalid_address.ingress = "not a socket address".to_owned();
+            let asserter = Asserter::new();
+            asserter.push_success(&Bytes::from(
+                IValidatorConfigV2::getActiveValidatorsCall::abi_encode_returns(&vec![
+                    invalid_address,
+                    validator,
+                ]),
+            ));
+            asserter.push_success(&Bytes::from(
+                IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_encode_returns(
+                    &(outcome.epoch + u64::from(!is_full)),
+                ),
+            ));
+            let boundary_hash = B256::repeat_byte(0x11);
+            let transport =
+                MockTransport::new(asserter).map_request(move |packet: RequestPacket| {
+                    let request = packet.as_single().unwrap();
+                    assert_eq!(request.method(), "eth_call");
+                    let params: serde_json::Value =
+                        serde_json::from_str(request.params().unwrap().get()).unwrap();
+                    assert_eq!(params[1], serde_json::json!(boundary_hash));
+                    packet
+                });
+            let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+                .connect_client(RpcClient::new(transport, true));
+            let config = read_ceremony_configuration(&provider, &outcome, boundary_hash)
+                .await
+                .unwrap();
+            assert_eq!(config.next_players, ordered::Set::from_iter_dedup([player]));
+            assert_eq!(config.is_next_full_dkg, is_full);
+        }
     }
 }

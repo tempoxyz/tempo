@@ -18,7 +18,7 @@ use std::{
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
 use commonware_actor::mailbox;
-use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
+use commonware_codec::{Encode as _, EncodeSize as _};
 use commonware_consensus::{
     Heightable as _,
     marshal::core::DigestFallback,
@@ -37,11 +37,12 @@ use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use rand_core::{CryptoRng, Rng};
 use reth_primitives_traits::BlockBody as _;
+use tempo_chainspec::{TempoHardfork, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_telemetry_util::display_duration;
 
-use reth_provider::{BlockReader as _, BlockSource};
+use reth_provider::{BlockReader as _, BlockSource, ChainSpecProvider as _};
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
     marshal_persist_estimate, observe_marshal_persist,
@@ -499,6 +500,19 @@ impl Inner<Init> {
             return Ok((parent, None));
         }
 
+        // Choose the boundary format from the timestamp that will actually be proposed.
+        let mut epoch_millis = context.current().epoch_millis();
+        if epoch_millis <= parent.timestamp_millis() {
+            self.metrics.parent_ahead_of_local_time.metric().inc();
+            epoch_millis = parent.timestamp_millis() + 1;
+        }
+        let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
+        let fork = self
+            .execution_node
+            .provider
+            .chain_spec()
+            .tempo_hardfork_at(timestamp);
+
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
         let extra_data = if parent_epoch_info.last() == parent.height().next()
@@ -508,7 +522,7 @@ impl Inner<Init> {
             let outcome = self
                 .state
                 .dkg_manager
-                .get_dkg_outcome(parent_digest, parent.height())
+                .get_dkg_outcome(parent_digest, parent.height(), fork)
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
@@ -523,7 +537,6 @@ impl Inner<Init> {
                 outcome.network_identity = %outcome.network_identity(),
                 outcome.dealers = ?outcome.dealers(),
                 outcome.players = ?outcome.players(),
-                outcome.next_players = ?outcome.next_players(),
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().into()
@@ -548,18 +561,6 @@ impl Inner<Init> {
                 }
             }
         };
-
-        // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        //
-        // We don't expect this being hit in practice because we validate the
-        // timestamp is not in the future during EL validation.
-        let mut epoch_millis = context.current().epoch_millis();
-        if epoch_millis <= parent.timestamp_millis() {
-            self.metrics.parent_ahead_of_local_time.metric().inc();
-            epoch_millis = parent.timestamp_millis() + 1
-        };
-
-        let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
         let consensus_context = Some(TempoConsensusContext {
             epoch: round.epoch().get(),
@@ -716,6 +717,10 @@ impl Inner<Init> {
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
+            self.execution_node
+                .provider
+                .chain_spec()
+                .tempo_hardfork_at(block.header().timestamp()),
         )
         .await
         {
@@ -866,6 +871,7 @@ async fn verify_header(
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
+    fork: TempoHardfork,
 ) -> eyre::Result<()> {
     let epoch_info = epoch_strategy
         .containing(block.height())
@@ -895,30 +901,33 @@ async fn verify_header(
             contains the correct DKG outcome",
         );
         let our_outcome = dkg_manager
-            .get_dkg_outcome(parent.1, block.height().saturating_sub(HeightDelta::new(1)))
+            .get_dkg_outcome(
+                parent.1,
+                block.height().saturating_sub(HeightDelta::new(1)),
+                fork,
+            )
             .await
             .wrap_err(
                 "failed getting public dkg ceremony outcome; cannot verify end \
                 of epoch block",
             )?;
-        let block_outcome = OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
-            .wrap_err(
-                "failed decoding extra data header as DKG ceremony \
+        let block_outcome =
+            OnchainDkgOutcome::decode_boundary(block.header().extra_data().as_ref(), &fork)
+                .wrap_err(
+                    "failed decoding extra data header as DKG ceremony \
                 outcome; cannot verify end of epoch block",
-            )?;
+                )?;
         if our_outcome != block_outcome {
             // Emit the log here so that it's structured. The error would be annoying to read.
             warn!(
                 our.epoch = %our_outcome.epoch,
                 our.players = ?our_outcome.players(),
-                our.next_players = ?our_outcome.next_players(),
+                our.legacy_config = ?our_outcome.legacy_config,
                 our.sharing = ?our_outcome.sharing(),
-                our.is_next_full_dkg = ?our_outcome.is_next_full_dkg,
                 block.epoch = %block_outcome.epoch,
                 block.players = ?block_outcome.players(),
-                block.next_players = ?block_outcome.next_players(),
+                block.legacy_config = ?block_outcome.legacy_config,
                 block.sharing = ?block_outcome.sharing(),
-                block.is_next_full_dkg = ?block_outcome.is_next_full_dkg,
                 "our public dkg outcome does not match what's stored \
                 in the block",
             );

@@ -45,7 +45,7 @@ use reth_node_core::{
 };
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
-use tempo_chainspec::{TempoChainSpec, TempoHardfork};
+use tempo_chainspec::{TempoChainSpec, TempoHardfork, TempoHardforks as _};
 use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
@@ -123,12 +123,12 @@ impl Builder {
         } = self;
 
         let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
-        let initial_dkg_outcome =
+        let mut initial_dkg_outcome =
             initial_dkg_outcome.ok_or_eyre("must specify initial DKG outcome")?;
         let validators = validators.ok_or_eyre("must specify validators")?;
 
         assert_eq!(
-            initial_dkg_outcome.next_players(),
+            initial_dkg_outcome.players(),
             &ordered::Set::from_iter_dedup(
                 validators
                     .iter_pairs()
@@ -161,6 +161,16 @@ impl Builder {
             }
         }
 
+        let tip1123_active = TempoChainSpec::from_genesis(genesis.clone())
+            .tempo_hardfork_at(genesis.timestamp)
+            .is_tip1123();
+        let genesis_rotation_epoch = initial_dkg_outcome
+            .legacy_config
+            .as_ref()
+            .map(|config| if config.is_next_full_dkg { 0 } else { u64::MAX });
+        if tip1123_active {
+            initial_dkg_outcome.legacy_config = None;
+        }
         genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
@@ -181,6 +191,17 @@ impl Builder {
                         .initialize(admin())
                         .wrap_err("failed to initialize validator config v2")
                         .unwrap();
+
+                    // Preserve the fixture's intended initial ceremony in execution state.
+                    // A zero schedule means a full genesis DKG under TIP-1123, not resharing.
+                    if tip1123_active && let Some(epoch) = genesis_rotation_epoch {
+                        validator_config_v2
+                            .set_network_identity_rotation_epoch(
+                                admin(),
+                                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch },
+                            )
+                            .unwrap();
+                    }
 
                     for (public_key, validator) in validators {
                         if let ConsensusNodeConfig {
@@ -878,7 +899,16 @@ impl std::fmt::Debug for ExecutionNode {
 }
 
 pub fn genesis() -> Genesis {
-    serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
+    let mut genesis =
+        serde_json::from_str::<Genesis>(include_str!("../../node/tests/assets/test-genesis.json"))
+            .unwrap();
+    // Exercise TIP-1123 in E2E tests without changing the generator's legacy fixture.
+    genesis
+        .config
+        .extra_fields
+        .insert_value("tip1123Time".to_owned(), 0)
+        .unwrap();
+    genesis
 }
 
 /// Returns MDBX DB args sized for tests (64 MB max with 4 MB growth step).

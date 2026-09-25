@@ -59,7 +59,7 @@ impl FullDkgTest {
 
             tracing::info!(full_dkg_epoch = self.full_dkg_epoch, "Scheduled full DKG");
 
-            // Step 1: Wait for and verify the is_next_full_dkg flag in epoch N-1
+            // Inspect the finalized configuration for the full ceremony in epoch N.
             let outcome_before = wait_for_outcome(
                 &context,
                 &validators,
@@ -69,8 +69,9 @@ impl FullDkgTest {
             .await;
 
             assert!(
-                outcome_before.is_next_full_dkg,
-                "Epoch {} outcome should have is_next_full_dkg=true",
+                super::common::read_ceremony_configuration(&validators[0], &outcome_before)
+                    .is_next_full_dkg,
+                "The boundary post-state should schedule a full ceremony after epoch {}",
                 self.full_dkg_epoch - 1
             );
             let pubkey_before = *outcome_before.sharing().public();
@@ -121,8 +122,9 @@ impl FullDkgTest {
             .await;
 
             assert!(
-                !outcome_after_reshare.is_next_full_dkg,
-                "Epoch {} should NOT have is_next_full_dkg flag",
+                !super::common::read_ceremony_configuration(&validators[0], &outcome_after_reshare)
+                    .is_next_full_dkg,
+                "The boundary post-state should schedule resharing after epoch {}",
                 self.full_dkg_epoch + 1
             );
 

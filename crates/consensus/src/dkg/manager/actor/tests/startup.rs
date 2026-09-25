@@ -36,7 +36,13 @@ fn persisted(fixture: &DkgFixture, rng: &mut impl CryptoRng) -> State {
         seed: Summary::random(rng),
         output: fixture.outcome.output.clone(),
         share: ShareState::unset_plaintext(),
-        players: fixture.outcome.next_players.clone(),
+        players: fixture
+            .outcome
+            .legacy_config
+            .as_ref()
+            .unwrap()
+            .next_players
+            .clone(),
         is_full_dkg: false,
     }
 }

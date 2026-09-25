@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Epochable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
@@ -15,7 +15,7 @@ use commonware_cryptography::{
 use commonware_parallel::Sequential;
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoHardfork};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
@@ -68,12 +68,14 @@ impl FinalizationVerifier {
     /// Install the identity encoded in a finalized epoch-boundary block.
     ///
     /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain
-    /// authenticated by a previously verified finalization.
+    /// authenticated by a previously verified finalization, and for selecting `fork` from that
+    /// boundary's timestamp rather than the current head.
     pub(crate) fn decode_dkg_outcome_and_register_boundary(
         &self,
-        mut extra_data: &[u8],
+        extra_data: &[u8],
+        fork: TempoHardfork,
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
-        let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
+        let outcome = OnchainDkgOutcome::decode_boundary(extra_data, &fork)?;
         self.scheme_provider.register(
             outcome.epoch(),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),

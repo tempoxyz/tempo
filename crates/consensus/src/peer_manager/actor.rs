@@ -7,7 +7,6 @@ use std::{
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -30,7 +29,10 @@ use tracing::{Span, debug, error, info_span, instrument, warn};
 use crate::{
     consensus::Digest,
     utils::public_key_to_b256,
-    validators::{DecodedValidatorV2, ExecutionNode, read_validator_config_at_block_hash},
+    validators::{
+        DecodedValidatorV2, ExecutionNode, read_active_and_known_peers_at_block_hash,
+        read_validator_config_at_block_hash,
+    },
 };
 
 /// The interval on which peer sets are refreshed during normal operation.
@@ -214,15 +216,28 @@ where
             read_header_at_height(self.execution_node.as_ref(), highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::decode_boundary(
+            latest_boundary_header.extra_data().as_ref(),
+            &self
+                .execution_node
+                .hardfork_at(latest_boundary_header.timestamp()),
+        )
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
-        let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
+        let ceremony_players = if let Some(config) = &onchain_outcome.legacy_config {
+            config.next_players.clone()
+        } else {
+            read_active_and_known_peers_at_block_hash(
+                self.execution_node.as_ref(),
+                &ordered::Set::default(),
+                latest_boundary_header.hash_slow(),
+            )
+            .wrap_err("DKG ceremony configuration unavailable at finalized boundary; restore its post-state")?
+            .into_keys()
+        };
+        let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome, &ceremony_players)
             .resolve_at_hash(
                 self.execution_node.as_ref(),
                 highest_finalized_header.hash_slow(),
@@ -346,11 +361,13 @@ struct PeersBuilder {
 }
 
 impl PeersBuilder {
-    fn with_dkg_outcome(outcome: &OnchainDkgOutcome) -> Self {
+    fn with_dkg_outcome(
+        outcome: &OnchainDkgOutcome,
+        ceremony_players: &ordered::Set<PublicKey>,
+    ) -> Self {
         let primary = outcome.players().clone();
         let secondary = ordered::Set::from_iter_dedup(
-            outcome
-                .next_players()
+            ceremony_players
                 .iter()
                 // Performs a binary search since `primary` is a sorted vec
                 // under the hood - so performance of this is fine.
@@ -535,6 +552,10 @@ mod tests {
     }
 
     impl ExecutionLayer for TestExecutionNode {
+        fn hardfork_at(&self, _timestamp: u64) -> tempo_chainspec::TempoHardfork {
+            tempo_chainspec::TempoHardfork::T13
+        }
+
         fn finalized_block_number(&self) -> eyre::Result<Option<u64>> {
             Ok(self.finalized)
         }
@@ -710,8 +731,10 @@ mod tests {
         Ok(OnchainDkgOutcome {
             epoch: 0,
             output,
-            next_players: ordered::Set::try_from_iter(next_players)?,
-            is_next_full_dkg: false,
+            legacy_config: Some(tempo_dkg_onchain_artifacts::LegacyDkgConfig {
+                next_players: ordered::Set::try_from_iter(next_players)?,
+                is_next_full_dkg: false,
+            }),
         })
     }
 
@@ -862,8 +885,11 @@ mod tests {
             [peer(1).public_key, peer(2).public_key],
             [peer(1).public_key, peer(2).public_key],
         )?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::with_dkg_outcome(
+            &outcome,
+            &outcome.legacy_config.as_ref().unwrap().next_players,
+        )
+        .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 2);
         assert_eq!(peers.secondary.len(), 0);
@@ -880,8 +906,11 @@ mod tests {
             [peer(1).public_key, peer(2).public_key],
             [peer(1).public_key],
         )?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::with_dkg_outcome(
+            &outcome,
+            &outcome.legacy_config.as_ref().unwrap().next_players,
+        )
+        .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 2);
         assert_eq!(peers.secondary.len(), 0);
@@ -898,8 +927,11 @@ mod tests {
             [peer(1).public_key],
             [peer(1).public_key, peer(2).public_key],
         )?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::with_dkg_outcome(
+            &outcome,
+            &outcome.legacy_config.as_ref().unwrap().next_players,
+        )
+        .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 1);
         assert_eq!(peers.secondary.len(), 1);
@@ -914,8 +946,11 @@ mod tests {
     fn resolve_at_hash_adds_active_non_dkg_validator_as_secondary() -> eyre::Result<()> {
         let execution = execution_with_validators(&[peer(1), peer(2)])?;
         let outcome = dkg_outcome([peer(1).public_key], [peer(1).public_key])?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::with_dkg_outcome(
+            &outcome,
+            &outcome.legacy_config.as_ref().unwrap().next_players,
+        )
+        .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 1);
         assert_eq!(peers.secondary.len(), 1);
