@@ -1,6 +1,7 @@
 use super::*;
 use crate::{TempoBatchCallEnv, gas_params::tempo_gas_params};
 use alloy_primitives::Signature;
+use tempo_precompiles::native_multisig::keccak_cost;
 
 mod cost;
 use alloy_signer::SignerSync;
@@ -14,7 +15,8 @@ use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
         AccountSignature, KeyAuthorization, MAX_MULTISIG_OWNERS, MULTISIG_SIGNATURE_DOMAIN,
-        MultisigConfig, MultisigOwner, PrimitiveSignature, multisig_digest,
+        MultisigConfig, MultisigOwner, PrimitiveSignature,
+        multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN, multisig_digest,
     },
 };
 
@@ -185,6 +187,51 @@ fn native_state_registration_gas_and_registered_v0() {
             )
         ))
     ));
+}
+
+#[test]
+fn native_transaction_accepts_threshold_above_eight_with_eight_approvals() {
+    let (mut tx, block) = fixture();
+    let mut owners = (0..9)
+        .map(|_| PrivateKeySigner::random())
+        .collect::<Vec<_>>();
+    owners.sort_by_key(|signer| signer.address());
+    let config = MultisigConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 9,
+        owners: owners
+            .iter()
+            .enumerate()
+            .map(|(index, signer)| MultisigOwner {
+                owner: signer.address(),
+                weight: if index == 0 { 2 } else { 1 },
+            })
+            .collect(),
+    };
+    let account = config
+        .derive_account(block.multisig_recovery_factory.unwrap())
+        .unwrap();
+    let aa = tx.tempo_tx_env.as_mut().unwrap();
+    let digest = multisig_digest(aa.signature_hash, account, 0);
+    let approvals = owners[..8]
+        .iter()
+        .map(|signer| PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest).unwrap()))
+        .collect();
+    aa.signature =
+        TempoSignature::Multisig(MultisigSignature::try_new(account, config, approvals).unwrap());
+    tx.caller = account;
+
+    let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(CacheDB::new(EmptyDB::default()));
+    validate_state(
+        &mut journal,
+        &tx,
+        &block,
+        TempoHardfork::T14,
+        &tempo_gas_params(TempoHardfork::T14),
+    )
+    .unwrap();
+    verify(&tx).unwrap();
 }
 
 #[test]
