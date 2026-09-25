@@ -1,6 +1,6 @@
 //! TIP-1098 native Nitro-backed Zone verifier.
 
-mod attestation;
+pub mod attestation;
 pub mod dispatch;
 
 use alloy::{
@@ -12,8 +12,6 @@ use tempo_precompiles_macros::contract;
 
 use self::attestation::{AWS_NITRO_ROOT_DER, verify_attestation_with_root};
 use crate::{error::Result, zone_factory::portal_address};
-
-pub use attestation::AwsLcP384;
 
 const CONFIG_V1: &[u8] = &[1];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
