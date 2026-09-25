@@ -687,6 +687,12 @@ where
                 best_txs.on_new_result(result);
             };
 
+            let tx_timing_span = tracing::info_span!(
+                target: "modexp_timing",
+                "timed_payload_tx",
+                timed_tx_hash = %tx.hash(),
+            )
+            .entered();
             let execution_start = Instant::now();
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
@@ -706,6 +712,7 @@ where
                     .map(|_| ())
             };
 
+            drop(tx_timing_span);
             {
                 let elapsed_ns = execution_start.elapsed().as_nanos() as u64;
                 let kind = zone_kind.unwrap_or(if is_payment { "payment" } else { "general" });

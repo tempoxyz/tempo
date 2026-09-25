@@ -1,6 +1,6 @@
 use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory, IntoTxEnv,
-    precompiles::PrecompilesMap,
+    precompiles::{DynPrecompile, Precompile, PrecompilesMap},
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::{
@@ -22,6 +22,7 @@ use std::{
     cell::RefCell,
     ops::{Deref, DerefMut},
     rc::Rc,
+    time::Instant,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
@@ -88,8 +89,35 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
+        let mut inner = tempo_revm::TempoEvm::new(ctx, NoOpInspector {});
+        // Diagnostic wrapper: preserve the selected hardfork implementation and time only its call.
+        inner
+            .inner
+            .precompiles
+            .map_precompile(&Address::with_last_byte(5), |precompile| {
+                DynPrecompile::new(precompile.precompile_id().clone(), move |input| {
+                    let input_data = Bytes::copy_from_slice(input.data);
+                    let gas_limit = input.gas;
+                    let caller = input.caller;
+                    let start = Instant::now();
+                    let result = precompile.call(input);
+                    let elapsed_ns = start.elapsed().as_nanos() as u64;
+                    tracing::info!(
+                        target: "modexp_timing",
+                        elapsed_ns,
+                        %input_data,
+                        %caller,
+                        gas_limit,
+                        execution_ok = result.is_ok(),
+                        success = result.as_ref().is_ok_and(|output| output.status.is_success()),
+                        gas_used = ?result.as_ref().ok().map(|output| output.gas_used),
+                        "Modexp invocation timing"
+                    );
+                    result
+                })
+            });
         Self {
-            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
+            inner,
             inspect: false,
         }
     }
