@@ -3,20 +3,15 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
 
-pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
+pub use tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
 
 use crate::{
-    budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_decision, scaled_build_time_multiplier,
-    },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
@@ -57,11 +52,7 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
@@ -70,7 +61,8 @@ use tempo_evm::{
     TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
+    Estimator, EstimatorConfig, FinishedBuild, TempoBuiltPayload, TempoPayloadAttributes,
+    ValidationLatencyWorkload,
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
@@ -139,11 +131,12 @@ pub struct TempoPayloadBuilder<Provider> {
     cache_metrics: CachedStateMetrics,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
-    /// Learned estimate of total replayable build work divided by work at tx cutoff.
+    /// Shared proposal budget estimator.
     ///
-    /// This lets the builder reserve time for non-interruptible
-    /// `builder_finish` without a fixed duration.
-    build_time_multiplier: Arc<AtomicU64>,
+    /// Consensus feeds it validation, persistence and network observations;
+    /// the builder reads one [`tempo_payload_types::BuildPlan`] per paced build
+    /// from it and reports the finished build's replayable work back.
+    estimator: Arc<Estimator>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -207,25 +200,24 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             enable_bal: cfg!(feature = "bal"),
-            build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
-                config.build_time_multiplier,
-            ))),
+            estimator: Arc::new(Estimator::new(
+                EstimatorConfig::default().with_build_time_multiplier(config.build_time_multiplier),
+            )),
         }
     }
 
-    fn build_time_multiplier(&self) -> u64 {
-        self.build_time_multiplier.load(Ordering::Relaxed)
+    /// Shares a proposal budget estimator with consensus.
+    ///
+    /// Without this the builder learns from its own builds only and never
+    /// sees validation, persistence or network feedback.
+    pub fn with_estimator(mut self, estimator: Arc<Estimator>) -> Self {
+        self.estimator = estimator;
+        self
     }
 
-    fn update_build_time_multiplier(&self, total_work: Duration, work_at_tx_cutoff: Duration) {
-        let Some(observed) = observed_build_time_multiplier(total_work, work_at_tx_cutoff) else {
-            return;
-        };
-        let _ = self.build_time_multiplier.try_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(decay_build_time_multiplier(current, observed)),
-        );
+    /// The proposal budget estimator this builder reports to.
+    pub fn estimator(&self) -> &Arc<Estimator> {
+        &self.estimator
     }
 }
 
@@ -504,33 +496,40 @@ where
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
-        let build_time_multiplier = self.build_time_multiplier();
-        let marshal_persist = marshal_persist_estimate();
-        let validation_latency = attributes.validation_latency_estimate();
+        // Snapshot the shared estimator once so every stop decision in this
+        // build uses the same multiplier, persistence rate and validation
+        // feedback. Consensus may attach a validation snapshot taken when it
+        // dispatched the build; prefer that when present.
+        let build_plan = payload_build_budget.map(|build_budget| {
+            self.estimator
+                .build_plan(build_budget)
+                .with_validation_latency(attributes.validation_latency_estimate())
+        });
+        let validation_latency = build_plan.map_or_else(
+            || attributes.validation_latency_estimate(),
+            |plan| plan.validation_latency(),
+        );
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
+            if let Some(plan) = build_plan.as_ref() {
                 let elapsed = start.elapsed();
                 let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
-                let budget_decision = payload_budget_decision(
+                let budget_decision = plan.decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
-                    build_time_multiplier,
-                    marshal_persist,
                     estimated_rlp_block_size,
-                    validation_latency,
                     current_workload,
                 );
-                if budget_decision.total_reserved >= build_budget {
+                if plan.exhausted(&budget_decision) {
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
-                        ?build_budget,
+                        build_budget = ?plan.build_budget,
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
                         total_reserved = ?budget_decision.total_reserved,
@@ -539,8 +538,7 @@ where
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
-                        build_time_multiplier = build_time_multiplier as f64
-                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                        build_time_multiplier = plan.build_time_multiplier(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
                     break BlockBuildStopReason::BuildBudget;
@@ -988,10 +986,16 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
-            self.update_build_time_multiplier(
-                validation_work_duration,
-                validation_work_at_tx_cutoff,
+            self.estimator.on_build_finished(
+                Instant::now(),
+                FinishedBuild {
+                    work_at_tx_cutoff: validation_work_at_tx_cutoff,
+                    total_work: validation_work_duration,
+                },
             );
+            self.metrics
+                .build_time_multiplier_last
+                .set(self.estimator.build_time_multiplier());
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {

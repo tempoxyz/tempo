@@ -1,66 +1,10 @@
-use std::{
-    collections::BTreeMap,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 use tracing::debug;
 
-/// How quickly the learned marshal persistence rate decays when blocks get cheaper.
-const RATE_DECAY: u64 = 8;
-/// Ignore tiny blocks so fixed archive overhead does not become a large-block byte cost.
-const MIN_SAMPLE_BYTES: usize = 128 * 1024;
 /// Number of recent successful EL validation timings to retain.
 const VALIDATION_LATENCY_SAMPLE_WINDOW: usize = 64;
 /// Fixed-point scale for validation workload multipliers.
 const VALIDATION_LATENCY_WORKLOAD_SCALE: u128 = 1_000_000;
-
-static MARSHAL_PERSIST_NS_PER_BYTE: AtomicU64 = AtomicU64::new(0);
-
-/// Returns the current estimate of consensus marshal persistence cost.
-///
-/// This is a point-in-time snapshot. Callers use it before building or
-/// returning a proposal so the same estimate is applied consistently to that
-/// decision.
-pub fn marshal_persist_estimate() -> MarshalPersistEstimator {
-    MarshalPersistEstimator::from_ns_per_byte(MARSHAL_PERSIST_NS_PER_BYTE.load(Ordering::Relaxed))
-}
-
-/// Records time spent persisting an encoded block through consensus marshal.
-///
-/// The observation is stored as nanoseconds per encoded block byte. Large
-/// blocks teach future build and return budgets how much size-dependent
-/// persistence time to reserve for both proposers and validators.
-/// Consensus records this from local `marshal.verified` time after persisting a
-/// proposal.
-pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
-    if block_size_bytes < MIN_SAMPLE_BYTES || elapsed == Duration::ZERO {
-        return;
-    }
-
-    let block_size = block_size_bytes as u128;
-    let observed = elapsed
-        .as_nanos()
-        .saturating_add(block_size.saturating_sub(1))
-        / block_size;
-    let observed = observed.min(u128::from(u64::MAX)) as u64;
-
-    let _ =
-        MARSHAL_PERSIST_NS_PER_BYTE.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            Some(if current == 0 || observed >= current {
-                observed
-            } else {
-                let decay = ((current - observed) / RATE_DECAY).max(1);
-                current.saturating_sub(decay).max(observed)
-            })
-        });
-    debug!(
-        block_size_bytes,
-        elapsed = ?elapsed,
-        observed_ns_per_byte = observed,
-        estimated_ns_per_byte = MARSHAL_PERSIST_NS_PER_BYTE.load(Ordering::Relaxed),
-        "updated marshal persistence estimate"
-    );
-}
 
 /// Point-in-time marshal persistence cost per encoded block byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,6 +16,11 @@ impl MarshalPersistEstimator {
     /// Creates an estimator from a raw nanoseconds-per-byte rate.
     pub fn from_ns_per_byte(ns_per_byte: u64) -> Self {
         Self { ns_per_byte }
+    }
+
+    /// The learned persistence cost in nanoseconds per encoded byte.
+    pub fn ns_per_byte(self) -> u64 {
+        self.ns_per_byte
     }
 
     /// Estimates marshal persistence time for an encoded block size.
@@ -179,6 +128,11 @@ pub struct ValidationLatencyEstimate {
 }
 
 impl ValidationLatencyEstimate {
+    /// The recent P90 validation time this estimate is floored at.
+    pub fn elapsed(self) -> Duration {
+        self.elapsed
+    }
+
     /// Estimates validation latency for the supplied workload.
     ///
     /// Recent elapsed validation feedback is the floor so faster replay feedback
@@ -289,6 +243,64 @@ impl ValidationLatencyEstimator {
         );
     }
 
+    /// Estimates validation time for `workload` from the observed per-unit
+    /// rates, scaling down for smaller blocks as well as up for larger ones.
+    ///
+    /// The estimate is the larger of the median nanoseconds-per-gas and
+    /// nanoseconds-per-transaction rates applied to `workload`, capped at the
+    /// pacing estimate from [`Self::estimate`] so it never exceeds the
+    /// conservative figure. Returns `None` without samples or for an empty
+    /// workload.
+    pub fn workload_estimate(&self, workload: ValidationLatencyWorkload) -> Option<Duration> {
+        if self.sample_window.is_empty()
+            || (workload.gas_used == 0 && workload.transaction_count == 0)
+        {
+            return None;
+        }
+        fn median(mut values: Vec<u128>) -> Option<u128> {
+            if values.is_empty() {
+                return None;
+            }
+            values.sort_unstable();
+            Some(values[(values.len() - 1) / 2])
+        }
+        let per_gas = median(
+            self.sample_window
+                .iter()
+                .filter(|(_, sample)| sample.workload.gas_used > 0)
+                .map(|(_, sample)| {
+                    sample.elapsed.as_nanos() * VALIDATION_LATENCY_WORKLOAD_SCALE
+                        / u128::from(sample.workload.gas_used)
+                })
+                .collect(),
+        )
+        .map(|rate| {
+            rate.saturating_mul(u128::from(workload.gas_used)) / VALIDATION_LATENCY_WORKLOAD_SCALE
+        });
+        let per_tx = median(
+            self.sample_window
+                .iter()
+                .filter(|(_, sample)| sample.workload.transaction_count > 0)
+                .map(|(_, sample)| {
+                    sample.elapsed.as_nanos() * VALIDATION_LATENCY_WORKLOAD_SCALE
+                        / sample.workload.transaction_count as u128
+                })
+                .collect(),
+        )
+        .map(|rate| {
+            rate.saturating_mul(workload.transaction_count as u128)
+                / VALIDATION_LATENCY_WORKLOAD_SCALE
+        });
+        let nanos = per_gas.into_iter().chain(per_tx).max()?;
+        let estimate = Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64);
+        Some(
+            match self.estimate().and_then(|floor| floor.estimate(workload)) {
+                Some(ceiling) => estimate.min(ceiling),
+                None => estimate,
+            },
+        )
+    }
+
     /// Returns the current estimate for execution-layer block validation work.
     ///
     /// `None` means this node has not yet observed any successful validations.
@@ -325,25 +337,6 @@ mod tests {
         estimator
             .estimate()
             .and_then(|estimate| estimate.estimate(current_workload))
-    }
-
-    #[test]
-    fn observes_large_blocks_and_ignores_tiny_samples() {
-        MARSHAL_PERSIST_NS_PER_BYTE.store(0, Ordering::Relaxed);
-        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::from_millis(13));
-
-        assert_eq!(
-            marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
-            Duration::from_nanos(13_107_200)
-        );
-
-        observe_marshal_persist(MIN_SAMPLE_BYTES - 1, Duration::from_millis(1));
-        observe_marshal_persist(1_000_000, Duration::ZERO);
-
-        assert_eq!(
-            marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
-            Duration::from_nanos(13_107_200)
-        );
     }
 
     #[test]
@@ -420,6 +413,42 @@ mod tests {
         assert_eq!(
             estimate_with_sample(sample, ValidationLatencyWorkload::new(1_000, 15)),
             Some(Duration::from_millis(150))
+        );
+    }
+
+    #[test]
+    fn workload_estimate_scales_down_for_smaller_blocks() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(1_000, 10)),
+            None
+        );
+        // Ten blocks of 10k transactions and 1 Ggas validate in 180 ms.
+        for id in 0..10 {
+            estimator.observe(
+                id,
+                ValidationLatencyWorkload::new(1_000_000_000, 10_000),
+                Duration::from_millis(180),
+            );
+        }
+        // A block half the size is credited half the time.
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(500_000_000, 5_000)),
+            Some(Duration::from_millis(90))
+        );
+        // Whichever unit is the larger share drives the estimate.
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(250_000_000, 5_000)),
+            Some(Duration::from_millis(90))
+        );
+        // Larger blocks never exceed the pacing estimate, which scales up too.
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(2_000_000_000, 20_000)),
+            Some(Duration::from_millis(360))
+        );
+        assert_eq!(
+            estimator.workload_estimate(ValidationLatencyWorkload::new(0, 0)),
+            None
         );
     }
 

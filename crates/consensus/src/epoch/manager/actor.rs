@@ -387,7 +387,10 @@ where
                 elector: elector::Random::<commonware_cryptography::Sha256>::new(elector),
                 strategy: Sequential,
 
-                reporter: self.config.marshal.clone(),
+                reporter: super::estimator_reporter::EstimatorReporter::new(
+                    self.config.marshal.clone(),
+                    self.config.estimator.clone(),
+                ),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix

@@ -47,7 +47,7 @@ use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{Estimator, TempoPayloadAttributes};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
@@ -164,6 +164,7 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+            estimator: None,
         }
     }
 }
@@ -324,6 +325,16 @@ impl TempoNode {
         self
     }
 
+    /// Shares the proposal budget estimator between the payload builder and
+    /// consensus.
+    ///
+    /// Consensus hands the same handle to its engine so that validation,
+    /// persistence and network feedback reach the builder's stop decisions.
+    pub fn with_estimator(mut self, estimator: Arc<Estimator>) -> Self {
+        self.payload_builder_builder.estimator = Some(estimator);
+        self
+    }
+
     /// Sets the validator key returned by the admin RPC API.
     pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
         self.validator_key = validator_key;
@@ -459,7 +470,7 @@ where
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(
             self.pool_builder.clone(),
-            self.payload_builder_builder,
+            self.payload_builder_builder.clone(),
             self.network_builder.clone(),
         )
     }
@@ -833,7 +844,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
@@ -844,7 +855,11 @@ pub struct TempoPayloadBuilderBuilder {
     pub enable_parallel: bool,
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
+    ///
+    /// Only used when no shared `estimator` is provided.
     pub build_time_multiplier: f64,
+    /// Proposal budget estimator shared with consensus, if the node runs one.
+    pub estimator: Option<Arc<Estimator>>,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -854,6 +869,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_prewarming: true,
             enable_parallel: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            estimator: None,
         }
     }
 }
@@ -880,7 +896,7 @@ where
             _ => None,
         });
 
-        Ok(TempoPayloadBuilder::new(
+        let builder = TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
             ctx.task_executor().clone(),
@@ -894,7 +910,11 @@ where
                 enable_parallel: self.enable_parallel,
                 build_time_multiplier: self.build_time_multiplier,
             },
-        ))
+        );
+        Ok(match self.estimator {
+            Some(estimator) => builder.with_estimator(estimator),
+            None => builder,
+        })
     }
 }
 

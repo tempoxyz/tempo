@@ -171,6 +171,59 @@ pub struct Args {
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
+    /// Largest network reservation the proposal budget estimator may learn.
+    ///
+    /// The estimator measures how long its own proposals take from return
+    /// until the next leader starts building on them, subtracts the
+    /// validators' expected validation and persistence work, and reserves a
+    /// recent percentile of the rest (`--consensus.network-reserve-percentile`):
+    /// never less than `--consensus.network-budget`, never more than this.
+    /// Set it equal to `--consensus.network-budget` for a fixed reservation.
+    ///
+    /// The 300ms default covers the far-away proposers of a 10 validator,
+    /// four region network, whose p75 network time was about 265-290ms; a
+    /// 250ms cap clamped them and cost p90 block time. It must stay below
+    /// `--consensus.target-block-time`.
+    #[arg(long = "consensus.network-budget-max", default_value = "300ms")]
+    pub network_budget_max: PositiveDuration,
+
+    /// Percentile of recent own-proposal network times the proposal budget
+    /// estimator reserves, from 50 to 100.
+    ///
+    /// A higher percentile leaves fewer proposals whose network time exceeds
+    /// the reservation, at the cost of a smaller return budget and therefore
+    /// smaller blocks.
+    #[arg(
+        long = "consensus.network-reserve-percentile",
+        default_value_t = tempo_payload_types::DEFAULT_NETWORK_RESERVE_PERCENTILE
+    )]
+    pub network_reserve_percentile: u8,
+
+    /// Reserve at least the most recent own-proposal network time, not only
+    /// the window percentile.
+    ///
+    /// The percentile over the last 16 own proposals, up to two minutes of
+    /// them, lags a network that is getting slower, for example while blocks
+    /// grow, so proposals made during the rise exceed their reservation far
+    /// more often than the percentile implies. Fast rise follows one slow
+    /// proposal up for the next one immediately, still capped by
+    /// `--consensus.network-budget-max`, and the next faster proposal hands
+    /// the reservation back to the window percentile. On a 10 validator, four
+    /// region benchmark it cut the share of proposals whose network time
+    /// exceeded the reservation from 43% to 37% without costing throughput.
+    ///
+    /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
+    /// reserve the window percentile alone.
+    #[arg(
+        long = "consensus.network-reserve-fast-rise",
+        value_name = "BOOL",
+        num_args(0..=1),
+        default_missing_value = "true",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    pub network_reserve_fast_rise: bool,
+
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
@@ -404,6 +457,22 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// Builds the shared proposal budget estimator configuration from the
+    /// consensus timing flags and the payload builder's initial multiplier.
+    pub fn estimator_config(
+        &self,
+        build_time_multiplier: f64,
+    ) -> tempo_payload_types::EstimatorConfig {
+        tempo_payload_types::EstimatorConfig {
+            target_block_time: self.target_block_time.into_duration(),
+            network_budget: self.network_budget.into_duration(),
+            network_budget_max: self.network_budget_max.into_duration(),
+            network_reserve_percentile: self.network_reserve_percentile,
+            network_reserve_fast_rise: self.network_reserve_fast_rise,
+            build_time_multiplier,
+        }
+    }
+
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
     /// would panic on when the first epoch is entered, so a misconfiguration
     /// fails at startup with a descriptive error instead.
@@ -419,6 +488,9 @@ impl Args {
             self.views_to_track > 0,
             "`--consensus.views-to-track` must be greater than zero",
         );
+        self.estimator_config(tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER)
+            .validate()
+            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?;
         let inactive_time_before_leader_skip =
             self.inactive_time_before_leader_skip.into_duration();
         let wait_to_rebroadcast_nullify = self.wait_to_rebroadcast_nullify.into_duration();
@@ -650,6 +722,57 @@ mod tests {
         .consensus
         .validate_simplex_timing()
         .unwrap();
+    }
+
+    #[test]
+    fn network_reserve_flags_reach_the_estimator_config() {
+        let multiplier = tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
+        let config = parse(&["--dev"]).consensus.estimator_config(multiplier);
+        assert_eq!(config.network_budget_max, Duration::from_millis(300));
+        assert_eq!(
+            config.network_budget_max,
+            tempo_payload_types::DEFAULT_NETWORK_BUDGET_MAX
+        );
+        assert_eq!(config.network_reserve_percentile, 75);
+        assert!(config.network_reserve_fast_rise);
+
+        // A bare fast rise flag enables it, whether another flag follows or not.
+        let args = parse(&[
+            "--dev",
+            "--consensus.network-reserve-fast-rise",
+            "--consensus.network-reserve-percentile",
+            "90",
+        ])
+        .consensus;
+        args.validate_simplex_timing().unwrap();
+        let config = args.estimator_config(multiplier);
+        assert_eq!(config.network_reserve_percentile, 90);
+        assert!(config.network_reserve_fast_rise);
+        assert!(
+            parse(&["--dev", "--consensus.network-reserve-fast-rise"])
+                .consensus
+                .network_reserve_fast_rise
+        );
+
+        // An explicit value turns it off.
+        let args = parse(&["--dev", "--consensus.network-reserve-fast-rise=false"]).consensus;
+        args.validate_simplex_timing().unwrap();
+        assert!(!args.estimator_config(multiplier).network_reserve_fast_rise);
+
+        for percentile in ["49", "101"] {
+            let err = parse(&[
+                "--dev",
+                "--consensus.network-reserve-percentile",
+                percentile,
+            ])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("network reserve percentile"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
