@@ -80,6 +80,7 @@ impl SignatureVerifier {
         signature_type: u8,
         require_admin: bool,
     ) -> Result<bool> {
+        // The root is implicitly admin without a stored access-key grant.
         if require_admin && key_id == account {
             return Ok(true);
         }
@@ -89,7 +90,7 @@ impl SignatureVerifier {
             account,
             key_id,
             timestamp,
-            Some(signature_type),
+            self.storage.spec().is_t14().then_some(signature_type),
         ) {
             Ok(key) => Ok(!require_admin || key.is_admin),
             Err(err) if err.is_system_error() => Err(err),
