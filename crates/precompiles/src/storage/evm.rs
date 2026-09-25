@@ -1,3 +1,4 @@
+use super::ConfigCommitmentWriteGas;
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
@@ -14,7 +15,10 @@ use revm::{
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{
+    TempoBlockEnv,
+    account::{decode_config_commitment, encode_config_commitment},
+};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -393,6 +397,28 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         })
     }
 
+    fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
+            return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
+        }
+        // The authorization read already charged account access (or was intrinsic).
+        let previous = {
+            let account = self.internals.load_account_mut(address)?;
+            decode_config_commitment(&account.data.account().info.extension, true)
+                .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?
+        };
+        self.deduct_gas(gas.cost(previous)?)?;
+        self.internals
+            .load_account_mut(address)?
+            .set_extension(encode_config_commitment(commitment).into());
+        Ok(())
+    }
+
     #[inline]
     fn sstore(
         &mut self,
@@ -734,6 +760,7 @@ pub fn deduct_gas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::ConfigCommitmentWriteGas as WriteGas;
     use alloy::primitives::{B256, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
@@ -745,6 +772,108 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+
+    #[test]
+    fn commitment_nested_journal_rollback() {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        super::super::tests::exercise_rollback(&mut evm.provider_max_gas());
+    }
+
+    #[test]
+    fn commitment_intrinsic_write_and_static_rejection() {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut provider = evm.provider_max_gas();
+        let address = Address::repeat_byte(1);
+        let commitment = B256::repeat_byte(2);
+        provider
+            .set_config_commitment(address, commitment, WriteGas::Intrinsic)
+            .unwrap();
+        assert_eq!(provider.gas_used(), 0);
+        assert_eq!(provider.state_gas_used(), 0);
+        {
+            let mut account = provider.internals.load_account_mut(address).unwrap();
+            account.set_balance(U256::from(7));
+            account.bump_nonce();
+        }
+        assert_eq!(provider.config_commitment(address).unwrap(), commitment);
+        let after_read = provider.gas_used();
+        provider
+            .set_config_commitment(address, commitment, WriteGas::Precompile)
+            .unwrap();
+        assert_eq!(provider.gas_used() - after_read, 5_000);
+        let fresh = Address::repeat_byte(4);
+        assert_eq!(provider.config_commitment(fresh).unwrap(), B256::ZERO);
+        let after_read = provider.gas_used();
+        provider
+            .set_config_commitment(fresh, commitment, WriteGas::Precompile)
+            .unwrap();
+        assert_eq!(provider.gas_used() - after_read, 20_000);
+        assert_eq!(provider.state_gas_used(), 0);
+        assert_eq!(provider.gas_refunded(), 0);
+        provider.is_static = true;
+        let error = provider
+            .set_config_commitment(address, commitment, WriteGas::Precompile)
+            .unwrap_err();
+        assert_eq!(error, TempoPrecompileError::InvalidConfigCommitmentWrite);
+        assert!(!error.is_system_error());
+        assert!(
+            error
+                .into_precompile_result(0, 0)
+                .unwrap()
+                .status
+                .is_revert()
+        );
+    }
+
+    #[test]
+    fn commitment_write_gas_boundary() {
+        let address = Address::repeat_byte(1);
+        let next = B256::repeat_byte(2);
+        for (previous, cost) in [(B256::ZERO, 20_000), (B256::repeat_byte(3), 5_000)] {
+            for shortfall in [1, 0] {
+                let mut evm = TestEvm::new(TempoHardfork::T14);
+                {
+                    let mut provider = evm.provider_max_gas();
+                    if !previous.is_zero() {
+                        provider
+                            .set_config_commitment(address, previous, WriteGas::Intrinsic)
+                            .unwrap();
+                    }
+                    // Pay for the prerequisite account read separately from the write budget.
+                    assert_eq!(provider.config_commitment(address).unwrap(), previous);
+                    assert!(provider.gas_used() > 0);
+                }
+                let reservoir = 100_000;
+                {
+                    let mut provider = evm.provider_with_gas_limit(cost - shortfall, reservoir);
+                    let result =
+                        provider.set_config_commitment(address, next, WriteGas::Precompile);
+                    if shortfall == 0 {
+                        result.unwrap();
+                        assert_eq!(provider.gas_used(), cost);
+                    } else {
+                        assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+                    }
+                    assert_eq!(provider.state_gas_used(), 0);
+                    assert_eq!(provider.state_gas_spilled(), 0);
+                    assert_eq!(provider.gas_refunded(), 0);
+                    assert_eq!(provider.reservoir(), reservoir);
+                }
+                assert_eq!(
+                    evm.provider_max_gas().config_commitment(address).unwrap(),
+                    if shortfall == 0 { next } else { previous }
+                );
+                assert!(
+                    evm.0
+                        .ctx_mut()
+                        .journaled_state
+                        .state
+                        .values()
+                        .all(|account| account.storage.is_empty())
+                );
+            }
+        }
+    }
 
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 
