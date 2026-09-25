@@ -397,7 +397,13 @@ impl FromStr for PositiveDuration {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let duration = s.parse::<jiff::SignedDuration>()?;
-        let _: Duration = duration.try_into().wrap_err("duration must be positive")?;
+        // `TryInto<Duration>` only rejects negatives, so zero passes it and reaches
+        // `simplex::Config`, whose `assert` requires each timeout to be greater than
+        // zero and panics at epoch entry rather than at startup.
+        let duration_std: Duration = duration.try_into().wrap_err("duration must be positive")?;
+        if duration_std.is_zero() {
+            return Err("duration must be greater than zero".into());
+        }
 
         Ok(Self(duration))
     }
@@ -567,7 +573,7 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write as _, process::Command, thread, time::Duration};
+    use std::{io::Write as _, process::Command, str::FromStr as _, thread, time::Duration};
 
     use clap::Parser as _;
     use commonware_codec::Encode as _;
@@ -903,5 +909,38 @@ mod tests {
             .await
             .expect_err("loading with a wrong passphrase must fail");
         writer.join().unwrap();
+    }
+
+    #[test]
+    fn positive_duration_rejects_zero() {
+        // The type's own doc promises "positive and not zero", and
+        // `into_duration` expects that promise to hold.
+        for zero in ["0s", "0ms", "-0s"] {
+            assert!(
+                super::PositiveDuration::from_str(zero).is_err(),
+                "`{zero}` must be rejected by PositiveDuration"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_simplex_timings_are_rejected_at_startup() {
+        // Each of these feeds a commonware `simplex::Config` field that
+        // `Config::assert` requires to be greater than zero, and that assert
+        // runs inside a spawned actor at epoch entry rather than at startup.
+        for flag in [
+            "--consensus.wait-for-proposal",
+            "--consensus.wait-to-rebroadcast-nullify",
+            "--consensus.wait-for-peer-response",
+        ] {
+            let rejected = match TestCli::try_parse_from(["test", "--dev", flag, "0s"]) {
+                Err(_) => true,
+                Ok(cli) => cli.consensus.validate_simplex_timing().is_err(),
+            };
+            assert!(
+                rejected,
+                "`{flag} 0s` reaches simplex::Config as a zero timeout"
+            );
+        }
     }
 }
