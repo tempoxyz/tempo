@@ -758,6 +758,10 @@ def txgen-run-preset-pipeline [
         if $portal_code.result == "0x" {
             error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
         }
+        let history_code = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x0000f90827f1c53a10cb7a02335b175320002935","latest"]}')
+        if ($history_code | get -o result | default "0x") == "0x" {
+            error make { msg: "zones requires EIP-2935 history storage for settlement anchors; rebuild cached benchmark snapshots with --force-bloat" }
+        }
         let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
         let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","latest"]}')
         if $nonce_response.result != $latest_nonce.result {
