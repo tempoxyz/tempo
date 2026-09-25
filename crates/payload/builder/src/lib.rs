@@ -565,6 +565,24 @@ where
             let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
 
+            // A transaction that is not valid yet fails execution in every block until its
+            // `valid_after`, so skip it here instead of executing it each time. Pool admission
+            // deliberately keeps such transactions around (see `aa_valid_after_max_secs`).
+            if let Err(error) = tx
+                .transaction
+                .inner()
+                .ensure_valid_after(attributes.timestamp)
+            {
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::InvalidValidAfter(error),
+                    )),
+                );
+                self.metrics.inc_pool_tx_skipped("valid_after_not_reached");
+                continue;
+            }
+
             let max_regular_gas_used = core::cmp::min(
                 tx.gas_limit(),
                 executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
@@ -1277,6 +1295,42 @@ pub(crate) struct RootsTaskResult {
 mod tests {
     use super::*;
     use alloy_primitives::Bytes;
+    use std::num::NonZeroU64;
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{
+            TempoTransaction,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        },
+    };
+
+    /// The builder skips a transaction whose `valid_after` is ahead of the block timestamp,
+    /// and the bound is inclusive: a block at exactly `valid_after` may include it.
+    #[test]
+    fn valid_after_skip_bound_matches_execution() {
+        let envelope = |valid_after: u64| {
+            let tx = TempoTransaction {
+                valid_after: NonZeroU64::new(valid_after),
+                ..Default::default()
+            };
+            TempoTxEnvelope::AA(AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                )),
+            ))
+        };
+
+        assert!(envelope(100).ensure_valid_after(101).is_ok());
+        assert!(envelope(100).ensure_valid_after(100).is_ok());
+        let error = envelope(100).ensure_valid_after(99).unwrap_err();
+        assert_eq!(error.valid_after, 100);
+        assert_eq!(error.max_allowed, 99);
+
+        // Transactions without `valid_after` are never skipped.
+        assert!(envelope(0).ensure_valid_after(0).is_ok());
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
