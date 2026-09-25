@@ -76,6 +76,9 @@ const STORAGE_SUBTRIES: u8 = 16;
 /// smaller ones are left to the sequential state root pass.
 const PARALLEL_TRIE_MIN_SLOTS: u64 = 1_000_000;
 
+/// Nodes a subtrie build holds before handing them to the writer; few in tests, to span batches.
+const SUBTRIE_BATCH_NODES: usize = if cfg!(test) { 4 } else { 100_000 };
+
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
 pub struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = TempoChainSpecParser> {
@@ -134,8 +137,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut total_blocks = 0u64;
 
         // Track addresses and their account data for hashing
-        let mut accounts_seen: AddressMap<Account> = AddressMap::default();
-        let mut slot_counts: AddressMap<u64> = AddressMap::default();
+        let mut accounts_seen: AddressMap<LoadedAccount> = AddressMap::default();
 
         // ETL collectors: accumulate entries sorted, spill to disk when full
         let mut hash_chunk: Vec<(B256, B256, CompactU256)> = Vec::with_capacity(WORKER_CHUNK_SIZE);
@@ -220,27 +222,31 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             // Preserving the genesis account is critical: TIP20 tokens have bytecode (0xEF)
             // set during genesis, and overwriting with Account::default() would clear the
             // code hash, making the token appear uninitialized.
-            let hashed_address = keccak256_uncached(address);
-            if let Entry::Vacant(e) = accounts_seen.entry(address) {
-                let mut account_cursor = provider_rw
-                    .tx_ref()
-                    .cursor_read::<tables::HashedAccounts>()?;
-                let account = match account_cursor.seek_exact(hashed_address)? {
-                    Some((_, account)) => account,
-                    None => {
-                        return Err(eyre::eyre!(
-                            "state bloat references account {address} that is missing from genesis"
-                        ));
-                    }
-                };
-                e.insert(account);
-            }
+            let loaded = match accounts_seen.entry(address) {
+                Entry::Occupied(e) => e.into_mut(),
+                Entry::Vacant(e) => {
+                    let hashed_address = keccak256_uncached(address);
+                    let account = provider_rw
+                        .tx_ref()
+                        .get::<tables::HashedAccounts>(hashed_address)?
+                        .ok_or_else(|| {
+                            eyre::eyre!(
+                                "state bloat references account {address} that is missing from genesis"
+                            )
+                        })?;
+                    e.insert(LoadedAccount {
+                        account,
+                        hashed_address,
+                        slots: 0,
+                    })
+                }
+            };
+            let hashed_address = loaded.hashed_address;
 
             // Read entries into the hashed ETL collector.
             let mut entry_buf = [0u8; 64];
             let start = Instant::now();
             let mut last_log = start;
-            let entries_before = total_entries;
 
             for i in 0..pair_count {
                 reader
@@ -272,11 +278,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 }
 
                 total_entries += 1;
+                loaded.slots += 1;
 
                 log_collection_progress(&address, i, pair_count, start, &mut last_log);
             }
 
-            *slot_counts.entry(address).or_default() += total_entries - entries_before;
             total_blocks += 1;
         }
 
@@ -331,7 +337,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Both workers finish before any error leaves, so a failed load exits with nothing
         // still writing.
-        let hashed = write_hashed_state(&provider_rw, &mut hashed_collector, &accounts_seen);
+        let hashed = write_hashed_state(&provider_rw, hashed_collector, &accounts_seen);
         let history = history_workers.map(|workers| workers.map(JoinHandle::join));
         hashed?;
 
@@ -347,6 +353,12 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 .save_prune_checkpoint(PruneSegment::StorageHistory, genesis_history_pruned())?,
         }
 
+        // Rebuild the merkle trie from scratch so the sparse trie cache on
+        // block 1 doesn't hit stale genesis nodes and stall on a full rebuild.
+        // Cleared before the commit, so a failed load leaves no stale node behind.
+        provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
+        provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
+
         // Committed here so the storage tries below can be read from many threads. A load that
         // fails past this point needs a fresh datadir, as any failed load does.
         provider_rw.commit()?;
@@ -359,33 +371,22 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let trie_start = Instant::now();
         let provider_rw = provider_factory.database_provider_rw()?;
-        // Rebuild the merkle trie from scratch so the sparse trie cache on
-        // block 1 doesn't hit stale genesis nodes and stall on a full rebuild.
-        provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
-        provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
 
-        // The state root pass reads these roots back instead of walking their slots.
-        let mut trie_writes = 0usize;
-        for (address, slots) in &slot_counts {
-            if *slots < PARALLEL_TRIE_MIN_SLOTS {
-                continue;
-            }
-            let hashed_address = keccak256_uncached(address);
-            if let Some((root, nodes)) =
-                parallel_storage_trie(&provider_factory, &provider_rw, hashed_address)?
-            {
-                trie_writes += nodes;
-                info!(
-                    target: "tempo::cli",
-                    %address,
-                    slots,
-                    %root,
-                    nodes,
-                    elapsed = ?trie_start.elapsed(),
-                    "Storage trie built by nibble"
-                );
-            }
-        }
+        // The state root pass reads these nodes instead of walking the slots under them.
+        let large_accounts: Vec<B256> = accounts_seen
+            .values()
+            .filter(|loaded| loaded.slots >= PARALLEL_TRIE_MIN_SLOTS)
+            .map(|loaded| loaded.hashed_address)
+            .collect();
+        let mut trie_writes =
+            parallel_storage_tries(&provider_factory, &provider_rw, &large_accounts)?;
+        info!(
+            target: "tempo::cli",
+            accounts = large_accounts.len(),
+            nodes = trie_writes,
+            elapsed = ?trie_start.elapsed(),
+            "Storage tries built by nibble"
+        );
 
         let mut resume: Option<IntermediateStateRootState> = None;
 
@@ -447,11 +448,12 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     }
 }
 
-/// Loads the sorted hashed storage into its table, then the hashed accounts.
+/// Loads the sorted hashed storage into its table, then the hashed accounts. Consumes the
+/// collector, so its spill files are gone before the trie is built.
 fn write_hashed_state<P>(
     provider: &P,
-    hashed_collector: &mut Collector<Vec<u8>, CompactU256>,
-    accounts: &AddressMap<Account>,
+    mut hashed_collector: Collector<Vec<u8>, CompactU256>,
+    accounts: &AddressMap<LoadedAccount>,
 ) -> eyre::Result<()>
 where
     P: DBProvider<Tx: DbTxMut> + HashingWriter,
@@ -462,15 +464,20 @@ where
     let mut hashed_cursor = provider
         .tx_ref()
         .cursor_dup_write::<tables::HashedStorages>()?;
-    load_etl_to_cursor(hashed_collector, total_hashes, "hashed storage", |k, v| {
-        hashed_cursor.append_dup(
-            B256::from_slice(&k[..32]),
-            StorageEntry {
-                key: B256::from_slice(&k[32..]),
-                value: v,
-            },
-        )
-    })?;
+    load_etl_to_cursor(
+        &mut hashed_collector,
+        total_hashes,
+        "hashed storage",
+        |k, v| {
+            hashed_cursor.append_dup(
+                B256::from_slice(&k[..32]),
+                StorageEntry {
+                    key: B256::from_slice(&k[32..]),
+                    value: v,
+                },
+            )
+        },
+    )?;
     drop(hashed_cursor);
 
     info!(target: "tempo::cli", total_hashes, "Storage written, writing hashed accounts...");
@@ -479,91 +486,90 @@ where
     provider.insert_account_for_hashing(
         accounts
             .iter()
-            .map(|(addr, account)| (*addr, Some(*account))),
+            .map(|(addr, loaded)| (*addr, Some(loaded.account))),
     )?;
     Ok(())
 }
 
-/// One account's storage trie: sixteen subtries built in parallel, one per leading nibble of
-/// the hashed slot, each written as it completes, then joined at the root. The nodes are what
-/// reth's own walk stores, so the state root pass reuses the root and later blocks update the
-/// trie incrementally. Returns the root and the nodes written.
-///
-/// `None` when a subtrie root is not a stored branch node, which only a tiny or skewed account
-/// produces; the sequential pass then builds the account over nodes it would store itself.
-fn parallel_storage_trie<N: ProviderNodeTypes>(
-    factory: &ProviderFactory<N>,
-    writer: &impl TrieWriter,
+/// An account the dump loads slots into.
+struct LoadedAccount {
+    /// As genesis left it, code hash included.
+    account: Account,
     hashed_address: B256,
-) -> eyre::Result<Option<(B256, usize)>> {
-    let (tx, rx) = mpsc::sync_channel(2);
-    let mut roots = [None; STORAGE_SUBTRIES as usize];
-    let mut written = 0;
-    let joined = thread::scope(|scope| -> eyre::Result<bool> {
-        scope.spawn(move || {
-            (0..STORAGE_SUBTRIES)
-                .into_par_iter()
-                .for_each_with(tx, |tx, nibble| {
-                    let _ = tx.send((nibble, build_subtrie(factory, hashed_address, nibble)));
-                });
-        });
-        for (nibble, built) in rx {
-            let Some((root, mut nodes)) = built? else {
-                continue;
-            };
-            let prefix = Nibbles::from_nibbles([nibble]);
-            // Built alone it carried the subtrie's root hash; in the whole trie it is an inner node.
-            let Some(mut inner) = nodes.remove(&Nibbles::new()) else {
-                return Ok(false);
-            };
-            inner.root_hash = None;
-            let mut updates = StorageTrieUpdates::default();
-            updates.storage_nodes.insert(prefix, inner);
-            for (path, node) in nodes {
-                updates.storage_nodes.insert(prefix.join(&path), node);
-            }
-            written += writer.write_trie_updates(TrieUpdates {
-                storage_tries: B256Map::from_iter([(hashed_address, updates)]),
-                ..Default::default()
-            })?;
-            roots[nibble as usize] = Some(root);
-        }
-        Ok(true)
-    })?;
-    if !joined {
-        return Ok(None);
-    }
-
-    let mut top = HashBuilder::default().with_updates(true);
-    for (nibble, root) in roots.into_iter().enumerate() {
-        if let Some(root) = root {
-            top.add_branch(Nibbles::from_nibbles([nibble as u8]), root, true);
-        }
-    }
-    let root = top.root();
-    let (_, nodes) = top.split();
-    written += writer.write_trie_updates(TrieUpdates {
-        storage_tries: B256Map::from_iter([(
-            hashed_address,
-            StorageTrieUpdates {
-                storage_nodes: nodes,
-                ..Default::default()
-            },
-        )]),
-        ..Default::default()
-    })?;
-    Ok(Some((root, written)))
+    /// Non-zero slots loaded into it.
+    slots: u64,
 }
 
-/// The subtrie under one leading nibble of an account's hashed slots, built over the keys with
-/// that nibble stripped: its root and its stored nodes, paths relative to the nibble. `None`
-/// when no slot falls under it.
+/// Builds the storage tries of `accounts` across the rayon pool, one subtrie per leading nibble
+/// of the hashed slot, and writes the nodes reth's own walk would store. Returns their count.
+fn parallel_storage_tries<N: ProviderNodeTypes>(
+    factory: &ProviderFactory<N>,
+    writer: &impl TrieWriter,
+    accounts: &[B256],
+) -> eyre::Result<usize> {
+    let subtries: Vec<Subtrie> = accounts
+        .iter()
+        .flat_map(|&account| (0..STORAGE_SUBTRIES).map(move |nibble| (account, nibble)))
+        .collect();
+    let (tx, rx) = mpsc::sync_channel(2);
+    thread::scope(|scope| {
+        // Once the writer stops, a failed send ends each build and skips those not started.
+        let builders = scope.spawn(move || {
+            let _ = subtries
+                .into_par_iter()
+                .try_for_each_with(tx, |tx, subtrie| {
+                    build_subtrie(factory, subtrie, tx).or_else(|err| tx.send((subtrie, Err(err))))
+                });
+        });
+        let written = write_subtries(writer, rx);
+        builders
+            .join()
+            .map_err(|_| eyre::eyre!("storage trie builder panicked"))?;
+        written
+    })
+}
+
+/// Writes each batch of subtrie nodes under its nibble. Returns the nodes written.
+fn write_subtries(
+    writer: &impl TrieWriter,
+    rx: mpsc::Receiver<SubtrieNodes>,
+) -> eyre::Result<usize> {
+    let mut written = 0;
+    for ((hashed_address, nibble), nodes) in rx {
+        let prefix = Nibbles::from_nibbles([nibble]);
+        let mut updates = StorageTrieUpdates::default();
+        for (path, mut node) in nodes? {
+            // Only a subtrie's own root carries a hash; in the account's trie it is inner.
+            node.root_hash = None;
+            updates.storage_nodes.insert(prefix.join(&path), node);
+        }
+        written += writer.write_trie_updates(TrieUpdates {
+            storage_tries: B256Map::from_iter([(hashed_address, updates)]),
+            ..Default::default()
+        })?;
+    }
+    Ok(written)
+}
+
+/// An account's hashed address and the leading nibble of the hashed slots under one subtrie.
+type Subtrie = (B256, u8);
+
+/// A batch of one subtrie's stored nodes, paths relative to its nibble, or why the build failed.
+type SubtrieNodes = (Subtrie, eyre::Result<HashMap<Nibbles, BranchNodeCompact>>);
+
+/// Builds the subtrie under one leading nibble of an account's hashed slots, over the keys with
+/// that nibble stripped, and sends its stored nodes in batches.
 fn build_subtrie<N: ProviderNodeTypes>(
     factory: &ProviderFactory<N>,
-    hashed_address: B256,
-    nibble: u8,
-) -> eyre::Result<Option<(B256, HashMap<Nibbles, BranchNodeCompact>)>> {
-    let provider = factory.provider()?;
+    (hashed_address, nibble): Subtrie,
+    tx: &mpsc::SyncSender<SubtrieNodes>,
+) -> eyre::Result<()> {
+    let send = |nodes| {
+        tx.send(((hashed_address, nibble), Ok(nodes)))
+            .map_err(|_| eyre::eyre!("storage trie writer stopped"))
+    };
+    // A large account's subtrie can outlast the read transaction timeout.
+    let provider = factory.provider()?.disable_long_read_transaction_safety();
     let mut cursor = provider
         .tx_ref()
         .cursor_dup_read::<tables::HashedStorages>()?;
@@ -571,7 +577,6 @@ fn build_subtrie<N: ProviderNodeTypes>(
     let mut first = B256::ZERO;
     first[0] = nibble << 4;
     let mut entry = cursor.seek_by_key_subkey(hashed_address, first)?;
-    let mut leaves = 0u64;
     while let Some(StorageEntry { key, value }) = entry {
         if key[0] >> 4 != nibble {
             break;
@@ -580,15 +585,15 @@ fn build_subtrie<N: ProviderNodeTypes>(
             Nibbles::unpack(key).slice(1..),
             alloy_rlp::encode_fixed_size(&value).as_ref(),
         );
-        leaves += 1;
+        if builder.updates_len() >= SUBTRIE_BATCH_NODES {
+            let (rest, nodes) = builder.split();
+            builder = rest.with_updates(true);
+            send(nodes)?;
+        }
         entry = cursor.next_dup_val()?;
     }
-    if leaves == 0 {
-        return Ok(None);
-    }
-    let root = builder.root();
-    let (_, nodes) = builder.split();
-    Ok(Some((root, nodes)))
+    builder.root();
+    send(builder.split().1)
 }
 
 /// The dump, unpacked on the way through if it was compressed. Its first four bytes say which.
@@ -897,6 +902,7 @@ fn log_collection_progress(
 mod tests {
     use super::*;
     use std::{
+        collections::BTreeSet,
         path::Path,
         sync::{
             Arc,
@@ -904,12 +910,19 @@ mod tests {
         },
     };
 
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, keccak256};
     use reth_db_api::table::Table;
     use reth_metrics::metrics::{
         self, Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
     };
-    use reth_provider::providers::HistoryInfo;
+    use reth_provider::{providers::HistoryInfo, test_utils::create_test_provider_factory};
+    use reth_trie::{
+        StorageRoot,
+        trie_cursor::{TrieCursor, TrieCursorFactory},
+    };
+    use reth_trie_db::{
+        DatabaseHashedCursorFactory, DatabaseStorageRoot, DatabaseTrieCursorFactory,
+    };
 
     /// Counts gets on the history table and ignores every other metric.
     #[derive(Default)]
@@ -1100,6 +1113,114 @@ mod tests {
         }
         let err = next_header(&mut BufReader::new(header[..1].chain(Broken))).unwrap_err();
         assert!(!err.to_string().contains("partway through"), "{err}");
+    }
+
+    /// An account's storage root and the nodes a sequential build of its trie keeps.
+    fn sequential_storage_trie<P: DBProvider + StorageSettingsCache>(
+        provider: &P,
+        hashed_address: B256,
+    ) -> (B256, StorageTrieUpdates) {
+        reth_trie_db::with_adapter!(provider, |A| {
+            type DbStorageRoot<'a, TX, A> = StorageRoot<
+                DatabaseTrieCursorFactory<&'a TX, A>,
+                DatabaseHashedCursorFactory<&'a TX>,
+            >;
+            let (root, _, updates) =
+                DbStorageRoot::<_, A>::from_tx_hashed(provider.tx_ref(), hashed_address)
+                    .root_with_updates()
+                    .unwrap();
+            (root, updates)
+        })
+    }
+
+    /// Every node stored for an account's storage trie, in path order.
+    fn stored_storage_nodes<P: DBProvider + StorageSettingsCache>(
+        provider: &P,
+        hashed_address: B256,
+    ) -> Vec<(Nibbles, BranchNodeCompact)> {
+        reth_trie_db::with_adapter!(provider, |A| {
+            let mut cursor = DatabaseTrieCursorFactory::<_, A>::new(provider.tx_ref())
+                .storage_trie_cursor(hashed_address)
+                .unwrap();
+            let mut nodes = Vec::new();
+            let mut node = cursor.seek(Nibbles::new()).unwrap();
+            while let Some(found) = node {
+                nodes.push(found);
+                node = cursor.next().unwrap();
+            }
+            nodes
+        })
+    }
+
+    /// Split by nibble, a storage trie stores exactly what a sequential build stores, whatever
+    /// shape each subtrie takes.
+    #[test]
+    fn the_split_storage_trie_stores_what_a_sequential_build_does() {
+        let led_by = |byte: u8, seed: u64| {
+            let mut key = keccak256(seed.to_be_bytes());
+            key[0] = byte;
+            key
+        };
+        // Nibbles 0 to b spread wide; c is empty; d is a lone leaf; e is a branch over leaves,
+        // which is not stored; f opens with an extension.
+        let mut slots: BTreeSet<B256> = (0..20_000u64)
+            .map(|seed| keccak256(seed.to_be_bytes()))
+            .filter(|key| key[0] < 0xc0)
+            .collect();
+        slots.insert(led_by(0xd0, 0));
+        slots.extend([0xe1, 0xe2, 0xe3].map(|byte| led_by(byte, 0)));
+        slots.extend((0..300).map(|seed| {
+            let mut key = led_by(0xfa, seed);
+            key[1] = 0xb0 | (key[1] & 0x0f);
+            key
+        }));
+
+        let factory = create_test_provider_factory();
+        // Two accounts over the same slots, with different values so their nodes differ.
+        let accounts = [B256::repeat_byte(0xac), B256::repeat_byte(0xbd)];
+        let provider = factory.database_provider_rw().unwrap();
+        let mut cursor = provider
+            .tx_ref()
+            .cursor_dup_write::<tables::HashedStorages>()
+            .unwrap();
+        for (offset, hashed_address) in accounts.into_iter().enumerate() {
+            for (value, &key) in slots.iter().enumerate() {
+                let value = U256::from(value + offset + 1);
+                cursor
+                    .append_dup(hashed_address, StorageEntry { key, value })
+                    .unwrap();
+            }
+        }
+        drop(cursor);
+        provider.commit().unwrap();
+
+        // Written only to be read back; dropped uncommitted.
+        let provider = factory.database_provider_rw().unwrap();
+        let sequential = accounts.map(|hashed_address| {
+            let (root, updates) = sequential_storage_trie(&provider, hashed_address);
+            provider
+                .write_trie_updates(TrieUpdates {
+                    storage_tries: B256Map::from_iter([(hashed_address, updates)]),
+                    ..Default::default()
+                })
+                .unwrap();
+            (root, stored_storage_nodes(&provider, hashed_address))
+        });
+        drop(provider);
+
+        let provider = factory.database_provider_rw().unwrap();
+        parallel_storage_tries(&factory, &provider, &accounts).unwrap();
+        let behind_the_extension = Nibbles::from_nibbles([0xf, 0xa, 0xb]);
+        for (hashed_address, (root, nodes)) in accounts.into_iter().zip(sequential) {
+            let split = stored_storage_nodes(&provider, hashed_address);
+            assert!(split.iter().any(|(path, _)| *path == behind_the_extension));
+            assert_eq!(split, nodes, "{hashed_address}");
+            assert_eq!(
+                sequential_storage_trie(&provider, hashed_address).0,
+                root,
+                "{hashed_address}: the root, read through the split nodes"
+            );
+        }
     }
 
     /// Times the history write over `TEMPO_HISTORY_BENCH_SLOTS` slots (default 32M);

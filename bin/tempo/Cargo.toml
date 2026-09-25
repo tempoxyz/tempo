@@ -121,6 +121,9 @@ tracy-client = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["signal"], optional = true }
 
+[dev-dependencies]
+reth-provider = { workspace = true, features = ["test-utils"] }
+
 [[bin]]
 name = "tempo"
 path = "src/main.rs"
