@@ -18,9 +18,6 @@ pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:multisig:signature";
 /// Maximum number of owners allowed in a native multisig config.
 pub const MAX_MULTISIG_OWNERS: usize = 48;
 
-/// Maximum threshold accepted by a native multisig config.
-pub const MAX_MULTISIG_THRESHOLD: u8 = 8;
-
 /// Maximum number of owner approvals allowed in one native multisig signature.
 pub const MAX_MULTISIG_SIGNATURES: usize = 8;
 
@@ -176,9 +173,6 @@ impl MultisigConfig {
         if self.threshold == 0 {
             return Err(MultisigConfigError::ZeroThreshold);
         }
-        if self.threshold > MAX_MULTISIG_THRESHOLD {
-            return Err(MultisigConfigError::ThresholdExceedsMax);
-        }
         // TIP-1109 orders errors across the entire owner list, not within each owner.
         for owner in &self.owners {
             if owner.owner.is_zero() {
@@ -215,7 +209,15 @@ impl MultisigConfig {
         if total_weight > u16::from(u8::MAX) {
             return Err(MultisigConfigError::TotalWeightExceedsMax);
         }
-        if u16::from(self.threshold) > total_weight {
+        let mut largest_weights = [0u8; MAX_MULTISIG_SIGNATURES];
+        for owner in &self.owners {
+            if owner.weight > largest_weights[0] {
+                largest_weights[0] = owner.weight;
+                largest_weights.sort_unstable();
+            }
+        }
+        let reachable_weight: u16 = largest_weights.into_iter().map(u16::from).sum();
+        if u16::from(self.threshold) > reachable_weight {
             return Err(MultisigConfigError::ThresholdExceedsWeight);
         }
 
@@ -439,8 +441,6 @@ pub enum MultisigConfigError {
     TooManyOwners,
     /// The threshold is zero.
     ZeroThreshold,
-    /// The threshold exceeds the protocol cap.
-    ThresholdExceedsMax,
     /// An owner address is zero.
     ZeroOwner,
     /// An owner weight is zero.
@@ -466,7 +466,6 @@ impl MultisigConfigError {
             Self::EmptyOwners => "multisig owners cannot be empty",
             Self::TooManyOwners => "too many multisig owners",
             Self::ZeroThreshold => "multisig threshold cannot be zero",
-            Self::ThresholdExceedsMax => "multisig threshold exceeds maximum",
             Self::ZeroOwner => "multisig owner cannot be zero",
             Self::ZeroWeight => "multisig owner weight cannot be zero",
             Self::DuplicateOwner => "multisig owners cannot contain duplicates",

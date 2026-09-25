@@ -450,7 +450,7 @@ fn config_total_weight_is_capped_at_u8_max() {
 #[test]
 fn config_accepts_max_threshold() {
     let owner = Address::from([0x11; 20]);
-    let threshold = MAX_MULTISIG_THRESHOLD;
+    let threshold = u8::MAX;
     let config = sorted_secp_config(&[(owner, threshold)], threshold);
 
     assert_eq!(config.validate(), Ok(threshold));
@@ -459,13 +459,15 @@ fn config_accepts_max_threshold() {
 #[test]
 fn config_rejects_threshold_requiring_too_many_approvals() {
     let owners = (1..=MAX_MULTISIG_SIGNATURES as u16 + 1)
-        .map(|index| (indexed_owner(index), 1))
+        .map(|index| (indexed_owner(index), if index == 1 { 1 } else { 30 }))
         .collect::<Vec<_>>();
-    let config = sorted_secp_config(&owners, owners.len() as u8);
+    let config = sorted_secp_config(&owners, 240);
+    assert_eq!(config.validate(), Ok(241));
 
+    let config = sorted_secp_config(&owners, 241);
     assert_eq!(
         config.validate(),
-        Err(MultisigConfigError::ThresholdExceedsMax)
+        Err(MultisigConfigError::ThresholdExceedsWeight)
     );
 }
 
@@ -689,7 +691,7 @@ fn multisig_config_validates_owner_count_after_decoding() {
     let config = MultisigConfig {
         salt: B256::ZERO,
         version: 0,
-        threshold: MAX_MULTISIG_THRESHOLD,
+        threshold: MAX_MULTISIG_SIGNATURES as u8,
         owners: (1..=MAX_MULTISIG_OWNERS as u16 + 1)
             .map(|index| MultisigOwner {
                 owner: Address::from_word(B256::from(U256::from(index))),
