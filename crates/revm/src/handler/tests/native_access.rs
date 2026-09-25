@@ -8,7 +8,10 @@ use revm::{
     DatabaseCommit,
     state::{AccountInfo, Bytecode},
 };
-use tempo_precompiles::native_multisig::keccak_cost;
+use tempo_precompiles::{
+    account_keychain::{AccountKeychain, SignatureType as KeychainSignatureType},
+    native_multisig::keccak_cost,
+};
 use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
@@ -92,7 +95,14 @@ impl NativeAccessFixture {
         gas_limit: u64,
         authorization: SignedKeyAuthorization,
     ) -> TestHandlerEvm {
-        let native_parent = matches!(case, GrantCase::NativeGrant | GrantCase::NativeGrantAndUse);
+        let native_parent = matches!(
+            case,
+            GrantCase::NativeGrant | GrantCase::NativeGrantAndUse | GrantCase::NativeAdminGrant
+        );
+        let admin_delegate = matches!(
+            case,
+            GrantCase::PrimitiveAdminGrant | GrantCase::NativeAdminGrant
+        );
         let parent_config = native_parent.then_some(&self.parent_config);
         let parent = parent_config.map_or(self.parent_key.address(), |config| {
             config.derive_account(Self::FACTORY).unwrap()
@@ -118,10 +128,11 @@ impl NativeAccessFixture {
             key_authorization: Some(authorization),
             ..Default::default()
         };
-        let signature = if matches!(
-            case,
-            GrantCase::PrimitiveGrantAndUse | GrantCase::NativeGrantAndUse
-        ) {
+        let signature = if admin_delegate
+            || matches!(
+                case,
+                GrantCase::PrimitiveGrantAndUse | GrantCase::NativeGrantAndUse
+            ) {
             let inner = KeychainSignature::signing_hash(tx.signature_hash(), parent);
             let signature = Self::sign(&self.delegate_key, Some(&self.delegate_config), inner);
             TempoSignature::Keychain(KeychainSignature::new(
@@ -135,17 +146,39 @@ impl NativeAccessFixture {
         let env = TempoTxEnv::from_recovered_tx(&signed, parent);
         let mut test = TestHandlerEvm::new(TempoHardfork::T14, env);
         test.evm.ctx.block.multisig_recovery_factory = Some(Self::FACTORY);
-        test.evm.ctx.journaled_state.database.insert_account_info(
-            parent,
-            AccountInfo {
-                nonce: 3,
-                ..Default::default()
-            },
-        );
+        let mut parent_info = AccountInfo {
+            nonce: 3,
+            ..Default::default()
+        };
+        if native_parent && admin_delegate {
+            parent_info.extension =
+                encode_config_commitment(self.parent_config.commitment().unwrap()).into();
+        }
+        test.evm
+            .ctx
+            .journaled_state
+            .database
+            .insert_account_info(parent, parent_info);
         StorageCtx::enter_ctx(test.evm.ctx_mut(), StorageActions::disabled(), || {
             TIP20Setup::path_usd(self.parent_key.address()).apply()
         })
         .unwrap();
+        if admin_delegate {
+            test.evm.ctx.journaled_state.load_account(parent).unwrap();
+            StorageCtx::enter_ctx(test.evm.ctx_mut(), StorageActions::disabled(), || {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize().unwrap();
+                keychain.set_tx_origin(parent).unwrap();
+                keychain
+                    .authorize_admin_key(
+                        parent,
+                        self.delegate(),
+                        KeychainSignatureType::Multisig,
+                        None,
+                    )
+                    .unwrap();
+            });
+        }
         let state = test.evm.ctx.journaled_state.finalize();
         test.evm.ctx.journaled_state.database.commit(state);
         match warmth {
@@ -171,6 +204,8 @@ enum GrantCase {
     NativeGrant,
     PrimitiveGrantAndUse,
     NativeGrantAndUse,
+    PrimitiveAdminGrant,
+    NativeAdminGrant,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -330,6 +365,37 @@ fn native_handler_binds_grant_roles(case: GrantBindingCase) {
     } else {
         assert!(result.unwrap().is_success());
     }
+}
+
+#[test_case::test_case(GrantCase::PrimitiveAdminGrant; "primitive_parent")]
+#[test_case::test_case(GrantCase::NativeAdminGrant; "configurable_parent")]
+fn multisig_admin_can_sign_inline_grant(case: GrantCase) {
+    let fixture = NativeAccessFixture::new();
+    let parent = if matches!(case, GrantCase::NativeAdminGrant) {
+        fixture
+            .parent_config
+            .derive_account(NativeAccessFixture::FACTORY)
+            .unwrap()
+    } else {
+        fixture.parent_key.address()
+    };
+    let child = PrivateKeySigner::from_bytes(&B256::repeat_byte(3))
+        .unwrap()
+        .address();
+    let grant =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child).with_account(parent);
+    let signature = NativeAccessFixture::sign(
+        &fixture.delegate_key,
+        Some(&fixture.delegate_config),
+        grant.signature_hash(),
+    );
+    let authorization = grant.into_signed(AccountSignature::try_from(signature).unwrap());
+    let mut test = fixture.evm_with_authorization(case, Warmth::Cold, 1_000_000, authorization);
+
+    assert!(test.handler.run(&mut test.evm).unwrap().is_success());
+    StorageCtx::enter_ctx(test.evm.ctx_mut(), StorageActions::disabled(), || {
+        assert!(AccountKeychain::new().is_active_key(parent, child).unwrap());
+    });
 }
 
 #[test_case::test_case(GrantCase::PrimitiveGrant; "primitive_parent_grant_only")]
