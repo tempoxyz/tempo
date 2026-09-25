@@ -1650,6 +1650,84 @@ fn outcome_request_waits_for_blocks_without_stalling_actor() {
 }
 
 #[test]
+fn outcome_walk_fetches_blocks_after_its_requests_go_away() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_walk_without_requests")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        for height in 0..=5 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+
+        // Marshal has the notarized chain at heights 6 to 8, except the
+        // block at height 7.
+        let anchor = block(header(Height::new(5)));
+        let mut tip = anchor.header().clone();
+        harness.marshal.add_block(anchor);
+        let mut chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = tip.hash_slow();
+            tip = header.clone();
+            chain.push(block(header));
+        }
+        let missing = chain.remove(1);
+        let missing_digest = missing.digest();
+        for block in chain {
+            harness.marshal.add_block(block);
+        }
+        harness.start().await;
+
+        let parent = Arc::new(block(tip));
+        let request = harness.mailbox().subscribe_dkg_ceremony(parent.clone());
+        let marshal = harness.marshal.clone();
+        let wait_ctx = context.child("wait_for_subscription");
+        context
+            .timeout(Duration::from_secs(1), async move {
+                while !marshal
+                    .subscriptions()
+                    .iter()
+                    .any(|(subscribed, _)| *subscribed == missing_digest)
+                {
+                    wait_ctx.sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("the walk must fetch the missing block");
+
+        // The actor handles another message after the request went away,
+        // and the block arrives only after that.
+        drop(request);
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        harness.marshal.add_block(missing);
+
+        let output = context
+            .timeout(
+                Duration::from_secs(1),
+                harness.mailbox().subscribe_dkg_ceremony(parent),
+            )
+            .await
+            .expect("a later request must get the output of the walk")
+            .unwrap();
+        assert_eq!(output, state.output);
+        let fetches_of_missing = harness
+            .marshal
+            .subscriptions()
+            .iter()
+            .filter(|(subscribed, _)| *subscribed == missing_digest)
+            .count();
+        assert_eq!(
+            fetches_of_missing, 1,
+            "the walk must not fetch the missing block again"
+        );
+    });
+}
+
+#[test]
 fn outcome_request_drops_ancestry_with_wrong_parent_height() {
     Runner::default().start(|context| async move {
         let mut harness = Harness::builder(context.child("test"), "outcome_wrong_parent_height")

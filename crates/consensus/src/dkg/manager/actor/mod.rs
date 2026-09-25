@@ -494,6 +494,7 @@ where
                                 outcome_requests.entry(request.parent.digest())
                                     .or_insert_with(|| PendingOutcome {
                                         cause: msg.cause,
+                                        parent: request.parent.clone(),
                                         requests: Vec::new(),
                                         fetch: None,
                                     })
@@ -1006,7 +1007,8 @@ where
         Ok(())
     }
 
-    /// Serves ready outcome subscriptions and fetches ancestry for those still waiting.
+    /// Serves ready outcome subscriptions and fetches ancestry for the walks
+    /// that still wait for a block.
     #[expect(
         clippy::too_many_arguments,
         reason = "subscription handling uses the state scoped to the current epoch"
@@ -1027,9 +1029,6 @@ where
             pending
                 .requests
                 .retain(|request| !request.response.is_canceled());
-            let Some(request) = pending.requests.first() else {
-                continue;
-            };
             match self
                 .handle_subscribe_dkg_ceremony(
                     &pending.cause,
@@ -1037,7 +1036,7 @@ where
                     player_state,
                     round,
                     state,
-                    request,
+                    &pending.parent,
                 )
                 .await
             {
@@ -1080,17 +1079,22 @@ where
                 // The handler logs the error. The request is for another
                 // epoch and cannot succeed later, so drop it to close the
                 // channel.
-                Err(_) => pending.requests.clear(),
+                Err(_) => {
+                    pending.requests.clear();
+                    pending.fetch = None;
+                }
             }
         }
-        outcome_requests.retain(|_, pending| !pending.requests.is_empty());
+        outcome_requests
+            .retain(|_, pending| !pending.requests.is_empty() || pending.fetch.is_some());
     }
 
-    /// Attempts to serve a `SubscribeDkgCeremony` request by concluding the DKG ceremony.
+    /// Attempts to conclude the DKG ceremony for a boundary block on top of
+    /// `parent`.
     ///
     /// The ceremony uses the finalized dealer logs. For dealers without a
     /// finalized log, it adds the logs from the notarized blocks between the
-    /// finalized tip and `request.parent`. Once the logs of all dealers are
+    /// finalized tip and `parent`. Once the logs of all dealers are
     /// finalized, [`Self::maybe_conclude_ceremony_for_epoch`] has cached the
     /// output for every parent, and the request does not walk the blocks.
     ///
@@ -1101,7 +1105,7 @@ where
         fields(
             as_player = player_state.is_some(),
             our.epoch = %round.epoch(),
-            for_block = %request.parent.digest(),
+            for_block = %parent.digest(),
         ),
         err(level = Level::WARN),
     )]
@@ -1112,7 +1116,7 @@ where
         player_state: &Option<Player>,
         round: &Round,
         state: &State,
-        request: &SubscribeDkgCeremony,
+        parent: &Block,
     ) -> eyre::Result<Outcome>
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
@@ -1120,7 +1124,7 @@ where
         let epoch_info = self
             .config
             .epoch_strategy
-            .containing(request.parent.height())
+            .containing(parent.height())
             .expect("our strategy covers all epochs");
 
         ensure!(
@@ -1130,7 +1134,7 @@ where
         );
 
         let output = if let Some((output, _)) = storage
-            .get_dkg_outcome(&state.epoch, &request.parent.digest())
+            .get_dkg_outcome(&state.epoch, &parent.digest())
             .cloned()
         {
             output
@@ -1145,8 +1149,8 @@ where
                 logs read from notarized blocks and concluding DKG that way",
             );
             let mut notarized_logs = BTreeMap::new();
-            let (mut height, mut digest) = (request.parent.height(), request.parent.digest());
-            let mut ancestor_round = request.parent.context().round;
+            let (mut height, mut digest) = (parent.height(), parent.digest());
+            let mut ancestor_round = parent.context().round;
             while height >= epoch_info.first()
                 && Some(height)
                     >= storage
@@ -1182,7 +1186,7 @@ where
 
             let player = self.ad_hoc_player(storage, round, player_state.is_some());
             let (output, share) = self.conclude_ceremony(round, state, player, finalized_logs);
-            storage.cache_dkg_outcome(state.epoch, request.parent.digest(), output.clone(), share);
+            storage.cache_dkg_outcome(state.epoch, parent.digest(), output.clone(), share);
             output
         };
 
@@ -1758,8 +1762,16 @@ impl Metrics {
     }
 }
 
+/// The walk for the ceremony output of a boundary block on top of `parent`.
+///
+/// The walk lives while it has requests or waits for a block from marshal.
+/// So it continues after all its requests went away, and a later request
+/// for the same parent gets the output from the storage cache without a new
+/// fetch. It ends when the output is ready, when a fetch fails, or when the
+/// epoch ends.
 struct PendingOutcome {
     cause: Span,
+    parent: Arc<Block>,
     requests: Vec<SubscribeDkgCeremony>,
     fetch: Option<Aborter>,
 }
