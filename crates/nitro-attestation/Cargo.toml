@@ -16,7 +16,6 @@ publish.workspace = true
 workspace = true
 
 [features]
-default = ["aws-lc"]
 aws-lc = ["dep:aws-lc-rs"]
 
 [dependencies]

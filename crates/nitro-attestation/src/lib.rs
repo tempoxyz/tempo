@@ -3,8 +3,8 @@
 //! This crate deliberately contains no chain or EVM integration. Callers can parse first, charge
 //! gas from [`ParsedAttestation::signature_count`], and only then call [`verify_parsed`].
 //!
-//! The default `aws-lc` feature provides `AwsLcP384` and requires `std`. Disable default
-//! features to use this crate in `no_std` environments with a custom verification backend.
+//! The optional `aws-lc` feature provides `AwsLcP384` and requires `std`. By default, this crate
+//! supports `no_std` environments with a custom verification backend.
 
 #![no_std]
 #![forbid(unsafe_code)]
