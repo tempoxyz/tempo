@@ -97,6 +97,10 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     general_gas_limit: Option<u64>,
 
+    /// Development recovery factory address for native multisig accounts.
+    #[arg(long)]
+    multisig_recovery_factory: Option<Address>,
+
     /// The hard-coded length of an epoch in blocks.
     #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
@@ -616,6 +620,11 @@ impl GenesisArgs {
             chain_config
                 .extra_fields
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
+        }
+        if let Some(factory) = self.multisig_recovery_factory {
+            chain_config
+                .extra_fields
+                .insert_value("multisigRecoveryFactory".to_string(), factory)?;
         }
         chain_config
             .extra_fields
