@@ -69,7 +69,7 @@ impl Report {
             match shadow {
                 Ok(shadow) => {
                     let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
-                    diff.record("success", |tx| tx.outcome == super::TxOutcome::Success);
+                    diff.record("outcome", |tx| tx.outcome);
                     diff.record("output", |tx| tx.output_hash);
                     // Keep all logs, in order; mask only a verified gas-derived fee amount.
                     let (real_logs, shadow_logs) = ctx

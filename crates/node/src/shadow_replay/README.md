@@ -46,8 +46,8 @@ that could not execute are reported as incomplete coverage.
 ## Comparison model
 
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
-changes in order. Transaction comparisons cover success, output, ordered receipt logs, and net
-account and storage transitions. Gas-only differences are not findings, although gas is still
+changes in order. Transaction comparisons cover the full success/revert/halt outcome, output,
+ordered receipt logs, and net account and storage transitions. Gas-only differences are not findings, although gas is still
 checked against canonical receipts and used to validate fee-derived effects. This compares
 observable effects at completed boundaries, not opcode traces or internal write history.
 
