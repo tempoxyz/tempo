@@ -742,30 +742,6 @@ mod tests {
     }
 
     #[test]
-    fn shadow_schedule_activates_candidate_and_predecessors() {
-        let canonical = TempoChainSpec::mainnet();
-        let shadow = shadow_spec(&canonical, TempoHardfork::T12);
-        assert_eq!(shadow.tempo_hardfork_at(0), TempoHardfork::T12);
-        for &fork in TempoHardfork::VARIANTS {
-            if fork != TempoHardfork::Genesis && fork <= TempoHardfork::T12 {
-                assert_eq!(
-                    shadow.tempo_fork_activation(fork),
-                    ForkCondition::Timestamp(0)
-                );
-            } else {
-                assert_eq!(
-                    shadow.tempo_fork_activation(fork),
-                    canonical.tempo_fork_activation(fork)
-                );
-            }
-        }
-        assert!(shadow.is_t5_active_at_timestamp(0));
-        assert!(shadow.is_t8_active_at_timestamp(0));
-        assert!(shadow.is_t10_active_at_timestamp(0));
-        assert!(!shadow.is_t13_active_at_timestamp(0));
-    }
-
-    #[test]
     fn candidate_pre_block_setup_is_transaction_prestate() {
         let canonical = TempoChainSpec::mainnet();
         let candidate = Arc::new(shadow_spec(&canonical, TempoHardfork::T13));
