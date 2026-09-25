@@ -1817,7 +1817,29 @@ where
             if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&aa_env.nonce_key) {
                 return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
             }
-            // TODO: Stateful multisig authentication is implemented in #7578.
+            // Naming a native account is not owner authentication. Until native
+            // execution is available, reject every such role, including simulations.
+            let native = |signature: &tempo_primitives::transaction::TempoSignature| {
+                signature.as_multisig().is_some()
+                    || signature
+                        .as_keychain()
+                        .is_some_and(|key| key.signature.as_multisig().is_some())
+            };
+            if native(&aa_env.signature)
+                || aa_env
+                    .tempo_authorization_list
+                    .iter()
+                    .any(|auth| native(auth.signature()))
+                || aa_env.key_authorization.as_ref().is_some_and(|auth| {
+                    auth.key_type == SignatureType::Multisig
+                        || auth.signature.as_multisig().is_some()
+                })
+            {
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    reason: "multisig signatures are not supported".into(),
+                }
+                .into());
+            }
             // Validate AA transaction structure (calls list, CREATE rules)
             validate_calls(
                 &aa_env.aa_calls,
