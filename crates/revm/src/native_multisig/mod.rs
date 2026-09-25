@@ -6,13 +6,12 @@ use revm::{
     context_interface::cfg::GasParams,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::native_multisig::{keccak_cost, valid_account};
+use tempo_precompiles::native_multisig::{initial_account_proof_gas, valid_account};
 use tempo_primitives::{
     TempoBlockEnv,
     account::decode_config_commitment,
     transaction::{
         KeychainSignature, MultisigQuorumError, MultisigSignature, SignatureType, TempoSignature,
-        multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
     },
 };
 
@@ -243,8 +242,7 @@ pub fn validate_state<J: JournalTr>(
                     account: address,
                 }));
             }
-            extra_gas += keccak_cost(signature.config().account_salt_preimage_len())
-                + keccak_cost(MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN);
+            extra_gas += initial_account_proof_gas(signature.config());
             if first {
                 extra_gas += 20_000;
             }

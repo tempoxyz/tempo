@@ -335,3 +335,73 @@ fn test_verify_multisig_rejects_invalid_state_and_signature() -> eyre::Result<()
         Ok(())
     })
 }
+
+#[test]
+fn verify_multisig_staticcall_charges_gas_and_halts_when_short() -> eyre::Result<()> {
+    use alloy_evm::{EvmEnv, EvmFactory, EvmInternals};
+    use revm::database::{CacheDB, EmptyDB};
+    use tempo_evm::TempoEvmFactory;
+    use tempo_revm::gas_params::tempo_gas_params;
+
+    let factory = Address::repeat_byte(0x71);
+    let signer = PrivateKeySigner::random();
+    let config = MultisigConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![MultisigOwner {
+            owner: signer.address(),
+            weight: 1,
+        }],
+    };
+    let account = config.derive_account(factory).unwrap();
+    let hash = B256::repeat_byte(0x42);
+    let signature = multisig_signature(account, config.clone(), hash, &[&signer])?;
+    let calldata = ISignatureVerifier::verifyMultisigCall {
+        account,
+        hash,
+        signature: signature.clone().into(),
+    }
+    .abi_encode();
+    let params = tempo_gas_params(TempoHardfork::T14);
+    let parsed = TempoSignature::from_bytes(&signature).unwrap();
+    let expected = crate::input_cost(TempoHardfork::T14, calldata.len())?
+        + params.warm_storage_read_cost()
+        + params.cold_account_additional_cost()
+        + multisig_verification_gas(parsed.as_multisig().unwrap())
+        + initial_account_proof_gas(&config);
+
+    let call = |gas_limit| {
+        let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T14;
+        cfg.gas_params = params.clone();
+        let mut evm = TempoEvmFactory::default().create_evm(
+            CacheDB::new(EmptyDB::default()),
+            EvmEnv {
+                cfg_env: cfg,
+                ..Default::default()
+            },
+        );
+        let ctx = evm.ctx_mut();
+        ctx.block.multisig_recovery_factory = Some(factory);
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = crate::storage::evm::EvmPrecompileStorageProvider::new(
+            internals,
+            gas_limit,
+            0,
+            TempoHardfork::T14,
+            false,
+            true,
+            params.clone(),
+        );
+        StorageCtx::enter(&mut provider, || {
+            SignatureVerifier::new().call(&calldata, Address::ZERO)
+        })
+    };
+
+    let output = call(expected)?;
+    assert!(output.is_success());
+    assert_eq!(output.gas_used, expected);
+    assert!(call(expected - 1)?.is_halt());
+    Ok(())
+}

@@ -4,7 +4,7 @@ use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    native_multisig::{keccak_cost, valid_account},
+    native_multisig::{initial_account_proof_gas, keccak_cost, valid_account},
 };
 use alloy::{
     primitives::{Address, B256, Bytes},
@@ -17,7 +17,7 @@ use tempo_primitives::{
     account::decode_config_commitment,
     transaction::{
         MultisigSignature,
-        multisig::{MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN, MULTISIG_SIGNATURE_DOMAIN},
+        multisig::MULTISIG_SIGNATURE_DOMAIN,
         tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
     },
 };
@@ -87,8 +87,7 @@ impl SignatureVerifier {
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
-            keccak_cost(config.account_salt_preimage_len())
-                + keccak_cost(MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN)
+            initial_account_proof_gas(config)
         } else {
             0
         };
