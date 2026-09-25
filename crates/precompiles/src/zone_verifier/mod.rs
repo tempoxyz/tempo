@@ -19,8 +19,19 @@ const MODE_NITRO_V1: &[u8] = &[1];
 const MODE_NO_PROOF: &[u8] = &[2];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// Production measurements remain deliberately unset until the reproducible T13 EIF is finalized.
-const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
+/// Measurements for the T11 EIF built from `tempoxyz/zones` at commit
+/// `154f2e4603809f706bd1b8a6066d71d96bb0f054`.
+const APPROVED_PCRS: Option<[[u8; 48]; 3]> = Some([
+    alloy::primitives::hex!(
+        "02a1b83bdd8e97e8097536f3298a8bc2006260ca8b8a7ef2429c0b3c60b304c8542c3d4cc31ffaf427c3b37ec12066b6"
+    ),
+    alloy::primitives::hex!(
+        "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
+    ),
+    alloy::primitives::hex!(
+        "cd9bdf7065daab5e8f1280126ab9efc572530932c943d649553895e49cce616d645cce6ab42e193bd4b27c7af7bf013a"
+    ),
+]);
 
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
