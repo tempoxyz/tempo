@@ -872,8 +872,8 @@ def txgen-run-preset-pipeline [
         "-n" $tx_count
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
-    # Zones and vaults generate the full count: setup must not consume workload duration.
+    ] | append (if $is_vault or $preset_name == "zones" or $is_public_mix { [] } else { ["--duration" $txgen_duration] })
+    # Fixture presets generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
         "generate"
