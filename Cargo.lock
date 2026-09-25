@@ -14064,6 +14064,7 @@ dependencies = [
  "alloy-evm",
  "alloy-json-abi",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-signer",
  "alloy-signer-local",
  "base64 0.22.1",
