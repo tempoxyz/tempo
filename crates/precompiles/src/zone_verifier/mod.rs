@@ -7,7 +7,8 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolStruct,
 };
-use tempo_contracts::precompiles::{IZoneVerifier, NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
+pub use tempo_contracts::precompiles::IZoneVerifier;
+use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
 use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::contract;
 
@@ -27,6 +28,20 @@ pub struct ZoneVerifier {}
 impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS)
+    }
+
+    /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
+    ///
+    /// This Rust-only observer entry point uses the AWS root and requires a `StorageCtx`
+    /// supplying the trusted parent-chain ID, current timestamp and gas budget. It does not
+    /// activate T13 or change the measurements used by the on-chain entry point.
+    pub fn verify_with_pcrs(
+        &self,
+        portal: Address,
+        call: IZoneVerifier::verifyCall,
+        approved_pcrs: [[u8; 48]; 3],
+    ) -> Result<bool> {
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, Some(approved_pcrs))
     }
 
     fn verify_with_policy(
@@ -310,6 +325,36 @@ mod tests {
                     expected
                 );
             }
+        });
+    }
+
+    #[test]
+    fn observer_policy_works_before_t13_without_changing_consensus() {
+        let mut call = call();
+        let portal = portal_address(call.zoneId);
+        let (proof, root, pcrs) = attestation::tests::fixture(batch_commitment(1, &call).as_ref());
+        call.proof = proof.into();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
+        StorageCtx::enter(&mut storage, || {
+            let verifier = ZoneVerifier::new();
+            assert!(
+                verifier
+                    .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
+                    .unwrap()
+            );
+            assert!(
+                !verifier
+                    .verify_with_policy(portal, call.clone(), &root, APPROVED_PCRS)
+                    .unwrap()
+            );
+            // The public observer API must still reject a synthetic, non-AWS trust root.
+            assert!(
+                !verifier
+                    .verify_with_pcrs(portal, call.clone(), pcrs)
+                    .unwrap()
+            );
+            assert!(!verifier.verify(portal, call).unwrap());
         });
     }
 }
