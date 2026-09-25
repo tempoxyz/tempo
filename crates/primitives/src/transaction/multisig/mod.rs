@@ -322,6 +322,26 @@ impl MultisigSignature {
         multisig_digest(inner_digest, self.account(), self.config.version)
     }
 
+    /// Verifies the owner approvals against this configuration, without checking account state.
+    pub fn verify_approvals(&self, inner_digest: B256) -> Result<(), MultisigQuorumError> {
+        let digest = self.digest(inner_digest);
+        let mut weight = MultisigWeightAccumulator::new(self.config.threshold)?;
+        for (approval_index, approval) in self.signatures.iter().enumerate() {
+            let owner = approval.recover_signer(&digest).map_err(|_| {
+                MultisigQuorumError::OwnerSignatureRecoveryFailed { approval_index }
+            })?;
+            let owner_weight = self
+                .config
+                .owner_weight(owner)
+                .ok_or(MultisigQuorumError::SignerNotOwner)?;
+            weight.record_owner(owner, owner_weight)?;
+            if weight.has_quorum() && approval_index + 1 != self.signatures.len() {
+                return Err(MultisigQuorumError::ExcessSignatures);
+            }
+        }
+        weight.finish()
+    }
+
     /// Computes the commitment of the configuration validated at construction or decoding.
     pub fn config_commitment(&self) -> B256 {
         self.config.commitment_validated()
@@ -536,6 +556,8 @@ pub enum MultisigQuorumError {
     EmptySignatures,
     /// The signature list exceeds [`MAX_MULTISIG_SIGNATURES`].
     TooManySignatures,
+    /// An owner approval could not recover a signer.
+    OwnerSignatureRecoveryFailed { approval_index: usize },
     /// The signature list has entries after quorum is reached.
     ExcessSignatures,
     /// A recovered signer is not a configured owner.
@@ -553,6 +575,7 @@ impl MultisigQuorumError {
             Self::ZeroThreshold => "multisig threshold cannot be zero",
             Self::EmptySignatures => "multisig signatures cannot be empty",
             Self::TooManySignatures => "too many multisig signatures",
+            Self::OwnerSignatureRecoveryFailed { .. } => "invalid multisig owner signature",
             Self::ExcessSignatures => "excess multisig owner signatures",
             Self::SignerNotOwner => "multisig signer is not an owner",
             Self::SignersNotAscending => "multisig recovered owners must be strictly ascending",
