@@ -4,10 +4,9 @@ use crate::{
     RevokedKeys, SpendingLimitUpdates, TempoTransactionPool, metrics::TempoPoolMaintenanceMetrics,
     transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
 };
-use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Map, B256Set},
+    map::{AddressMap, AddressSet, B256Set},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -16,16 +15,10 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{
-    PoolTransaction, TransactionOrigin, TransactionPool, error::PoolErrorKind,
-};
-use revm::{database::BundleAccount, state::AccountInfo};
+use reth_transaction_pool::{AllPoolTransactions, TransactionPool, ValidPoolTransaction};
+use revm::database::BundleAccount;
 use std::{
-    collections::VecDeque,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tempo_chainspec::hardfork::TempoHardforks;
@@ -33,38 +26,33 @@ use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP40
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
 };
-use tempo_primitives::{
-    TempoAddressExt, TempoHeader, TempoPrimitives, account::decode_config_commitment,
-};
+use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
 
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
 
-/// Returns authorization changes and code changes; unsigned grant recipients only depend on code.
+/// Account-leaf changes that can invalidate native signers or code-free accounts.
 fn configurable_account_changes(state: &AddressMap<BundleAccount>) -> (AddressSet, AddressSet) {
-    let mut changed = AddressSet::default();
-    let mut code_changed = AddressSet::default();
+    let mut signer_changes = AddressSet::default();
+    let mut code_changes = AddressSet::default();
     for (address, account) in state {
-        let auth = |info: &AccountInfo| {
-            (
-                decode_config_commitment(&info.extension, true),
-                info.code_hash,
-            )
-        };
-        let old = account.original_info.as_ref().map(auth);
-        let new = account.info.as_ref().map(auth);
-        if old.as_ref().map(|(_, code)| code) != new.as_ref().map(|(_, code)| code) {
-            code_changed.insert(*address);
+        let previous = account.original_info.as_ref();
+        let current = account.info.as_ref();
+        if previous.map(|info| &info.extension) != current.map(|info| &info.extension) {
+            signer_changes.insert(*address);
         }
-        // Malformed extensions also force stateful revalidation.
-        if old != new || new.as_ref().is_some_and(|(hash, _)| hash.is_err()) {
-            changed.insert(*address);
+        if previous.map(|info| info.code_hash) != current.map(|info| info.code_hash) {
+            signer_changes.insert(*address);
+            code_changes.insert(*address);
         }
     }
-    (changed, code_changed)
+    (signer_changes, code_changes)
 }
+
+/// Aggregated block-level invalidation events for the transaction pool.
+///
 /// Collects all invalidation events from a block into a single structure,
 /// allowing efficient batch processing of pool updates.
 #[derive(Debug, Default)]
@@ -520,254 +508,6 @@ where
     maintain_tempo_pool_with_events(pool, chain_events).await;
 }
 
-// Retry limits bound local maintenance memory and work, not transaction validity.
-const MAINTENANCE_CONCURRENCY: usize = 4;
-const RESURRECTION_CAPACITY: usize = 256;
-const RESURRECTION_BYTES: usize = 16 * 1024 * 1024;
-const RESURRECTION_ATTEMPTS: u8 = 8;
-const RESURRECTION_MAX_AGE: Duration = Duration::from_secs(60);
-
-enum MaintenanceItem {
-    Revalidate(B256),
-    Resurrect {
-        transaction: Box<TempoPooledTransaction>,
-        first_seen: Instant,
-        attempts: u8,
-    },
-}
-
-impl MaintenanceItem {
-    fn hash(&self) -> B256 {
-        match self {
-            Self::Revalidate(hash) => *hash,
-            Self::Resurrect { transaction, .. } => *transaction.hash(),
-        }
-    }
-
-    fn expired(&self, now: Instant) -> bool {
-        matches!(self, Self::Resurrect { first_seen, attempts, .. }
-            if *attempts >= RESURRECTION_ATTEMPTS || now.duration_since(*first_seen) >= RESURRECTION_MAX_AGE)
-    }
-}
-
-#[derive(Default)]
-struct MaintenanceQueue {
-    items: VecDeque<MaintenanceItem>,
-    hashes: B256Set,
-    /// Failed work waits for the next timer tick or canonical event, not another job's completion.
-    deferred: B256Set,
-    in_flight: B256Map<Arc<MaintenancePermit>>,
-    resurrection_count: usize,
-    resurrection_bytes: usize,
-}
-
-impl MaintenanceQueue {
-    /// Retained entries stop being selectable as soon as revalidation is scheduled.
-    fn invalidate(&mut self, transaction: &TempoPooledTransaction) {
-        transaction.quarantine();
-        self.revalidate(*transaction.hash());
-    }
-
-    fn revalidate(&mut self, hash: B256) {
-        self.deferred.remove(&hash);
-        if self.hashes.insert(hash) {
-            self.items.push_back(MaintenanceItem::Revalidate(hash));
-        }
-    }
-
-    fn resurrect(&mut self, transaction: TempoPooledTransaction) {
-        if transaction.encoded_length() > RESURRECTION_BYTES {
-            return;
-        }
-        if let Some(index) = self
-            .items
-            .iter()
-            .position(|item| item.hash() == *transaction.hash())
-        {
-            if matches!(self.items[index], MaintenanceItem::Resurrect { .. }) {
-                return;
-            }
-            self.items.remove(index);
-            self.hashes.remove(transaction.hash());
-        }
-        // These totals include in-flight work; evict only queued orphans, never restart a worker.
-        while self.resurrection_count >= RESURRECTION_CAPACITY
-            || self.resurrection_bytes + transaction.encoded_length() > RESURRECTION_BYTES
-        {
-            let Some(index) = self
-                .items
-                .iter()
-                .position(|item| matches!(item, MaintenanceItem::Resurrect { .. }))
-            else {
-                return;
-            };
-            let removed = self.items.remove(index).unwrap();
-            self.remove(&removed);
-        }
-        self.resurrection_count += 1;
-        self.resurrection_bytes += transaction.encoded_length();
-        self.hashes.insert(*transaction.hash());
-        self.items.push_back(MaintenanceItem::Resurrect {
-            transaction: Box::new(transaction),
-            first_seen: Instant::now(),
-            attempts: 0,
-        });
-    }
-
-    fn retain(&mut self, mut keep: impl FnMut(&MaintenanceItem) -> bool) {
-        self.items.retain(|item| {
-            if keep(item) {
-                true
-            } else {
-                self.hashes.remove(&item.hash());
-                self.deferred.remove(&item.hash());
-                if let MaintenanceItem::Resurrect { transaction, .. } = item {
-                    self.resurrection_count -= 1;
-                    self.resurrection_bytes -= transaction.encoded_length();
-                }
-                false
-            }
-        });
-    }
-
-    fn refresh(&mut self, contains: impl Fn(&B256) -> bool, now: Instant) {
-        for item in &mut self.items {
-            if let MaintenanceItem::Resurrect { transaction, .. } = item
-                && contains(transaction.hash())
-            {
-                self.resurrection_count -= 1;
-                self.resurrection_bytes -= transaction.encoded_length();
-                *item = MaintenanceItem::Revalidate(*transaction.hash());
-            }
-        }
-        self.retain(|item| {
-            !item.expired(now)
-                && match item {
-                    MaintenanceItem::Revalidate(hash) => contains(hash),
-                    MaintenanceItem::Resurrect { .. } => true,
-                }
-        });
-    }
-
-    fn remove(&mut self, item: &MaintenanceItem) {
-        self.hashes.remove(&item.hash());
-        self.deferred.remove(&item.hash());
-        if let MaintenanceItem::Resurrect { transaction, .. } = item {
-            self.resurrection_count -= 1;
-            self.resurrection_bytes -= transaction.encoded_length();
-        }
-    }
-
-    fn complete(&mut self, item: MaintenanceItem, retry: bool) {
-        let permit = self
-            .in_flight
-            .remove(&item.hash())
-            .expect("completed maintenance job");
-        if retry
-            && permit.is_valid()
-            && !item.expired(Instant::now())
-            && self.hashes.insert(item.hash())
-        {
-            self.deferred.insert(item.hash());
-            self.items.push_back(item);
-        } else {
-            // A queued followup can carry an orphan payload while an earlier revalidation runs.
-            if let MaintenanceItem::Resurrect { transaction, .. } = item {
-                self.resurrection_count -= 1;
-                self.resurrection_bytes -= transaction.encoded_length();
-            }
-        }
-    }
-
-    fn next(&mut self) -> Option<(MaintenanceItem, Arc<MaintenancePermit>)> {
-        let index = self.items.iter().position(|item| {
-            !self.in_flight.contains_key(&item.hash()) && !self.deferred.contains(&item.hash())
-        })?;
-        let item = self.items.remove(index)?;
-        self.hashes.remove(&item.hash());
-        let permit = Arc::new(MaintenancePermit::new(match &item {
-            MaintenanceItem::Revalidate(_) => None,
-            MaintenanceItem::Resurrect { first_seen, .. } => {
-                Some(*first_seen + RESURRECTION_MAX_AGE)
-            }
-        }));
-        self.in_flight.insert(item.hash(), permit.clone());
-        Some((item, permit))
-    }
-
-    fn discard_mined(&mut self, hashes: &B256Set) {
-        self.retain(|item| !hashes.contains(&item.hash()));
-        for hash in hashes {
-            if let Some(permit) = self.in_flight.get(hash) {
-                permit.cancel();
-            }
-        }
-    }
-}
-
-/// Checked after queued validation, immediately before applying its pool result.
-pub(crate) struct MaintenancePermit {
-    cancelled: AtomicBool,
-    expires_at: Option<Instant>,
-}
-
-impl MaintenancePermit {
-    pub(crate) fn new(expires_at: Option<Instant>) -> Self {
-        Self {
-            cancelled: AtomicBool::new(false),
-            expires_at,
-        }
-    }
-
-    pub(crate) fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Relaxed);
-    }
-
-    pub(crate) fn is_valid(&self) -> bool {
-        !self.cancelled.load(Ordering::Relaxed)
-            && self
-                .expires_at
-                .is_none_or(|deadline| Instant::now() < deadline)
-    }
-}
-
-async fn run_maintenance_item<Client, EvmConfig>(
-    pool: TempoTransactionPool<Client, EvmConfig>,
-    mut item: MaintenanceItem,
-    permit: Arc<MaintenancePermit>,
-) -> (MaintenanceItem, bool)
-where
-    EvmConfig: ConfigureTempoPoolEvm,
-    Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
-        + 'static,
-{
-    let retry = match &mut item {
-        MaintenanceItem::Revalidate(hash) => {
-            let mut hashes = B256Set::from_iter([*hash]);
-            pool.revalidate_pending_transactions(&mut hashes, Some(&permit))
-                .await;
-            hashes.contains(hash)
-        }
-        MaintenanceItem::Resurrect {
-            transaction,
-            attempts,
-            ..
-        } => {
-            *attempts += 1;
-            if pool.contains(transaction.hash()) {
-                false
-            } else {
-                matches!(
-                    pool.add_fresh_transaction_with_permit(TransactionOrigin::External, (**transaction).clone(), Some(&permit)).await,
-                    Err(error) if matches!(error.kind, PoolErrorKind::Other(_))
-                )
-            }
-        }
-    };
-    (item, retry)
-}
-
 pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
     pool: TempoTransactionPool<Client, EvmConfig>,
     mut chain_events: impl futures::Stream<Item = CanonStateNotification<TempoPrimitives>> + Unpin,
@@ -779,156 +519,15 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         + 'static,
 {
     let mut pending_staleness = PendingStalenessTracker::default();
-    let mut pending = MaintenanceQueue::default();
-    let mut jobs = futures::stream::FuturesUnordered::new();
-    let mut wakeup = tokio::time::interval(Duration::from_millis(100));
-    wakeup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut rescan_all = false;
-    let mut dispatch = false;
-    let mut refresh_pending = false;
-    let mut closed = false;
-    let mut previous_tip = None;
-    // Callback lag retains one event; only actual notification gaps require a full rescan.
-    let mut deferred_event = None;
-    let mut mined_pending = B256Set::default();
     let metrics = TempoPoolMaintenanceMetrics::default();
 
     let amm_cache = pool.amm_liquidity_cache();
 
     // Process all maintenance operations on new block commit or reorg.
-    loop {
-        if dispatch {
-            dispatch = false;
-            if refresh_pending {
-                refresh_pending = false;
-                mined_pending.retain(|hash| pool.contains(hash));
-                pending.refresh(|hash| pool.contains(hash), Instant::now());
-            }
-            if deferred_event.is_none() && pool.processed_head_is_current().unwrap_or(false) {
-                if rescan_all {
-                    // Missed events can affect ordinary token-policy transactions too.
-                    for tx in pool.all_transactions().iter() {
-                        if !mined_pending.contains(tx.hash()) {
-                            pending.invalidate(&tx.transaction);
-                        }
-                    }
-                    rescan_all = false;
-                }
-                while jobs.len() < MAINTENANCE_CONCURRENCY {
-                    let Some((item, permit)) = pending.next() else {
-                        break;
-                    };
-                    jobs.push(run_maintenance_item(pool.clone(), item, permit));
-                }
-            }
-        }
-        // Drain synchronized queued work once on stream closure; do not retry after shutdown.
-        if closed
-            && jobs.is_empty()
-            && (pending.items.is_empty() || !pool.processed_head_is_current().unwrap_or(false))
-        {
-            break;
-        }
-        let event = if deferred_event.is_some() && pool.processed_head_is_current().unwrap_or(false)
-        {
-            deferred_event.take().expect("deferred canonical event")
-        } else {
-            tokio::select! {
-                event = chain_events.next(), if !closed && deferred_event.is_none() => match event {
-                    Some(event) => event,
-                    None => {
-                        closed = true;
-                        pending.deferred.clear();
-                        refresh_pending = true;
-                        dispatch = true;
-                        continue;
-                    }
-                },
-                Some((item, retry)) = jobs.next(), if !jobs.is_empty() => {
-                    pending.complete(item, retry && !closed);
-                    dispatch = true;
-                    continue;
-                },
-                _ = pool.canonical_update_completed() => {
-                    refresh_pending = true;
-                    dispatch = true;
-                    continue;
-                },
-                _ = wakeup.tick() => {
-                    pending.deferred.clear();
-                    refresh_pending = true;
-                    dispatch = true;
-                    continue;
-                }
-            }
-        };
-        pending.deferred.clear();
-        refresh_pending = true;
+    while let Some(event) = chain_events.next().await {
         let reorg = matches!(&event, CanonStateNotification::Reorg { .. });
-
-        let new = match &event {
-            CanonStateNotification::Commit { new } | CanonStateNotification::Reorg { new, .. } => {
-                new
-            }
-        };
-        let removed_this_iteration: B256Set = new.transaction_hashes().copied().collect();
-        pending.discard_mined(&removed_this_iteration);
-        let updates = TempoPoolUpdates::from_chain(new);
-        let bundle_state = new.execution_outcome().state().state();
-        let (changed, code_changed) = configurable_account_changes(bundle_state);
-        let all_txs = pool.all_transactions();
-        for tx in all_txs
-            .iter()
-            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-        {
-            let transaction = &tx.transaction;
-            let token = transaction.effective_fee_token();
-            let policy_changed = updates.transfer_policy_updates.contains(&token);
-            let quote_changed = updates.quote_token_updates.contains(&token);
-            if policy_changed
-                || quote_changed
-                || (reorg && transaction.has_configurable_dependencies())
-                || transaction
-                    .configurable_signers()
-                    .any(|account| changed.contains(&account))
-                || transaction
-                    .authorization_parent()
-                    .is_some_and(|account| changed.contains(&account))
-                || transaction
-                    .configurable_grant_recipient()
-                    .is_some_and(|account| code_changed.contains(&account))
-            {
-                pending.invalidate(transaction);
-                metrics
-                    .transfer_policy_revalidated
-                    .increment(u64::from(policy_changed));
-                metrics
-                    .quote_token_revalidated
-                    .increment(u64::from(quote_changed));
-            }
-        }
-        // Rescan the same dependencies after the callback to include admissions that finished
-        // against the preceding head. Every admission path shares its publication barrier.
-        if !pool.processed_head_is_current().unwrap_or(false) {
-            deferred_event = Some(event);
-            continue;
-        }
-        drop(all_txs);
-
         let new = match event {
-            CanonStateNotification::Reorg { old, new } => {
-                for hash in old.transaction_hashes() {
-                    mined_pending.remove(hash);
-                }
-                let mined: B256Set = new.transaction_hashes().copied().collect();
-                for transaction in old
-                    .transactions_recovered_iter()
-                    .filter(|tx| !mined.contains(tx.tx_hash()))
-                    .map(|tx| TempoPooledTransaction::new(tx.cloned()))
-                    .filter(|tx| tx.has_configurable_dependencies())
-                {
-                    pending.resurrect(transaction);
-                }
+            CanonStateNotification::Reorg { old: _, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
@@ -945,25 +544,13 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         let tip = &new;
         let bundle_state = tip.execution_outcome().state().state();
         let tip_timestamp = tip.tip().header().timestamp();
-        if previous_tip.is_some_and(|hash| {
-            tip.blocks_iter()
-                .next()
-                .is_some_and(|block| block.header().parent_hash() != hash)
-        }) {
-            // Canonical streams may skip notifications on lag; recover dependencies from state.
-            rescan_all = true;
-            if !reorg && let Err(error) = amm_cache.repopulate(pool.client()) {
-                error!(target: "txpool", %error, "AMM liquidity cache repopulate after notification gap failed");
-            }
-        }
-        previous_tip = Some(tip.tip().hash());
 
         // Removed transactions are collected here and dropped at the end of the
         // iteration: deallocating them (input data, signatures, allocator work) is
         // expensive and there is a block time of slack after the updates are done.
         let mut removed_txs: Vec<Vec<_>> = Vec::with_capacity(1);
 
-        // Update 2D nonce pool before eviction.
+        // 1. Update 2D nonce pool before scan-based maintenance.
         // This removes mined 2D nonce transactions and promotes newly
         // unblocked transactions before later pool scans.
         let nonce_pool_start = Instant::now();
@@ -972,7 +559,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
             .nonce_pool_update_duration_seconds
             .record(nonce_pool_start.elapsed());
 
-        // Refresh AMM state before dispatching revalidation.
+        // 2. Update AMM liquidity cache before revalidation/invalidation scans.
         let amm_start = Instant::now();
         amm_cache.on_new_state(tip.execution_outcome());
         if let Err(err) = amm_cache.on_new_blocks(
@@ -985,17 +572,119 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
             .amm_cache_update_duration_seconds
             .record(amm_start.elapsed());
 
-        // Keep mined entries on Reth's canonical notification path.
-        mined_pending.extend(
-            removed_this_iteration
-                .iter()
-                .filter(|hash| pool.contains(hash))
-                .copied(),
-        );
+        // 3. Collect all block-level invalidation events
+        let updates = TempoPoolUpdates::from_chain(tip);
 
-        dispatch = true;
+        let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
+        // Reth's canonical-update handling may not have pruned mined transactions yet.
+        // Exclude them from every snapshot-based maintenance phase so they follow the
+        // normal mined path rather than being discarded from the pool.
+        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
-        // Evict expired and invalidated transactions in one pool traversal.
+        let readd = |removed: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+                     reason: &'static str,
+                     wait_for_head: bool| {
+            let count = removed.len();
+            let pool = pool.clone();
+            let tip_hash = tip.tip().hash();
+            let tip_number = tip.tip().number();
+            tokio::spawn(async move {
+                if wait_for_head {
+                    // Reth and Tempo receive the same notification independently. Validate only
+                    // after Reth has updated its validator and pool head.
+                    loop {
+                        let head = pool.block_info();
+                        if head.last_seen_block_number > tip_number
+                            || (head.last_seen_block_number == tip_number
+                                && head.last_seen_block_hash == tip_hash)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+                let transactions = removed
+                    .into_iter()
+                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                    .collect();
+                let results = pool.add_transactions_with_origins(transactions).await;
+                let success = results.iter().filter(|result| result.is_ok()).count();
+                debug!(target: "txpool", total = count, success, reason, "Re-validated transactions");
+            });
+        };
+
+        let (signer_changes, code_changes) = configurable_account_changes(bundle_state);
+        if reorg || !signer_changes.is_empty() {
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| {
+                        tx.transaction.needs_configurable_revalidation(
+                            &signer_changes,
+                            &code_changes,
+                            reorg,
+                        )
+                    })
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let removed = pool.remove_transactions(hashes);
+                removed_this_iteration.extend(removed.iter().map(|tx| *tx.hash()));
+                readd(removed, "configurable account change", true);
+            }
+        }
+
+        // 4. Handle potentially invalidating updates
+        // When a cached value changes of a token (transfer policy, or quote token) changes,
+        // pending transactions using that token may become invalid. We need to remove them
+        // and re-add so they go through full validation against the updated state.
+        for (updated, counter, reason) in [
+            (
+                &updates.transfer_policy_updates,
+                &metrics.transfer_policy_revalidated,
+                "transfer policy update",
+            ),
+            (
+                &updates.quote_token_updates,
+                &metrics.quote_token_revalidated,
+                "quote token update",
+            ),
+        ] {
+            if updated.is_empty() {
+                continue;
+            }
+
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| {
+                        tx.transaction
+                            .resolved_fee_token()
+                            .is_some_and(|t| updated.contains(&t))
+                    })
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let removed_txs = pool.remove_transactions(hashes);
+                let count = removed_txs.len();
+
+                for tx in &removed_txs {
+                    removed_this_iteration.insert(*tx.hash());
+                }
+
+                counter.increment(count as u64);
+
+                readd(removed_txs, reason, false);
+            }
+        }
+
+        // 5. Evict expired and invalidated transactions in one pool traversal.
         let invalidation_start = Instant::now();
         debug!(
             target: "txpool",
@@ -1011,16 +700,12 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
             "Processing transaction invalidation events"
         );
         let evicted = {
-            let all_txs = pool.all_transactions();
+            let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
             pool.evict_invalidated_transactions_from(
                 &updates,
                 all_txs
                     .iter()
-                    // Full validation refreshes metadata before judging same-block changes.
-                    .filter(|tx| {
-                        !removed_this_iteration.contains(tx.hash())
-                            && !tx.transaction.is_quarantined()
-                    }),
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash())),
                 Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
             )
         };
@@ -1036,7 +721,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
             .expired_eviction_duration_seconds
             .record(invalidation_start.elapsed());
 
-        // Evict stale pending transactions after AA pool promotions.
+        // 6. Evict stale pending transactions (must happen after AA pool promotions in step 1)
         // Only runs once per interval (~30 min) to avoid overhead on every block.
         // Transactions pending across two consecutive snapshots are considered stale.
         if pending_staleness.should_check(tip_timestamp) {
@@ -1072,139 +757,55 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
-    use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
+    use alloy_primitives::{Address, B256, TxHash, U256};
     use reth_primitives_traits::RecoveredBlock;
-    use revm::{database::AccountStatus, state::AccountExtension};
+    use revm::state::{AccountExtension, AccountInfo};
     use std::sync::Arc;
-    use tempo_primitives::{
-        Block, BlockBody, TempoHeader, TempoTxEnvelope, account::encode_config_commitment,
-        transaction::Call,
-    };
+    use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
     #[test]
-    fn configurable_leaf_changes_include_eventless_registration_and_code() {
-        let address = Address::repeat_byte(0x22);
+    fn configurable_account_changes_include_eventless_registration_and_code() {
+        let registration = Address::repeat_byte(1);
+        let code = Address::repeat_byte(2);
+        let balance_only = Address::repeat_byte(3);
         let original = AccountInfo::default();
-        let mut registered = original.clone();
-        registered.extension =
-            AccountExtension::copy_from_slice(&encode_config_commitment(B256::repeat_byte(0x42)));
-        for (old, new, changed) in [
-            (original.clone(), registered.clone(), true),
-            (registered.clone(), original, true),
-            (registered.clone(), registered.clone(), false),
-            (
-                registered.clone(),
-                AccountInfo {
-                    code_hash: B256::repeat_byte(0x55),
-                    ..registered
-                },
-                true,
-            ),
-        ] {
-            let code_changed = old.code_hash != new.code_hash;
-            let state = AddressMap::from_iter([(
+        let mut state = AddressMap::default();
+        let mut insert = |address, current: AccountInfo| {
+            state.insert(
                 address,
-                BundleAccount::new(
-                    Some(old),
-                    Some(new),
-                    Default::default(),
-                    AccountStatus::Changed,
-                ),
-            )]);
-            let (accounts, code) = configurable_account_changes(&state);
-            assert_eq!(accounts.contains(&address), changed);
-            assert_eq!(code.contains(&address), code_changed);
-        }
-    }
-
-    #[test]
-    fn maintenance_queue_preserves_orphan_followup_after_mining() {
-        let tx = TxBuilder::aa(Address::repeat_byte(1)).build();
-        let hash = *tx.hash();
-        let mut queue = MaintenanceQueue::default();
-        queue.revalidate(hash);
-        let (running, permit) = queue.next().unwrap();
-        queue.discard_mined(&B256Set::from_iter([hash]));
-        assert!(!permit.is_valid());
-        queue.resurrect(tx);
-        assert!(
-            queue.next().is_none(),
-            "same hash must not run concurrently"
-        );
-        queue.complete(running, true);
-        let (followup, _) = queue.next().unwrap();
-        assert!(matches!(followup, MaintenanceItem::Resurrect { .. }));
-        queue.complete(followup, false);
-        assert_eq!(queue.resurrection_count, 0);
-        assert_eq!(queue.resurrection_bytes, 0);
-        assert!(queue.hashes.is_empty());
-    }
-
-    #[test]
-    fn maintenance_queue_rotates_retries_and_preserves_new_requests() {
-        let mut queue = MaintenanceQueue::default();
-        let first = B256::repeat_byte(1);
-        let second = B256::repeat_byte(2);
-        queue.revalidate(first);
-        queue.revalidate(second);
-        let (running, _) = queue.next().unwrap();
-        queue.revalidate(first);
-        queue.complete(running, false);
-        let (running, _) = queue.next().unwrap();
-        assert_eq!(running.hash(), second);
-        queue.complete(running, true);
-        let (running, _) = queue.next().unwrap();
-        assert_eq!(running.hash(), first);
-        queue.complete(running, false);
-        assert!(
-            queue.next().is_none(),
-            "completion must not wake failed work"
-        );
-        queue.deferred.clear();
-        assert_eq!(queue.next().unwrap().0.hash(), second);
-    }
-
-    #[test]
-    fn resurrection_retry_limits_include_inflight_and_idle_expiry() {
-        let mut queue = MaintenanceQueue::default();
-        for nonce in 0..=RESURRECTION_CAPACITY {
-            queue.resurrect(
-                TxBuilder::aa(Address::repeat_byte(1))
-                    .nonce(nonce as u64)
-                    .build(),
+                BundleAccount {
+                    original_info: Some(original.clone()),
+                    info: Some(current),
+                    storage: Default::default(),
+                    status: Default::default(),
+                },
             );
-        }
-        assert_eq!(queue.resurrection_count, RESURRECTION_CAPACITY);
-        let (mut running, _) = queue.next().unwrap();
-        assert_eq!(queue.resurrection_count, RESURRECTION_CAPACITY);
-        if let MaintenanceItem::Resurrect { attempts, .. } = &mut running {
-            *attempts = RESURRECTION_ATTEMPTS;
-        }
-        queue.complete(running, true);
-        assert_eq!(queue.resurrection_count, RESURRECTION_CAPACITY - 1);
-        queue.refresh(|_| false, Instant::now() + RESURRECTION_MAX_AGE);
-        assert!(queue.items.is_empty());
-        assert!(queue.hashes.is_empty());
-        assert_eq!(queue.resurrection_count, 0);
-        assert_eq!(queue.resurrection_bytes, 0);
-    }
+        };
+        insert(
+            registration,
+            AccountInfo {
+                extension: AccountExtension::copy_from_slice(&[1]),
+                ..original.clone()
+            },
+        );
+        insert(
+            code,
+            AccountInfo {
+                code_hash: B256::repeat_byte(2),
+                ..original.clone()
+            },
+        );
+        insert(
+            balance_only,
+            AccountInfo {
+                balance: U256::from(1),
+                ..original.clone()
+            },
+        );
 
-    #[test]
-    fn resurrection_payload_bytes_are_bounded() {
-        let mut queue = MaintenanceQueue::default();
-        for nonce in 0..10 {
-            let tx = TxBuilder::aa(Address::repeat_byte(1))
-                .nonce(nonce)
-                .calls(vec![Call {
-                    to: TxKind::Call(Address::repeat_byte(2)),
-                    input: Bytes::from(vec![0; 2 * 1024 * 1024]),
-                    value: U256::ZERO,
-                }])
-                .build();
-            queue.resurrect(tx);
-            assert!(queue.resurrection_bytes <= RESURRECTION_BYTES);
-        }
-        assert!(queue.resurrection_count < 10);
+        let (signer_changes, code_changes) = configurable_account_changes(&state);
+        assert_eq!(signer_changes, [registration, code].into_iter().collect());
+        assert_eq!(code_changes, [code].into_iter().collect());
     }
 
     mod pending_staleness_tracker_tests {
