@@ -49,7 +49,8 @@ pub(super) fn verify_attestation_with_root(
     Ok(verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384).ok())
 }
 
-struct AwsLcP384;
+/// AWS-LC backend for SHA-384 hashing and P-384 Nitro attestation verification.
+pub struct AwsLcP384;
 
 impl Sha384Hasher for AwsLcP384 {
     fn sha384(&self, input: &[u8]) -> [u8; SHA384_SIZE] {
