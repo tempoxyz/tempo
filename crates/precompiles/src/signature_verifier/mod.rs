@@ -99,19 +99,14 @@ impl SignatureVerifier {
         {
             return Ok(false);
         }
-        let actual = signature.config_commitment();
-        if commitment.is_zero() {
-            let factory = self
-                .storage
-                .with_block_env(|block| block.multisig_recovery_factory)
-                .filter(|factory| !factory.is_zero());
-            if config.version != 0
-                || factory
-                    .is_none_or(|factory| config.derive_account(factory).ok() != Some(account))
-            {
-                return Ok(false);
-            }
-        } else if commitment != actual {
+        let factory = self
+            .storage
+            .with_block_env(|block| block.multisig_recovery_factory)
+            .filter(|factory| !factory.is_zero());
+        if signature
+            .validate_account_commitment(commitment, factory)
+            .is_err()
+        {
             return Ok(false);
         }
 

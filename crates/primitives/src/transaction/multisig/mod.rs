@@ -347,6 +347,41 @@ impl MultisigSignature {
         self.config.commitment_validated()
     }
 
+    /// Checks the stored commitment or, on first use, derives the named account.
+    /// Does not read state, inspect code, or verify owner approvals.
+    pub fn validate_account_commitment(
+        &self,
+        stored: B256,
+        factory: Option<Address>,
+    ) -> Result<(), MultisigStateError> {
+        let actual = self.config_commitment();
+        if actual.is_zero() || (!stored.is_zero() && stored != actual) {
+            return Err(MultisigStateError::CommitmentMismatch {
+                expected: stored,
+                actual,
+            });
+        }
+        if stored.is_zero() {
+            if self.config.version != 0 {
+                return Err(MultisigStateError::UnregisteredVersion {
+                    actual: self.config.version,
+                });
+            }
+            let factory = factory.ok_or(MultisigStateError::FactoryNotConfigured)?;
+            let expected = self
+                .config
+                .derive_account(factory)
+                .map_err(MultisigStateError::InvalidInitialConfig)?;
+            if expected != self.account {
+                return Err(MultisigStateError::InitialAccountMismatch {
+                    expected,
+                    actual: self.account,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Returns a heuristic for the in-memory size of the signature.
     pub fn size(&self) -> usize {
         size_of::<Self>()
@@ -544,6 +579,61 @@ impl core::fmt::Display for MultisigSignatureError {
 impl From<MultisigConfigError> for MultisigSignatureError {
     fn from(error: MultisigConfigError) -> Self {
         Self::InvalidConfig(error)
+    }
+}
+
+/// Why a witness does not match the current account commitment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigStateError {
+    /// The witness hash differs from the stored hash or is zero.
+    CommitmentMismatch {
+        /// Stored hash.
+        expected: B256,
+        /// Witness hash.
+        actual: B256,
+    },
+    /// First use requires version zero.
+    UnregisteredVersion {
+        /// Witness version.
+        actual: u64,
+    },
+    /// First use requires a configured recovery factory.
+    FactoryNotConfigured,
+    /// The initial configuration cannot derive a valid account.
+    InvalidInitialConfig(MultisigConfigError),
+    /// The initial configuration derives a different address.
+    InitialAccountMismatch {
+        /// Derived account.
+        expected: Address,
+        /// Account named in the witness.
+        actual: Address,
+    },
+}
+
+impl core::fmt::Display for MultisigStateError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::CommitmentMismatch { expected, actual } => write!(
+                f,
+                "multisig configuration commitment mismatch: expected {expected}, actual {actual}"
+            ),
+            Self::UnregisteredVersion { actual } => {
+                write!(
+                    f,
+                    "unregistered configuration version mismatch: expected 0, actual {actual}"
+                )
+            }
+            Self::FactoryNotConfigured => {
+                f.write_str("native multisig recovery factory is not configured")
+            }
+            Self::InvalidInitialConfig(error) => error.fmt(f),
+            Self::InitialAccountMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "initial multisig account mismatch: expected {expected}, actual {actual}"
+                )
+            }
+        }
     }
 }
 
