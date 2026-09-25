@@ -34,7 +34,7 @@ use tempo_precompiles::{
     tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{
-    SignatureType, TempoTxEnvelope,
+    TempoTxEnvelope,
     transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
 };
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
@@ -277,43 +277,29 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Whether a changed account can affect this transaction's authorization.
+    /// Whether a changed commitment can stale a native signer in this transaction.
     pub(crate) fn needs_configurable_revalidation(
         &self,
-        signer_changes: &AddressSet,
-        code_changes: &AddressSet,
+        changed_commitments: &AddressSet,
         reorg: bool,
     ) -> bool {
         let Some(tx) = self.inner().as_aa() else {
             return false;
         };
         let keychain = tx.signature().as_keychain();
-        let grant = tx.tx().key_authorization.as_ref();
-        let parent = keychain
-            .map(|signature| signature.user_address)
-            .or_else(|| grant.map(|_| self.sender()));
-
-        if parent.is_some_and(|account| reorg || code_changes.contains(&account)) {
-            return true;
-        }
-
         let transaction_signer = tx
             .signature()
             .as_multisig()
             .or_else(|| keychain.and_then(|signature| signature.signature.as_multisig()));
-        let grant_signer = grant.and_then(|authorization| authorization.signature.as_multisig());
-        if [transaction_signer, grant_signer]
+        let grant_signer = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.signature.as_multisig());
+        [transaction_signer, grant_signer]
             .into_iter()
             .flatten()
-            .any(|signature| reorg || signer_changes.contains(&signature.account()))
-        {
-            return true;
-        }
-
-        grant.is_some_and(|authorization| {
-            authorization.key_type == SignatureType::Multisig
-                && code_changes.contains(&authorization.key_id)
-        })
+            .any(|signature| reorg || changed_commitments.contains(&signature.account()))
     }
 
     /// Returns the unique identifier for this AA transaction.
@@ -1035,7 +1021,7 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        KeyAuthorization, MultisigConfig, MultisigOwner, MultisigSignature,
+        KeyAuthorization, MultisigConfig, MultisigOwner, MultisigSignature, SignatureType,
         TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
@@ -1057,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn configurable_revalidation_matches_signers_and_account_eligibility() {
+    fn configurable_revalidation_matches_native_signers() {
         let parent = Address::repeat_byte(0x11);
         let signer = Address::repeat_byte(0x22);
         let recipient = Address::repeat_byte(0x33);
@@ -1090,27 +1076,38 @@ mod tests {
             TxBuilder::aa(signer).build(),
             TempoSignature::Multisig(multisig.clone()),
         );
-        assert!(direct.needs_configurable_revalidation(&changed(signer), &none, false));
-        assert!(!direct.needs_configurable_revalidation(&changed(parent), &none, false));
+        assert!(direct.needs_configurable_revalidation(&changed(signer), false));
+        assert!(!direct.needs_configurable_revalidation(&changed(parent), false));
+        assert!(direct.needs_configurable_revalidation(&none, true));
 
         let delegated = pooled(
             TxBuilder::aa(parent).build(),
             TempoSignature::Keychain(KeychainSignature::new(parent, multisig.clone())),
         );
-        assert!(delegated.needs_configurable_revalidation(&changed(signer), &none, false));
-        assert!(!delegated.needs_configurable_revalidation(&changed(parent), &none, false));
-        assert!(delegated.needs_configurable_revalidation(&none, &changed(parent), false));
+        assert!(delegated.needs_configurable_revalidation(&changed(signer), false));
+        assert!(!delegated.needs_configurable_revalidation(&changed(parent), false));
+        assert!(delegated.needs_configurable_revalidation(&none, true));
+
+        let primitive_keychain = pooled(
+            TxBuilder::aa(parent).build(),
+            TempoSignature::Keychain(KeychainSignature::new(
+                parent,
+                PrimitiveSignature::Secp256k1(Signature::test_signature()),
+            )),
+        );
+        assert!(!primitive_keychain.needs_configurable_revalidation(&changed(parent), false));
+        assert!(!primitive_keychain.needs_configurable_revalidation(&none, true));
 
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Multisig, recipient)
             .into_signed(multisig);
         let inline = TxBuilder::aa(parent).key_authorization(grant).build();
-        assert!(inline.needs_configurable_revalidation(&changed(signer), &none, false));
-        assert!(inline.needs_configurable_revalidation(&none, &changed(recipient), false));
-        assert!(inline.needs_configurable_revalidation(&none, &none, true));
+        assert!(inline.needs_configurable_revalidation(&changed(signer), false));
+        assert!(!inline.needs_configurable_revalidation(&changed(recipient), false));
+        assert!(inline.needs_configurable_revalidation(&none, true));
         assert!(
             !TxBuilder::aa(parent)
                 .build()
-                .needs_configurable_revalidation(&none, &none, true)
+                .needs_configurable_revalidation(&none, true)
         );
     }
 
