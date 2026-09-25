@@ -17,7 +17,8 @@ use reth_primitives_traits::{
 use reth_provider::BlockReaderIdExt;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
-    AccountReader, BytecodeReader, StateProvider, StateProviderBox, StateProviderFactory,
+    AccountReader, BytecodeReader, EvmStateProviderAdapter, StateProvider, StateProviderBox,
+    StateProviderFactory,
     errors::{ProviderError, ProviderResult},
 };
 use reth_transaction_pool::{
@@ -364,7 +365,9 @@ where
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
             &cached_state,
-            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
+            StateProviderDatabase::new(
+                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+            ),
         );
         let evm_env = self.cached_evm_env.read().clone();
 
@@ -832,10 +835,13 @@ pub trait ConfigureTempoPoolEvm:
 {
     fn pool_evm<'a>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        db: StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
         evm_env: EvmEnvFor<Self>,
     ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        DB = StateCacheDb<
+            'a,
+            StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>,
+        >,
     > + 'a;
 }
 
@@ -847,15 +853,20 @@ where
                 EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
             >,
         > + 'static,
-    for<'a> EvmFor<T, StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>>:
-        TempoPoolValidationEvm,
+    for<'a> EvmFor<
+        T,
+        StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
+    >: TempoPoolValidationEvm,
 {
     fn pool_evm<'a>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        db: StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
         evm_env: EvmEnvFor<Self>,
     ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        DB = StateCacheDb<
+            'a,
+            StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>,
+        >,
     > + 'a {
         let mut evm = self.evm_with_env(db, evm_env);
         evm.configure_for_pool();
