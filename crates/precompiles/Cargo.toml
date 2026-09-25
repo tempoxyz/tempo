@@ -30,8 +30,7 @@ keccak-const.workspace = true
 revm.workspace = true
 paste.workspace = true
 bitflags.workspace = true
-aws-lc-rs.workspace = true
-tempo-nitro-attestation.workspace = true
+tempo-nitro-attestation = { workspace = true, features = ["aws-lc"] }
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true

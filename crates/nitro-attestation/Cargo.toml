@@ -15,10 +15,21 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["aws-lc"]
+aws-lc = ["dep:aws-lc-rs"]
+
 [dependencies]
 arrayvec = { version = "=0.7.6", default-features = false, features = ["serde"] }
+hex-literal = "1"
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
 minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
 serde = { workspace = true, features = ["alloc"] }
 serde_with = { version = "=3.21.0", default-features = false, features = ["alloc"] }
 x509-cert = { version = "=0.2.5", default-features = false }
+
+# aws-lc
+aws-lc-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+base64.workspace = true
