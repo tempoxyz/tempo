@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{Precompile, charge_input_cost, dispatch, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{AccountKeychainError, IAccountKeychain};
@@ -45,50 +45,50 @@ impl Precompile for AccountKeychain {
                             },
                         };
 
-                        mutate_void(call, msg_sender, |sender, c| {
-                            self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                        mutate(self, call, msg_sender, |this, sender, c| {
+                            this.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
                         })
                     },
                     #[schedule(since = T3)]
-                    authorizeKey_1(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                    authorizeKey_1(call) => mutate(self, call, msg_sender, |this, sender, c| {
+                        this.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
                     }),
                     #[schedule(since = T5)]
-                    authorizeKey_2(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, Some(c.witness))
+                    authorizeKey_2(call) => mutate(self, call, msg_sender, |this, sender, c| {
+                        this.authorize_key(sender, c.keyId, c.signatureType, c.config, Some(c.witness))
                     }),
                     #[schedule(since = T6)]
-                    authorizeAdminKey(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_admin_key(sender, c.keyId, c.signatureType, Some(c.witness))
+                    authorizeAdminKey(call) => mutate(self, call, msg_sender, |this, sender, c| {
+                        this.authorize_admin_key(sender, c.keyId, c.signatureType, Some(c.witness))
                     }),
                     #[schedule(since = T5)]
-                    burnKeyAuthorizationWitness(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.burn_key_authorization_witness(sender, c)
+                    burnKeyAuthorizationWitness(call) => mutate(self, call, msg_sender, |this, sender, c| {
+                        this.burn_key_authorization_witness(sender, c)
                     }),
-                    revokeKey(call) => mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c)),
-                    updateSpendingLimit(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.update_spending_limit(sender, c)
-                    }),
-                    #[schedule(since = T3)]
-                    setAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.set_allowed_calls(sender, c)
+                    revokeKey(call) => mutate(self, call, msg_sender, |this, sender, c| this.revoke_key(sender, c)),
+                    updateSpendingLimit(call) => mutate(self, call, msg_sender, |this, sender, c| {
+                        this.update_spending_limit(sender, c)
                     }),
                     #[schedule(since = T3)]
-                    removeAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.remove_allowed_calls(sender, c)
+                    setAllowedCalls(call) => mutate(self, call, msg_sender, |this, sender, c| {
+                        this.set_allowed_calls(sender, c)
                     }),
-                    getKey(call) => view(call, |c| self.get_key(c)),
+                    #[schedule(since = T3)]
+                    removeAllowedCalls(call) => mutate(self, call, msg_sender, |this, sender, c| {
+                        this.remove_allowed_calls(sender, c)
+                    }),
+                    getKey(call) => view(self, call, |this, c| this.get_key(c)),
                     #[schedule(until = T3)]
-                    getRemainingLimit(call) => view(call, |c| self.get_remaining_limit(c)),
+                    getRemainingLimit(call) => view(self, call, |this, c| this.get_remaining_limit(c)),
                     #[schedule(since = T3)]
-                    getRemainingLimitWithPeriod(call) => view(call, |c| self.get_remaining_limit_with_period(c)),
+                    getRemainingLimitWithPeriod(call) => view(self, call, |this, c| this.get_remaining_limit_with_period(c)),
                     #[schedule(since = T3)]
-                    getAllowedCalls(call) => view(call, |c| self.get_allowed_calls(c)),
+                    getAllowedCalls(call) => view(self, call, |this, c| this.get_allowed_calls(c)),
                     #[schedule(since = T5)]
-                    isKeyAuthorizationWitnessBurned(call) => view(call, |c| self.is_key_authorization_witness_burned(c)),
+                    isKeyAuthorizationWitnessBurned(call) => view(self, call, |this, c| this.is_key_authorization_witness_burned(c)),
                     #[schedule(since = T6)]
-                    isAdminKey(call) => view(call, |c| self.is_admin_key(c.account, c.keyId)),
-                    getTransactionKey(call) => view(call, |c| self.get_transaction_key(c, msg_sender))
+                    isAdminKey(call) => view(self, call, |this, c| this.is_admin_key(c.account, c.keyId)),
+                    getTransactionKey(call) => view(self, call, |this, c| this.get_transaction_key(c, msg_sender))
                 }
             }
         )

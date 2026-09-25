@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`ValidatorConfigV2`] precompile (T2+).
 
 use super::*;
-use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfigV2;
@@ -21,30 +21,30 @@ impl Precompile for ValidatorConfigV2 {
             calldata,
             |call| match call {
                 IValidatorConfigV2::IValidatorConfigV2Calls {
-                    owner(call) => view(call, |_| self.owner()),
-                    getActiveValidators(call) => view(call, |_| self.get_active_validators()),
-                    getInitializedAtHeight(call) => view(call, |_| self.get_initialized_at_height()),
-                    validatorCount(call) => view(call, |_| self.validator_count()),
-                    validatorByIndex(call) => view(call, |c| self.validator_by_index(c.index)),
-                    validatorByAddress(call) => view(call, |c| self.validator_by_address(c.validatorAddress)),
-                    validatorByPublicKey(call) => view(call, |c| self.validator_by_public_key(c.publicKey)),
-                    getNextNetworkIdentityRotationEpoch(call) => view(call, |_| self.get_next_network_identity_rotation_epoch()),
-                    isInitialized(call) => view(call, |_| self.is_initialized()),
+                    owner(call) => view(self, call, |this, _| this.owner()),
+                    getActiveValidators(call) => view(self, call, |this, _| this.get_active_validators()),
+                    getInitializedAtHeight(call) => view(self, call, |this, _| this.get_initialized_at_height()),
+                    validatorCount(call) => view(self, call, |this, _| this.validator_count()),
+                    validatorByIndex(call) => view(self, call, |this, c| this.validator_by_index(c.index)),
+                    validatorByAddress(call) => view(self, call, |this, c| this.validator_by_address(c.validatorAddress)),
+                    validatorByPublicKey(call) => view(self, call, |this, c| this.validator_by_public_key(c.publicKey)),
+                    getNextNetworkIdentityRotationEpoch(call) => view(self, call, |this, _| this.get_next_network_identity_rotation_epoch()),
+                    isInitialized(call) => view(self, call, |this, _| this.is_initialized()),
 
-                    addValidator(call) => mutate(call, msg_sender, |s, c| self.add_validator(s, c)),
-                    deactivateValidator(call) => mutate_void(call, msg_sender, |s, c| self.deactivate_validator(s, c)),
-                    rotateValidator(call) => mutate_void(call, msg_sender, |s, c| self.rotate_validator(s, c)),
-                    setFeeRecipient(call) => mutate_void(call, msg_sender, |s, c| self.set_fee_recipient(s, c)),
-                    setIpAddresses(call) => mutate_void(call, msg_sender, |s, c| self.set_ip_addresses(s, c)),
-                    transferValidatorOwnership(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.transfer_validator_ownership(s, c)
+                    addValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.add_validator(s, c)),
+                    deactivateValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.deactivate_validator(s, c)),
+                    rotateValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.rotate_validator(s, c)),
+                    setFeeRecipient(call) => mutate(self, call, msg_sender, |this, s, c| this.set_fee_recipient(s, c)),
+                    setIpAddresses(call) => mutate(self, call, msg_sender, |this, s, c| this.set_ip_addresses(s, c)),
+                    transferValidatorOwnership(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        this.transfer_validator_ownership(s, c)
                     }),
-                    transferOwnership(call) => mutate_void(call, msg_sender, |s, c| self.transfer_ownership(s, c)),
-                    setNetworkIdentityRotationEpoch(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.set_network_identity_rotation_epoch(s, c)
+                    transferOwnership(call) => mutate(self, call, msg_sender, |this, s, c| this.transfer_ownership(s, c)),
+                    setNetworkIdentityRotationEpoch(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        this.set_network_identity_rotation_epoch(s, c)
                     }),
-                    migrateValidator(call) => mutate_void(call, msg_sender, |s, c| self.migrate_validator(s, c)),
-                    initializeIfMigrated(call) => mutate_void(call, msg_sender, |s, _| self.initialize_if_migrated(s))
+                    migrateValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.migrate_validator(s, c)),
+                    initializeIfMigrated(call) => mutate(self, call, msg_sender, |this, s, _| this.initialize_if_migrated(s))
                 }
             }
         )

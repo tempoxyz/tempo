@@ -288,7 +288,10 @@ impl StorageCtx {
     }
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
-    pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
+    ///
+    /// Gas accounting is allowed during static execution and does not grant state-write access,
+    /// so callers only need a shared storage context.
+    pub fn deduct_gas(&self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
     }
 

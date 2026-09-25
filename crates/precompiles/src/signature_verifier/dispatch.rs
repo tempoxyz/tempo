@@ -27,17 +27,17 @@ impl Precompile for SignatureVerifier {
             calldata,
             |call| match call {
                 ISignatureVerifier::ISignatureVerifierCalls {
-                    recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
-                    verify(call) => view(call, |c| {
-                        self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
+                    recover(call) => view(self, call, |this, c| this.recover(c.hash, c.signature)),
+                    verify(call) => view(self, call, |this, c| {
+                        this.recover(c.hash, c.signature).map(|sig| sig == c.signer)
                     }),
                     #[schedule(since = T6)]
-                    verifyKeychain(call) => view(call, |c| {
-                        self.verify_keychain(c.account, c.hash, c.signature)
+                    verifyKeychain(call) => view(self, call, |this, c| {
+                        this.verify_keychain(c.account, c.hash, c.signature)
                     }),
                     #[schedule(since = T6)]
-                    verifyKeychainAdmin(call) => view(call, |c| {
-                        self.verify_keychain_admin(c.account, c.hash, c.signature)
+                    verifyKeychainAdmin(call) => view(self, call, |this, c| {
+                        this.verify_keychain_admin(c.account, c.hash, c.signature)
                     }),
                 }
             }

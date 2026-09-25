@@ -44,88 +44,60 @@ pub mod typed {
             .into_precompile_result(0, StorageCtx.reservoir())
     }
 
-    /// Dispatches a parameterless view call, encoding the return via `T`.
-    #[inline]
-    pub fn metadata<T: SolCall, E: IntoPrecompileResult>(
-        f: impl FnOnce() -> core::result::Result<T::Return, E>,
-    ) -> PrecompileResult {
-        f().encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-    }
-
     /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
+    ///
+    /// The handler only receives a shared reference to the precompile, preventing methods that
+    /// require `&mut self` from being routed through this helper.
     #[inline]
-    pub fn view<T: SolCall, E: IntoPrecompileResult>(
+    pub fn view<P, T: SolCall, E: IntoPrecompileResult>(
+        precompile: &P,
         call: T,
-        f: impl FnOnce(T) -> core::result::Result<T::Return, E>,
+        f: impl FnOnce(&P, T) -> core::result::Result<T::Return, E>,
     ) -> PrecompileResult {
-        f(call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+        f(precompile, call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
     }
 
-    /// Dispatches a state-mutating call that returns ABI-encoded data.
+    /// Dispatches a state-mutating call, ABI-encoding its return values.
     ///
-    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
+    /// Handlers for calls without return values may return `()`; Alloy converts it into the
+    /// generated empty return container through [`Into`]. Rejects static calls pre-T12 with
+    /// [`StaticCallNotAllowed`] and from T12 with an execution halt.
     #[inline]
-    pub fn mutate<T: SolCall, E: IntoPrecompileResult>(
+    pub fn mutate<P, T: SolCall, E: IntoPrecompileResult, R: Into<T::Return>>(
+        precompile: &mut P,
         call: T,
         sender: Address,
-        f: impl FnOnce(Address, T) -> core::result::Result<T::Return, E>,
+        f: impl FnOnce(&mut P, Address, T) -> core::result::Result<R, E>,
     ) -> PrecompileResult {
         if StorageCtx.is_static() {
             return reject_static_call();
         }
-        f(sender, call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+        f(precompile, sender, call)
+            .encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret.into()).into())
     }
-
-    /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
-    ///
-    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
-    #[inline]
-    pub fn mutate_void<T: SolCall, E: IntoPrecompileResult>(
-        call: T,
-        sender: Address,
-        f: impl FnOnce(Address, T) -> core::result::Result<(), E>,
-    ) -> PrecompileResult {
-        if StorageCtx.is_static() {
-            return reject_static_call();
-        }
-        f(sender, call).encode_precompile_result(0, 0, |()| Bytes::new())
-    }
-}
-
-/// Dispatches a parameterless view call, encoding the return via `T`.
-#[inline]
-pub fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    typed::metadata::<T, crate::error::TempoPrecompileError>(f)
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
-pub fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    typed::view::<T, crate::error::TempoPrecompileError>(call, f)
+pub fn view<P, T: SolCall>(
+    precompile: &P,
+    call: T,
+    f: impl FnOnce(&P, T) -> Result<T::Return>,
+) -> PrecompileResult {
+    typed::view(precompile, call, f)
 }
 
-/// Dispatches a state-mutating call that returns ABI-encoded data.
+/// Dispatches a state-mutating call, ABI-encoding its return values.
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
-pub fn mutate<T: SolCall>(
+pub fn mutate<P, T: SolCall, R: Into<T::Return>>(
+    precompile: &mut P,
     call: T,
     sender: Address,
-    f: impl FnOnce(Address, T) -> Result<T::Return>,
+    f: impl FnOnce(&mut P, Address, T) -> Result<R>,
 ) -> PrecompileResult {
-    typed::mutate::<T, crate::error::TempoPrecompileError>(call, sender, f)
-}
-
-/// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
-///
-/// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
-pub fn mutate_void<T: SolCall>(
-    call: T,
-    sender: Address,
-    f: impl FnOnce(Address, T) -> Result<()>,
-) -> PrecompileResult {
-    typed::mutate_void::<T, crate::error::TempoPrecompileError>(call, sender, f)
+    typed::mutate(precompile, call, sender, f)
 }
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
@@ -436,11 +408,13 @@ mod tests {
 
     #[test]
     fn generic_helpers_encode_success_outputs() -> eyre::Result<()> {
+        let target = U256::from(1);
         let output = typed::view(
+            &target,
             ITestDispatch::getCall {
                 value: U256::from(41),
             },
-            |c| core::result::Result::<_, CustomError>::Ok(c.value + U256::from(1)),
+            |target, c| core::result::Result::<_, CustomError>::Ok(*target + c.value),
         )?;
         assert!(output.is_success());
         assert_eq!(
@@ -451,28 +425,39 @@ mod tests {
         let sender = Address::ZERO;
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut target = U256::ZERO;
             let output = typed::mutate(
+                &mut target,
                 ITestDispatch::setCall {
                     value: U256::from(7),
                 },
                 sender,
-                |_, c| core::result::Result::<_, CustomError>::Ok(c.value),
+                |target, _, c| {
+                    *target = c.value;
+                    core::result::Result::<_, CustomError>::Ok(*target)
+                },
             )?;
             assert!(output.is_success());
+            assert_eq!(target, U256::from(7));
             assert_eq!(
                 output.bytes,
                 ITestDispatch::setCall::abi_encode_returns(&U256::from(7))
             );
 
-            let output = typed::mutate_void(
+            let output = typed::mutate(
+                &mut target,
                 ITestDispatch::clearCall {
                     value: U256::from(7),
                 },
                 sender,
-                |_, _| core::result::Result::<_, CustomError>::Ok(()),
+                |target, _, _| {
+                    *target = U256::ZERO;
+                    core::result::Result::<_, CustomError>::Ok(())
+                },
             )?;
             assert!(output.is_success());
             assert!(output.bytes.is_empty());
+            assert_eq!(target, U256::ZERO);
             Ok(())
         })
     }
@@ -482,7 +467,7 @@ mod tests {
         let error = CustomTypedError {
             code: U256::from(9),
         };
-        let output = typed::view(ITestDispatch::getCall { value: U256::ZERO }, |_| {
+        let output = typed::view(&(), ITestDispatch::getCall { value: U256::ZERO }, |_, _| {
             core::result::Result::<U256, _>::Err(CustomError::Typed(error.clone()))
         })?;
         assert!(output.is_revert());

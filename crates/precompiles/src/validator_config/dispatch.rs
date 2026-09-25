@@ -1,9 +1,7 @@
 //! ABI dispatch for the [`ValidatorConfig`] (V1) precompile.
 
 use super::ValidatorConfig;
-use crate::{
-    Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate_void, view,
-};
+use crate::{Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfig;
@@ -18,28 +16,28 @@ impl Precompile for ValidatorConfig {
             |call| match call {
                 IValidatorConfig::IValidatorConfigCalls {
                     // View functions
-                    owner(call) => view(call, |_| self.owner()),
-                    getValidators(call) => view(call, |_| self.get_validators()),
-                    getNextFullDkgCeremony(call) => view(call, |_| self.get_next_full_dkg_ceremony()),
-                    validatorsArray(call) => view(call, |c| {
+                    owner(call) => view(self, call, |this, _| this.owner()),
+                    getValidators(call) => view(self, call, |this, _| this.get_validators()),
+                    getNextFullDkgCeremony(call) => view(self, call, |this, _| this.get_next_full_dkg_ceremony()),
+                    validatorsArray(call) => view(self, call, |this, c| {
                         let index = u64::try_from(c.index)
                             .map_err(|_| TempoPrecompileError::array_oob())?;
-                        self.validators_array(index)
+                        this.validators_array(index)
                     }),
-                    validators(call) => view(call, |c| self.validators(c.validator)),
-                    validatorCount(call) => view(call, |_| self.validator_count()),
+                    validators(call) => view(self, call, |this, c| this.validators(c.validator)),
+                    validatorCount(call) => view(self, call, |this, _| this.validator_count()),
 
                     // Mutate functions
-                    addValidator(call) => mutate_void(call, msg_sender, |s, c| self.add_validator(s, c)),
-                    updateValidator(call) => mutate_void(call, msg_sender, |s, c| self.update_validator(s, c)),
-                    changeValidatorStatus(call) => mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c)),
+                    addValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.add_validator(s, c)),
+                    updateValidator(call) => mutate(self, call, msg_sender, |this, s, c| this.update_validator(s, c)),
+                    changeValidatorStatus(call) => mutate(self, call, msg_sender, |this, s, c| this.change_validator_status(s, c)),
                     #[schedule(since = T1)]
-                    changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.change_validator_status_by_index(s, c)
+                    changeValidatorStatusByIndex(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        this.change_validator_status_by_index(s, c)
                     }),
-                    changeOwner(call) => mutate_void(call, msg_sender, |s, c| self.change_owner(s, c)),
-                    setNextFullDkgCeremony(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.set_next_full_dkg_ceremony(s, c)
+                    changeOwner(call) => mutate(self, call, msg_sender, |this, s, c| this.change_owner(s, c)),
+                    setNextFullDkgCeremony(call) => mutate(self, call, msg_sender, |this, s, c| {
+                        this.set_next_full_dkg_ceremony(s, c)
                     })
                 }
             }
