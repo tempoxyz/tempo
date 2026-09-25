@@ -76,7 +76,7 @@ use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorC
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
-    transaction::TempoPoolTransactionError,
+    lanes::LaneBalancedTransactions, transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
@@ -90,9 +90,13 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
-    Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
-    Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
-    Parallel(BestTransactionsPrewarming),
+    Sequential(
+        StateAwareBestTransactions<
+            LaneBalancedTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>,
+        >,
+    ),
+    Prewarming(StateAwareBestTransactions<LaneBalancedTransactions<BestTransactionsPrewarming>>),
+    Parallel(LaneBalancedTransactions<BestTransactionsPrewarming>),
 }
 
 impl PayloadTransactions {
@@ -124,6 +128,15 @@ impl PayloadTransactions {
             Self::Parallel(_) => {
                 // Parallel does not use state-aware best transactions iterator.
             }
+        }
+    }
+
+    /// Charge executed gas before choosing the next lane.
+    fn set_gas_used(&mut self, general: u64, total: u64) {
+        match self {
+            Self::Sequential(txs) => txs.inner_mut().set_gas_used(general, total),
+            Self::Prewarming(txs) => txs.inner_mut().set_gas_used(general, total),
+            Self::Parallel(txs) => txs.set_gas_used(general, total),
         }
     }
 }
@@ -479,17 +492,31 @@ where
         );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
-                PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
-                    prewarm_ctx,
-                    raw_best_txs,
+                PayloadTransactions::Parallel(LaneBalancedTransactions::new(
+                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    general_gas_limit,
+                    block_gas_limit,
+                    hardfork.is_t5(),
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    LaneBalancedTransactions::new(
+                        BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                        general_gas_limit,
+                        block_gas_limit,
+                        hardfork.is_t5(),
+                    ),
                 ))
             }
         } else {
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
+            PayloadTransactions::Sequential(StateAwareBestTransactions::new(
+                LaneBalancedTransactions::new(
+                    Box::new(raw_best_txs) as Box<dyn BestTransactions<Item = BestTransaction>>,
+                    general_gas_limit,
+                    block_gas_limit,
+                    hardfork.is_t5(),
+                ),
+            ))
         };
         self.metrics
             .pool_fetch_duration_seconds
@@ -547,6 +574,7 @@ where
                 }
             }
 
+            best_txs.set_gas_used(non_payment_gas_used, cumulative_gas_used);
             let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));

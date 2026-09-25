@@ -19,6 +19,7 @@ pub use tempo_pool::{TempoTransactionPool, TempoTransactionPoolExt};
 
 pub mod amm;
 pub mod best;
+pub mod lanes;
 pub mod maintain;
 pub mod metrics;
 pub mod ordering;
