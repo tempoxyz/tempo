@@ -8,7 +8,7 @@ use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
-use reth_storage_api::{StateProviderBox, StateProviderFactory};
+use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
@@ -17,7 +17,7 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
-pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -370,7 +370,7 @@ where
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+        let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -382,6 +382,8 @@ where
                 return None;
             }
         };
+        let mut state_provider: EvmStateProviderBox =
+            Box::new(state_provider.into_evm_state_provider());
 
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(
