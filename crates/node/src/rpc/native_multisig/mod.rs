@@ -6,7 +6,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{
     SignatureType, TempoBlockEnv, TempoSignature, TempoTxEnvelope,
     account::decode_config_commitment,
-    transaction::{MultisigSignature, SignedKeyAuthorization},
+    transaction::{MultisigSignature, MultisigStateError, SignedKeyAuthorization},
 };
 use tempo_revm::native_multisig::{NativeAuthorization, NativeMultisigError};
 
@@ -132,34 +132,20 @@ fn validate_witness(
     }
     let stored = decode_config_commitment(&info.extension, hardfork.is_t14())
         .map_err(|error| EthApiError::Internal(reth_errors::RethError::msg(error.to_string())))?;
-    let supplied = signature.config_commitment();
-    if supplied.is_zero() || (!stored.is_zero() && stored != supplied) {
-        return Err(EthApiError::InvalidParams(format!(
-            "{} for {account} at the requested state",
-            NativeMultisigError::ConfigurationCommitmentMismatch {
-                expected: stored,
-                actual: supplied
-            },
-        )));
-    }
-    if stored.is_zero() {
-        if signature.config().version != 0 {
-            return Err(EthApiError::InvalidParams(format!(
-                "unregistered configuration version mismatch: expected 0, actual {}",
-                signature.config().version
-            )));
-        }
-        let expected = signature
-            .config()
-            .derive_account(factory)
-            .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
-        if expected != account {
-            return Err(EthApiError::InvalidParams(format!(
-                "initial multisig account mismatch at the requested state: expected {expected}, actual {account}"
-            )));
-        }
-    }
-    Ok(())
+    signature
+        .validate_account_commitment(stored, Some(factory))
+        .map_err(|error| {
+            let message = match error {
+                MultisigStateError::CommitmentMismatch { .. } => {
+                    format!("{error} for {account} at the requested state")
+                }
+                MultisigStateError::InitialAccountMismatch { expected, actual } => {
+                    format!("initial multisig account mismatch at the requested state: expected {expected}, actual {actual}")
+                }
+                _ => error.to_string(),
+            };
+            EthApiError::InvalidParams(message)
+        })
 }
 
 /// Removes simulation hints while retaining the exact real grant for the unsigned response.
