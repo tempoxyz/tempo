@@ -197,6 +197,11 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
+        // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
+        if self.spec.is_t12() && self.gas_tracker.remaining() <= self.gas_params.call_stipend() {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -972,6 +977,38 @@ mod tests {
             let expected_value = U256::from(i * 100);
             let loaded_value = provider.sload(address, key)?;
             assert_eq!(loaded_value, expected_value);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_reentrancy_sentry_blocks_dirty_write() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let mut evm = TestEvm::new(spec);
+            let gas_params = evm.ctx().cfg.gas_params.clone();
+            let address = Address::random();
+            let key = U256::from(42);
+
+            evm.provider_max_gas().sstore(address, key, U256::ONE)?;
+
+            let result = evm
+                .provider_with_gas_limit(gas_params.call_stipend(), 0)
+                .sstore(address, key, U256::from(2));
+
+            let expected = if spec.is_t12() {
+                assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+                U256::ONE
+            } else {
+                result.expect("pre-T12 SSTORE at stipend should preserve historical behavior");
+                U256::from(2)
+            };
+
+            assert_eq!(
+                evm.provider_max_gas().sload(address, key)?,
+                expected,
+                "failed SSTORE must not mutate storage"
+            );
         }
 
         Ok(())
