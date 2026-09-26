@@ -29,6 +29,9 @@ pub struct EvmPrecompileStorageProvider<'a> {
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    /// Number of recorded storage actions when each open checkpoint was created, so a revert
+    /// can drop the actions of the reverted batch along with its journal entries.
+    checkpoint_action_lens: Vec<usize>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -58,6 +61,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             #[cfg(debug_assertions)]
+            checkpoint_action_lens: Vec::new(),
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
         }
@@ -560,6 +564,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn checkpoint(&mut self) -> JournalCheckpoint {
         let cp = self.internals.checkpoint();
+        self.checkpoint_action_lens.push(self.actions.len());
         #[cfg(debug_assertions)]
         self.track_checkpoint(&cp);
         cp
@@ -569,6 +574,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn checkpoint_commit(&mut self, _checkpoint: JournalCheckpoint) {
         #[cfg(debug_assertions)]
         self.assert_lifo(&_checkpoint, "commit");
+        self.checkpoint_action_lens.pop();
         self.internals.checkpoint_commit()
     }
 
@@ -576,6 +582,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         #[cfg(debug_assertions)]
         self.assert_lifo(&checkpoint, "revert");
+        // The journal forgets the reverted writes; the replay log must forget them too, or a
+        // consumer replaying the actions would apply state the EVM never committed.
+        if let Some(len) = self.checkpoint_action_lens.pop() {
+            self.actions.truncate(len);
+        }
         self.internals.checkpoint_revert(checkpoint)
     }
 
@@ -864,6 +875,53 @@ mod tests {
                 StorageAction::Sinc(addr, k1, v1_new, U256::from(4)),
                 StorageAction::Sdec(addr, k2, v2, U256::from(5)),
             ])
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_checkpoint_revert_drops_recorded_actions() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let addr = Address::random();
+
+        let mut provider = evm
+            .provider_max_gas()
+            .with_actions(StorageActions::enabled());
+
+        let (k1, v1) = (U256::from(1), U256::from(10));
+        let (k2, v2) = (U256::from(2), U256::from(20));
+        provider.sstore(addr, k1, v1)?;
+
+        // A nested batch commits inside a batch that is then reverted.
+        let outer = provider.checkpoint();
+        provider.sstore(addr, k1, U256::from(99))?;
+        let inner = provider.checkpoint();
+        provider.sstore(addr, k2, v2)?;
+        provider.checkpoint_commit(inner);
+        let _ = provider.sload(addr, k2)?;
+        provider.checkpoint_revert(outer);
+
+        assert_eq!(provider.sload(addr, k1)?, v1);
+        assert_eq!(provider.sload(addr, k2)?, U256::ZERO);
+
+        // Only the actions recorded before the reverted batch survive, plus the reads after it.
+        assert_eq!(
+            provider.take_actions(),
+            Some(vec![
+                StorageAction::Sstore(addr, k1, U256::ZERO, v1),
+                StorageAction::Sload(addr, k1, v1),
+                StorageAction::Sload(addr, k2, U256::ZERO),
+            ])
+        );
+
+        // A committed batch keeps its actions.
+        let cp = provider.checkpoint();
+        provider.sstore(addr, k2, v2)?;
+        provider.checkpoint_commit(cp);
+        assert_eq!(
+            provider.take_actions(),
+            Some(vec![StorageAction::Sstore(addr, k2, U256::ZERO, v2)])
         );
 
         Ok(())
