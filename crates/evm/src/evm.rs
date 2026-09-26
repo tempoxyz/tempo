@@ -162,6 +162,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Runs the full transaction validation pipeline without executing the transaction.
     ///
     /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
+    /// Clears Tempo-specific transaction bookkeeping on success. On error, the caller must
+    /// call [`tempo_revm::TempoEvm::clear`] via [`Self::inner_mut`] before reusing the EVM for
+    /// another transaction. On both success and error, validation-only callers must also discard
+    /// the transaction's journaled writes; `clear` does not revert them.
     pub fn validate_transaction(
         &mut self,
         tx: impl IntoTxEnv<TempoTxEnv>,
