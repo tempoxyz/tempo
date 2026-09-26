@@ -62,5 +62,6 @@ serde = [
 	"reth-storage-api?/serde",
 	"tempo-chainspec/serde",
 	"tempo-contracts/serde",
-	"tempo-primitives/serde"
+	"tempo-primitives/serde",
+	"tempo-precompiles/serde"
 ]

@@ -1064,6 +1064,15 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
+    /// Returns the token's name, symbol and currency.
+    pub fn metadata(&self) -> Result<Tip20TokenMetadata> {
+        Ok(Tip20TokenMetadata {
+            name: self.name()?,
+            symbol: self.symbol()?,
+            currency: self.currency()?,
+        })
+    }
+
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }
@@ -1461,6 +1470,18 @@ impl TIP20Token {
 
         Ok(())
     }
+}
+
+/// Descriptive TIP-20 token metadata, written once when the token is initialized.
+///
+/// `decimals` is omitted because all TIP-20 tokens use a fixed decimal count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct Tip20TokenMetadata {
+    pub name: String,
+    pub symbol: String,
+    pub currency: String,
 }
 
 /// Resolved transfer recipient for [TIP-1022] virtual address support.
