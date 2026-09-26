@@ -363,8 +363,15 @@ where
         let block_gas_limit = self
             .config
             .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
-        let general_gas_limit =
-            chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
+        // Header validation recomputes both limits from the chain spec, so derive them the
+        // same way here: the shared limit is only zero once T4 is active.
+        let shared_gas_limit =
+            chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
+        let general_gas_limit = chain_spec.general_gas_limit_at(
+            attributes.timestamp,
+            block_gas_limit,
+            shared_gas_limit,
+        );
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
         let mut cumulative_gas_used = 0;
@@ -396,7 +403,7 @@ where
                 slot_number: attributes.slot_number,
             },
             general_gas_limit,
-            shared_gas_limit: 0,
+            shared_gas_limit,
             timestamp_millis_part: attributes.timestamp_millis_part(),
             consensus_context: attributes.consensus_context(),
         };
