@@ -1512,8 +1512,13 @@ def "main e2e" [
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     cleanup-local-e2e-processes
 
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    # Fresh non-schelk runners have no virgin copy until initialization below.
+    if (has-schelk) or ($"($a_db).virgin" | path exists) {
+        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+    }
+    if (has-schelk) or ($"($b_db).virgin" | path exists) {
+        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    }
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)

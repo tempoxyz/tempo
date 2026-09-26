@@ -35,6 +35,7 @@ at the same partition. Preserve the original MDBX snapshots for rollback.
 # Set these to verified, dedicated, unmounted partitions and a built library.
 : "${TRIEDB_A_DEVICE:?}" "${TRIEDB_B_DEVICE:?}" "${RETH_TRIEDB_LIBRARY:?}"
 : "${BASELINE_SHA:?}" "${FEATURE_SHA:?}"
+export BENCHMARK_ID=monad-triedb-comparison
 
 feature_env="RETH_TRIEDB_LIBRARY='$RETH_TRIEDB_LIBRARY' RETH_TRIEDB_INITIALIZE=1 RETH_TRIEDB_MAP='/reth-bench-a=$TRIEDB_A_DEVICE;/reth-bench-b=$TRIEDB_B_DEVICE'"
 
