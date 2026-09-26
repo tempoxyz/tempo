@@ -486,16 +486,19 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{N3f1, TryFromIterator as _};
     use rand::SeedableRng as _;
-    use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
+    use reth_ethereum::evm::{
+        primitives::EvmEnvFor,
+        revm::{State, database::StateProviderDatabase},
+    };
     use reth_node_builder::ConfigureEvm as _;
     use reth_provider::{
         StateProviderBox,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
-    use tempo_node::evm::{TempoEvmConfig, evm::TempoEvm};
+    use tempo_node::evm::TempoEvmConfig;
     use tempo_precompiles::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
+        storage::{StorageActions, StorageCtx, hashmap::HashMapStorageProvider},
+        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE},
     };
 
     use super::*;
@@ -523,13 +526,9 @@ mod tests {
             Ok(Box::new(self.provider.clone()))
         }
 
-        fn evm_for_block(
-            &self,
-            db: State<StateProviderDatabase<StateProviderBox>>,
-            header: &TempoHeader,
-        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+        fn evm_env(&self, header: &TempoHeader) -> eyre::Result<EvmEnvFor<TempoEvmConfig>> {
             TempoEvmConfig::moderato()
-                .evm_for_block(db, header)
+                .evm_env(header)
                 .map_err(eyre::Report::new)
         }
     }
@@ -670,6 +669,13 @@ mod tests {
             Ok(())
         })?;
 
+        Ok(execution_with_storage(storage, execution_header(7)))
+    }
+
+    fn execution_with_storage(
+        storage: HashMapStorageProvider,
+        header: TempoHeader,
+    ) -> TestExecutionNode {
         let mut storage_by_account = HashMap::<AlloyAddress, Vec<(B256, U256)>>::new();
         for (address, slot, value) in storage.into_storage() {
             storage_by_account
@@ -685,15 +691,135 @@ mod tests {
             );
         }
 
-        let header = execution_header(7);
-        Ok(TestExecutionNode {
+        TestExecutionNode {
             hash: header.hash_slow(),
             height: header.number(),
             provider,
             finalized: Some(header.number()),
             headers: HashMap::from([(header.number(), header)]),
             header_reads: Mutex::default(),
-        })
+        }
+    }
+
+    #[test]
+    fn validator_reads_match_evm_across_rotation_and_deactivation() -> eyre::Result<()> {
+        let owner = AlloyAddress::from([0xAA; 20]);
+        let original = peer(1);
+        let other = peer(2);
+        let mut rotated = peer(3);
+        // Exercise dynamic strings that span multiple storage slots as well as short IPv4 strings.
+        rotated.ingress = "[2001:0db8:1234:5678:90ab:cdef:1234:5678]:8003".into();
+        rotated.egress = "2001:0db8:1234:5678:90ab:cdef:1234:5678".into();
+
+        let mut snapshots = Vec::new();
+        for phase in 0..3u8 {
+            let mut storage = HashMapStorageProvider::new(1);
+            storage.set_block_number(7);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut config = ValidatorConfigV2::new();
+                config.initialize(owner)?;
+                config.add_validator(owner, original.add_validator_call())?;
+                config.add_validator(owner, other.add_validator_call())?;
+                Ok(())
+            })?;
+            let height = if phase == 0 { 7 } else { 8 };
+            storage.set_block_number(height);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut config = ValidatorConfigV2::new();
+                if phase >= 1 {
+                    let mut hasher = Keccak256::new();
+                    hasher.update(1u64.to_be_bytes());
+                    hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+                    hasher.update(original.validator_address.as_slice());
+                    hasher.update([rotated.ingress.len() as u8]);
+                    hasher.update(rotated.ingress.as_bytes());
+                    hasher.update([rotated.egress.len() as u8]);
+                    hasher.update(rotated.egress.as_bytes());
+                    let signature = rotated
+                        .private_key
+                        .sign(VALIDATOR_NS_ROTATE, hasher.finalize().as_slice())
+                        .encode();
+                    config.rotate_validator(
+                        owner,
+                        IValidatorConfigV2::rotateValidatorCall {
+                            idx: 0,
+                            publicKey: public_key_to_b256(&rotated.public_key),
+                            ingress: rotated.ingress.clone(),
+                            egress: rotated.egress.clone(),
+                            signature: signature.into(),
+                        },
+                    )?;
+                }
+                if phase >= 2 {
+                    config.deactivate_validator(
+                        owner,
+                        IValidatorConfigV2::deactivateValidatorCall { idx: 1 },
+                    )?;
+                }
+                config.set_network_identity_rotation_epoch(
+                    owner,
+                    IValidatorConfigV2::setNetworkIdentityRotationEpochCall {
+                        epoch: 10 + u64::from(phase),
+                    },
+                )?;
+                Ok(())
+            })?;
+            // Include an older block and distinct hashes at height 8 for alternative parents.
+            let mut header = execution_header(height);
+            header.inner.state_root = B256::from([phase + 1; 32]);
+            snapshots.push(execution_with_storage(storage, header));
+        }
+
+        // Read an older snapshot again after newer ones to catch cache leakage between reads.
+        for phase in [0, 1, 2, 0] {
+            let node = &snapshots[phase];
+            let read = |config: &ValidatorConfigV2| -> eyre::Result<_> {
+                Ok((
+                    config.get_active_validators()?,
+                    config.validator_by_public_key(public_key_to_b256(&original.public_key))?,
+                    config.validator_by_public_key(public_key_to_b256(&other.public_key))?,
+                    config.validator_by_public_key(public_key_to_b256(&rotated.public_key)),
+                    config.validator_by_public_key(B256::ZERO),
+                    config.get_next_network_identity_rotation_epoch()?,
+                ))
+            };
+            let header = node.header(node.hash)?;
+            let db = State::builder()
+                .with_database(StateProviderDatabase::new(
+                    node.state_by_block_hash(node.hash)?,
+                ))
+                .build();
+            let mut evm = TempoEvmConfig::moderato().evm_for_block(db, &header)?;
+            let ctx = evm.ctx_mut();
+            let expected = StorageCtx::enter_evm(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                StorageActions::disabled(),
+                || read(&ValidatorConfigV2::new()),
+            )?;
+            let (height, hash, actual) =
+                read_validator_config_at_block_hash(node, node.hash, read)?;
+            assert_eq!((height, hash), (node.height, node.hash));
+            assert_eq!(actual, expected);
+            assert_eq!(actual.0.len(), if phase == 2 { 1 } else { 2 });
+            assert_eq!(actual.1.deactivatedAtHeight, if phase >= 1 { 8 } else { 0 });
+            assert_eq!(actual.2.deactivatedAtHeight, if phase == 2 { 8 } else { 0 });
+            assert_eq!(actual.5, 10 + phase as u64);
+
+            let known = ordered::Set::from_iter_dedup([
+                original.public_key.clone(),
+                other.public_key.clone(),
+            ]);
+            let peers = crate::validators::read_active_and_known_peers_at_block_hash(
+                node, &known, node.hash,
+            )?;
+            assert_peer(&peers, &original);
+            assert_peer(&peers, &other);
+            assert_eq!(peers.len(), if phase >= 1 { 3 } else { 2 });
+        }
+        Ok(())
     }
 
     fn dkg_outcome(
