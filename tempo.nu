@@ -7,7 +7,7 @@ source contrib/bench/txgen/helpers.nu
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
 const LOGS_DIR = "contrib/bench/logs"
-const RUSTFLAGS = "-C target-cpu=native"
+const RUSTFLAGS = "-C target-cpu=native -C force-frame-pointers=yes"
 const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 const BENCH_WORKTREES_DIR = ".bench-worktrees"
@@ -74,7 +74,7 @@ def tracy-build-config [features: string, tracy: string] {
         { features: $features, extra_rustflags: "" }
     } else {
         let tracy_features = if $features == "" { "tracy" } else { $"($features),tracy" }
-        { features: $tracy_features, extra_rustflags: " -C force-frame-pointers=yes" }
+        { features: $tracy_features, extra_rustflags: "" }
     }
 }
 
@@ -423,9 +423,11 @@ def resolve-git-ref-label [sha: string, fallback: string] {
     $fallback
 }
 
-def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
+def bench-cache-key [commit_sha: string, features: string, no_default_features: bool, profile: string, rustflags: string] {
+    # Include build settings so older binaries without frame pointers are not reused.
+    let build_key = ([$profile $rustflags] | to json --raw | hash sha256 | str substring 0..15)
     if (not $no_default_features) and $features == $DEFAULT_FEATURES {
-        return $commit_sha
+        return $"($commit_sha)-($build_key)"
     }
 
     let feature_key = if $features == "" {
@@ -438,7 +440,7 @@ def bench-cache-key [commit_sha: string, features: string, no_default_features: 
     }
 
     let mode_key = if $no_default_features { "no-default" } else { "features" }
-    $"($commit_sha)-($mode_key)-($feature_key)"
+    $"($commit_sha)-($mode_key)-($feature_key)-($build_key)"
 }
 
 # Try to download cached binaries from MinIO for a given commit SHA.
@@ -518,7 +520,8 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 
 # Build tempo binary in a git worktree (with optional MinIO cache)
 def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
-    let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
+    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
+    let cache_key = (bench-cache-key $commit_sha $features $no_default_features $profile $rustflags)
 
     # Try cache first
     if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
@@ -526,7 +529,6 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     }
 
     print $"Building tempo for ($ref) in ($worktree_dir)..."
-    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     let feature_args = (cargo-feature-args $features $no_default_features)
     let build_cmd = ["cargo" "build" "--profile" $profile]
         | append $feature_args
