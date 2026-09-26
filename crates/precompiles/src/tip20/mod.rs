@@ -169,15 +169,6 @@ impl TIP20Token {
         self.currency.read()
     }
 
-    /// Returns the token's name, symbol and currency.
-    pub fn metadata(&self) -> Result<Tip20TokenMetadata> {
-        Ok(Tip20TokenMetadata {
-            name: self.name()?,
-            symbol: self.symbol()?,
-            currency: self.currency()?,
-        })
-    }
-
     /// Returns the logo URI for this token (TIP-1026).
     ///
     /// Returns an empty string if not set.
@@ -1071,6 +1062,15 @@ impl TIP20Token {
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
         self.grant_default_admin(msg_sender, admin)
+    }
+
+    /// Returns the token's name, symbol and currency.
+    pub fn metadata(&self) -> Result<Tip20TokenMetadata> {
+        Ok(Tip20TokenMetadata {
+            name: self.name()?,
+            symbol: self.symbol()?,
+            currency: self.currency()?,
+        })
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
