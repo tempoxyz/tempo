@@ -878,12 +878,13 @@ def txgen-run-preset-pipeline [
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
-    let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+    let raise_file_limit = 'ulimit -Sn "$(ulimit -Hn)"'
+    let pipeline = $"set -euo pipefail; ($bench_env_export)($raise_file_limit) && ($txgen_cmd_str) | ($bench_cmd_str)"
 
     if $use_two_phase_setup {
         let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
         let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
-        let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
+        let setup_pipeline = $"set -euo pipefail; ($bench_env_export)($raise_file_limit) && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
         if $is_vault {
             print "  Streaming vault setup transactions into bench send..."

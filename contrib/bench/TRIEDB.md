@@ -18,9 +18,17 @@ multi-region topology. The preset is 80% TIP20 transfers, 5% mints, and 15% MPP
 channel opens, targeting prepopulated state; zero-bloat runs are invalid.
 
 Requirements include 32 logical CPUs, enough RAM for both validators, Node 24,
-Nushell, `txgen-tempo`, `bench`, and optionally Samply. Install both stable and
+Nushell, `uv`, `txgen-tempo`, `bench`, and optionally Samply. Install both stable and
 nightly Rust; use nightly for formatting and Clippy. Keep the native huge-page
 reservation identical for baseline and feature measurements.
+
+The profiling harness requires the runner image's Samply fork, which supports
+`--presymbolicate`; the stock crates.io release is not interchangeable:
+
+```sh
+cargo +stable install --git https://github.com/danipopes/samply \
+  --rev 24fd6ce78f206513751f996b6aae7a2cba54e5e7 --locked samply
+```
 
 Use one NVMe filesystem for the MDBX datadirs, snapshots, and benchmark output.
 Reserve another unmounted NVMe for TrieDB and divide it into two partitions,
