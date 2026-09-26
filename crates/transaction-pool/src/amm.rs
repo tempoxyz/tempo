@@ -69,11 +69,13 @@ impl AmmLiquidityCache {
     {
         let mut missing_in_cache = Vec::new();
         let hardfork;
+        let generation;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
+            generation = inner.generation;
 
             // Validators always accept fees in their own token, and this is the common case, so
             // answer it before doing any swap math.
@@ -125,8 +127,7 @@ impl AmmLiquidityCache {
             return Ok(false);
         }
 
-        // Slow path: ask the planner. Unconditionally warm all its reported `data.pools`.
-        // This might race other fetches but we're OK with it.
+        // Slow path: ask the planner and warm the cache with the pools it reports.
         state_provider
             .with_read_only_storage_ctx(
                 hardfork,
@@ -138,14 +139,19 @@ impl AmmLiquidityCache {
                             manager.plan_fee_route(user_token, validator_token, fee)?;
                         if !pools.is_empty() || intermediate.is_some() {
                             let mut inner = self.inner.write();
-                            for &(pair, reserve) in &pools {
-                                let id = manager.pool_id(pair.0, pair.1);
-                                let slot = manager.pools[id].base_slot();
-                                inner.pool_cache.insert(pair, U256::from(reserve));
-                                inner.slot_to_pool.insert(slot, pair);
-                            }
-                            if let Some(hop) = intermediate {
-                                inner.quote_token_cache.insert(user_token, hop);
+                            // The state read here can be older than the cache: skip caching if
+                            // newer state was applied since the lookup started, and never
+                            // overwrite cached entries, which `on_new_state` keeps current.
+                            if inner.generation == generation {
+                                for &(pair, reserve) in &pools {
+                                    let id = manager.pool_id(pair.0, pair.1);
+                                    let slot = manager.pools[id].base_slot();
+                                    inner.pool_cache.entry(pair).or_insert(U256::from(reserve));
+                                    inner.slot_to_pool.insert(slot, pair);
+                                }
+                                if let Some(hop) = intermediate {
+                                    inner.quote_token_cache.entry(user_token).or_insert(hop);
+                                }
                             }
                         }
                         // If there is enough liquidity, short circuit and return `true`
@@ -163,7 +169,12 @@ impl AmmLiquidityCache {
     /// Clears all cached state. Used on reorg to invalidate stale entries
     /// from orphaned blocks.
     pub fn clear(&self) {
-        *self.inner.write() = AmmLiquidityCacheInner::default();
+        let mut inner = self.inner.write();
+        let generation = inner.generation + 1;
+        *inner = AmmLiquidityCacheInner {
+            generation,
+            ..Default::default()
+        };
     }
 
     /// Clears all cached state and repopulates from the current canonical chain.
@@ -190,6 +201,7 @@ impl AmmLiquidityCache {
     /// tokens whose `quoteToken` storage slot was written.
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) {
         let mut inner = self.inner.write();
+        inner.generation += 1;
 
         // Process FeeManager slot changes: update pool reserves and validator preferences.
         if let Some(storage) = execution_outcome
@@ -343,6 +355,10 @@ struct AmmLiquidityCacheInner {
 
     /// Reverse index for mapping validator preference slot to validator address.
     slot_to_validator: U256Map<Address>,
+
+    /// Bumped whenever canonical state is applied or the cache is cleared, so a slow-path lookup
+    /// can tell that the state it read may be older than the cache.
+    generation: u64,
 }
 
 impl AmmLiquidityCache {
@@ -616,6 +632,43 @@ mod tests {
         assert!(
             !inner.slot_to_pool.is_empty(),
             "slot_to_pool reverse index should be populated for the check pool",
+        );
+    }
+
+    #[test]
+    fn test_has_enough_liquidity_slow_path_keeps_cached_reserves() {
+        // TIP-20 addresses, so the T5 planner can look up the user token's quote token.
+        let user_token = address!("20C0000000000000000000000000000000000001");
+        let validator_token = address!("20C0000000000000000000000000000000000002");
+
+        // The direct reserve is cached but too low and the quote token isn't cached, so the
+        // lookup falls through to the slow path, where the provider returns zero reserves.
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                hardfork: TempoHardfork::T5,
+                unique_tokens: vec![validator_token],
+                pool_cache: {
+                    let mut m = HashMap::default();
+                    m.insert((user_token, validator_token), U256::from(1));
+                    m
+                },
+                ..Default::default()
+            })),
+        };
+
+        let provider = create_mock_provider();
+        let state = provider.latest().unwrap();
+
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        assert!(!result.unwrap());
+        assert_eq!(
+            cache
+                .inner
+                .read()
+                .pool_cache
+                .get(&(user_token, validator_token)),
+            Some(&U256::from(1)),
+            "slow path must not overwrite a cached reserve",
         );
     }
 
