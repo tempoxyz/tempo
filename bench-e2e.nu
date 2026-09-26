@@ -571,7 +571,11 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
     }
 
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
+    # sudo/systemd-run must retain the job's temp directory for profiler files.
     mut telemetry_env_names = []
+    if ($env.TMPDIR? | default "" | str length) > 0 {
+        $telemetry_env_names = ($telemetry_env_names | append "TMPDIR")
+    }
     if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
         $telemetry_env_names = ($telemetry_env_names | append "TEMPO_TELEMETRY_URL")
     }
