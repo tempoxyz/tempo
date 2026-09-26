@@ -8,12 +8,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source test utilities
 source "$SCRIPT_DIR/test-utils.sh"
 
+tx_gen_pid=""
+cleanup_tx_generator() {
+  if [[ "$tx_gen_pid" =~ ^[0-9]+$ ]]; then
+    stop_tx_generator "$tx_gen_pid" || true
+    tx_gen_pid=""
+  fi
+}
+trap cleanup_tx_generator EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 echo "=== Partial Network Failure Test ==="
 
 # Main test
 main() {
   local rpc_url="http://localhost:8545"
-  local tx_gen_pid=""
 
   # Start the network and wait for it to be ready
   start_network "$SCRIPT_DIR"
@@ -27,7 +37,7 @@ main() {
   echo ""
 
   # Start transaction generator (perpetually)
-  tx_gen_pid=$(start_tx_generator 999999 "$SCRIPT_DIR")
+  start_tx_generator tx_gen_pid 999999 "$SCRIPT_DIR"
   echo ""
 
   # Stop one validator (validator-2)
@@ -39,16 +49,18 @@ main() {
   echo "Checking block production with one validator down..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Network should continue producing blocks with one validator down"
-    stop_tx_generator "$tx_gen_pid" || true
+    cleanup_tx_generator
     exit 1
   fi
   echo ""
 
   # Stop transaction generator and check for failures
   if ! stop_tx_generator "$tx_gen_pid"; then
+    tx_gen_pid=""
     echo "Test FAILED: Transaction generator encountered failures"
     exit 1
   fi
+  tx_gen_pid=""
   echo ""
 
   echo "Test PASSED: Validator recovery working correctly"
