@@ -217,8 +217,9 @@ impl BlockCache {
         }
 
         let body = match self.by_number.remove(&number) {
-            Some(existing) => body.or(existing.body),
-            None => body,
+            // A different block at this height, e.g. after a reorg, must not inherit the old body.
+            Some(existing) if existing.hash == hash => body.or(existing.body),
+            _ => body,
         };
 
         self.by_number
@@ -775,6 +776,21 @@ mod tests {
             ..Default::default()
         };
         cache.insert_header(number, numbered_hash(number), header);
+    }
+
+    #[test]
+    fn upsert_keeps_body_only_for_same_block() {
+        let mut cache = BlockCache::new(10);
+        let (old, new) = (B256::with_last_byte(1), B256::with_last_byte(2));
+
+        cache.insert_block(1, old, TempoHeader::default(), Default::default());
+        cache.insert_header(1, old, TempoHeader::default());
+        assert!(cache.get_by_hash(&old).unwrap().body.is_some());
+
+        // A different block replaces it at the same height, e.g. after a reorg.
+        cache.insert_header(1, new, TempoHeader::default());
+        assert!(cache.get_by_hash(&old).is_none());
+        assert!(cache.get_by_hash(&new).unwrap().body.is_none());
     }
 
     #[test]
