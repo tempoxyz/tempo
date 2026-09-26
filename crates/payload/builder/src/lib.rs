@@ -17,7 +17,10 @@ use crate::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
         payload_budget_decision, scaled_build_time_multiplier,
     },
-    encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
+    encode::{
+        EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
+        block_transaction_length,
+    },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
@@ -610,7 +613,8 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = tx.transaction.encoded_length();
+            let tx_rlp_length =
+                block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
