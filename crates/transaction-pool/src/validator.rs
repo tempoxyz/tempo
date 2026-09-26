@@ -380,12 +380,31 @@ where
     }
 
     /// Returns the latest state provider and a state cache valid for the provider's tip.
+    ///
+    /// The tip is read on both sides of `latest()`. A block that lands in between leaves the
+    /// provider pinned to one tip while the cache is anchored to another, and the cache is
+    /// populated from the provider on every miss, so reads from the old tip would be stored
+    /// under the new one and served for the rest of that block.
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+        let hash_before = self.inner.client().chain_info()?.best_hash;
         let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        let hash_after = self.inner.client().chain_info()?.best_hash;
+        Ok((
+            state_provider,
+            self.state_cache_for_stable_tip(hash_before, hash_after),
+        ))
+    }
+
+    /// Returns the shared cache only when the tip did not move while the state provider was
+    /// taken, otherwise an empty ephemeral cache.
+    fn state_cache_for_stable_tip(&self, hash_before: B256, hash_after: B256) -> Arc<StateCache> {
+        if hash_before != hash_after {
+            return Arc::new(StateCache::default());
+        }
+
+        self.state_cache_for_tip(hash_after)
     }
 
     /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
@@ -1205,6 +1224,33 @@ mod tests {
         let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
 
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+    }
+
+    #[test]
+    fn state_cache_is_ephemeral_when_the_tip_moves_while_taking_the_provider() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let (tip_hash, shared_cache) = validator.cached_state.read().clone();
+        let newer_tip_hash = B256::repeat_byte(0x44);
+        assert_ne!(tip_hash, newer_tip_hash);
+
+        // A stable tip keeps using the shared cache.
+        assert!(Arc::ptr_eq(
+            &validator.state_cache_for_stable_tip(tip_hash, tip_hash),
+            &shared_cache
+        ));
+
+        // A tip that moves while the provider is taken must not reuse either side's cache,
+        // in both directions: the provider and the cache belong to different tips.
+        assert!(!Arc::ptr_eq(
+            &validator.state_cache_for_stable_tip(tip_hash, newer_tip_hash),
+            &shared_cache
+        ));
+        *validator.cached_state.write() = (newer_tip_hash, shared_cache.clone());
+        assert!(!Arc::ptr_eq(
+            &validator.state_cache_for_stable_tip(tip_hash, newer_tip_hash),
+            &shared_cache
+        ));
     }
 
     #[tokio::test]
