@@ -281,7 +281,7 @@ use alloy::{
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use eyre::WrapErr;
-use reth_e2e_test_utils::setup;
+use reth_e2e_test_utils::E2ETestSetupExt;
 use reth_ethereum::tasks::Runtime;
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
@@ -539,13 +539,11 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, _wallet) = setup::<TempoNode>(
-            1,
-            Arc::new(chain_spec),
-            self.is_dev,
-            default_attributes_generator,
-        )
-        .await?;
+        let (mut nodes, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
+            .with_dev_mode(self.is_dev)
+            .with_attributes_generator(default_attributes_generator)
+            .build()
+            .await?;
 
         let node = nodes.remove(0);
 
@@ -568,13 +566,11 @@ impl TestNodeBuilder {
 
         let chain_spec = self.build_chain_spec()?;
 
-        let (nodes, _wallet) = setup::<TempoNode>(
-            self.node_count,
-            Arc::new(chain_spec),
-            self.is_dev,
-            default_attributes_generator,
-        )
-        .await?;
+        let (nodes, _wallet) = TempoNode::test_setup(self.node_count, Arc::new(chain_spec))
+            .with_dev_mode(self.is_dev)
+            .with_attributes_generator(default_attributes_generator)
+            .build()
+            .await?;
 
         Ok(MultiNodeSetup { nodes })
     }
