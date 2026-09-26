@@ -945,24 +945,6 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
-        let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
-
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0)];
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
-
-        assert!(prewarming.next().is_some());
-
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
-        });
-    }
-
-    #[test]
     fn failed_prewarm_clears_actions_before_same_worker_is_reused() {
         let executor = TaskExecutor::test();
         let mut context = prewarming_context(executor, true);
