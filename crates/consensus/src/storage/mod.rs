@@ -59,14 +59,18 @@ pub(crate) const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192);
 /// Beyond this depth, [`Hybrid`] falls back to looking up blocks from the
 /// execution layer.
 ///
+/// Three epochs contain 64,800 blocks (3 × 21,600),
+/// rounded up to 16 sections (65,536 blocks). Section rounding can
+/// retain up to 69,631 blocks when reth is caught up.
+///
 /// The prunable archive evicts in `PRUNABLE_ITEMS_PER_SECTION`-sized
 /// batches (see [`hybrid`]'s "Section-rounding" docs). When reth is
 /// caught up to the marshal's tip the cache holds between `RETENTION`
 /// and `RETENTION + PRUNABLE_ITEMS_PER_SECTION − 1` items; if reth is
 /// lagging the marshal, the cache can hold more (it never drops blocks
 /// reth doesn't yet have). The assertion below keeps the section
-/// overshoot small relative to `RETENTION` (current ratio: 4×).
-pub(crate) const DEFAULT_FINALIZED_BLOCKS_RETENTION: u64 = 16_384;
+/// overshoot small relative to `RETENTION` (current ratio: 16×).
+pub(crate) const DEFAULT_FINALIZED_BLOCKS_RETENTION: u64 = 16 * PRUNABLE_ITEMS_PER_SECTION.get();
 
 const _: () = assert!(
     DEFAULT_FINALIZED_BLOCKS_RETENTION >= 2 * PRUNABLE_ITEMS_PER_SECTION.get(),

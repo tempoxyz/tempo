@@ -8,7 +8,7 @@ pub(crate) mod marshal {
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard},
+        marshal::{self, core, standard::Standard, store::Blocks as _},
         simplex::scheme::bls12381_threshold::vrf::Scheme,
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
@@ -157,6 +157,21 @@ pub(crate) mod marshal {
             &execution_node,
         )
         .await?;
+
+        let execution_finalized = execution_finalized_point(&execution_node).0;
+        if execution_finalized < finalized_floor.0 {
+            let reachable_height = finalized_blocks
+                .next_gap(execution_finalized.next())
+                .0
+                .unwrap_or(execution_finalized);
+            ensure!(
+                reachable_height >= finalized_floor.0,
+                "execution layer finalized height `{execution_finalized}` cannot reach finalization \
+                 archive floor `{}`. Run as a follower to sync to tip or restored a fresher snapshot",
+                finalized_floor.0,
+            );
+        }
+
         let (tip_round, tip_height, tip_digest) = match &finalized_tip {
             Some((height, certificate)) => (
                 certificate.proposal.round,
