@@ -533,7 +533,7 @@ async fn fetch_and_cache_header_by_number(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
     number: u64,
-) -> Result<()> {
+) -> Result<TempoHeader> {
     let block = provider
         .get_block_by_number(number.into())
         .await
@@ -541,15 +541,15 @@ async fn fetch_and_cache_header_by_number(
         .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
 
     let header: TempoHeader = block.header.inner.inner.clone();
-    cache.insert_header(block.header.number(), block.header.hash(), header);
-    Ok(())
+    cache.insert_header(block.header.number(), block.header.hash(), header.clone());
+    Ok(header)
 }
 
 async fn fetch_and_cache_header_batch(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
     numbers: &[u64],
-) -> Result<()> {
+) -> Result<Vec<TempoHeader>> {
     let mut batch = BatchRequest::new(provider.client());
     let mut waiters = Vec::with_capacity(numbers.len());
 
@@ -563,46 +563,63 @@ async fn fetch_and_cache_header_batch(
 
     batch.send().await.context("failed to fetch header batch")?;
 
+    let mut headers = Vec::with_capacity(numbers.len());
     for (number, waiter) in waiters {
         match waiter.await {
             Ok(Some(block)) => {
                 let header: TempoHeader = block.header.inner.inner.clone();
-                cache.insert_header(block.header.number(), block.header.hash(), header);
+                cache.insert_header(block.header.number(), block.header.hash(), header.clone());
+                headers.push(header);
             }
             Ok(None) => {
                 debug!(number, "header batch returned no block");
             }
             Err(err) => {
                 debug!(number, %err, "header batch waiter failed; falling back to single request");
-                let _ = fetch_and_cache_header_by_number(provider, cache, number).await;
+                if let Ok(header) = fetch_and_cache_header_by_number(provider, cache, number).await
+                {
+                    headers.push(header);
+                }
             }
         }
     }
 
-    Ok(())
+    Ok(headers)
 }
 
+/// Fetches the headers missing from the cache and returns them by number.
+///
+/// Headers older than everything cached are evicted as soon as they're inserted into a full
+/// cache, so callers can't rely on reading them back from it.
 async fn fetch_and_cache_headers(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
     numbers: &[u64],
-) {
+) -> HashMap<u64, TempoHeader> {
     let missing_numbers: Vec<u64> = numbers
         .iter()
         .copied()
         .filter(|number| cache.get_by_number(*number).is_none())
         .collect();
 
+    let mut fetched = HashMap::with_capacity(missing_numbers.len());
     for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
-        if fetch_and_cache_header_batch(provider, cache, chunk)
-            .await
-            .is_err()
-        {
-            for &number in chunk {
-                let _ = fetch_and_cache_header_by_number(provider, cache, number).await;
+        match fetch_and_cache_header_batch(provider, cache, chunk).await {
+            Ok(headers) => {
+                fetched.extend(headers.into_iter().map(|header| (header.number(), header)));
+            }
+            Err(_) => {
+                for &number in chunk {
+                    if let Ok(header) =
+                        fetch_and_cache_header_by_number(provider, cache, number).await
+                    {
+                        fetched.insert(number, header);
+                    }
+                }
             }
         }
     }
+    fetched
 }
 
 async fn resolve_start_block_number(
@@ -662,14 +679,18 @@ async fn resolve_headers(
     };
 
     let requested_numbers = requested_header_numbers(start_num, request);
-    fetch_and_cache_headers(provider, cache, &requested_numbers).await;
+    let mut fetched = fetch_and_cache_headers(provider, cache, &requested_numbers).await;
 
     let mut headers = Vec::with_capacity(requested_numbers.len());
     for number in requested_numbers {
-        let Some(block) = cache.get_by_number(number) else {
+        let Some(header) = fetched.remove(&number).or_else(|| {
+            cache
+                .get_by_number(number)
+                .map(|block| block.header.clone())
+        }) else {
             break;
         };
-        headers.push(block.header.clone());
+        headers.push(header);
     }
 
     headers
@@ -948,5 +969,27 @@ mod tests {
         assert_eq!(headers[0].number(), start);
         assert_eq!(headers[0].hash_slow(), start_hash);
         assert!(cache.get_by_hash(&start_hash).is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_headers_serves_headers_older_than_cached_blocks() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(2);
+
+        // A full cache of newer blocks evicts each fetched header as soon as it's inserted.
+        insert_test_header(&mut cache, 1 << 40);
+        insert_test_header(&mut cache, (1 << 40) + 1);
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(1),
+            limit: 3,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+        let headers = resolve_headers(&provider, &mut cache, &request).await;
+
+        assert_eq!(headers.len(), 3);
+        assert_eq!(headers[0].number(), 1);
+        assert_eq!(headers[2].number(), 3);
     }
 }
