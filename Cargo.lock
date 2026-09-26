@@ -7800,6 +7800,7 @@ dependencies = [
  "ecdsa 0.16.9",
  "elliptic-curve 0.13.8",
  "primeorder 0.13.6",
+ "serdect 0.2.0",
  "sha2 0.10.9",
 ]
 

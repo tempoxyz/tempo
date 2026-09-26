@@ -22,7 +22,7 @@ tempo-transaction-pool.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, features = ["default"] }
 tempo-revm.workspace = true
 

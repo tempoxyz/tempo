@@ -109,6 +109,18 @@ pub struct TIP20Token {
     user_reward_info: Mapping<Address, UserRewardInfo>,
 }
 
+/// Descriptive TIP-20 token metadata, written once when the token is initialized.
+///
+/// `decimals` is omitted because all TIP-20 tokens use a fixed decimal count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct Tip20TokenMetadata {
+    pub name: String,
+    pub symbol: String,
+    pub currency: String,
+}
+
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
 pub const PERMIT_TYPEHASH: B256 = B256::new(
     Keccak256::new()
@@ -167,6 +179,15 @@ impl TIP20Token {
     /// Returns the token's currency denomination (e.g. `"USD"`).
     pub fn currency(&self) -> Result<String> {
         self.currency.read()
+    }
+
+    /// Returns the token's name, symbol and currency.
+    pub fn metadata(&self) -> Result<Tip20TokenMetadata> {
+        Ok(Tip20TokenMetadata {
+            name: self.name()?,
+            symbol: self.symbol()?,
+            currency: self.currency()?,
+        })
     }
 
     /// Returns the logo URI for this token (TIP-1026).
