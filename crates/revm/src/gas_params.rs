@@ -60,6 +60,21 @@ pub fn tempo_gas_params_with_amsterdam(
         return TABLE.get_or_init(amsterdam_gas_params).clone();
     }
 
+    // TIP-1122: adopt EIP-7976 without enabling other Amsterdam gas changes.
+    if spec.is_t13() {
+        static TABLE: OnceLock<GasParams> = OnceLock::new();
+        return TABLE
+            .get_or_init(|| {
+                let mut params = t7_gas_params();
+                params.override_gas([
+                    (GasId::tx_floor_cost_per_token(), 16),
+                    (GasId::tx_floor_token_zero_byte_multiplier(), 4),
+                ]);
+                params
+            })
+            .clone();
+    }
+
     // TIP-1060 (T7+): the SSTORE creation cost drops to the 5k residual; the
     // 245k creditable portion is handled by the storage-credit hook.
     if spec.is_t7() {
@@ -175,6 +190,23 @@ pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1122_changes_only_calldata_floor_prices() {
+        let before = tempo_gas_params(TempoHardfork::T12);
+        let after = tempo_gas_params(TempoHardfork::T13);
+        let mut expected = before.clone();
+        expected.override_gas([
+            (GasId::tx_floor_cost_per_token(), 16),
+            (GasId::tx_floor_token_zero_byte_multiplier(), 4),
+        ]);
+        assert_eq!(after.table(), expected.table());
+        // Access-list bytes and Ethereum's other Amsterdam repricings are not adopted.
+        assert_eq!(after.tx_access_list_floor_byte_multiplier(), 0);
+        assert_eq!(after.tx_floor_cost_base_gas(), 21_000);
+        assert_eq!(after.tx_floor_cost(&[0, 1]), 21_128);
+        assert_eq!(before.tx_floor_cost(&[0, 1]), 21_050);
+    }
 
     #[test]
     fn test_tempo_override_gas_params_are_cached() {

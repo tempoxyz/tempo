@@ -2291,11 +2291,13 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 
     // 6. Per-call costs
     let mut total_tokens = 0u64;
+    let mut calldata_length = 0u64;
 
     for call in calls {
         // 4a. Calldata gas using revm helper
         let tokens = get_tokens_in_calldata_istanbul(&call.input);
         total_tokens += tokens;
+        calldata_length += call.input.len() as u64;
 
         // 4b. CREATE-specific costs
         if call.to.is_create() {
@@ -2333,8 +2335,14 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         gas.initial_regular_gas += storages as u64 * gas_params.tx_access_list_storage_key_cost(); // 1900 per storage
     }
 
-    // 6. Floor gas using revm helper
-    gas.floor_gas = gas_params.tx_floor_cost_with_tokens(total_tokens); // tokens * 10 + 21000
+    // TIP-1122 / EIP-7976: every input byte contributes four floor tokens at T13.
+    // Keep ordinary calldata tokens separate and charge the floor base once per batch.
+    let floor_tokens = if spec.is_t13() {
+        calldata_length * 4
+    } else {
+        total_tokens
+    };
+    gas.floor_gas = gas_params.tx_floor_cost_with_tokens(floor_tokens);
 
     Ok(gas)
 }

@@ -4424,3 +4424,73 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
     assert_eq!(result.gas().state_gas_spent(), 0);
     assert_eq!(result.gas().reservoir(), 0);
 }
+
+#[test]
+fn tip1122_floor_validation_for_eth_and_aa() {
+    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for byte in [0, 1] {
+            let input = Bytes::from(vec![byte; 1000]);
+            let expected_floor = 21_000
+                + 1000
+                    * if spec.is_t13() {
+                        64
+                    } else if byte == 0 {
+                        10
+                    } else {
+                        40
+                    };
+            for aa in [false, true] {
+                let mut tx = TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        nonce: 1,
+                        data: input.clone(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                if aa {
+                    tx.tempo_tx_env = Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![
+                            Call {
+                                to: TxKind::Call(Address::repeat_byte(1)),
+                                value: U256::ZERO,
+                                input: input.slice(..500),
+                            },
+                            Call {
+                                to: TxKind::Call(Address::repeat_byte(2)),
+                                value: U256::ZERO,
+                                input: input.slice(500..),
+                            },
+                        ],
+                        ..Default::default()
+                    }));
+                }
+                for limit in [expected_floor - 1, expected_floor, expected_floor + 1] {
+                    tx.gas_limit = limit;
+                    let mut test = TestHandlerEvm::new(spec, tx.clone());
+                    let result = test.handler.validate_initial_tx_gas(&mut test.evm);
+                    if limit < expected_floor {
+                        assert!(matches!(
+                            result,
+                            Err(EVMError::Transaction(
+                                TempoInvalidTransaction::EthInvalidTransaction(
+                                    InvalidTransaction::GasFloorMoreThanGasLimit { .. }
+                                )
+                            ))
+                        ));
+                    } else {
+                        let gas = result.unwrap();
+                        assert_eq!(gas.floor_gas, expected_floor);
+                        // Ordinary calldata charges remain zero/nonzero-sensitive.
+                        assert_eq!(
+                            gas.initial_regular_gas(),
+                            21_000
+                                + 1000 * if byte == 0 { 4 } else { 16 }
+                                + if aa { 2600 } else { 0 }
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

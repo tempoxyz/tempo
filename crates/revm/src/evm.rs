@@ -71,7 +71,13 @@ pub struct TempoEvm<DB: Database, I> {
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
-    pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
+    pub fn new(mut ctx: TempoContext<DB>, inspector: I) -> Self {
+        // TIP-1122 / EIP-7954. Preserve explicit overrides used by simulation and tests.
+        if ctx.cfg.spec.is_t13() {
+            ctx.cfg
+                .limit_contract_code_size
+                .get_or_insert(revm::primitives::eip7954::MAX_CODE_SIZE);
+        }
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let actions = StorageActions::disabled();
         let precompiles = tempo_precompiles::tempo_precompiles(

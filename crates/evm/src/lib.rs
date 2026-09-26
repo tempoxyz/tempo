@@ -190,6 +190,9 @@ impl ConfigureEvm for TempoEvmConfig {
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        if spec.is_t13() {
+            cfg_env.limit_contract_code_size = Some(reth_revm::primitives::eip7954::MAX_CODE_SIZE);
+        }
 
         Ok(EvmEnv {
             cfg_env,
@@ -245,6 +248,9 @@ impl ConfigureEvm for TempoEvmConfig {
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        if spec.is_t13() {
+            cfg_env.limit_contract_code_size = Some(reth_revm::primitives::eip7954::MAX_CODE_SIZE);
+        }
 
         Ok(EvmEnv {
             cfg_env,
@@ -324,6 +330,85 @@ mod tests {
         BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
+
+    #[test]
+    fn tip1122_execution_and_payload_envs_agree_at_activation() {
+        use reth_chainspec::EthChainSpec;
+        use reth_revm::context::Cfg;
+        use tempo_chainspec::spec::DEV;
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t13Time".into(), 1000u64)
+            .unwrap();
+        let config =
+            TempoEvmConfig::new(std::sync::Arc::new(TempoChainSpec::from_genesis(genesis)));
+        for timestamp in [999, 1000, 1001] {
+            let header = TempoHeader {
+                inner: alloy_consensus::Header {
+                    timestamp,
+                    base_fee_per_gas: Some(20_000_000_000),
+                    gas_limit: 30_000_000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let attributes = TempoNextBlockEnvAttributes {
+                inner: NextBlockEnvAttributes {
+                    timestamp,
+                    suggested_fee_recipient: Address::ZERO,
+                    prev_randao: B256::ZERO,
+                    gas_limit: 30_000_000,
+                    parent_beacon_block_root: None,
+                    withdrawals: None,
+                    extra_data: Default::default(),
+                    slot_number: None,
+                },
+                general_gas_limit: 30_000_000,
+                shared_gas_limit: 0,
+                timestamp_millis_part: 0,
+                consensus_context: None,
+            };
+            for env in [
+                config.evm_env(&header).unwrap(),
+                config.next_evm_env(&header, &attributes).unwrap(),
+            ] {
+                assert_eq!(
+                    env.cfg_env.max_code_size(),
+                    if timestamp < 1000 { 24_576 } else { 65_536 }
+                );
+                assert_eq!(
+                    env.cfg_env.max_initcode_size(),
+                    if timestamp < 1000 { 49_152 } else { 131_072 }
+                );
+                assert_eq!(
+                    env.cfg_env.gas_params.tx_floor_cost(&[0, 1]),
+                    if timestamp < 1000 { 21_050 } else { 21_128 }
+                );
+                assert!(!env.cfg_env.enable_amsterdam_eip8037);
+                assert!(!env.cfg_env.enable_amsterdam_eip2780);
+                assert_eq!(env.cfg_env.tx_gas_limit_cap, Some(30_000_000));
+            }
+        }
+    }
+
+    #[test]
+    fn tip1122_factory_genesis_allocations() {
+        use reth_chainspec::EthChainSpec;
+        use tempo_chainspec::spec::{DEV, MODERATO, PRESTO};
+        use tempo_contracts::{
+            ARACHNID_CREATE2_FACTORY_ADDRESS, contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+        };
+        for spec in [&*DEV, &*MODERATO, &*PRESTO] {
+            let account = &spec.genesis().alloc[&ARACHNID_CREATE2_FACTORY_ADDRESS];
+            assert_eq!(account.nonce, Some(1));
+            assert_eq!(
+                account.code.as_ref(),
+                Some(&ARACHNID_CREATE2_FACTORY_BYTECODE)
+            );
+        }
+    }
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
