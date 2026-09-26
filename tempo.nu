@@ -444,6 +444,20 @@ def bench-cache-key [commit_sha: string, features: string, no_default_features: 
 # Try to download cached binaries from MinIO for a given commit SHA.
 # Returns true on cache hit, false on miss or any failure.
 def try-cache-download [worktree_dir: string, profile: string, commit_sha: string, cache_key: string] {
+    # An optional read-only local cache is useful on isolated benchmark boxes.
+    # Entries use the same commit/feature key as the remote cache.
+    let local_cache = ($env | get -o TEMPO_BENCH_BINARY_CACHE | default "")
+    let cached_bin = $"($local_cache)/($profile)/($cache_key)/tempo"
+    if $local_cache != "" and ($cached_bin | path exists) {
+        let target_profile = if $profile == "dev" { "debug" } else { $profile }
+        let target_dir = $"($worktree_dir)/target/($target_profile)"
+        mkdir $target_dir
+        cp $cached_bin $"($target_dir)/tempo"
+        chmod +x $"($target_dir)/tempo"
+        run-external $"($target_dir)/tempo" "--version"
+        print $"Local binary cache hit: ($cache_key)"
+        return true
+    }
     if not (has-mc) { return false }
 
     let bins = ["tempo"]

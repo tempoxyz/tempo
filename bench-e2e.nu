@@ -1374,6 +1374,7 @@ def "main e2e" [
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
+    --no-upload-profiles                               # Keep profiles local instead of publishing them
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, tracy
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
@@ -1511,8 +1512,13 @@ def "main e2e" [
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     cleanup-local-e2e-processes
 
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    # Fresh non-schelk runners have no virgin copy until initialization below.
+    if (has-schelk) or ($"($a_db).virgin" | path exists) {
+        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+    }
+    if (has-schelk) or ($"($b_db).virgin" | path exists) {
+        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    }
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
@@ -1793,7 +1799,7 @@ def "main e2e" [
         }
     }
 
-    if $e2e_exit == 0 and $samply {
+    if $e2e_exit == 0 and $samply and not $no_upload_profiles {
         print "\nUploading local e2e samply profiles to Firefox Profiler..."
         for run in $runs {
             for role in ["a" "b"] {
