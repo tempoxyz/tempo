@@ -474,24 +474,9 @@ impl Inner<Init> {
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
-            // If the header has a block access list hash but the block itself doesn't
-            // it likely means that the block was fetched from reth database and we need to
-            // additionally fetch the BAL from commonware.
-            let parent = if parent.block().header().block_access_list_hash().is_some()
-                && parent.block_access_list().is_none()
-            {
-                let round = Round::new(round.epoch(), parent_view);
-                (*self
-                    .marshal
-                    .subscribe_by_digest(parent_digest, DigestFallback::FetchByRound { round })
-                    .await
-                    .map_err(|_| {
-                        eyre!("syncer dropped channel before the parent block was sent")
-                    })?)
-                .clone()
-            } else {
-                parent
-            };
+            let parent = self
+                .with_block_access_list(parent, Round::new(round.epoch(), parent_view))
+                .await?;
             if !self.marshal.verified(round, parent.clone()).await {
                 bail!("marshal rejected re-proposed boundary block");
             }
@@ -654,6 +639,26 @@ impl Inner<Init> {
         ))
     }
 
+    /// Returns `block` with its block access list sidecar attached.
+    ///
+    /// Blocks resolved from the execution layer database carry no commonware sidecars. If the
+    /// header commits to a block access list, the block is re-fetched from the marshal by
+    /// digest so that it can be persisted and encoded again later.
+    async fn with_block_access_list(&self, block: Block, round: Round) -> eyre::Result<Block> {
+        if block.block().header().block_access_list_hash().is_none()
+            || block.block_access_list().is_some()
+        {
+            return Ok(block);
+        }
+        let digest = block.digest();
+        Ok((*self
+            .marshal
+            .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
+            .await
+            .map_err(|_| eyre!("syncer dropped channel before the block was sent"))?)
+        .clone())
+    }
+
     #[instrument(
         skip_all,
         fields(
@@ -694,6 +699,9 @@ impl Inner<Init> {
                 .containing(block.height())
                 .expect("epoch strategy is for all heights");
             if epoch_info.last() == block.height() && epoch_info.epoch() == round.epoch() {
+                let block = self
+                    .with_block_access_list(block, Round::new(round.epoch(), parent_view))
+                    .await?;
                 if !self.marshal.verified(round, block).await {
                     bail!("marshal actor refused to persist verified re-proposed block");
                 }
