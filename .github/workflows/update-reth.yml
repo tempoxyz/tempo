@@ -43,7 +43,7 @@ jobs:
     steps:
       # ── checkout ───────────────────────────────────────────────
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@bd66336ead0e97e3939428f526dc61fb43db0996 # 2026-09-25T20-13-44Z-bd66336e
+        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
@@ -107,10 +107,10 @@ jobs:
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bd66336ead0e97e3939428f526dc61fb43db0996 # 2026-09-25T20-13-44Z-bd66336e
-      - uses: tempoxyz/gh-actions/actions/setup-mold@bd66336ead0e97e3939428f526dc61fb43db0996 # 2026-09-25T20-13-44Z-bd66336e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@bd66336ead0e97e3939428f526dc61fb43db0996 # 2026-09-25T20-13-44Z-bd66336e
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@bd66336ead0e97e3939428f526dc61fb43db0996 # 2026-09-25T20-13-44Z-bd66336e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
+      - uses: tempoxyz/gh-actions/actions/setup-mold@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
         with:
           tool: nextest@0.9.127
 
@@ -352,7 +352,7 @@ jobs:
           fi
 
       # ── zepter feature lint ─────────────────────────────────────
-      - uses: tempoxyz/gh-actions/actions/cargo-install@bd66336ead0e97e3939428f526dc61fb43db0996 # 2026-09-25T20-13-44Z-bd66336e
+      - uses: tempoxyz/gh-actions/actions/cargo-install@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
         with:
           tool: zepter
       - name: Fix zepter lint
