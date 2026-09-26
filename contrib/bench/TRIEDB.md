@@ -5,6 +5,9 @@ for plain/hashed account and storage records. It is off by default. Ethereum
 state-root computation, trie-node tables, history, and consensus are unchanged.
 This is a storage-backend experiment, not a port of Monad's full execution engine.
 
+The [completed small-state experiment](TRIEDB-RESULTS.md) found a substantial
+throughput regression; this adapter is not a demonstrated performance improvement.
+
 Build the native library using the [pinned Reth adapter instructions](https://github.com/paradigmxyz/reth/blob/c6bbfb47bbb91f837e74e293de751ebded0be5bd/crates/storage/db/native/triedb/README.md).
 The native library is GPL-3.0-or-later. The adapter is not production-ready;
 review its retention, backup, error handling, and cursor limitations before use.
@@ -65,6 +68,8 @@ Use `bench-results/*/summary.json` for verdicts. Retain logs, profiles, exact
 commit IDs, compiler/feature settings, device layout, and binary hashes. Report
 dataset size and topology alongside any numbers; do not equate local results
 with the multi-region benchmark.
+The stock datadir-size metric excludes the raw TrieDB device and therefore
+cannot establish a total storage-footprint improvement for this backend.
 
 For isolated boxes, `TEMPO_BENCH_BINARY_CACHE` can point at a read-only local
 binary cache. Place already-built binaries under

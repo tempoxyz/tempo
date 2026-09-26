@@ -1,0 +1,158 @@
+[
+  {
+    "phase": "baseline-1",
+    "samples": 70,
+    "devices": {
+      "nvme2n1": {
+        "r/s": 4.626,
+        "rMB/s": 0.02,
+        "r_await": 0.233,
+        "w/s": 12238.179,
+        "wMB/s": 461.65,
+        "w_await": 10.612,
+        "aqu-sz": 430.667,
+        "%util": 26.423
+      },
+      "nvme3n1": {
+        "r/s": 0,
+        "rMB/s": 0,
+        "r_await": 0,
+        "w/s": 0,
+        "wMB/s": 0,
+        "w_await": 0,
+        "aqu-sz": 0,
+        "%util": 0
+      }
+    }
+  },
+  {
+    "phase": "baseline-2",
+    "samples": 70,
+    "devices": {
+      "nvme2n1": {
+        "r/s": 4.599,
+        "rMB/s": 0.02,
+        "r_await": 0.156,
+        "w/s": 12098.733,
+        "wMB/s": 442.914,
+        "w_await": 9.069,
+        "aqu-sz": 330.299,
+        "%util": 27.368
+      },
+      "nvme3n1": {
+        "r/s": 0,
+        "rMB/s": 0,
+        "r_await": 0,
+        "w/s": 0,
+        "wMB/s": 0,
+        "w_await": 0,
+        "aqu-sz": 0,
+        "%util": 0
+      }
+    }
+  },
+  {
+    "phase": "baseline-3",
+    "samples": 70,
+    "devices": {
+      "nvme2n1": {
+        "r/s": 4.599,
+        "rMB/s": 0.021,
+        "r_await": 0.186,
+        "w/s": 12730.566,
+        "wMB/s": 462.529,
+        "w_await": 10.99,
+        "aqu-sz": 455.376,
+        "%util": 25.434
+      },
+      "nvme3n1": {
+        "r/s": 0,
+        "rMB/s": 0,
+        "r_await": 0,
+        "w/s": 0,
+        "wMB/s": 0,
+        "w_await": 0,
+        "aqu-sz": 0,
+        "%util": 0
+      }
+    }
+  },
+  {
+    "phase": "feature-1",
+    "samples": 70,
+    "devices": {
+      "nvme2n1": {
+        "r/s": 4.285,
+        "rMB/s": 0.02,
+        "r_await": 0.032,
+        "w/s": 364.227,
+        "wMB/s": 18.543,
+        "w_await": 0.984,
+        "aqu-sz": 0.8,
+        "%util": 1.109
+      },
+      "nvme3n1": {
+        "r/s": 0.314,
+        "rMB/s": 0.001,
+        "r_await": 0.007,
+        "w/s": 30.914,
+        "wMB/s": 3.707,
+        "w_await": 0.239,
+        "aqu-sz": 0.032,
+        "%util": 0.077
+      }
+    }
+  },
+  {
+    "phase": "feature-2",
+    "samples": 70,
+    "devices": {
+      "nvme2n1": {
+        "r/s": 4.299,
+        "rMB/s": 0.02,
+        "r_await": 0.032,
+        "w/s": 353.675,
+        "wMB/s": 17.176,
+        "w_await": 0.999,
+        "aqu-sz": 0.772,
+        "%util": 1.075
+      },
+      "nvme3n1": {
+        "r/s": 0.285,
+        "rMB/s": 0.001,
+        "r_await": 0.014,
+        "w/s": 28.205,
+        "wMB/s": 3.383,
+        "w_await": 0.221,
+        "aqu-sz": 0.027,
+        "%util": 0.087
+      }
+    }
+  },
+  {
+    "phase": "feature-3",
+    "samples": 70,
+    "devices": {
+      "nvme2n1": {
+        "r/s": 4.313,
+        "rMB/s": 0.02,
+        "r_await": 0.034,
+        "w/s": 362.587,
+        "wMB/s": 18.171,
+        "w_await": 1.015,
+        "aqu-sz": 0.871,
+        "%util": 1.151
+      },
+      "nvme3n1": {
+        "r/s": 0.329,
+        "rMB/s": 0.001,
+        "r_await": 0.007,
+        "w/s": 29.929,
+        "wMB/s": 3.587,
+        "w_await": 0.22,
+        "aqu-sz": 0.029,
+        "%util": 0.096
+      }
+    }
+  }
+]

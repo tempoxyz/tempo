@@ -1,0 +1,1000 @@
+[
+  {
+    "phase": "baseline-1",
+    "profile": "bench-results/20260926-161102-900/profile-baseline-1-a.json.gz",
+    "phase_range": {
+      "phase": "baseline-1",
+      "started_ms": 1790439286309,
+      "finished_ms": 1790439415158
+    },
+    "analysis_window": {
+      "started_ms": 1790439288392,
+      "finished_ms": 1790439378392
+    },
+    "meta_start_ms": 1790439277047.844,
+    "first_sample_ms": 192524033.748956,
+    "first_thread_times": [
+      [
+        "samply",
+        0,
+        [
+          192524033.748956
+        ]
+      ],
+      [
+        "<292076>",
+        0,
+        []
+      ],
+      [
+        "Thread <292245.1>",
+        0,
+        []
+      ],
+      [
+        "Thread <292247.1>",
+        0,
+        []
+      ],
+      [
+        "Thread <292248.1>",
+        0,
+        []
+      ]
+    ],
+    "selected_samples": 645043,
+    "sample_units": {
+      "time": "ms",
+      "eventDelay": "ms",
+      "threadCPUDelta": "µs"
+    },
+    "cpu_microseconds": {
+      "total_weight": 621673959,
+      "self": [
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_accum_mul",
+          "pct": 7.04,
+          "weight": 43763962
+        },
+        {
+          "name": "_KeccakF1600",
+          "pct": 4.528,
+          "weight": 28147995
+        },
+        {
+          "name": "_memcpy_avx512_unaligned_erms",
+          "pct": 3.069,
+          "weight": 19079738
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_mul_inner",
+          "pct": 2.204,
+          "weight": 13700509
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_rshift",
+          "pct": 1.617,
+          "weight": 10052462
+        },
+        {
+          "name": "KECCAK_ASM_SHA3_absorb",
+          "pct": 1.487,
+          "weight": 9246465
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_sqr_inner",
+          "pct": 1.441,
+          "weight": 8958173
+        },
+        {
+          "name": "node_key",
+          "pct": 1.403,
+          "weight": 8723450
+        },
+        {
+          "name": "{closure#0}",
+          "pct": 1.328,
+          "weight": 8258280
+        },
+        {
+          "name": "filter<&slotmap::basic::Slot<reth_trie_sparse::arena::nodes::ArenaSparseNode>, slotmap::basic::{impl#5}::get::{closure_env#0}<slotmap::DefaultKey, reth_trie_sparse::arena::nodes::ArenaSparseNode>>",
+          "pct": 1.125,
+          "weight": 6993894
+        },
+        {
+          "name": "decompose_tag<crossbeam_epoch::sync::list::Entry>",
+          "pct": 1.068,
+          "weight": 6637307
+        },
+        {
+          "name": "_memcmp_evex_movbe",
+          "pct": 0.884,
+          "weight": 5497275
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_impl_add",
+          "pct": 0.811,
+          "weight": 5039804
+        },
+        {
+          "name": "spec_eq<u64, u64, 4>",
+          "pct": 0.652,
+          "weight": 4054402
+        },
+        {
+          "name": "perf_iterate_ctx",
+          "pct": 0.65,
+          "weight": 4039816
+        },
+        {
+          "name": "srso_alias_safe_ret",
+          "pct": 0.617,
+          "weight": 3835323
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_mul",
+          "pct": 0.611,
+          "weight": 3801365
+        },
+        {
+          "name": "key_at_rank",
+          "pct": 0.59,
+          "weight": 3665202
+        },
+        {
+          "name": "spec_next<i32>",
+          "pct": 0.561,
+          "weight": 3489077
+        },
+        {
+          "name": "write<revm_context_interface::journaled_state::entry::JournalEntry>",
+          "pct": 0.492,
+          "weight": 3059924
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_modinv64_divsteps_62_var",
+          "pct": 0.446,
+          "weight": 2771511
+        },
+        {
+          "name": "write<reth_trie_sparse::arena::cursor::ArenaCursorStackEntry>",
+          "pct": 0.412,
+          "weight": 2563211
+        },
+        {
+          "name": "do_syscall_64",
+          "pct": 0.407,
+          "weight": 2532040
+        },
+        {
+          "name": "mm_cmpeq_epi8",
+          "pct": 0.385,
+          "weight": 2393798
+        },
+        {
+          "name": "node_search",
+          "pct": 0.373,
+          "weight": 2320476
+        },
+        {
+          "name": "_raw_spin_lock",
+          "pct": 0.368,
+          "weight": 2290177
+        },
+        {
+          "name": "__schedule",
+          "pct": 0.34,
+          "weight": 2111910
+        },
+        {
+          "name": "lt",
+          "pct": 0.33,
+          "weight": 2050029
+        },
+        {
+          "name": "get<core::num::wrapping::Wrapping<usize>>",
+          "pct": 0.323,
+          "weight": 2006822
+        },
+        {
+          "name": "cache_bin_alloc_impl",
+          "pct": 0.316,
+          "weight": 1967543
+        }
+      ],
+      "special_inclusive": [
+        {
+          "name": "futex",
+          "pct": 5.781,
+          "weight": 35937470
+        },
+        {
+          "name": "fdatasync",
+          "pct": 0.025,
+          "weight": 156258
+        }
+      ]
+    },
+    "sample_weights": {
+      "total_weight": 645043,
+      "self": [
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_accum_mul",
+          "pct": 6.75,
+          "weight": 43543
+        },
+        {
+          "name": "_KeccakF1600",
+          "pct": 4.407,
+          "weight": 28430
+        },
+        {
+          "name": "_memcpy_avx512_unaligned_erms",
+          "pct": 2.958,
+          "weight": 19080
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_mul_inner",
+          "pct": 2.115,
+          "weight": 13641
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_rshift",
+          "pct": 1.556,
+          "weight": 10036
+        },
+        {
+          "name": "KECCAK_ASM_SHA3_absorb",
+          "pct": 1.453,
+          "weight": 9374
+        },
+        {
+          "name": "node_key",
+          "pct": 1.375,
+          "weight": 8870
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_sqr_inner",
+          "pct": 1.344,
+          "weight": 8671
+        },
+        {
+          "name": "{closure#0}",
+          "pct": 1.311,
+          "weight": 8457
+        },
+        {
+          "name": "decompose_tag<crossbeam_epoch::sync::list::Entry>",
+          "pct": 1.151,
+          "weight": 7426
+        },
+        {
+          "name": "filter<&slotmap::basic::Slot<reth_trie_sparse::arena::nodes::ArenaSparseNode>, slotmap::basic::{impl#5}::get::{closure_env#0}<slotmap::DefaultKey, reth_trie_sparse::arena::nodes::ArenaSparseNode>>",
+          "pct": 1.12,
+          "weight": 7225
+        },
+        {
+          "name": "perf_iterate_ctx",
+          "pct": 0.88,
+          "weight": 5675
+        },
+        {
+          "name": "_memcmp_evex_movbe",
+          "pct": 0.865,
+          "weight": 5581
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_impl_add",
+          "pct": 0.782,
+          "weight": 5043
+        },
+        {
+          "name": "spec_eq<u64, u64, 4>",
+          "pct": 0.645,
+          "weight": 4159
+        },
+        {
+          "name": "srso_alias_safe_ret",
+          "pct": 0.605,
+          "weight": 3900
+        },
+        {
+          "name": "spec_next<i32>",
+          "pct": 0.598,
+          "weight": 3859
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_mul",
+          "pct": 0.584,
+          "weight": 3770
+        },
+        {
+          "name": "__perf_event_task_sched_in",
+          "pct": 0.584,
+          "weight": 3767
+        },
+        {
+          "name": "key_at_rank",
+          "pct": 0.567,
+          "weight": 3657
+        },
+        {
+          "name": "perf_ctx_unlock",
+          "pct": 0.513,
+          "weight": 3306
+        },
+        {
+          "name": "write<revm_context_interface::journaled_state::entry::JournalEntry>",
+          "pct": 0.483,
+          "weight": 3114
+        },
+        {
+          "name": "do_syscall_64",
+          "pct": 0.438,
+          "weight": 2823
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_modinv64_divsteps_62_var",
+          "pct": 0.423,
+          "weight": 2727
+        },
+        {
+          "name": "write<reth_trie_sparse::arena::cursor::ArenaCursorStackEntry>",
+          "pct": 0.412,
+          "weight": 2660
+        },
+        {
+          "name": "_raw_spin_lock",
+          "pct": 0.401,
+          "weight": 2585
+        },
+        {
+          "name": "mm_cmpeq_epi8",
+          "pct": 0.379,
+          "weight": 2446
+        },
+        {
+          "name": "__schedule",
+          "pct": 0.379,
+          "weight": 2444
+        },
+        {
+          "name": "node_search",
+          "pct": 0.364,
+          "weight": 2348
+        },
+        {
+          "name": "get<core::num::wrapping::Wrapping<usize>>",
+          "pct": 0.352,
+          "weight": 2273
+        }
+      ],
+      "special_inclusive": [
+        {
+          "name": "futex",
+          "pct": 7.112,
+          "weight": 45873
+        },
+        {
+          "name": "fdatasync",
+          "pct": 0.025,
+          "weight": 162
+        }
+      ]
+    },
+    "thread_cpu_seconds": [
+      [
+        "tokio-rt",
+        133.64
+      ],
+      [
+        "persistence",
+        19.905
+      ],
+      [
+        "sparse-trie",
+        16.086
+      ],
+      [
+        "engine",
+        15.947
+      ],
+      [
+        "tokio-rt-worker",
+        15.138
+      ],
+      [
+        "payload-builder",
+        13.975
+      ],
+      [
+        "rayon-00",
+        11.199
+      ],
+      [
+        "rayon-01",
+        11.017
+      ],
+      [
+        "trie-hashing",
+        10.912
+      ],
+      [
+        "rayon-02",
+        10.527
+      ],
+      [
+        "rayon-03",
+        9.935
+      ],
+      [
+        "rayon-04",
+        9.553
+      ],
+      [
+        "rayon-05",
+        9.247
+      ],
+      [
+        "rayon-06",
+        8.946
+      ],
+      [
+        "rayon-07",
+        8.774
+      ],
+      [
+        "rayon-08",
+        8.424
+      ],
+      [
+        "rayon-09",
+        8.319
+      ],
+      [
+        "rayon-10",
+        8.251
+      ],
+      [
+        "rayon-11",
+        8.21
+      ],
+      [
+        "rayon-12",
+        8.189
+      ]
+    ]
+  },
+  {
+    "phase": "feature-1",
+    "profile": "bench-results/20260926-161102-900/profile-feature-1-a.json.gz",
+    "phase_range": {
+      "phase": "feature-1",
+      "started_ms": 1790439114143,
+      "finished_ms": 1790439267991
+    },
+    "analysis_window": {
+      "started_ms": 1790439116151,
+      "finished_ms": 1790439206151
+    },
+    "meta_start_ms": 1790439072670.822,
+    "first_sample_ms": 192319654.260427,
+    "first_thread_times": [
+      [
+        "samply",
+        0,
+        [
+          192319654.260427
+        ]
+      ],
+      [
+        "<269203>",
+        0,
+        []
+      ],
+      [
+        "Thread <270011.1>",
+        0,
+        [
+          192515084.603533
+        ]
+      ],
+      [
+        "taskset",
+        192319654.352407,
+        [
+          192319654.442757
+        ]
+      ],
+      [
+        "tempo",
+        192319655.126649,
+        [
+          192319655.712601
+        ]
+      ]
+    ],
+    "selected_samples": 407001,
+    "sample_units": {
+      "time": "ms",
+      "eventDelay": "ms",
+      "threadCPUDelta": "µs"
+    },
+    "cpu_microseconds": {
+      "total_weight": 388512925,
+      "self": [
+        {
+          "name": "moodycamel::ConcurrentQueue<std::variant<std::monostate, monad::mpt::fiber_find_request_t, monad::mpt::OnDiskDbServiceThread::FiberUpsertRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadAllFromBlockRequest, monad::mpt::OnDiskDbServiceThread::FiberTraverseRequest, monad::mpt::OnDiskDbServiceThread::MoveSubtrieRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadRootVersionRequest, monad::mpt::OnDiskDbServiceThread::FiberCopyTrieRequest, monad::mpt::OnDiskDbServiceThread::RODbFiberFindOwningNodeRequest>, moodycamel::ConcurrentQueueDefaultTraits>::try_dequeue<std::variant<std::monostate, monad::mpt::fiber_find_request_t, monad::mpt::OnDiskDbServiceThread::FiberUpsertRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadAllFromBlockRequest, monad::mpt::OnDiskDbServiceThread::FiberTraverseRequest, monad::mpt::OnDiskDbServiceThread::MoveSubtrieRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadRootVersionRequest, monad::mpt::OnDiskDbServiceThread::FiberCopyTrieRequest, monad::mpt::OnDiskDbServiceThread::RODbFiberFindOwningNodeRequest> >(std::variant<std::monostate, monad::mpt::fiber_find_request_t, monad::mpt::OnDiskDbServiceThread::FiberUpsertRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadAllFromBlockRequest, monad::mpt::OnDiskDbServiceThread::FiberTraverseRequest, monad::mpt::OnDiskDbServiceThread::MoveSubtrieRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadRootVersionRequest, monad::mpt::OnDiskDbServiceThread::FiberCopyTrieRequest, monad::mpt::OnDiskDbServiceThread::RODbFiberFindOwningNodeRequest>&)",
+          "pct": 31.128,
+          "weight": 120934904
+        },
+        {
+          "name": "fun_2980",
+          "pct": 5.302,
+          "weight": 20598227
+        },
+        {
+          "name": "monad::async::AsyncIO::poll_uring_(bool, unsigned int)::$_1::operator()() const",
+          "pct": 2.002,
+          "weight": 7778568
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_accum_mul",
+          "pct": 1.828,
+          "weight": 7103509
+        },
+        {
+          "name": "monad::async::AsyncIO::poll_uring_(bool, unsigned int)",
+          "pct": 1.47,
+          "weight": 5712812
+        },
+        {
+          "name": "_memcpy_avx512_unaligned_erms",
+          "pct": 1.437,
+          "weight": 5584459
+        },
+        {
+          "name": "srso_alias_safe_ret",
+          "pct": 1.395,
+          "weight": 5420908
+        },
+        {
+          "name": "perf_iterate_ctx",
+          "pct": 1.169,
+          "weight": 4540709
+        },
+        {
+          "name": "(anonymous namespace)::Seek::should_visit(monad::mpt::Node const&, unsigned char)",
+          "pct": 0.986,
+          "weight": 3830944
+        },
+        {
+          "name": "decompose_tag<crossbeam_epoch::sync::list::Entry>",
+          "pct": 0.921,
+          "weight": 3579112
+        },
+        {
+          "name": "key_at_rank",
+          "pct": 0.872,
+          "weight": 3389477
+        },
+        {
+          "name": "_KeccakF1600",
+          "pct": 0.824,
+          "weight": 3201866
+        },
+        {
+          "name": "do_syscall_64",
+          "pct": 0.695,
+          "weight": 2698995
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_mul_inner",
+          "pct": 0.62,
+          "weight": 2409094
+        },
+        {
+          "name": "native_queued_spin_lock_slowpath",
+          "pct": 0.559,
+          "weight": 2171229
+        },
+        {
+          "name": "entry_SYSCALL_64",
+          "pct": 0.512,
+          "weight": 1989929
+        },
+        {
+          "name": "(anonymous namespace)::Seek::down(unsigned char, monad::mpt::Node const&)",
+          "pct": 0.48,
+          "weight": 1866517
+        },
+        {
+          "name": "__schedule",
+          "pct": 0.471,
+          "weight": 1829269
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_rshift",
+          "pct": 0.449,
+          "weight": 1746097
+        },
+        {
+          "name": "perf_event_switch_output",
+          "pct": 0.434,
+          "weight": 1687617
+        },
+        {
+          "name": "arch_exit_to_user_mode_prepare.isra.0",
+          "pct": 0.392,
+          "weight": 1523161
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_sqr_inner",
+          "pct": 0.38,
+          "weight": 1474630
+        },
+        {
+          "name": "_raw_spin_lock",
+          "pct": 0.372,
+          "weight": 1446451
+        },
+        {
+          "name": "cache_bin_alloc_impl",
+          "pct": 0.37,
+          "weight": 1438544
+        },
+        {
+          "name": "update_curr",
+          "pct": 0.358,
+          "weight": 1391746
+        },
+        {
+          "name": "atomic_load<u64>",
+          "pct": 0.352,
+          "weight": 1368587
+        },
+        {
+          "name": "lt",
+          "pct": 0.342,
+          "weight": 1327875
+        },
+        {
+          "name": "core::str::validations::run_utf8_validation",
+          "pct": 0.335,
+          "weight": 1299854
+        },
+        {
+          "name": "filemap_read",
+          "pct": 0.332,
+          "weight": 1291751
+        },
+        {
+          "name": "_tls_get_addr",
+          "pct": 0.329,
+          "weight": 1279078
+        }
+      ],
+      "special_inclusive": [
+        {
+          "name": "futex",
+          "pct": 11.053,
+          "weight": 42940654
+        },
+        {
+          "name": "AsyncIO",
+          "pct": 10.499,
+          "weight": 40790443
+        },
+        {
+          "name": "reth_triedb_seek",
+          "pct": 6.918,
+          "weight": 26879180
+        },
+        {
+          "name": "io_uring",
+          "pct": 5.959,
+          "weight": 23149932
+        },
+        {
+          "name": "traverse_blocking",
+          "pct": 4.012,
+          "weight": 15586481
+        },
+        {
+          "name": "reth_triedb_get",
+          "pct": 0.149,
+          "weight": 577011
+        },
+        {
+          "name": "fdatasync",
+          "pct": 0.146,
+          "weight": 565770
+        },
+        {
+          "name": "reth_triedb_commit",
+          "pct": 0.01,
+          "weight": 38679
+        }
+      ]
+    },
+    "sample_weights": {
+      "total_weight": 407001,
+      "self": [
+        {
+          "name": "moodycamel::ConcurrentQueue<std::variant<std::monostate, monad::mpt::fiber_find_request_t, monad::mpt::OnDiskDbServiceThread::FiberUpsertRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadAllFromBlockRequest, monad::mpt::OnDiskDbServiceThread::FiberTraverseRequest, monad::mpt::OnDiskDbServiceThread::MoveSubtrieRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadRootVersionRequest, monad::mpt::OnDiskDbServiceThread::FiberCopyTrieRequest, monad::mpt::OnDiskDbServiceThread::RODbFiberFindOwningNodeRequest>, moodycamel::ConcurrentQueueDefaultTraits>::try_dequeue<std::variant<std::monostate, monad::mpt::fiber_find_request_t, monad::mpt::OnDiskDbServiceThread::FiberUpsertRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadAllFromBlockRequest, monad::mpt::OnDiskDbServiceThread::FiberTraverseRequest, monad::mpt::OnDiskDbServiceThread::MoveSubtrieRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadRootVersionRequest, monad::mpt::OnDiskDbServiceThread::FiberCopyTrieRequest, monad::mpt::OnDiskDbServiceThread::RODbFiberFindOwningNodeRequest> >(std::variant<std::monostate, monad::mpt::fiber_find_request_t, monad::mpt::OnDiskDbServiceThread::FiberUpsertRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadAllFromBlockRequest, monad::mpt::OnDiskDbServiceThread::FiberTraverseRequest, monad::mpt::OnDiskDbServiceThread::MoveSubtrieRequest, monad::mpt::OnDiskDbServiceThread::FiberLoadRootVersionRequest, monad::mpt::OnDiskDbServiceThread::FiberCopyTrieRequest, monad::mpt::OnDiskDbServiceThread::RODbFiberFindOwningNodeRequest>&)",
+          "pct": 29.765,
+          "weight": 121145
+        },
+        {
+          "name": "fun_2980",
+          "pct": 5.067,
+          "weight": 20623
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_accum_mul",
+          "pct": 1.976,
+          "weight": 8044
+        },
+        {
+          "name": "monad::async::AsyncIO::poll_uring_(bool, unsigned int)::$_1::operator()() const",
+          "pct": 1.917,
+          "weight": 7801
+        },
+        {
+          "name": "perf_iterate_ctx",
+          "pct": 1.461,
+          "weight": 5945
+        },
+        {
+          "name": "_memcpy_avx512_unaligned_erms",
+          "pct": 1.459,
+          "weight": 5937
+        },
+        {
+          "name": "monad::async::AsyncIO::poll_uring_(bool, unsigned int)",
+          "pct": 1.407,
+          "weight": 5727
+        },
+        {
+          "name": "srso_alias_safe_ret",
+          "pct": 1.289,
+          "weight": 5245
+        },
+        {
+          "name": "decompose_tag<crossbeam_epoch::sync::list::Entry>",
+          "pct": 1.063,
+          "weight": 4326
+        },
+        {
+          "name": "(anonymous namespace)::Seek::should_visit(monad::mpt::Node const&, unsigned char)",
+          "pct": 0.922,
+          "weight": 3753
+        },
+        {
+          "name": "key_at_rank",
+          "pct": 0.835,
+          "weight": 3400
+        },
+        {
+          "name": "perf_ctx_unlock",
+          "pct": 0.803,
+          "weight": 3269
+        },
+        {
+          "name": "__perf_event_task_sched_in",
+          "pct": 0.768,
+          "weight": 3124
+        },
+        {
+          "name": "do_syscall_64",
+          "pct": 0.758,
+          "weight": 3084
+        },
+        {
+          "name": "_KeccakF1600",
+          "pct": 0.758,
+          "weight": 3084
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_mul_inner",
+          "pct": 0.644,
+          "weight": 2622
+        },
+        {
+          "name": "native_queued_spin_lock_slowpath",
+          "pct": 0.567,
+          "weight": 2306
+        },
+        {
+          "name": "perf_event_switch_output",
+          "pct": 0.51,
+          "weight": 2075
+        },
+        {
+          "name": "__schedule",
+          "pct": 0.503,
+          "weight": 2047
+        },
+        {
+          "name": "entry_SYSCALL_64",
+          "pct": 0.493,
+          "weight": 2005
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_u128_rshift",
+          "pct": 0.491,
+          "weight": 1999
+        },
+        {
+          "name": "(anonymous namespace)::Seek::down(unsigned char, monad::mpt::Node const&)",
+          "pct": 0.445,
+          "weight": 1813
+        },
+        {
+          "name": "_raw_spin_lock",
+          "pct": 0.432,
+          "weight": 1757
+        },
+        {
+          "name": "rustsecp256k1_v0_10_0_fe_sqr_inner",
+          "pct": 0.408,
+          "weight": 1659
+        },
+        {
+          "name": "arch_exit_to_user_mode_prepare.isra.0",
+          "pct": 0.403,
+          "weight": 1640
+        },
+        {
+          "name": "update_curr",
+          "pct": 0.39,
+          "weight": 1587
+        },
+        {
+          "name": "__rcu_read_unlock",
+          "pct": 0.38,
+          "weight": 1545
+        },
+        {
+          "name": "atomic_load<u64>",
+          "pct": 0.367,
+          "weight": 1494
+        },
+        {
+          "name": "filemap_read",
+          "pct": 0.33,
+          "weight": 1344
+        },
+        {
+          "name": "get<core::num::wrapping::Wrapping<usize>>",
+          "pct": 0.329,
+          "weight": 1341
+        }
+      ],
+      "special_inclusive": [
+        {
+          "name": "futex",
+          "pct": 12.68,
+          "weight": 51606
+        },
+        {
+          "name": "AsyncIO",
+          "pct": 10.04,
+          "weight": 40864
+        },
+        {
+          "name": "reth_triedb_seek",
+          "pct": 6.8,
+          "weight": 27678
+        },
+        {
+          "name": "io_uring",
+          "pct": 5.695,
+          "weight": 23177
+        },
+        {
+          "name": "traverse_blocking",
+          "pct": 3.617,
+          "weight": 14721
+        },
+        {
+          "name": "reth_triedb_get",
+          "pct": 0.147,
+          "weight": 599
+        },
+        {
+          "name": "fdatasync",
+          "pct": 0.024,
+          "weight": 96
+        },
+        {
+          "name": "reth_triedb_commit",
+          "pct": 0.01,
+          "weight": 39
+        }
+      ]
+    },
+    "thread_cpu_seconds": [
+      [
+        "tempo",
+        170.041
+      ],
+      [
+        "tokio-rt",
+        77.651
+      ],
+      [
+        "persistence",
+        6.729
+      ],
+      [
+        "sparse-trie",
+        5.435
+      ],
+      [
+        "rayon-00",
+        5.308
+      ],
+      [
+        "rayon-01",
+        4.868
+      ],
+      [
+        "tokio-rt-worker",
+        4.739
+      ],
+      [
+        "rayon-02",
+        4.54
+      ],
+      [
+        "rayon-03",
+        3.968
+      ],
+      [
+        "QuillBackend",
+        3.862
+      ],
+      [
+        "rayon-04",
+        3.667
+      ],
+      [
+        "rayon-05",
+        3.322
+      ],
+      [
+        "tempo-txpool-ma",
+        3.009
+      ],
+      [
+        "rayon-06",
+        2.867
+      ],
+      [
+        "rayon-07",
+        2.763
+      ],
+      [
+        "rayon-08",
+        2.712
+      ],
+      [
+        "rayon-09",
+        2.542
+      ],
+      [
+        "rayon-10",
+        2.439
+      ],
+      [
+        "rayon-11",
+        2.344
+      ],
+      [
+        "engine",
+        2.043
+      ]
+    ]
+  }
+]
