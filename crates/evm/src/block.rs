@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -256,9 +256,15 @@ where
         Ok(())
     }
 
-    /// Exercises the shared runtime upgrade path at T13.
-    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+    /// Installs the T13 shared runtimes at the hardfork boundary.
+    fn upgrade_zone_runtimes_at_t13_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Installs the T14 shared runtimes at the hardfork boundary.
+    fn upgrade_zone_runtimes_at_t14_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
@@ -519,16 +525,25 @@ where
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
-        // Chains starting at T13 supply their runtime code in genesis. Preserve those
-        // allocations (including locally compiled contracts on test chains). Chains
-        // that activate T13 later still follow the normal runtime upgrade path.
+        // Chains starting at a Zone runtime hardfork supply their runtime code in genesis.
+        // Preserve those allocations (including locally compiled contracts on test chains).
+        // Chains activating the hardfork later follow the normal runtime upgrade path.
         if self.inner.spec.is_t13_active_at_timestamp(timestamp)
+            && !self.inner.spec.is_t14_active_at_timestamp(timestamp)
             && !self
                 .inner
                 .spec
                 .is_t13_active_at_timestamp(self.inner.spec.genesis().timestamp)
         {
-            self.upgrade_zone_runtimes_at_boundary()?;
+            self.upgrade_zone_runtimes_at_t13_boundary()?;
+        }
+        if self.inner.spec.is_t14_active_at_timestamp(timestamp)
+            && !self
+                .inner
+                .spec
+                .is_t14_active_at_timestamp(self.inner.spec.genesis().timestamp)
+        {
+            self.upgrade_zone_runtimes_at_t14_boundary()?;
         }
 
         Ok(())
@@ -712,7 +727,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_MESSENGER_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -1712,65 +1728,85 @@ mod tests {
     }
 
     #[test]
-    fn t13_at_genesis_preserves_zone_runtimes() {
-        // Use the actual genesis timestamp, not just t13Time == 0.
-        for (genesis_timestamp, activation) in [(0, 0), (100, 50), (100, 100)] {
-            let mut genesis = DEV.genesis().clone();
-            genesis.timestamp = genesis_timestamp;
-            genesis
-                .config
-                .extra_fields
-                .insert_value("t13Time".into(), activation)
-                .unwrap();
-            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-            let mut db = State::builder().with_bundle_update().build();
-            let mut expected = Vec::new();
-            for (index, address) in [
-                ZONE_FACTORY_ADDRESS,
-                ZONE_PORTAL_IMPL_ADDRESS,
-                ZONE_VERIFIER_ADDRESS,
-                ZONE_MESSENGER_ADDRESS,
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let code = Bytecode::new_legacy(Bytes::from(vec![0x00, index as u8]));
-                let info = AccountInfo {
-                    balance: U256::from(42),
-                    nonce: 7,
-                    code_hash: code.hash_slow(),
-                    code: Some(code),
-                    ..Default::default()
-                };
-                db.insert_account_with_storage(
-                    address,
-                    info.clone(),
-                    [(U256::from(9), U256::from(123))].into_iter().collect(),
-                );
-                expected.push((address, info));
-            }
-            for block_number in [1, 2] {
-                let mut executor = TestExecutorBuilder::default()
-                    .with_spec(TempoHardfork::T13)
-                    .with_block_number(block_number)
-                    .with_parent_beacon_block_root(B256::ZERO)
-                    .build(&mut db, &chainspec);
-                executor.evm_mut().ctx_mut().block.timestamp =
-                    U256::from(genesis_timestamp + block_number);
-                executor.apply_pre_execution_changes().unwrap();
-                drop(executor);
-                for (address, info) in &expected {
-                    assert_eq!(
-                        &db.load_cache_account(*address)
-                            .unwrap()
-                            .account_info()
-                            .unwrap(),
-                        info
+    fn zone_hardfork_at_genesis_preserves_zone_runtimes() {
+        // Use the actual genesis timestamp, not just an activation time of zero.
+        for (fork, spec) in [
+            ("t13Time", TempoHardfork::T13),
+            ("t14Time", TempoHardfork::T14),
+        ] {
+            for (genesis_timestamp, activation) in [(0, 0), (100, 50), (100, 100)] {
+                let mut genesis = DEV.genesis().clone();
+                genesis.timestamp = genesis_timestamp;
+                genesis
+                    .config
+                    .extra_fields
+                    .insert_value(
+                        "t13Time".into(),
+                        if fork == "t13Time" { activation } else { 0 },
+                    )
+                    .unwrap();
+                genesis
+                    .config
+                    .extra_fields
+                    .insert_value(
+                        "t14Time".into(),
+                        if fork == "t14Time" {
+                            activation
+                        } else {
+                            u64::MAX
+                        },
+                    )
+                    .unwrap();
+                let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+                let mut db = State::builder().with_bundle_update().build();
+                let mut expected = Vec::new();
+                for (index, address) in [
+                    ZONE_FACTORY_ADDRESS,
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    ZONE_VERIFIER_ADDRESS,
+                    ZONE_MESSENGER_ADDRESS,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let code = Bytecode::new_legacy(Bytes::from(vec![0x00, index as u8]));
+                    let info = AccountInfo {
+                        balance: U256::from(42),
+                        nonce: 7,
+                        code_hash: code.hash_slow(),
+                        code: Some(code),
+                        ..Default::default()
+                    };
+                    db.insert_account_with_storage(
+                        address,
+                        info.clone(),
+                        [(U256::from(9), U256::from(123))].into_iter().collect(),
                     );
-                    assert_eq!(
-                        revm::Database::storage(&mut db, *address, U256::from(9)).unwrap(),
-                        U256::from(123)
-                    );
+                    expected.push((address, info));
+                }
+                for block_number in [1, 2] {
+                    let mut executor = TestExecutorBuilder::default()
+                        .with_spec(spec)
+                        .with_block_number(block_number)
+                        .with_parent_beacon_block_root(B256::ZERO)
+                        .build(&mut db, &chainspec);
+                    executor.evm_mut().ctx_mut().block.timestamp =
+                        U256::from(genesis_timestamp + block_number);
+                    executor.apply_pre_execution_changes().unwrap();
+                    drop(executor);
+                    for (address, info) in &expected {
+                        assert_eq!(
+                            &db.load_cache_account(*address)
+                                .unwrap()
+                                .account_info()
+                                .unwrap(),
+                            info
+                        );
+                        assert_eq!(
+                            revm::Database::storage(&mut db, *address, U256::from(9)).unwrap(),
+                            U256::from(123)
+                        );
+                    }
                 }
             }
         }
@@ -1822,6 +1858,11 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t14Time".into(), u64::MAX)
+                .unwrap();
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
@@ -1829,6 +1870,79 @@ mod tests {
                     TempoHardfork::T13
                 } else {
                     TempoHardfork::T12
+                })
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build(&mut db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(timestamp);
+            executor.apply_pre_execution_changes().unwrap();
+            drop(executor);
+
+            for (address, expected) in [
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+            ]
+            .into_iter()
+            .zip(expected_runtimes)
+            {
+                let installed = db
+                    .load_cache_account(address)
+                    .unwrap()
+                    .account_info()
+                    .unwrap()
+                    .code
+                    .unwrap();
+                assert_eq!(installed.original_bytes(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn zone_runtime_upgrade_activates_at_t14() {
+        for (timestamp, expected_runtimes) in [
+            (
+                9,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                10,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T14_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                11,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T14_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+        ] {
+            let mut genesis = DEV.genesis().clone();
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t13Time".into(), 1)
+                .unwrap();
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t14Time".into(), 10)
+                .unwrap();
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(if timestamp >= 10 {
+                    TempoHardfork::T14
+                } else {
+                    TempoHardfork::T13
                 })
                 .with_parent_beacon_block_root(B256::ZERO)
                 .build(&mut db, &chainspec);
@@ -1879,8 +1993,10 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_t13_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_t13_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_t14_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_t14_boundary().unwrap();
         drop(executor);
 
         let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
@@ -1910,7 +2026,7 @@ mod tests {
             ),
             (
                 ZONE_MESSENGER_ADDRESS,
-                Bytecode::new_legacy(T13_ZONE_MESSENGER_RUNTIME),
+                Bytecode::new_legacy(T14_ZONE_MESSENGER_RUNTIME),
             ),
         ] {
             let installed = db
@@ -1926,8 +2042,8 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(
             calls.len(),
-            3,
-            "T10 installation and T13 replacement must each dispatch an update"
+            4,
+            "T10, T13, and T14 installations must each dispatch an update"
         );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
@@ -1944,6 +2060,8 @@ mod tests {
                 "T13 runtime must be installed in the runtime state hook"
             );
         }
+        assert!(calls[3].contains_key(&ZONE_MESSENGER_ADDRESS));
+        assert_eq!(calls[3].len(), 1, "only ZoneMessenger changes at T14");
     }
 
     /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.

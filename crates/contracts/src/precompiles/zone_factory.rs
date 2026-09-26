@@ -1,6 +1,6 @@
 use crate::zones::{
     T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-    ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+    T14_ZONE_MESSENGER_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
 };
 use alloy_primitives::{Address, Bytes, U256, address};
 
@@ -88,6 +88,21 @@ pub fn t13_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] 
         InitialZoneFactoryAccount {
             address: ZONE_MESSENGER_ADDRESS,
             code: T13_ZONE_MESSENGER_RUNTIME,
+            storage: None,
+        },
+    ]
+}
+
+/// Returns the native ZoneFactory state with the T14 shared runtimes.
+pub fn t14_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+    let [factory, portal, verifier, _] = t13_zone_factory_state(owner);
+    [
+        factory,
+        portal,
+        verifier,
+        InitialZoneFactoryAccount {
+            address: ZONE_MESSENGER_ADDRESS,
+            code: T14_ZONE_MESSENGER_RUNTIME,
             storage: None,
         },
     ]

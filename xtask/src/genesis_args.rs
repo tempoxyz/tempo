@@ -45,7 +45,7 @@ use tempo_contracts::{
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t13_zone_factory_state,
+        t13_zone_factory_state, t14_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -575,7 +575,12 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t10_time, self.t13_time, &mut genesis_alloc);
+        insert_zone_state_at_genesis(
+            self.t10_time,
+            self.t13_time,
+            self.t14_time,
+            &mut genesis_alloc,
+        );
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -705,11 +710,14 @@ impl GenesisArgs {
 fn insert_zone_state_at_genesis(
     t10_time: u64,
     t13_time: u64,
+    t14_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
     if t10_time == 0 {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if t13_time == 0 {
+        let accounts = if t14_time == 0 {
+            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else if t13_time == 0 {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -1272,14 +1280,15 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_MESSENGER_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
 
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, 1, &mut alloc);
+        insert_zone_state_at_genesis(0, 1, 1, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
         let expected_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
@@ -1301,7 +1310,7 @@ mod tests {
     #[test]
     fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(1, 1, &mut alloc);
+        insert_zone_state_at_genesis(1, 1, 1, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
     }
@@ -1309,12 +1318,26 @@ mod tests {
     #[test]
     fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, 0, &mut alloc);
+        insert_zone_state_at_genesis(0, 0, 1, &mut alloc);
 
         for (destination, expected) in [
             (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
             (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
             (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+        ] {
+            assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+        }
+    }
+
+    #[test]
+    fn t14_genesis_installs_t14_shared_runtimes() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_state_at_genesis(0, 0, 0, &mut alloc);
+
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T14_ZONE_MESSENGER_RUNTIME),
         ] {
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
