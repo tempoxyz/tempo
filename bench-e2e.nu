@@ -1374,6 +1374,7 @@ def "main e2e" [
     --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
+    --no-upload-profiles                               # Keep profiles local instead of publishing them
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, tracy
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
@@ -1793,7 +1794,7 @@ def "main e2e" [
         }
     }
 
-    if $e2e_exit == 0 and $samply {
+    if $e2e_exit == 0 and $samply and not $no_upload_profiles {
         print "\nUploading local e2e samply profiles to Firefox Profiler..."
         for run in $runs {
             for role in ["a" "b"] {

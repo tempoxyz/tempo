@@ -223,3 +223,4 @@ min-trace-logs = [
 	"tempo-node/min-trace-logs",
 ]
 trie-debug = ["tempo-node/trie-debug"]
+monad-triedb = ["reth-db/monad-triedb"]
