@@ -1134,10 +1134,12 @@ impl TIP20Token {
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)?;
 
-        if let Some(spender) = spender {
-            self.consume_allowance(from, spender, amount)?;
-        } else {
-            self.check_and_update_spending_limit(from, amount)?;
+        if !crate::tip20_funder::permission::authorize_input(from, self.address, amount)? {
+            if let Some(spender) = spender {
+                self.consume_allowance(from, spender, amount)?;
+            } else {
+                self.check_and_update_spending_limit(from, amount)?;
+            }
         }
 
         if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
@@ -1261,6 +1263,7 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+        crate::tip20_funder::permission::meter_input(from, self.address, amount)?;
         let from_balance = if !self.storage.spec().is_t8() {
             let from_balance = self.get_balance(from)?;
             if amount > from_balance {

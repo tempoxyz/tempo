@@ -119,6 +119,7 @@ fn run_batch(
             evm,
             &mut gas,
             FundingCall {
+                permission: None,
                 caller: FUNDER,
                 source: SOURCE,
                 is_static: true,
@@ -145,6 +146,7 @@ fn run_batch(
                         evm,
                         &mut gas,
                         FundingCall {
+                            permission: None,
                             caller: FUNDER,
                             source: SOURCE,
                             is_static: false,
@@ -463,5 +465,180 @@ fn public_quotes_grant_no_funding_authority() {
         .unwrap();
         assert!(!result.is_success());
         assert_eq!(slot(&evm, 0), U256::ZERO);
+    }
+}
+
+#[test]
+fn funded_callbacks_meter_real_tip20_debits_and_clear_authority() {
+    use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
+    use tempo_precompiles::{
+        test_util::TIP20Setup,
+        tip20::TIP20Token,
+        tip20_funder::{RATE_SCALE, permission::FundingPermission},
+    };
+
+    for inspect in [false, true] {
+        for mode in [10, 11, 12, 13] {
+            let mut evm = evm(TempoHardfork::T5);
+            let mut tx = TxEnv::new_system_tx_with_caller(ACCOUNT, ASSET, Bytes::new());
+            tx.gas_limit = 2_000_000;
+            evm.inner.ctx.set_tx(tx.into());
+            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                TIP20Setup::path_usd(ACCOUNT)
+                    .with_issuer(ACCOUNT)
+                    .with_mint(ACCOUNT, U256::from(100))
+                    .apply()
+                    .unwrap();
+            });
+            let plan = IFundingSource::Quote {
+                assetIn: PATH_USD_ADDRESS,
+                rate: RATE_SCALE,
+                maxAmountIn: U256::from(30),
+                amountOut: U256::ZERO,
+                executionData: Default::default(),
+            };
+            let make_permission =
+                || FundingPermission::new(FUNDER, ACCOUNT, SOURCE, &plan, U256::from(30)).unwrap();
+            let data: Bytes = IFundingSource::fundCall {
+                account: ACCOUNT,
+                assetOut: PATH_USD_ADDRESS,
+                amountOut: U256::from(50),
+                executionData: (
+                    U256::from(mode),
+                    alloy_primitives::B256::right_padding_from(b"prepared"),
+                )
+                    .abi_encode()
+                    .into(),
+            }
+            .abi_encode()
+            .into();
+            let run_loop = if inspect {
+                TempoEvmHandler::inspect_run_exec_loop
+            } else {
+                TempoEvmHandler::run_exec_loop
+            };
+            let mut gas = GasTracker::new(2_000_000, 2_000_000, 0);
+            let mut handler = TempoEvmHandler::new();
+            let result = handler
+                .execute_funding_call_with(
+                    &mut evm,
+                    &mut gas,
+                    FundingCall {
+                        caller: FUNDER,
+                        source: SOURCE,
+                        data: data.clone(),
+                        is_static: false,
+                        permission: Some(make_permission()),
+                    },
+                    run_loop,
+                )
+                .unwrap();
+            let succeeds = matches!(mode, 10 | 12);
+            assert_eq!(result.instruction_result().is_ok(), succeeds, "mode {mode}");
+            if !succeeds {
+                assert_eq!(
+                    result.output().data().as_ref(),
+                    ITIP20Funder::InputLimitExceeded {
+                        source: SOURCE,
+                        limit: U256::from(30),
+                        attempted: U256::from(31),
+                    }
+                    .abi_encode(),
+                    "mode {mode}"
+                );
+            }
+            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                let token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
+                assert_eq!(
+                    token
+                        .balance_of(ITIP20::balanceOfCall { account: ACCOUNT })
+                        .unwrap(),
+                    U256::from(if succeeds { 70 } else { 100 })
+                );
+                assert_eq!(
+                    make_permission().usage().unwrap().amount_in,
+                    U256::from(if succeeds { 30 } else { 0 })
+                );
+                assert_eq!(
+                    token
+                        .allowance(ITIP20::allowanceCall {
+                            owner: ACCOUNT,
+                            spender: SOURCE
+                        })
+                        .unwrap(),
+                    U256::ZERO
+                );
+            });
+            let result = handler
+                .execute_funding_call_with(
+                    &mut evm,
+                    &mut gas,
+                    FundingCall {
+                        caller: SOURCE,
+                        source: PATH_USD_ADDRESS,
+                        data: ITIP20::transferFromCall {
+                            from: ACCOUNT,
+                            to: SOURCE,
+                            amount: U256::ONE,
+                        }
+                        .abi_encode()
+                        .into(),
+                        is_static: false,
+                        permission: None,
+                    },
+                    run_loop,
+                )
+                .unwrap();
+            assert!(
+                result.instruction_result().is_revert(),
+                "cleanup after mode {mode}: {:?}",
+                result.instruction_result()
+            );
+            assert_eq!(
+                result.output().data().as_ref(),
+                ITIP20::InsufficientAllowance {}.abi_encode()
+            );
+        }
+    }
+}
+
+#[test]
+fn input_permission_rejects_static_or_mismatched_callbacks() {
+    use tempo_precompiles::tip20_funder::{RATE_SCALE, permission::FundingPermission};
+    for case in 0..4 {
+        let mut evm = evm(TempoHardfork::T5);
+        evm.inner
+            .ctx
+            .set_tx(TxEnv::new_system_tx_with_caller(ACCOUNT, ASSET, Bytes::new()).into());
+        let permission = FundingPermission::new(
+            FUNDER,
+            if case == 3 { SOURCE } else { ACCOUNT },
+            SOURCE,
+            &IFundingSource::Quote {
+                assetIn: ASSET,
+                rate: RATE_SCALE,
+                maxAmountIn: U256::ONE,
+                amountOut: U256::ZERO,
+                executionData: Bytes::new(),
+            },
+            U256::ONE,
+        )
+        .unwrap();
+        let mut gas = GasTracker::new(100_000, 100_000, 0);
+        let result = TempoEvmHandler::new().execute_funding_call_with(
+            &mut evm,
+            &mut gas,
+            FundingCall {
+                caller: if case == 1 { ACCOUNT } else { FUNDER },
+                source: if case == 2 { ASSET } else { SOURCE },
+                is_static: case == 0,
+                data: Bytes::new(),
+                permission: Some(permission),
+            },
+            TempoEvmHandler::inspect_run_exec_loop,
+        );
+        assert!(result.is_err());
+        assert!(evm.inner.inspector.calls.is_empty());
+        assert!(evm.inner.frame_stack.index().is_none());
     }
 }
