@@ -33,6 +33,8 @@ struct HardforkMetadata {
 /// This command intentionally does not modify feature gates, TIPs, runtime code, or genesis
 /// allocations owned by a specific upgrade. Those changes remain reviewable in the feature PRs
 /// that follow the generated plumbing PR.
+/// New forks are unscheduled in generated network genesis files until explicitly configured.
+/// The built-in local development chainspec and test fixtures opt in at genesis.
 #[derive(clap::Args, Debug)]
 pub(crate) struct AddHardfork {
     /// New hardfork identifier, for example `T11` or `T1A`.
@@ -255,28 +257,47 @@ fn append_genesis_info_field(source: &str, previous: &str, hardfork: &str) -> ey
 }
 
 fn append_genesis_arg(source: &str, previous: &str, hardfork: &str) -> eyre::Result<String> {
-    let previous_arg = format!(
+    let legacy_arg = format!(
         "    /// {previous} hardfork activation time.\n    #[arg(long, default_value = \"0\")]\n    {}_time: u64,\n",
         previous.to_ascii_lowercase()
     );
-    let new_arg = format!(
-        "{previous_arg}\n    /// {hardfork} hardfork activation time.\n    #[arg(long, default_value = \"0\")]\n    {}_time: u64,\n",
-        hardfork.to_ascii_lowercase()
-    );
+    let optional_arg = optional_genesis_arg(previous);
+    let previous_arg = if source.contains(&optional_arg) {
+        optional_arg
+    } else {
+        legacy_arg
+    };
+    let new_arg = format!("{previous_arg}\n{}", optional_genesis_arg(hardfork));
     let mut output = insert_once(source, &previous_arg, &new_arg)?;
 
-    let previous_insert = format!(
+    let legacy_insert = format!(
         "        chain_config\n            .extra_fields\n            .insert_value(\"{}Time\".to_string(), self.{}_time)?;\n",
         previous.to_ascii_lowercase(),
         previous.to_ascii_lowercase()
     );
-    let new_insert = format!(
-        "{previous_insert}        chain_config\n            .extra_fields\n            .insert_value(\"{}Time\".to_string(), self.{}_time)?;\n",
-        hardfork.to_ascii_lowercase(),
-        hardfork.to_ascii_lowercase()
-    );
+    let optional_insert = optional_genesis_insert(previous);
+    let previous_insert = if source.contains(&optional_insert) {
+        optional_insert
+    } else {
+        legacy_insert
+    };
+    let new_insert = format!("{previous_insert}{}", optional_genesis_insert(hardfork));
     output = insert_once(&output, &previous_insert, &new_insert)?;
     Ok(output)
+}
+
+fn optional_genesis_arg(hardfork: &str) -> String {
+    format!(
+        "    /// {hardfork} hardfork activation time (omitted = disabled, 0 = genesis).\n    #[arg(long)]\n    {}_time: Option<u64>,\n",
+        hardfork.to_ascii_lowercase()
+    )
+}
+
+fn optional_genesis_insert(hardfork: &str) -> String {
+    let name = hardfork.to_ascii_lowercase();
+    format!(
+        "        if let Some(timestamp) = self.{name}_time {{\n            chain_config\n                .extra_fields\n                .insert_value(\"{name}Time\".to_string(), timestamp)?;\n        }}\n"
+    )
 }
 
 fn ensure_profile_pair(source: &str, current: &str, previous: &str) -> eyre::Result<()> {
@@ -448,6 +469,42 @@ mod tests {
         let rotated = rotate_profiles(source, "T10", "T11").unwrap();
         assert!(rotated.contains("[profile.default]\nhardfork = \"tempo:T10\""));
         assert!(rotated.contains("[profile.next]\nhardfork = \"tempo:T11\""));
+    }
+
+    #[test]
+    fn new_genesis_args_require_explicit_activation_across_successive_forks() {
+        let source = concat!(
+            "    /// T12 hardfork activation time.\n",
+            "    #[arg(long, default_value = \"0\")]\n",
+            "    t12_time: u64,\n",
+            "        chain_config\n",
+            "            .extra_fields\n",
+            "            .insert_value(\"t12Time\".to_string(), self.t12_time)?;\n",
+        );
+        let first = append_genesis_arg(source, "T12", "T13").unwrap();
+        let second = append_genesis_arg(&first, "T13", "T14").unwrap();
+
+        // Preserve the existing schedule; adding another fork must not promote an
+        // earlier unscheduled fork to active-at-genesis either.
+        assert_eq!(second.matches("default_value = \"0\"").count(), 1);
+        assert!(second.contains("    t12_time: u64,"));
+        for name in ["t13", "t14"] {
+            assert!(second.contains(&format!("    {name}_time: Option<u64>,")));
+            assert!(second.contains(&format!("if let Some(timestamp) = self.{name}_time {{")));
+            assert!(second.contains(&format!(
+                ".insert_value(\"{name}Time\".to_string(), timestamp)?;"
+            )));
+        }
+    }
+
+    #[test]
+    fn current_genesis_args_accept_an_unscheduled_new_fork() {
+        let variants = parse_variants(include_str!("../../crates/hardfork/src/lib.rs")).unwrap();
+        let previous = variants.last().unwrap();
+        let updated =
+            append_genesis_arg(include_str!("genesis_args.rs"), previous, "T999").unwrap();
+        assert!(updated.contains("    t999_time: Option<u64>,"));
+        assert!(updated.contains("if let Some(timestamp) = self.t999_time {"));
     }
 
     #[test]
