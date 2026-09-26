@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::B256;
@@ -9,7 +12,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -17,7 +20,16 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
+use crate::wait::TransactionWaiter;
+
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    // EVMs are not Send. Keep them on their worker thread, separate from Reth's validator state.
+    // The weak owner identifies the build and prevents its allocation from being reused too early.
+    static PREWARM_EVM: RefCell<(Weak<AtomicBool>, PrewarmEvmState)> =
+        const { RefCell::new((Weak::new(), None)) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -27,6 +39,8 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    /// Keep a timed-out consumer from queuing advances before a reply arrives.
+    advance_pending: bool,
 }
 
 impl BestTransactionsPrewarming {
@@ -45,6 +59,7 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            advance_pending: false,
         };
 
         let prewarm_executor = prewarm.executor();
@@ -78,57 +93,61 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let lookahead = pool.current_num_threads() * 2;
+        let mut in_flight = 0;
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
+            let refill = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                          in_flight: &mut usize| {
+                while *in_flight < lookahead {
+                    let Some(tx) = ctx.best_txs.next() else {
+                        // Prewarming still in progress is work, not an idle pool wait.
+                        if *in_flight == 0 {
+                            let _ = ctx.transactions_tx.send(None);
+                        }
+                        return;
+                    };
+                    *in_flight += 1;
+                    let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                        let offset = ctx.next_expiring_nonce_offset;
+                        ctx.next_expiring_nonce_offset += 1;
+                        Some(offset)
+                    } else {
+                        None
+                    };
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
-                let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
-                    return;
-                };
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                    let offset = ctx.next_expiring_nonce_offset;
-                    ctx.next_expiring_nonce_offset += 1;
-                    Some(offset)
-                } else {
-                    None
-                };
+                    let parallel = ctx.prewarm.parallel;
+                    let prewarm = ctx.prewarm.clone();
+                    let commands_tx = ctx.commands_tx.clone();
+                    let transactions_tx = ctx.transactions_tx.clone();
 
-                let parallel = ctx.prewarm.parallel;
-                let prewarm = ctx.prewarm.clone();
-                let commands_tx = ctx.commands_tx.clone();
-                let transactions_tx = ctx.transactions_tx.clone();
-
-                if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
-                }
-
-                scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
-                    if parallel {
-                        let _ = transactions_tx.send(Some(tx));
+                    if !parallel {
+                        let _ = ctx
+                            .transactions_tx
+                            .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
-                });
+
+                    scope.spawn(move |_| {
+                        let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                        if parallel {
+                            let _ = transactions_tx.send(Some(tx));
+                        }
+                        let _ = commands_tx.send(BestTransactionsCommand::Prewarmed);
+                    });
+                }
             };
 
-            // Fill the initial batch of transactions to execute and prewarm.
-            //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
-            }
+            // Restore the full lookahead after the source has been empty.
+            refill(&mut ctx, &mut in_flight);
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                        refill(&mut ctx, &mut in_flight);
+                    }
+                    BestTransactionsCommand::Prewarmed => {
+                        in_flight -= 1;
+                        refill(&mut ctx, &mut in_flight);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
@@ -161,7 +180,15 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        let stop = &ctx.prewarm.stop;
+        pool.broadcast(pool.current_num_threads(), |_| {
+            PREWARM_EVM.with_borrow_mut(|(owner, evm)| {
+                if std::ptr::eq(owner.as_ptr(), Arc::as_ptr(stop)) {
+                    *owner = Weak::new();
+                    *evm = None;
+                }
+            });
+        });
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -177,12 +204,12 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = prewarm.with_evm(|state| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let evm = state.as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
@@ -258,30 +285,57 @@ impl Drop for BestTransactionsPrewarming {
     }
 }
 
+impl BestTransactionsPrewarming {
+    /// Discard stale empty replies without hiding transactions already in the queue.
+    fn try_next(&mut self) -> Option<PrewarmedTransaction> {
+        while let Ok(tx) = self.transactions_rx.try_recv() {
+            self.advance_pending = false;
+            if tx.is_some() {
+                return tx;
+            }
+        }
+        None
+    }
+
+    fn request_advance(&mut self) -> Option<()> {
+        if !self.advance_pending {
+            self.commands_tx
+                .send(BestTransactionsCommand::Advance)
+                .ok()?;
+            self.advance_pending = true;
+        }
+        Some(())
+    }
+
+    /// A timeout preserves the outstanding request for the next call.
+    pub(crate) fn next_with_waiter(
+        &mut self,
+        waiter: Option<&mut TransactionWaiter>,
+    ) -> Option<PrewarmedTransaction> {
+        if let Some(tx) = self.try_next() {
+            return Some(tx);
+        }
+        self.request_advance()?;
+        let tx = match waiter {
+            Some(waiter) => waiter.recv(&self.transactions_rx)?,
+            None => self.transactions_rx.recv().ok()?,
+        };
+        self.advance_pending = false;
+        tx.or_else(|| self.try_next())
+    }
+}
+
 impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Empty replies describe earlier source polls. Drain them before deciding
-        // whether a ready transaction exists, preserving the order of actual txs.
-        if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
-            return Some(tx);
-        }
-        self.commands_tx
-            .send(BestTransactionsCommand::Advance)
-            .ok()?;
-        // An eager advance can also reply empty while this receive is waiting.
-        // Check for buffered transactions before reporting empty to the builder,
-        // but do not wait for more replies: it must still check its build budget.
-        self.transactions_rx
-            .recv()
-            .ok()?
-            .or_else(|| self.transactions_rx.try_iter().flatten().next())
+        self.next_with_waiter(None)
     }
 }
 
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.advance_pending = false;
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
@@ -409,6 +463,16 @@ where
         Some(evm)
     }
 
+    fn with_evm<R>(&self, f: impl FnOnce(&mut PrewarmEvmState) -> R) -> R {
+        PREWARM_EVM.with_borrow_mut(|(owner, evm)| {
+            if !std::ptr::eq(owner.as_ptr(), Arc::as_ptr(&self.stop)) {
+                *owner = Arc::downgrade(&self.stop);
+                *evm = self.evm_for_ctx();
+            }
+            f(evm)
+        })
+    }
+
     pub(crate) fn executor(&self) -> TaskExecutor {
         self.executor.clone()
     }
@@ -428,6 +492,7 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    Prewarmed,
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -492,12 +557,13 @@ mod tests {
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
     use reth_storage_api::noop::NoopProvider;
+    use reth_tasks::WorkerPool;
     use reth_transaction_pool::{
         TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
     };
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex},
+        sync::{Arc, Barrier, Mutex},
         thread,
         time::{Duration, Instant},
     };
@@ -520,6 +586,7 @@ mod tests {
 
     struct TestBestTransactions {
         txs: VecDeque<BestTransaction>,
+        incoming: Option<Receiver<BestTransaction>>,
         log: Arc<Mutex<TestLog>>,
     }
 
@@ -527,6 +594,7 @@ mod tests {
         fn new(txs: Vec<BestTransaction>, log: Arc<Mutex<TestLog>>) -> Self {
             Self {
                 txs: txs.into(),
+                incoming: None,
                 log,
             }
         }
@@ -536,6 +604,9 @@ mod tests {
         type Item = BestTransaction;
 
         fn next(&mut self) -> Option<Self::Item> {
+            if let Some(incoming) = &self.incoming {
+                self.txs.extend(incoming.try_iter());
+            }
             let tx = self.txs.pop_front();
             {
                 let mut log = self.log.lock().unwrap();
@@ -724,6 +795,38 @@ mod tests {
         }
     }
 
+    fn prewarming_channels() -> (
+        BestTransactionsPrewarming,
+        Sender<Option<PrewarmedTransaction>>,
+        Receiver<BestTransactionsCommand>,
+    ) {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        (
+            BestTransactionsPrewarming {
+                transactions_rx,
+                commands_tx,
+                stop: Arc::default(),
+                advance_pending: false,
+            },
+            transactions_tx,
+            commands_rx,
+        )
+    }
+
+    fn test_waiter(parallel: bool) -> TransactionWaiter {
+        let mut waiter = TransactionWaiter::new(parallel);
+        waiter.set_deadline(Instant::now() + Duration::from_secs(5));
+        waiter
+    }
+
+    fn expect_advance(commands: &Receiver<BestTransactionsCommand>) {
+        assert!(matches!(
+            commands.recv_timeout(Duration::from_secs(1)).unwrap(),
+            BestTransactionsCommand::Advance
+        ));
+    }
+
     fn wait_until(mut condition: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(1);
         while Instant::now() < deadline {
@@ -751,6 +854,210 @@ mod tests {
     }
 
     #[test]
+    fn budgeted_wait_does_not_queue_advances_on_timeout() {
+        let mut waiter = test_waiter(true);
+        let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
+        for _ in 0..3 {
+            waiter.set_deadline(Instant::now() + Duration::from_millis(1));
+            assert!(prewarming.next_with_waiter(Some(&mut waiter)).is_none());
+        }
+        assert!(matches!(
+            commands_rx.try_recv().unwrap(),
+            BestTransactionsCommand::Advance
+        ));
+        assert!(commands_rx.try_recv().is_err());
+        assert_eq!(waiter.take_idle_elapsed(), Duration::ZERO);
+
+        let tx = test_tx(Address::random(), 0);
+        transactions_tx
+            .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
+            .unwrap();
+        waiter.set_deadline(Instant::now() + Duration::from_secs(1));
+        assert_eq!(
+            prewarming
+                .next_with_waiter(Some(&mut waiter))
+                .unwrap()
+                .tx
+                .hash(),
+            tx.hash()
+        );
+    }
+
+    #[test]
+    fn ready_prewarm_wakes_an_idle_builder_without_a_pool_arrival() {
+        let mut waiter = test_waiter(true);
+        let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
+        let tx = test_tx(Address::random(), 0);
+        let expected = *tx.hash();
+        let coordinator = thread::spawn(move || {
+            expect_advance(&commands_rx);
+            thread::sleep(Duration::from_millis(10));
+            transactions_tx
+                .send(Some(PrewarmedTransaction::without_replay(tx)))
+                .unwrap();
+        });
+        assert_eq!(
+            *prewarming
+                .next_with_waiter(Some(&mut waiter))
+                .unwrap()
+                .tx
+                .hash(),
+            expected
+        );
+        coordinator.join().unwrap();
+    }
+
+    #[test]
+    fn budgeted_wait_resumes_after_idle_in_both_prewarming_modes() {
+        for parallel in [false, true] {
+            let executor = TaskExecutor::test();
+            let mut waiter = test_waiter(parallel);
+            let (incoming, incoming_rx) = mpsc::channel();
+            let mut source = TestBestTransactions::new(Vec::new(), Arc::default());
+            source.incoming = Some(incoming_rx);
+            let mut prewarming = TestPrewarming {
+                prewarming: Some(BestTransactionsPrewarming::new(
+                    prewarming_context(executor.clone(), parallel),
+                    source,
+                )),
+                executor,
+            };
+            for _ in 0..2 {
+                let txs = (0..16)
+                    .map(|nonce| test_tx(Address::random(), nonce))
+                    .collect::<Vec<_>>();
+                let mut expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+                let incoming = incoming.clone();
+                let producer = thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(10));
+                    for tx in txs {
+                        incoming.send(tx).unwrap();
+                    }
+                });
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut actual = (0..expected.len())
+                    .map(|_| {
+                        loop {
+                            waiter.set_deadline(Instant::now() + Duration::from_millis(1));
+                            if let Some(tx) = prewarming.next_with_waiter(Some(&mut waiter)) {
+                                break *tx.tx.hash();
+                            }
+                            assert!(Instant::now() < deadline);
+                            waiter.wait_for_deadline();
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if parallel {
+                    actual.sort_unstable();
+                    expected.sort_unstable();
+                }
+                assert_eq!(actual, expected);
+                producer.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn invalidation_replaces_an_outstanding_advance() {
+        let mut waiter = test_waiter(true);
+        let (mut prewarming, old_tx, commands_rx) = prewarming_channels();
+        waiter.set_deadline(Instant::now() + Duration::from_millis(1));
+        assert!(prewarming.next_with_waiter(Some(&mut waiter)).is_none());
+        let valid = test_tx(Address::random(), 0);
+        let expected = *valid.hash();
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(test_tx(Address::random(), 0)),
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        let coordinator = thread::spawn(move || {
+            expect_advance(&commands_rx);
+            let BestTransactionsCommand::Invalid { new_tx, .. } =
+                commands_rx.recv_timeout(Duration::from_secs(1)).unwrap()
+            else {
+                panic!("expected invalidation")
+            };
+            drop(old_tx);
+            expect_advance(&commands_rx);
+            new_tx
+                .send(Some(PrewarmedTransaction::without_replay(valid)))
+                .unwrap();
+        });
+        waiter.set_deadline(Instant::now() + Duration::from_secs(5));
+        assert_eq!(
+            *prewarming
+                .next_with_waiter(Some(&mut waiter))
+                .unwrap()
+                .tx
+                .hash(),
+            expected
+        );
+        coordinator.join().unwrap();
+    }
+
+    #[test]
+    fn idle_prewarming_refills_the_entire_bounded_worker_window() {
+        for (parallel, partial) in [(false, false), (true, false), (true, true)] {
+            let executor = TaskExecutor::test();
+            let workers = executor.prewarming_pool().current_num_threads();
+            let lookahead = workers * 2;
+            let incoming_count = if partial {
+                lookahead - 1
+            } else {
+                lookahead + 4
+            };
+            let expected = incoming_count.min(lookahead);
+            let log = Arc::new(Mutex::new(TestLog::default()));
+            let (incoming, incoming_rx) = mpsc::channel();
+            let mut source = TestBestTransactions::new(Vec::new(), log.clone());
+            source.incoming = Some(incoming_rx);
+            let mut prewarming = TestPrewarming {
+                prewarming: Some(BestTransactionsPrewarming::new(
+                    prewarming_context(executor.clone(), parallel),
+                    source,
+                )),
+                executor: executor.clone(),
+            };
+            wait_until(|| prewarming.transactions_rx.try_recv().is_ok());
+
+            // Hold all workers so only the consumer's refill can schedule this burst.
+            let started = Arc::new(Barrier::new(workers + 1));
+            let release = Arc::new(Barrier::new(workers + 1));
+            let blocker = thread::spawn({
+                let executor = executor.clone();
+                let started = started.clone();
+                let release = release.clone();
+                move || {
+                    executor.prewarming_pool().broadcast(workers, |_| {
+                        started.wait();
+                        release.wait();
+                    })
+                }
+            });
+            started.wait();
+            for nonce in 0..incoming_count {
+                incoming
+                    .send(test_tx(Address::random(), nonce as u64))
+                    .unwrap();
+            }
+            let mut waiter = test_waiter(parallel);
+            waiter.set_deadline(Instant::now() + Duration::from_millis(100));
+            let _ = prewarming.next_with_waiter(Some(&mut waiter));
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while log.lock().unwrap().yielded < expected && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            let scheduled = log.lock().unwrap().yielded;
+            let idle_elapsed = waiter.take_idle_elapsed();
+            release.wait();
+            blocker.join().unwrap();
+            assert_eq!(scheduled, expected);
+            if parallel {
+                assert_eq!(idle_elapsed, Duration::ZERO);
+            }
+        }
+    }
+
+    #[test]
     fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
@@ -770,26 +1077,24 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_polled_once_per_refill() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        wait_until(|| log.lock().unwrap().empty_polls == 2);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        wait_until(|| log.lock().unwrap().empty_polls == 3);
     }
 
     #[test]
     fn stale_empty_replies_do_not_hide_buffered_transactions() {
         for empty_replies in [2, 32] {
-            let (transactions_tx, transactions_rx) = mpsc::channel();
-            let (commands_tx, commands_rx) = mpsc::channel();
+            let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
             let sender = Address::random();
             let first = test_tx(sender, 0);
             let second = test_tx(sender, 1);
@@ -801,11 +1106,6 @@ mod tests {
                     .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
                     .unwrap();
             }
-            let mut prewarming = BestTransactionsPrewarming {
-                transactions_rx,
-                commands_tx,
-                stop: Arc::default(),
-            };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
             assert_eq!(prewarming.next().unwrap().tx.hash(), second.hash());
@@ -818,27 +1118,18 @@ mod tests {
 
     #[test]
     fn stale_empty_replies_do_not_hide_a_fresh_advance() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         for _ in 0..32 {
             transactions_tx.send(None).unwrap();
         }
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
         let coordinator = thread::spawn(move || {
-            assert!(matches!(
-                commands_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-                BestTransactionsCommand::Advance
-            ));
+            expect_advance(&commands_rx);
             transactions_tx
                 .send(Some(PrewarmedTransaction::without_replay(tx)))
                 .unwrap();
         });
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-        };
 
         let next = prewarming.next();
         coordinator.join().unwrap();
@@ -847,24 +1138,15 @@ mod tests {
 
     #[test]
     fn empty_advance_returns_none_and_can_resume_on_a_later_poll() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
         let coordinator = thread::spawn(move || {
             for reply in [None, Some(PrewarmedTransaction::without_replay(tx))] {
-                assert!(matches!(
-                    commands_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-                    BestTransactionsCommand::Advance
-                ));
+                expect_advance(&commands_rx);
                 transactions_tx.send(reply).unwrap();
             }
         });
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-        };
 
         assert!(prewarming.next().is_none());
         assert_eq!(
@@ -877,8 +1159,7 @@ mod tests {
 
     #[test]
     fn buffered_transactions_survive_empty_replies_and_coordinator_disconnect() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (mut prewarming, transactions_tx, commands_rx) = prewarming_channels();
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
         transactions_tx.send(None).unwrap();
@@ -887,11 +1168,6 @@ mod tests {
             .unwrap();
         drop(transactions_tx);
         drop(commands_rx);
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-        };
 
         assert_eq!(
             *prewarming.next().expect("buffered transaction").tx.hash(),
@@ -956,9 +1232,27 @@ mod tests {
         let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
 
         assert!(prewarming.next().is_some());
+        drop(prewarming);
 
         pool.broadcast(pool.current_num_threads(), |worker| {
             assert_eq!(*worker.get::<usize>(), 1);
+        });
+    }
+
+    #[test]
+    fn prewarming_reinitializes_state_when_the_build_changes() {
+        let executor = TaskExecutor::test();
+        let first = prewarming_context(executor.clone(), false);
+        let second = prewarming_context(executor, false);
+        let pool = WorkerPool::new(1, "prewarm-context-test");
+        pool.install_fn(|| {
+            first.with_evm(|state| {
+                assert!(state.is_some());
+                *state = None;
+            });
+            first.with_evm(|state| assert!(state.is_none()));
+            second.with_evm(|state| assert!(state.is_some()));
+            first.with_evm(|state| assert!(state.is_some()));
         });
     }
 
@@ -969,8 +1263,6 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
-
         pool.install_fn(|| {
             let failed_action = StorageAction::Sstore(
                 Address::random(),
@@ -978,11 +1270,8 @@ mod tests {
                 U256::from(2),
                 U256::from(3),
             );
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
+            context.with_evm(|state| {
+                let evm = state.as_mut().expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
                 assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
             });
@@ -994,11 +1283,8 @@ mod tests {
                 None,
             );
             assert!(failed.replay.is_none());
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
+            context.with_evm(|state| {
+                let evm = state.as_mut().expect("prewarm EVM");
                 assert_eq!(evm.take_actions(), Some(Vec::new()));
             });
 
