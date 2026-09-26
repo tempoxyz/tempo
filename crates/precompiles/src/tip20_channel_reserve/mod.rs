@@ -835,7 +835,15 @@ impl TIP20ChannelReserve {
         let digest = self.get_voucher_digest_inner(channel_id, cumulative_amount)?;
         let signer = SignatureVerifier::new()
             .recover(digest, signature.clone())
-            .map_err(|_| TIP20ChannelReserveError::invalid_signature())?;
+            .map_err(|err| {
+                // (T12+) OOG and storage failures must propagate instead of reverting as a bad
+                // signature.
+                if err.is_system_error() && self.storage.spec().is_t12() {
+                    err
+                } else {
+                    TIP20ChannelReserveError::invalid_signature().into()
+                }
+            })?;
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
@@ -2727,6 +2735,55 @@ mod tests {
             );
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_voucher_signature_recovery_propagates_out_of_gas() -> eyre::Result<()> {
+        use crate::storage::evm::EvmPrecompileStorageProvider;
+        use alloy_evm::{EthEvmFactory, EvmEnv, EvmFactory, EvmInternals};
+        use revm::{
+            context::{CfgEnv, ContextTr, TxEnv},
+            database::{CacheDB, EmptyDB},
+        };
+
+        let signer = PrivateKeySigner::random();
+        let signature = Bytes::from(signer.sign_hash_sync(&B256::random())?.as_bytes().to_vec());
+        let descriptor = descriptor(
+            Address::random(),
+            Address::random(),
+            Address::ZERO,
+            Address::random(),
+            B256::random(),
+            signer.address(),
+            B256::random(),
+        );
+
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(spec);
+            let tx = TxEnv::default();
+            let mut evm = EthEvmFactory::default()
+                .create_evm(CacheDB::new(EmptyDB::new()), EvmEnv::default());
+            let block = evm.block.clone();
+            let internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+            // Enough gas for the digest, not for the 3,000 gas secp256k1 verification charge
+            // that `SignatureVerifier::recover` deducts.
+            let mut storage =
+                EvmPrecompileStorageProvider::new_with_gas_limit(internals, &cfg, 2_999, 0);
+
+            StorageCtx::enter(&mut storage, || {
+                let err = TIP20ChannelReserve::new()
+                    .validate_voucher(&descriptor, B256::random(), U96::from(10), &signature)
+                    .unwrap_err();
+                if spec.is_t12() {
+                    assert_eq!(err, TempoPrecompileError::OutOfGas);
+                } else {
+                    assert_eq!(err, TIP20ChannelReserveError::invalid_signature().into());
+                }
+            });
+        }
+
+        Ok(())
     }
 
     #[test]
