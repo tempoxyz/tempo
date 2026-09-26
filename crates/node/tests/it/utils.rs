@@ -281,11 +281,7 @@ use alloy::{
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use eyre::WrapErr;
-use reth_e2e_test_utils::setup;
-use reth_ethereum::tasks::Runtime;
-use reth_node_api::FullNodeComponents;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
-use reth_node_core::args::RpcServerArgs;
+use reth_e2e_test_utils::E2ETestSetupExt;
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
@@ -351,19 +347,8 @@ pub(crate) enum NodeSource {
     LocalNode(String),
 }
 
-/// Type alias for a local test node and task manager
-pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, Runtime);
-
-/// Trait wrapper around NodeHandle to simplify function return types
-pub(crate) trait TestNodeHandle: Send {}
-
-/// Generic [`TestNodeHandle`] implementation for NodeHandle
-impl<Node, AddOns> TestNodeHandle for NodeHandle<Node, AddOns>
-where
-    Node: FullNodeComponents,
-    AddOns: RethRpcAddOns<Node>,
-{
-}
+/// A local test node, kept alive for the duration of a test.
+pub(crate) type LocalTestNode = reth_e2e_test_utils::NodeHelperType<TempoNode>;
 
 /// Set up a test node from the provided source configuration
 pub(crate) async fn setup_test_node(
@@ -444,7 +429,7 @@ pub(crate) struct MultiNodeSetup {
 pub(crate) struct HttpOnlySetup {
     /// HTTP RPC URL for provider connections
     pub http_url: Url,
-    /// Optional local node and task manager (None if using external RPC)
+    /// Optional local node (None if using external RPC)
     pub local_node: Option<LocalTestNode>,
 }
 
@@ -539,15 +524,12 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, _wallet) = setup::<TempoNode>(
-            1,
-            Arc::new(chain_spec),
-            self.is_dev,
-            default_attributes_generator,
-        )
-        .await?;
-
-        let node = nodes.remove(0);
+        let is_dev = self.is_dev;
+        let (node, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
+            .with_node_config_modifier(move |config| config.set_dev(is_dev))
+            .with_attributes_generator(default_attributes_generator)
+            .build_single()
+            .await?;
 
         Ok(SingleNodeSetup { node, hardfork })
     }
@@ -568,13 +550,12 @@ impl TestNodeBuilder {
 
         let chain_spec = self.build_chain_spec()?;
 
-        let (nodes, _wallet) = setup::<TempoNode>(
-            self.node_count,
-            Arc::new(chain_spec),
-            self.is_dev,
-            default_attributes_generator,
-        )
-        .await?;
+        let is_dev = self.is_dev;
+        let (nodes, _wallet) = TempoNode::test_setup(self.node_count, Arc::new(chain_spec))
+            .with_node_config_modifier(move |config| config.set_dev(is_dev))
+            .with_attributes_generator(default_attributes_generator)
+            .build()
+            .await?;
 
         Ok(MultiNodeSetup { nodes })
     }
@@ -596,30 +577,15 @@ impl TestNodeBuilder {
             });
         }
 
-        let runtime = Runtime::test();
         let chain_spec = self.build_chain_spec()?;
         let static_validator = self
             .custom_validator
             .unwrap_or(chain_spec.inner.genesis.coinbase);
         let dynamic_validator = self.dynamic_validator.clone();
 
-        let mut node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(
-                RpcServerArgs::default()
-                    .with_unused_ports()
-                    .with_http()
-                    .with_http_api(http_api),
-            );
-        node_config.txpool.max_account_slots = usize::MAX;
-        node_config.dev.block_time = self.block_time;
-
-        let node_handle = NodeBuilder::new(node_config.clone())
-            .testing_node(runtime.clone())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .map_debug_payload_attributes(move |mut attributes| {
+        let (node, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
+            .with_dev_mining(self.block_time)
+            .map_dev_payload_attributes(move |mut attributes| {
                 let validator = dynamic_validator
                     .as_ref()
                     .map(|v| *v.lock().unwrap())
@@ -627,19 +593,17 @@ impl TestNodeBuilder {
                 attributes.suggested_fee_recipient = validator;
                 attributes
             })
+            .with_rpc_modifier(move |rpc| rpc.with_http_api(http_api.clone()))
+            .with_node_config_modifier(|mut config| {
+                config.txpool.max_account_slots = usize::MAX;
+                config
+            })
+            .build_single()
             .await?;
 
-        let http_url = node_handle
-            .node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
         Ok(HttpOnlySetup {
-            http_url,
-            local_node: Some((Box::new(node_handle), runtime)),
+            http_url: node.rpc_url(),
+            local_node: Some(node),
         })
     }
 
