@@ -13,6 +13,8 @@ use tokio::sync::broadcast;
 use tracing::{Level, instrument};
 
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
+const MISSING_CERTIFICATE: &str = "certificate";
+const MISSING_BLOCK: &str = "block";
 
 /// Internal shared state for the feed.
 pub(super) struct FeedState {
@@ -97,7 +99,7 @@ impl ConsensusFeed for FeedStateHandle {
                 .read()
                 .latest_finalized
                 .clone()
-                .map_or(Response::Missing("certifications"), Response::Success),
+                .map_or(Response::Missing(MISSING_CERTIFICATE), Response::Success),
             Query::Height(height) => 'process: {
                 let height = Height::new(height);
                 let Some(marshal) = self.marshal() else {
@@ -105,10 +107,10 @@ impl ConsensusFeed for FeedStateHandle {
                 };
 
                 let Some(finalization) = marshal.get_finalization(height).await else {
-                    break 'process Response::Missing("certificate");
+                    break 'process Response::Missing(MISSING_CERTIFICATE);
                 };
                 let Some(block) = marshal.get_block(height).await else {
-                    break 'process Response::Missing("block");
+                    break 'process Response::Missing(MISSING_BLOCK);
                 };
 
                 Response::Success(CertifiedBlock {

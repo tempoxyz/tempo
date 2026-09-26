@@ -43,13 +43,13 @@ impl<T> From<types::Response<T>> for RpcResult<T> {
         match value {
             types::Response::Success(val) => Ok(val),
             types::Response::NotReady => Err(ErrorObject::owned(
-                ErrorCode::NoContent as i32,
-                ErrorCode::NoContent.msg(),
+                ErrorCode::ServiceUnavailable as i32,
+                ErrorCode::ServiceUnavailable.msg(),
                 None::<()>,
             )),
             types::Response::Missing(msg) => Err(ErrorObject::owned(
-                ErrorCode::ServiceUnavailable as i32,
-                ErrorCode::ServiceUnavailable.msg(),
+                ErrorCode::NoContent as i32,
+                ErrorCode::NoContent.msg(),
                 Some(msg),
             )),
         }
@@ -136,5 +136,39 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consensus_error_json() {
+        let errors = [
+            types::Response::<()>::NotReady,
+            types::Response::Missing("block"),
+            types::Response::Missing("certificate"),
+        ]
+        .map(|response| RpcResult::<()>::from(response).unwrap_err());
+
+        insta::assert_snapshot!(serde_json::to_string_pretty(&errors).unwrap(), @r#"
+        [
+          {
+            "code": 503,
+            "message": "the consensus subservice was not available, but the request can be retried later"
+          },
+          {
+            "code": 204,
+            "message": "the requested content was not available",
+            "data": "block"
+          },
+          {
+            "code": 204,
+            "message": "the requested content was not available",
+            "data": "certificate"
+          }
+        ]
+        "#);
     }
 }
