@@ -34,7 +34,7 @@ use std::{
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tracing::{debug, error, info};
 
 /// Tempo-specific network primitives for the proxy node.
@@ -49,6 +49,9 @@ const HEADER_RPC_BATCH_SIZE: usize = 128;
 const MAX_HEADERS_SERVE: usize = 1024;
 /// Soft cap on the total encoded body size in a `GetBlockBodies` response.
 const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
+/// Maximum number of header and body requests handled at once. Further requests wait in the
+/// network's request channel, which drops new requests once it's full.
+const MAX_CONCURRENT_REQUESTS: usize = 256;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -385,6 +388,7 @@ async fn run_p2p_network(
     });
 
     // Handle incoming eth requests
+    let request_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     while let Some(eth_request) = requests_rx.recv().await {
         match eth_request {
             IncomingEthRequest::GetBlockHeaders {
@@ -396,9 +400,14 @@ async fn run_p2p_network(
                 stats
                     .header_requests_received
                     .fetch_add(1, Ordering::Relaxed);
+                let permit = Arc::clone(&request_permits)
+                    .acquire_owned()
+                    .await
+                    .expect("semaphore is never closed");
                 let fetch_tx = fetch_tx.clone();
                 let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let headers = async {
                         let (tx, rx) = oneshot::channel();
                         fetch_tx
@@ -427,9 +436,14 @@ async fn run_p2p_network(
             } => {
                 debug!(%peer_id, ?request, "received GetBlockBodies");
                 stats.body_requests_received.fetch_add(1, Ordering::Relaxed);
+                let permit = Arc::clone(&request_permits)
+                    .acquire_owned()
+                    .await
+                    .expect("semaphore is never closed");
                 let fetch_tx = fetch_tx.clone();
                 let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let bodies = async {
                         let (tx, rx) = oneshot::channel();
                         fetch_tx
