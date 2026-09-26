@@ -290,7 +290,6 @@ impl AmmLiquidityCache {
             if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
                 inner.last_seen_tokens.pop_front();
             }
-            inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
 
             // Track the new observed validator (block producer)
             inner.last_seen_validators.push_back(beneficiary);
@@ -303,6 +302,24 @@ impl AmmLiquidityCache {
                 .copied()
                 .unique()
                 .collect();
+
+            // Include the current token of each recent validator, so a token set via
+            // `setValidatorToken` isn't dropped before that validator produces its next block.
+            let unique_tokens: Vec<Address> = inner
+                .last_seen_tokens
+                .iter()
+                .copied()
+                .chain(inner.unique_validators.iter().filter_map(|validator| {
+                    let token = *inner.validator_preferences.get(validator)?;
+                    Some(if token.is_zero() {
+                        DEFAULT_FEE_TOKEN
+                    } else {
+                        token
+                    })
+                }))
+                .unique()
+                .collect();
+            inner.unique_tokens = unique_tokens;
         }
 
         // Refresh the cached active hardfork from the latest seen header.
@@ -1070,5 +1087,54 @@ mod tests {
         let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
         assert!(cache.track_tokens(&[token_b, token_b]));
         assert_eq!(cache.inner.read().unique_tokens.len(), 2);
+    }
+
+    #[test]
+    fn test_new_validator_token_survives_other_validators_blocks() {
+        use alloy_consensus::Header;
+
+        let (validator_a, validator_b) = (Address::random(), Address::random());
+        let (old_token, new_token, token_b) =
+            (Address::random(), Address::random(), Address::random());
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                validator_preferences: [(validator_a, old_token), (validator_b, token_b)]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            })),
+        };
+        let provider = create_mock_provider();
+        let header = |number, beneficiary| {
+            SealedHeader::seal_slow(TempoHeader {
+                inner: Header {
+                    number,
+                    beneficiary,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
+        let (block_1, block_2, block_3) = (
+            header(1, validator_a),
+            header(2, validator_b),
+            header(3, validator_b),
+        );
+
+        cache
+            .on_new_blocks([&block_1, &block_2], &provider)
+            .unwrap();
+
+        // Validator A switches tokens, as applied by `on_new_state` and `track_tokens`.
+        cache
+            .inner
+            .write()
+            .validator_preferences
+            .insert(validator_a, new_token);
+        cache.track_tokens(&[new_token]);
+
+        // A block from another validator must not drop the new token.
+        cache.on_new_blocks([&block_3], &provider).unwrap();
+        assert!(cache.is_active_validator_token(&new_token));
     }
 }
