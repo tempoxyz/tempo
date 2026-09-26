@@ -2,6 +2,7 @@ use revm::{
     context_interface::cfg::{GasId, GasParams},
     primitives::OnceLock,
 };
+use std::sync::Arc;
 use tempo_chainspec::{
     constants::gas::{SSTORE_CREATE_COST, SSTORE_SET_COST},
     hardfork::TempoHardfork,
@@ -73,6 +74,53 @@ pub fn tempo_gas_params_with_amsterdam(
     }
 
     GasParams::new_spec(spec.into())
+}
+
+/// Gas charged by the inline key authorization precompile.
+pub(crate) fn key_authorization_gas_params(
+    spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
+    gas_params: &GasParams,
+) -> GasParams {
+    if !spec.is_t1() {
+        return gas_params.clone();
+    }
+
+    fn authorization_table(gas_params: &GasParams) -> GasParams {
+        let mut table = [0u64; 256];
+        for id in [
+            GasId::sstore_set_without_load_cost(),
+            GasId::warm_storage_read_cost(),
+        ] {
+            table[id.as_usize()] = gas_params.get(id);
+        }
+        GasParams::new(Arc::new(table))
+    }
+
+    // Match the protocol gas schedules without capturing the first caller's cfg.
+    let cached = if amsterdam_eip8037_enabled {
+        static TABLE: OnceLock<GasParams> = OnceLock::new();
+        TABLE.get_or_init(|| authorization_table(&amsterdam_gas_params()))
+    } else if spec.is_t7() {
+        static TABLE: OnceLock<GasParams> = OnceLock::new();
+        TABLE.get_or_init(|| authorization_table(&t7_gas_params()))
+    } else {
+        static TABLE: OnceLock<GasParams> = OnceLock::new();
+        TABLE.get_or_init(|| authorization_table(&t1_gas_params()))
+    };
+
+    // Custom configurations must not reuse or overwrite a protocol table.
+    if [
+        GasId::sstore_set_without_load_cost(),
+        GasId::warm_storage_read_cost(),
+    ]
+    .into_iter()
+    .all(|id| gas_params.get(id) == cached.get(id))
+    {
+        cached.clone()
+    } else {
+        authorization_table(gas_params)
+    }
 }
 
 /// Builds the T7 gas table: TIP-1000 creation costs, but the SSTORE creation
@@ -175,6 +223,51 @@ pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_key_authorization_gas_tables() {
+        for (spec, amsterdam, expected_set_cost) in [
+            (TempoHardfork::T7, false, 5_000),
+            (TempoHardfork::T1A, false, 250_000),
+            (TempoHardfork::T4, true, 20_000),
+            (TempoHardfork::T4, false, 250_000),
+            (TempoHardfork::T11, false, 5_000),
+        ] {
+            let params = tempo_gas_params_with_amsterdam(spec, amsterdam);
+            let auth = key_authorization_gas_params(spec, amsterdam, &params);
+            let again = key_authorization_gas_params(spec, amsterdam, &params);
+            assert!(std::ptr::eq(auth.table(), again.table()));
+            let mut expected = [0u64; 256];
+            expected[GasId::sstore_set_without_load_cost().as_usize()] = expected_set_cost;
+            expected[GasId::warm_storage_read_cost().as_usize()] = 100;
+            assert_eq!(auth.table(), &expected, "{spec:?}, amsterdam={amsterdam}");
+        }
+
+        let params = tempo_gas_params(TempoHardfork::T0);
+        let auth = key_authorization_gas_params(TempoHardfork::T0, false, &params);
+        assert!(std::ptr::eq(params.table(), auth.table()));
+    }
+
+    #[test]
+    fn test_key_authorization_custom_gas_does_not_change_cached_tables() {
+        let spec = TempoHardfork::T1A;
+        let params = tempo_gas_params(spec);
+        let standard = key_authorization_gas_params(spec, false, &params);
+        for id in [
+            GasId::sstore_set_without_load_cost(),
+            GasId::warm_storage_read_cost(),
+        ] {
+            let mut custom = params.clone();
+            custom.override_gas([(id, 123)]);
+            let auth = key_authorization_gas_params(spec, false, &custom);
+            let mut expected = *standard.table();
+            expected[id.as_usize()] = 123;
+            assert_eq!(auth.table(), &expected);
+            let restored = key_authorization_gas_params(spec, false, &params);
+            assert!(std::ptr::eq(standard.table(), restored.table()));
+            assert_eq!(restored.get(id), params.get(id));
+        }
+    }
 
     #[test]
     fn test_tempo_override_gas_params_are_cached() {

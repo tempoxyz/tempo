@@ -2807,6 +2807,82 @@ mod keychain {
         (evm, TempoEvmHandler::new())
     }
 
+    // Use a fresh journal for each authorization, but share the process-wide gas caches.
+    fn authorize_with_gas(spec: TempoHardfork, gas_limit: u64, set_cost: Option<u64>) -> u64 {
+        use tempo_precompiles::account_keychain::getKeyCall;
+
+        let (signer, user) = generate_keypair();
+        let key = Address::random();
+        let signed = sign_key_auth(
+            &signer,
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
+        );
+        let (mut evm, handler) = make_evm(
+            user,
+            key,
+            Some(signed),
+            spec,
+            Some(TempoSignature::Primitive(test_sig())),
+            false,
+        );
+        evm.ctx.cfg.gas_params = tempo_gas_params(spec);
+        if let Some(cost) = set_cost {
+            evm.ctx
+                .cfg
+                .gas_params
+                .override_gas([(GasId::sstore_set_without_load_cost(), cost)]);
+        }
+        evm.ctx.tx.inner.gas_limit = gas_limit;
+        let mut gas = InitialAndFloorGas::default();
+        handler
+            .validate_against_state_and_deduct_caller(&mut evm, &mut gas)
+            .unwrap();
+
+        let info = StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+            AccountKeychain::new()
+                .get_key(getKeyCall {
+                    account: user,
+                    keyId: key,
+                })
+                .unwrap()
+        });
+        if gas.initial_regular_gas == u64::MAX {
+            assert_eq!(info.expiry, 0, "OOG must roll back key authorization");
+        } else {
+            assert_eq!(info.keyId, key);
+            assert_eq!(info.expiry, u64::MAX);
+        }
+        gas.initial_regular_gas
+    }
+
+    #[test_case::test_case(true; "late_first")]
+    #[test_case::test_case(false; "early_first")]
+    fn test_key_authorization_gas_fork_order(late_first: bool) {
+        use TempoHardfork::{T0, T1, T1A, T1B, T7, T11};
+
+        let forks = if late_first {
+            [T11, T7, T1A, T1, T1B, T0, T1A]
+        } else {
+            [T1A, T1, T7, T11, T1B, T0, T1A]
+        };
+        for spec in forks {
+            let expected = if spec.is_t1() && !spec.is_t1b() {
+                250_675
+            } else {
+                0
+            };
+            assert_eq!(
+                authorize_with_gas(spec, 1_000_000, None),
+                expected,
+                "{spec:?}"
+            );
+        }
+        assert_eq!(authorize_with_gas(T1A, 1_000_000, Some(5_000)), 5_675);
+        assert_eq!(authorize_with_gas(T1A, 1_000_000, None), 250_675);
+        assert_eq!(authorize_with_gas(T1A, 100_000, None), u64::MAX);
+        assert_eq!(authorize_with_gas(T1B, 100_000, None), 0);
+    }
+
     #[test]
     fn test_key_authorization_invalid_signature_rejected() {
         let (_, user) = generate_keypair();
