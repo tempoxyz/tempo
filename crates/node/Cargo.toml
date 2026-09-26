@@ -71,6 +71,8 @@ jiff = { workspace = true, features = ["std"] }
 jsonrpsee.workspace = true
 reqwest.workspace = true
 metrics.workspace = true
+parking_lot.workspace = true
+schnellru.workspace = true
 sysinfo.workspace = true
 url.workspace = true
 serde.workspace = true

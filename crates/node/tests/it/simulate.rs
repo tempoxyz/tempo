@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, U256},
+    primitives::{Address, U256, address},
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
 };
@@ -63,13 +63,20 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     assert_eq!(meta.symbol, "TEST");
     assert_eq!(meta.currency, "USD");
 
-    // Construct a call that does not target TIP20
+    // Construct calls that target a non-TIP20 address and an undeployed TIP20 address
+    let undeployed_tip20 = address!("0x20C000000000000000000000ffffffffffffffff");
     let payload = json!({
         "blockStateCalls": [{
-            "calls": [{
-                "from": format!("{:#x}", Address::ZERO),
-                "to": format!("{:#x}", Address::random()),
-            }]
+            "calls": [
+                {
+                    "from": format!("{:#x}", Address::ZERO),
+                    "to": format!("{:#x}", Address::random()),
+                },
+                {
+                    "from": format!("{:#x}", Address::ZERO),
+                    "to": format!("{undeployed_tip20:#x}"),
+                },
+            ]
         }],
     });
 
@@ -79,7 +86,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
 
     assert!(
         response.token_metadata.is_empty(),
-        "expected empty token metadata for non-TIP-20 simulation"
+        "expected empty token metadata for non-TIP-20 and undeployed TIP-20 targets"
     );
 
     Ok(())

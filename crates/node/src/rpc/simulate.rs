@@ -6,6 +6,7 @@ use alloy_eips::BlockId;
 use alloy_primitives::Address;
 use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use parking_lot::Mutex;
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
 use reth_node_api::FullNodeTypes;
 use reth_node_builder::NodeAdapter;
@@ -17,16 +18,24 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing;
+use schnellru::{ByLength, LruMap};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::StorageActions,
     tip20::{ITIP20, TIP20Token},
+    tip20_factory::TIP20Factory,
 };
 use tempo_primitives::TempoAddressExt;
+
+/// Maximum number of TIP-20 tokens kept in the metadata cache.
+const TOKEN_METADATA_CACHE_SIZE: u32 = 1024;
 
 /// TIP-20 token metadata returned alongside simulation results.
 ///
@@ -48,7 +57,8 @@ pub struct Tip20TokenMetadata {
 pub struct TempoSimulateV1Response<B> {
     /// Standard simulation results (one per simulated block).
     pub blocks: Vec<SimulatedBlock<B>>,
-    /// Token metadata for TIP-20 addresses that appear in Transfer logs.
+    /// Token metadata for deployed TIP-20 tokens that are called, used as fee token, or
+    /// appear in Transfer logs.
     pub token_metadata: BTreeMap<Address, Tip20TokenMetadata>,
 }
 
@@ -73,23 +83,31 @@ pub trait TempoSimulateApi {
 #[derive(Debug, Clone)]
 pub struct TempoSimulate<N: FullNodeTypes<Types = TempoNode>> {
     eth_api: TempoEthApi<NodeAdapter<N>>,
+    /// Metadata of deployed TIP-20 tokens.
+    ///
+    /// Name, symbol and currency are only written when a token is created, so cached entries
+    /// never go stale.
+    token_metadata_cache: Arc<Mutex<LruMap<Address, Tip20TokenMetadata>>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
     pub fn new(eth_api: TempoEthApi<NodeAdapter<N>>) -> Self {
-        Self { eth_api }
+        Self {
+            eth_api,
+            token_metadata_cache: Arc::new(Mutex::new(LruMap::new(ByLength::new(
+                TOKEN_METADATA_CACHE_SIZE,
+            )))),
+        }
     }
 }
 
-/// Extract TIP-20 addresses from the simulation request's call targets.
-///
-/// This allows metadata resolution to start before simulation completes.
+/// Extract TIP-20 addresses from the simulation request's call targets and fee tokens.
 fn extract_tip20_targets(
     payload: &alloy_rpc_types_eth::simulate::SimulatePayload<
         tempo_alloy::rpc::TempoTransactionRequest,
     >,
-) -> Vec<Address> {
-    let mut addrs = std::collections::BTreeSet::new();
+) -> BTreeSet<Address> {
+    let mut addrs = BTreeSet::new();
     for block in &payload.block_state_calls {
         for call in &block.calls {
             // Standard `to` field
@@ -114,7 +132,7 @@ fn extract_tip20_targets(
             }
         }
     }
-    addrs.into_iter().collect()
+    addrs
 }
 
 #[async_trait::async_trait]
@@ -126,9 +144,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
         >,
         block: Option<alloy_eips::BlockId>,
     ) -> RpcResult<TempoSimulateV1Response<RpcBlock<tempo_alloy::TempoNetwork>>> {
-        // Pre-extract TIP-20 addresses from call targets so we can start
-        // metadata resolution concurrently with the simulation.
-        let prefetched = extract_tip20_targets(&payload);
+        let mut tokens = extract_tip20_targets(&payload);
 
         let block = block.unwrap_or_default();
         let base_block = self
@@ -139,36 +155,24 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
         let base_block_timestamp = base_block.timestamp();
         let block = BlockId::hash(base_block.hash());
 
-        // Run simulation and metadata prefetch concurrently against the same block.
-        let (sim_result, mut token_metadata) = tokio::join!(
-            self.eth_api.simulate_v1(payload, Some(block)),
-            self.resolve_token_metadata(prefetched, block, base_block_timestamp),
+        let blocks = self.eth_api.simulate_v1(payload, Some(block)).await?;
+
+        // Include tokens touched indirectly, e.g. via contract calls.
+        tokens.extend(
+            blocks
+                .iter()
+                .flat_map(|block| &block.calls)
+                .flat_map(|call| &call.logs)
+                .filter(|log| {
+                    log.address().is_tip20()
+                        && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
+                })
+                .map(|log| log.address()),
         );
 
-        let blocks = sim_result?;
-
-        // Scan simulation logs for any additional TIP-20 addresses not in the
-        // prefetched set (e.g. tokens touched indirectly via contract calls).
-        let mut extra = HashSet::new();
-        for sim_block in &blocks {
-            for call in &sim_block.calls {
-                for log in &call.logs {
-                    if log.address().is_tip20()
-                        && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
-                        && !token_metadata.contains_key(&log.address())
-                    {
-                        extra.insert(log.address());
-                    }
-                }
-            }
-        }
-
-        if !extra.is_empty() {
-            let extra_metadata = self
-                .resolve_token_metadata(extra.into_iter().collect(), block, base_block_timestamp)
-                .await;
-            token_metadata.extend(extra_metadata);
-        }
+        let token_metadata = self
+            .resolve_token_metadata(tokens, block, base_block_timestamp)
+            .await;
 
         Ok(TempoSimulateV1Response {
             blocks,
@@ -178,15 +182,32 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
-    /// Resolves TIP-20 token metadata for the given addresses using state at the target block.
+    /// Resolves TIP-20 token metadata for the given addresses, reading tokens missing from the
+    /// cache from state at the target block.
+    ///
+    /// Addresses without a deployed token are skipped.
     async fn resolve_token_metadata(
         &self,
-        addresses: Vec<Address>,
+        tokens: BTreeSet<Address>,
         block: BlockId,
         timestamp: u64,
     ) -> BTreeMap<Address, Tip20TokenMetadata> {
-        if addresses.is_empty() {
-            return BTreeMap::new();
+        let mut metadata = BTreeMap::new();
+        let mut missing = Vec::new();
+        {
+            let mut cache = self.token_metadata_cache.lock();
+            for token in tokens {
+                match cache.get(&token) {
+                    Some(cached) => {
+                        metadata.insert(token, cached.clone());
+                    }
+                    None => missing.push(token),
+                }
+            }
+        }
+
+        if missing.is_empty() {
+            return metadata;
         }
 
         let result = self
@@ -196,54 +217,60 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
                 let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
                 let mut db = StateProviderDatabase::new(state);
 
-                let metadata =
+                let resolved =
                     db.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
-                        let mut metadata = BTreeMap::new();
-
-                        for addr in &addresses {
-                            let result = (|| {
-                                let token = TIP20Token::from_address(*addr)?;
-                                Ok::<_, TempoPrecompileError>((
-                                    token.name()?,
-                                    token.symbol()?,
-                                    token.currency()?,
-                                ))
-                            })();
-
-                            match result {
-                                Ok((name, symbol, currency)) => {
-                                    metadata.insert(
-                                        *addr,
-                                        Tip20TokenMetadata {
-                                            name,
-                                            symbol,
-                                            currency,
-                                        },
-                                    );
-                                }
+                        missing
+                            .into_iter()
+                            .filter_map(|token| match read_token_metadata(token) {
+                                Ok(metadata) => metadata.map(|metadata| (token, metadata)),
                                 Err(e) => {
                                     tracing::warn!(
-                                        token = %addr,
+                                        %token,
                                         error = %e,
                                         "failed to resolve TIP-20 metadata, skipping"
                                     );
+                                    None
                                 }
-                            }
-                        }
-
-                        metadata
+                            })
+                            .collect::<Vec<_>>()
                     });
 
-                Ok(metadata)
+                Ok(resolved)
             })
             .await;
 
         match result {
-            Ok(m) => m,
+            Ok(resolved) => {
+                let mut cache = self.token_metadata_cache.lock();
+                for (token, token_metadata) in resolved {
+                    cache.insert(token, token_metadata.clone());
+                    metadata.insert(token, token_metadata);
+                }
+            }
             Err(e) => {
                 tracing::warn!(error = ?e, "failed to resolve token metadata");
-                BTreeMap::new()
             }
         }
+
+        metadata
     }
+}
+
+/// Reads the metadata of the TIP-20 token at `address`, returning `None` if no token is
+/// deployed there.
+///
+/// Must be called within a storage context.
+fn read_token_metadata(
+    address: Address,
+) -> Result<Option<Tip20TokenMetadata>, TempoPrecompileError> {
+    if !TIP20Factory::new().is_tip20(address)? {
+        return Ok(None);
+    }
+
+    let token = TIP20Token::from_address_unchecked(address);
+    Ok(Some(Tip20TokenMetadata {
+        name: token.name()?,
+        symbol: token.symbol()?,
+        currency: token.currency()?,
+    }))
 }
