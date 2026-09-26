@@ -189,9 +189,16 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
             return BTreeMap::new();
         }
 
+        // Like `eth_simulateV1` itself, take a blocking IO permit so concurrent requests can't
+        // spawn an unbounded number of blocking tasks.
+        let Ok(permit) = self.eth_api.acquire_owned_blocking_io().await else {
+            return BTreeMap::new();
+        };
+
         let result = self
             .eth_api
             .spawn_blocking_io_fut(async move |this| {
+                let _permit = permit;
                 let state = this.state_at_block_id(block).await?;
                 let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
                 let mut db = StateProviderDatabase::new(state);
