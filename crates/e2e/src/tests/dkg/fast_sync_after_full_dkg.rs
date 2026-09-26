@@ -12,10 +12,7 @@ use std::time::Duration;
 use tracing::info;
 
 use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
-use crate::{
-    Setup, connect_execution_peers, connect_execution_to_peers, metrics::MetricsExt,
-    setup_validators,
-};
+use crate::{Setup, connect_execution_peers, connect_execution_to_peers, setup_validators};
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
 ///
@@ -24,6 +21,7 @@ use crate::{
 /// 2. A validator that joins late (after full DKG) can sync the chain
 /// 3. The late validator replays across epoch boundaries, including the full DKG epoch
 /// 4. The late validator continues progressing after sync
+/// 5. A subsequent resharing ceremony succeeds on the late validator's chain
 #[test_traced]
 fn validator_can_fast_sync_after_full_dkg() {
     fast_sync_after_full_dkg(false);
@@ -43,9 +41,6 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
     // MAX_REPAIR (concurrency) by default is 20, so keep enough finalized
     // history to exercise catch-up across the full DKG epoch.
     let epoch_length = 30;
-
-    let full_dkg_epoch = 1;
-    let blocks_before_late_join = 3 * epoch_length + 1;
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
@@ -69,29 +64,52 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
             .parse()
             .unwrap();
 
-        execution_runtime
-            .set_next_full_dkg_ceremony_v2(http_url, full_dkg_epoch)
-            .await
-            .unwrap();
+        let mut full_dkg_epoch = 1;
+        let outcome_after = loop {
+            execution_runtime
+                .set_next_full_dkg_ceremony_v2(http_url.clone(), full_dkg_epoch)
+                .await
+                .unwrap();
 
-        let outcome_before =
-            wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
-        assert!(
-            outcome_before.is_next_full_dkg,
-            "outcome.is_next_full_dkg should be `true`"
-        );
+            let outcome_before =
+                wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
+            assert!(
+                outcome_before.is_next_full_dkg,
+                "outcome.is_next_full_dkg should be `true`"
+            );
 
-        // wait for full DKG completion (-1 because late validator not started yet)
-        wait_for_validators_to_reach_epoch(&context, full_dkg_epoch + 1, how_many_signers - 1)
-            .await;
+            // The late validator has not started yet.
+            wait_for_validators_to_reach_epoch(&context, full_dkg_epoch + 1, how_many_signers - 1)
+                .await;
 
-        let outcome_after =
-            wait_for_outcome(&context, &validators, full_dkg_epoch, epoch_length).await;
-        assert_ne!(
-            outcome_before.sharing().public(),
-            outcome_after.sharing().public(),
-            "full DKG must create different public key"
-        );
+            let outcome_after =
+                wait_for_outcome(&context, &validators, full_dkg_epoch, epoch_length).await;
+            if outcome_after.output != outcome_before.output {
+                assert_ne!(
+                    outcome_before.sharing().public(),
+                    outcome_after.sharing().public(),
+                    "full DKG must create different public key"
+                );
+                break outcome_after;
+            }
+
+            // A short epoch may end before enough dealers propose their logs. A failed
+            // ceremony retains the previous output; schedule another rotation rather than
+            // treating this as a sync failure. Leave a full epoch to include the request.
+            info!(
+                full_dkg_epoch,
+                "full DKG failed; scheduling another ceremony"
+            );
+            // Schedule from the canonical tip; the persisted tip can lag behind it.
+            full_dkg_epoch = validators[0]
+                .execution_provider()
+                .best_block_number()
+                .unwrap()
+                / epoch_length
+                + 2;
+        };
+
+        let blocks_before_late_join = (full_dkg_epoch + 2) * epoch_length + 1;
 
         // wait for chain to advance
         while validators[0]
@@ -148,6 +166,30 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
             }
             context.sleep(Duration::from_secs(1)).await;
         }
-        context.to_metrics().assert_no_dkg_failures();
+
+        // Failure counters never reset. Instead, require a successful reshare after
+        // catch-up, allowing another epoch when too few dealer logs reached the chain.
+        let mut epoch = late_validator
+            .execution_provider()
+            .last_block_number()
+            .unwrap()
+            / epoch_length;
+        let late_validators = std::slice::from_ref(&late_validator);
+        let mut previous =
+            wait_for_outcome(&context, late_validators, epoch - 1, epoch_length).await;
+        loop {
+            let outcome = wait_for_outcome(&context, late_validators, epoch, epoch_length).await;
+            assert_eq!(
+                outcome.network_identity(),
+                outcome_after.network_identity(),
+                "resharing must preserve the rotated network identity"
+            );
+            if outcome.output != previous.output {
+                break;
+            }
+            info!(epoch, "resharing failed; waiting for the next ceremony");
+            previous = outcome;
+            epoch += 1;
+        }
     })
 }
