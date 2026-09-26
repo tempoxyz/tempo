@@ -11,7 +11,7 @@ use crate::{
     RECEIVE_POLICY_GUARD_ADDRESS,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip20::{Recipient, TIP20Token},
 };
 use alloy::{
@@ -238,7 +238,14 @@ fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMod
     let receipt = ClaimReceiptV1::try_from(bytes)?;
     let receiver = AddressRegistry::new()
         .resolve_recipient(receipt.recipient)
-        .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
+        .map_err(|err| {
+            // (T12+) OOG and storage failures must propagate instead of reverting as a bad receipt.
+            if err.is_system_error() && StorageCtx.spec().is_t12() {
+                err
+            } else {
+                ReceivePolicyGuardError::invalid_claim_address().into()
+            }
+        })?;
     let recovery_mode = RecoveryMode::from(&receipt, receiver);
 
     Ok((receipt, receiver, recovery_mode))
@@ -248,9 +255,10 @@ fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMod
 mod tests {
     use super::*;
     use crate::{
-        address_registry::AddressRegistry,
+        ADDRESS_REGISTRY_ADDRESS,
+        address_registry::{self, AddressRegistry},
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, StorageKey, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
         tip20::{BURN_BLOCKED_ROLE, ITIP20},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -1121,5 +1129,70 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_virtual_receipt_resolution_propagates_system_errors() -> eyre::Result<()> {
+        let admin = Address::random();
+        let originator = Address::random();
+        let amount = U256::from(123u64);
+
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            storage.set_timestamp(U256::from(1_728_009u64));
+
+            let (receipt, master_slot) = StorageCtx::enter(&mut storage, || -> eyre::Result<_> {
+                let (master_id, virtual_addr) =
+                    register_virtual_master(&mut AddressRegistry::new())?;
+                let mut token = TIP20Setup::create("T", "T", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, BURN_BLOCKED_ROLE)
+                    .with_mint(originator, amount)
+                    .apply()?;
+                block_all_senders(VIRTUAL_MASTER, VIRTUAL_MASTER)?;
+                token.transfer(
+                    originator,
+                    ITIP20::transferCall {
+                        to: virtual_addr,
+                        amount,
+                    },
+                )?;
+
+                let receipt = ClaimReceiptV1::new(
+                    token.address(),
+                    VIRTUAL_MASTER,
+                    originator,
+                    virtual_addr,
+                    1_728_009,
+                    1,
+                    BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                );
+                let master_slot = master_id.mapping_slot(address_registry::slots::DATA);
+                Ok((Bytes::from(receipt.abi_encode()), master_slot))
+            })?;
+
+            // Simulate a storage failure while resolving the virtual recipient's master.
+            storage.fail_next_sload_at(ADDRESS_REGISTRY_ADDRESS, master_slot);
+
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut guard = ReceivePolicyGuard::new();
+                let claim = guard.claim(VIRTUAL_MASTER, VIRTUAL_MASTER, receipt.clone());
+                let burn = guard.burn_blocked_receipt(admin, receipt);
+
+                for err in [claim.unwrap_err(), burn.unwrap_err()] {
+                    if spec.is_t12() {
+                        assert!(matches!(err, TempoPrecompileError::Fatal(_)), "{err:?}");
+                    } else {
+                        assert_eq!(err, ReceivePolicyGuardError::invalid_claim_address().into());
+                    }
+                }
+
+                Ok(())
+            })?;
+        }
+
+        Ok(())
     }
 }
