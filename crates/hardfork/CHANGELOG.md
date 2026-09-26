@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-hardfork@1.12.0`
+
+### Minor Changes
+
+- Add T14 hardfork support with a configurable `t14Time` genesis activation timestamp. T14 remains unscheduled on mainnet and Moderato. (by @ShanedaSilva, [#7917](https://github.com/tempoxyz/tempo/pull/7917))
+
 ## `tempo-hardfork@1.11.0`
 
 ### Minor Changes
