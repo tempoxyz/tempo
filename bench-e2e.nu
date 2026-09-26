@@ -1346,9 +1346,22 @@ def "main summarize" [
 def "main render-txgen-spec" [
     --preset: string = ""                              # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
+    --accounts: int = 1000                             # Public-mix user count
+    --tps: int = 50000                                  # Public-mix target TPS
+    --duration: int = 90                                # Public-mix duration in seconds
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
-    print $spec.spec_path
+    if $spec.scenario_id == "public-mix" {
+        let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
+        if $window_ms < 1 or $tps < 1 or $duration < 1 {
+            error make {msg: "Public mix requires positive TPS, duration, and zone sizing window"}
+        }
+        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
+        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        print (txgen-prepare-public-mix-preset $spec.spec_path ($tps * $duration) $accounts $zones 1337 --out-dir $out_dir)
+    } else {
+        print $spec.spec_path
+    }
 }
 
 # Run the e2e sequence on one runner.
