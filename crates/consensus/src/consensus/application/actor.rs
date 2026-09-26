@@ -35,6 +35,7 @@ use commonware_runtime::{
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
+use futures::future::BoxFuture;
 use rand_core::{CryptoRng, Rng};
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -285,7 +286,7 @@ impl Inner<Init> {
         }
 
         let proposal_block = {
-            let mut proposal = Box::pin(async {
+            let mut proposal: BoxFuture<'_, eyre::Result<Block>> = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
                 //
                 // >On leader recovery, marshal may already hold a verified block
@@ -307,16 +308,17 @@ impl Inner<Init> {
                 let already_verified = OptionFuture::some(self.marshal.get_verified(round));
                 futures::pin_mut!(already_verified);
 
-                let mut proposal = Box::pin(self.clone().propose(
-                    &context,
-                    BuildProposalArgs {
-                        propose_start,
-                        parent_view,
-                        parent_digest,
-                        round,
-                        leader,
-                    },
-                ));
+                let mut proposal: BoxFuture<'_, eyre::Result<(Block, Option<ProposalReturn>)>> =
+                    Box::pin(self.clone().propose(
+                        &context,
+                        BuildProposalArgs {
+                            propose_start,
+                            parent_view,
+                            parent_digest,
+                            round,
+                            leader,
+                        },
+                    ));
 
                 let proposal_result = tokio::select! {
                     biased;

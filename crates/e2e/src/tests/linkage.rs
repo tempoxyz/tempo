@@ -20,7 +20,7 @@ fn only_good_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup::new().epoch_length(100).seed(seed);
-        let _first = run(setup.clone(), |metrics| metrics.consensus_at_height(5) > 0);
+        let _first = run(setup, |metrics| metrics.consensus_at_height(5) > 0);
 
         // FIXME(janis): there is some non-determinism and hence the runs are
         // sometimes flaky.
@@ -60,7 +60,7 @@ fn many_bad_links() {
             .linkage(link.clone())
             .epoch_length(100);
 
-        let _first = run(setup.clone(), |metrics| metrics.consensus_at_height(5) > 0);
+        let _first = run(setup, |metrics| metrics.consensus_at_height(5) > 0);
 
         // FIXME(janis): the events are currently not fully deterministic, so
         // two runs will not reproduce the exact same audit.
