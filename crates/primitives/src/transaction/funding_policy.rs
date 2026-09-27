@@ -285,6 +285,13 @@ mod tests {
             serde_json::to_value(FundingPolicyAuthorization::Inline(policy.clone())).unwrap();
         assert!(value["rules"].get("sources").unwrap().is_object());
         assert!(value["rules"].get("routes").is_none());
+        let route = &policy.rules.routes[0];
+        let source = &value["rules"]["sources"][route.token.to_string()][0];
+        assert_eq!(
+            source["to"],
+            serde_json::to_value(route.sources[0].target).unwrap()
+        );
+        assert!(source.get("target").is_none());
         assert_eq!(
             serde_json::from_value::<FundingPolicyAuthorization>(value).unwrap(),
             FundingPolicyAuthorization::Inline(policy)
