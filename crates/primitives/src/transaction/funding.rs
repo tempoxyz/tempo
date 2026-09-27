@@ -13,7 +13,6 @@ use alloy_rlp::{Buf, Decodable, Encodable};
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct FundingSource {
     /// Contract or precompile implementing IFundingSource.
-    #[cfg_attr(feature = "serde", serde(rename = "to"))]
     pub target: Address,
     /// Signed source arguments, including any input cap.
     pub data: Bytes,
@@ -178,10 +177,10 @@ mod tests {
 
     #[test]
     #[cfg(feature = "serde")]
-    fn funding_source_json_uses_to() {
+    fn funding_source_json_uses_target() {
         let source = requirement().sources.remove(0);
         let json = serde_json::json!({
-            "to": "0x0202020202020202020202020202020202020202",
+            "target": "0x0202020202020202020202020202020202020202",
             "data": "0xab",
         });
         assert_eq!(serde_json::to_value(&source).unwrap(), json);
@@ -191,7 +190,7 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<FundingSource>(serde_json::json!({
-                "target": "0x0202020202020202020202020202020202020202",
+                "address": "0x0202020202020202020202020202020202020202",
                 "data": "0xab",
             }))
             .is_err()
