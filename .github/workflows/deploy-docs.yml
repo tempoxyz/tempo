@@ -18,7 +18,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        uses: tempoxyz/gh-actions/actions/secure-runner@ac946e06f5f59daeebc8d33d8e7b9c9501e2ee98 # 2026-09-28T13-48-02Z-ac946e06
 
       - name: Deploy to Vercel
         run: |

@@ -17,7 +17,8 @@ use reth_primitives_traits::{
 use reth_provider::BlockReaderIdExt;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
-    AccountReader, BytecodeReader, StateProvider, StateProviderBox, StateProviderFactory,
+    AccountReader, BytecodeReader, EvmStateProviderAdapter, StateProvider, StateProviderBox,
+    StateProviderFactory,
     errors::{ProviderError, ProviderResult},
 };
 use reth_transaction_pool::{
@@ -101,6 +102,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
+    /// Minimum fee cap accepted by this chain's pool.
+    minimum_fee_cap: u128,
     /// Addresses checked against transaction senders and direct call targets.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
@@ -147,6 +150,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             disable_fee_amm_check: false,
+            minimum_fee_cap: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
@@ -157,6 +161,15 @@ where
     /// Configures whether to skip the FeeAMM liquidity check during pool admission.
     pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
         self.disable_fee_amm_check = disable;
+        self
+    }
+
+    /// Sets the minimum fee cap for chains with a custom protocol fee policy.
+    ///
+    /// Tempo defaults to the T7 fee floor. Zero-base-fee chains such as Zones can opt into
+    /// accepting zero-fee transactions without disabling any other admission checks.
+    pub const fn with_minimum_fee_cap(mut self, minimum_fee_cap: u128) -> Self {
+        self.minimum_fee_cap = minimum_fee_cap;
         self
     }
 
@@ -352,7 +365,9 @@ where
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
             &cached_state,
-            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
+            StateProviderDatabase::new(
+                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+            ),
         );
         let evm_env = self.cached_evm_env.read().clone();
 
@@ -413,9 +428,9 @@ where
             );
         }
 
-        // T7 is active on all supported networks. Fees below its floor can never become
-        // executable; fees below the current dynamic base fee can wait for block selection.
-        if transaction.max_fee_per_gas() < u128::from(TEMPO_T7_BASE_FEE_FLOOR) {
+        // Fees below the chain's configured floor can never become executable; fees below
+        // the current dynamic base fee can wait for block selection.
+        if transaction.max_fee_per_gas() < self.minimum_fee_cap {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
@@ -820,10 +835,13 @@ pub trait ConfigureTempoPoolEvm:
 {
     fn pool_evm<'a>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        db: StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
         evm_env: EvmEnvFor<Self>,
     ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        DB = StateCacheDb<
+            'a,
+            StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>,
+        >,
     > + 'a;
 }
 
@@ -835,15 +853,20 @@ where
                 EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
             >,
         > + 'static,
-    for<'a> EvmFor<T, StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>>:
-        TempoPoolValidationEvm,
+    for<'a> EvmFor<
+        T,
+        StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
+    >: TempoPoolValidationEvm,
 {
     fn pool_evm<'a>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        db: StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
         evm_env: EvmEnvFor<Self>,
     ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        DB = StateCacheDb<
+            'a,
+            StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>,
+        >,
     > + 'a {
         let mut evm = self.evm_with_env(db, evm_env);
         evm.configure_for_pool();
@@ -2161,6 +2184,33 @@ mod tests {
                             )))
                 ),
                 "expected floor rejection, got {outcome:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_zero_fee_cap_with_custom_floor() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for transaction in [
+            TxBuilder::aa(Address::random())
+                .max_fee(0)
+                .max_priority_fee(0)
+                .build(),
+            TxBuilder::eip1559(Address::random())
+                .max_fee(0)
+                .max_priority_fee(0)
+                .build_eip1559(),
+        ] {
+            let validator = setup_validator(&transaction, current_time).with_minimum_fee_cap(0);
+            let outcome = validator
+                .validate_transaction(TransactionOrigin::External, transaction)
+                .await;
+            assert!(
+                matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                "zero fee cap should be admitted with a zero floor: {outcome:?}"
             );
         }
     }
