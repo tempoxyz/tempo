@@ -51,8 +51,6 @@ alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
 minicbor = { version = "=2.3.0", features = ["alloc"] }
 p256.workspace = true
-# `serde` must be enabled here: activating it only through `tempo-precompiles/serde` builds p384
-# with its serde cfg but without the optional `serdect` dependency.
 p384 = { workspace = true, features = ["serde"] }
 rand_08.workspace = true
 proptest.workspace = true
