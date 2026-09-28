@@ -33,7 +33,7 @@ impl NativeMultisig {
     }
 
     pub fn derive_account(
-        &mut self,
+        &self,
         salt: B256,
         threshold: u8,
         owners: Vec<INativeMultisig::MultisigOwner>,
