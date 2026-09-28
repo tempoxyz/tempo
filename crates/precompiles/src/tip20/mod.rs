@@ -12,6 +12,9 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
+#[cfg(test)]
+mod burn_at_tests;
+
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
@@ -139,9 +142,11 @@ pub const ISSUER_ROLE: B256 = B256::new(Keccak256::new().update(b"ISSUER_ROLE").
 /// Role hash that authorizes burning tokens from blocked accounts.
 pub const BURN_BLOCKED_ROLE: B256 =
     B256::new(Keccak256::new().update(b"BURN_BLOCKED_ROLE").finalize());
+/// Role hash that authorizes burning tokens from any unprotected account.
+pub const BURN_AT_ROLE: B256 = B256::new(Keccak256::new().update(b"BURN_AT_ROLE").finalize());
 
 #[rustfmt::skip]
-/// System custody addresses added to burn-blocked protection at each hardfork.
+/// System custody addresses protected from both privileged burn functions at each hardfork.
 pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
     (TempoHardfork::T5, &[TIP20_CHANNEL_RESERVE_ADDRESS]),
@@ -253,6 +258,11 @@ impl TIP20Token {
     /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
     pub fn burn_blocked_role() -> B256 {
         BURN_BLOCKED_ROLE
+    }
+
+    /// Returns the `BURN_AT_ROLE` constant (TIP-1006).
+    pub fn burn_at_role() -> B256 {
+        BURN_AT_ROLE
     }
 
     /// Returns the token balance of `account`.
@@ -627,14 +637,7 @@ impl TIP20Token {
         self.check_role(msg_sender, BURN_BLOCKED_ROLE)?;
 
         if check_protected {
-            // Prevent burning from system custody addresses to protect accounting invariants.
-            if PROTECTED
-                .iter()
-                .any(|(hf, addr)| hardfork >= *hf && addr.contains(&owner))
-                || (hardfork.is_t5() && owner == self.address)
-            {
-                return Err(TIP20Error::protected_address().into());
-            }
+            self.check_burn_address(owner)?;
         }
 
         // Check if the address is blocked from transferring (sender authorization)
@@ -663,6 +666,45 @@ impl TIP20Token {
         self.set_total_supply(new_supply)?;
 
         self.emit_event(TIP20Event::burn_blocked(owner, amount))
+    }
+
+    /// Burns from an unprotected account without checking its transfer policy (TIP-1006).
+    ///
+    /// Requires `BURN_AT_ROLE` and an unpaused token. When `from` is the transaction origin,
+    /// the burn consumes the access key's spending limit even if a bridge is the caller.
+    pub fn burn_at(&mut self, msg_sender: Address, call: ITIP20::burnAtCall) -> Result<()> {
+        self.check_not_paused()?;
+        self.check_role(msg_sender, BURN_AT_ROLE)?;
+        self.check_burn_address(call.from)?;
+        self.check_and_update_spending_limit(call.from, call.amount)?;
+
+        self._transfer(call.from, &Recipient::direct(Address::ZERO), call.amount)?;
+        let total_supply = self.total_supply()?;
+        let new_supply =
+            total_supply
+                .checked_sub(call.amount)
+                .ok_or(TIP20Error::insufficient_balance(
+                    total_supply,
+                    call.amount,
+                    self.address,
+                ))?;
+        self.set_total_supply(new_supply)?;
+
+        self.emit_event(TIP20Event::burn_at(msg_sender, call.from, call.amount))
+    }
+
+    /// Rejects pooled custody balances whose destruction would leave outstanding claims unbacked.
+    fn check_burn_address(&self, from: Address) -> Result<()> {
+        let hardfork = self.storage.spec();
+        if PROTECTED
+            .iter()
+            .any(|(hf, addresses)| hardfork >= *hf && addresses.contains(&from))
+            || (hardfork.is_t5() && from == self.address)
+            || (hardfork.is_t12() && from.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX))
+        {
+            return Err(TIP20Error::protected_address().into());
+        }
+        Ok(())
     }
 
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
