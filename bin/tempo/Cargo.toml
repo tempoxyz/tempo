@@ -131,7 +131,7 @@ required-features = ["localnet"]
 
 [features]
 expiring-nonce-no-persistence = ["tempo-node/expiring-nonce-no-persistence"]
-default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
+default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global", "expiring-nonce-no-persistence"]
 
 localnet = ["dep:nix"]
 
