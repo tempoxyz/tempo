@@ -12,7 +12,15 @@ use tempo_node::rpc::consensus::{
 use tokio::sync::broadcast;
 use tracing::{Level, instrument};
 
-const BROADCAST_CHANNEL_SIZE: usize = 1024;
+/// Capacity in finalized blocks (one event per block); at ~2 blocks/s this is about a minute.
+/// tokio rounds it up to the next power of two, so keep it one. The ring only fills while a
+/// subscriber's RPC sink is backpressured, because each subscription task forwards an event
+/// before receiving the next and jsonrpsee already buffers up to 1024 messages per connection.
+/// tokio drops a slot's value only after every receiver has read it, so a subscriber that stops
+/// reading keeps up to this many full blocks alive. A lagged receiver resumes at the oldest
+/// retained slot, so this also bounds how stale its replay is. Subscribers skip on lag; clients
+/// that need every block can backfill with `consensus_getFinalization`.
+const BROADCAST_CHANNEL_SIZE: usize = 128;
 
 /// Internal shared state for the feed.
 pub(super) struct FeedState {
