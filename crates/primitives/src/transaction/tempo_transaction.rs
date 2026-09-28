@@ -963,6 +963,8 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
                 .map(|mut entries| {
                     for entry in &mut entries {
                         entry.slippage_bps = entry.slippage_bps.map(|bps| bps % 10_001);
+                        entry.policy_rules =
+                            entry.policy_rules.take().filter(|rules| !rules.is_empty());
                     }
                     entries
                 });
@@ -1149,6 +1151,23 @@ mod tests {
                 assert!(remaining.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn arbitrary_empty_funding_policy_rules() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        let mut input = vec![0; 156];
+        input[99] = 1; // Include require_funds.
+        input[100] = 1; // Include one requirement.
+        input[155] = 1; // Include policy_rules with exhausted input.
+        let tx = TempoTransaction::arbitrary(&mut Unstructured::new(&input)).unwrap();
+        assert_eq!(tx.require_funds.as_ref().unwrap().len(), 1);
+        let encoded = alloy_rlp::encode(&tx);
+        assert_eq!(
+            TempoTransaction::decode(&mut encoded.as_slice()).unwrap(),
+            tx
+        );
     }
 
     fn rlp_item_end(encoded: &[u8], start: usize) -> usize {
