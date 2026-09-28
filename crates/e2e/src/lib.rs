@@ -121,6 +121,10 @@ pub struct ConsensusNodeConfig {
 /// The test setup run by [`run`].
 #[derive(Clone)]
 pub struct Setup {
+    /// T12 activation override for transition tests; disables later forks when set.
+    /// `None` preserves the fixture schedule.
+    pub t12_time: Option<u64>,
+
     /// How many signing validators to launch.
     pub how_many_signers: u32,
 
@@ -151,6 +155,7 @@ pub struct Setup {
 impl Setup {
     pub fn new() -> Self {
         Self {
+            t12_time: None,
             how_many_signers: 4,
             how_many_verifiers: 0,
             seed: 0,
@@ -163,6 +168,13 @@ impl Setup {
             proposal_return_budget: Duration::from_millis(300),
             fee_recipient: Address::ZERO,
             with_gossip: false,
+        }
+    }
+
+    pub fn t12_time(self, t12_time: u64) -> Self {
+        Self {
+            t12_time: Some(t12_time),
+            ..self
         }
     }
 
@@ -234,6 +246,7 @@ impl Default for Setup {
 pub async fn setup_validators(
     context: &mut Context,
     Setup {
+        t12_time,
         epoch_length,
         how_many_signers,
         how_many_verifiers,
@@ -275,6 +288,7 @@ pub async fn setup_validators(
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
+        .with_t12_time(t12_time)
         .with_validators(validators.clone())
         .launch()
         .unwrap();
