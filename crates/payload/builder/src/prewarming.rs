@@ -4,6 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+use crate::prewarm_diagnostics::{PrewarmDiagnostics, PrewarmObservation};
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
@@ -78,6 +79,10 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        ctx.prewarm
+            .diagnostics
+            .worker_threads
+            .store(pool.current_num_threads() as u64, Ordering::Relaxed);
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -99,18 +104,36 @@ impl BestTransactionsPrewarming {
                 };
 
                 let parallel = ctx.prewarm.parallel;
+                let payment = if ctx.prewarm.is_t5 {
+                    tx.transaction.is_payment()
+                } else {
+                    tx.transaction.inner().is_payment_v1()
+                };
+                let observation = ctx.prewarm.diagnostics.schedule(
+                    payment,
+                    tx.gas_limit().min(
+                        ctx.prewarm
+                            .evm_env
+                            .cfg_env
+                            .tx_gas_limit_cap
+                            .unwrap_or(u64::MAX),
+                    ),
+                );
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
 
                 if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                    let _ = ctx.transactions_tx.send(Some(PrewarmedTransaction {
+                        tx: tx.clone(),
+                        replay: None,
+                        observation: Some(observation.clone()),
+                    }));
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    let tx =
+                        Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset, observation);
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -135,16 +158,29 @@ impl BestTransactionsPrewarming {
                         old_rx,
                         new_tx,
                     } => {
+                        let diagnostic_start = ctx.prewarm.diagnostics.now();
+                        ctx.prewarm
+                            .diagnostics
+                            .invalidations
+                            .fetch_add(1, Ordering::Relaxed);
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
                         for tx in old_rx {
+                            ctx.prewarm
+                                .diagnostics
+                                .drained
+                                .fetch_add(1, Ordering::Relaxed);
                             if let Some(tx) = tx
                                 && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
                             {
                                 let _ = ctx.transactions_tx.send(Some(tx));
                             }
                         }
+                        ctx.prewarm.diagnostics.invalidation_ns.fetch_add(
+                            ctx.prewarm.diagnostics.now() - diagnostic_start,
+                            Ordering::Relaxed,
+                        );
                     }
                     BestTransactionsCommand::NoUpdates => {
                         ctx.best_txs.no_updates();
@@ -173,10 +209,12 @@ impl BestTransactionsPrewarming {
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
+        observation: Arc<PrewarmObservation>,
     ) -> PrewarmedTransaction
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
+        prewarm.diagnostics.start(&observation);
         let replay = WorkerPool::with_worker_mut(|worker| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
@@ -196,6 +234,7 @@ impl BestTransactionsPrewarming {
             let result = match evm.transact_raw(tx_env) {
                 Ok(result) => result.result,
                 Err(err) => {
+                    observation.worker_result.store(1, Ordering::Relaxed);
                     // Discard actions recorded by the failed transaction before reusing this worker.
                     evm.clear_actions();
                     trace!(
@@ -207,6 +246,9 @@ impl BestTransactionsPrewarming {
                     return None;
                 }
             };
+            observation
+                .worker_result
+                .store(if result.is_success() { 3 } else { 2 }, Ordering::Relaxed);
 
             trace!(target: "payload_builder", "Prewarmed transaction");
 
@@ -242,7 +284,14 @@ impl BestTransactionsPrewarming {
             }))
         });
 
-        PrewarmedTransaction { tx, replay }
+        observation
+            .finished
+            .store(prewarm.diagnostics.now(), Ordering::Release);
+        PrewarmedTransaction {
+            tx,
+            replay,
+            observation: Some(observation),
+        }
     }
 }
 
@@ -320,11 +369,16 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    pub(crate) observation: Option<Arc<PrewarmObservation>>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self {
+            tx,
+            replay: None,
+            observation: None,
+        }
     }
 }
 
@@ -344,6 +398,8 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    diagnostics: Arc<PrewarmDiagnostics>,
+    is_t5: bool,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -357,6 +413,8 @@ where
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
+        diagnostics: Arc<PrewarmDiagnostics>,
+        is_t5: bool,
     ) -> Self {
         Self {
             provider,
@@ -366,6 +424,8 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            diagnostics,
+            is_t5,
         }
     }
 
@@ -721,6 +781,13 @@ mod tests {
             evm_env,
             stop: Arc::default(),
             parallel,
+            diagnostics: Arc::new(PrewarmDiagnostics::new(
+                1,
+                parent_header.hash(),
+                parallel,
+                30_000_000,
+            )),
+            is_t5: true,
         }
     }
 
@@ -992,6 +1059,7 @@ mod tests {
                 context.clone(),
                 test_payment_tx(sender, 0),
                 None,
+                Arc::default(),
             );
             assert!(failed.replay.is_none());
             WorkerPool::with_worker_mut(|worker| {
@@ -1006,6 +1074,7 @@ mod tests {
                 context,
                 test_payment_tx(sender, 500_000),
                 None,
+                Arc::default(),
             );
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());

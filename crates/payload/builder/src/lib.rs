@@ -6,6 +6,7 @@
 mod budget;
 mod encode;
 mod metrics;
+mod prewarm_diagnostics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
@@ -19,6 +20,7 @@ use crate::{
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    prewarm_diagnostics::PrewarmDiagnostics,
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
@@ -482,6 +484,12 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let diagnostics = Arc::new(PrewarmDiagnostics::new(
+            parent_header.number() + 1,
+            parent_header.hash(),
+            self.config.enable_parallel,
+            general_gas_limit,
+        ));
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -489,6 +497,8 @@ where
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
+            diagnostics.clone(),
+            hardfork.is_t5(),
         );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
@@ -575,7 +585,12 @@ where
             }
 
             best_txs.set_gas_used(non_payment_gas_used, cumulative_gas_used);
-            let Some(mut pool_tx) = best_txs.next() else {
+            let next_start = Instant::now();
+            let next = best_txs.next();
+            diagnostics
+                .next_ns
+                .fetch_add(next_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let Some(mut pool_tx) = next else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
@@ -591,6 +606,9 @@ where
                 break stop_reason;
             };
             let tx = pool_tx.tx.clone();
+            if let Some(observation) = &pool_tx.observation {
+                observation.outcome.store(4, Ordering::Relaxed);
+            }
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
@@ -622,6 +640,15 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                let _ = diagnostics.first_general_skip.compare_exchange(
+                    0,
+                    diagnostics.now(),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+                if let Some(observation) = &pool_tx.observation {
+                    observation.outcome.store(3, Ordering::Relaxed);
+                }
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::Other(Box::new(
@@ -663,6 +690,9 @@ where
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
                     non_payment_gas_used += result.block_gas_used();
+                    diagnostics
+                        .general_used
+                        .store(non_payment_gas_used, Ordering::Relaxed);
                 }
 
                 // Score payload value by the validator-credited fee amount that the
@@ -673,6 +703,11 @@ where
                 best_txs.on_new_result(result);
             };
 
+            if let Some(observation) = &pool_tx.observation {
+                observation.observe_execution();
+                observation.outcome.store(5, Ordering::Relaxed);
+            }
+            let execution_start_diagnostic = Instant::now();
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
@@ -691,6 +726,12 @@ where
                     .map(|_| ())
             };
 
+            if let Some(observation) = &pool_tx.observation {
+                observation.execution_ns.store(
+                    execution_start_diagnostic.elapsed().as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
+            }
             if let Err(err) = execution_result {
                 match err {
                     BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -752,12 +793,25 @@ where
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
+            if let Some(observation) = &pool_tx.observation {
+                observation
+                    .outcome
+                    .store(if receipt.success { 1 } else { 2 }, Ordering::Relaxed);
+            }
             if !receipt.success {
                 reverted_transactions += 1;
             }
             let _ = roots_tx.send((tx, receipt));
         };
 
+        diagnostics
+            .cutoff
+            .store(diagnostics.now(), Ordering::Relaxed);
+        info!(target: "prewarm_diagnostics", build_id = diagnostics.id, block = parent_header.number() + 1,
+            parent = %parent_header.hash(), included = pool_transactions_included,
+            yielded = pool_transactions_yielded, general_gas = non_payment_gas_used,
+            total_gas = cumulative_gas_used, stop = ?block_build_stop_reason,
+            fill_ns = execution_start.elapsed().as_nanos() as u64, "prewarm_cutoff");
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
 
@@ -1072,6 +1126,8 @@ where
             "Built payload"
         );
 
+        info!(target: "prewarm_diagnostics", build_id = diagnostics.id,
+            block = block.number(), hash = %block.hash(), timestamp_ms = block.timestamp_millis(), "prewarm_payload");
         let block = Arc::new(block);
         let execution_block_encoder = ExecutionBlockEncoder::new(
             block.clone(),
