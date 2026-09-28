@@ -14,25 +14,21 @@ use revm::{
 use tempo_precompiles::tip20_funder::permission::FundingPermission;
 
 /// Protocol-provided callback context, never decoded from application calldata.
-pub(super) struct FundingCall {
+pub(super) struct FundingCall<'a> {
     pub caller: Address,
     pub source: Address,
     pub data: Bytes,
     pub is_static: bool,
-    pub permission: Option<FundingPermission>,
+    pub permission: Option<&'a FundingPermission>,
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     /// Runs one callback; the transaction handler owns the surrounding funding and batch checkpoint.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "funding transaction admission is not enabled")
-    )]
     pub(super) fn execute_funding_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
         gas: &mut GasTracker,
-        call: FundingCall,
+        call: FundingCall<'_>,
         mut run_loop: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -154,3 +150,5 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
 
 #[cfg(test)]
 mod tests;
+
+mod owner;
