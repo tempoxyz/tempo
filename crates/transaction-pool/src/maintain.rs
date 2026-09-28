@@ -52,6 +52,16 @@ fn changed_commitments(state: &AddressMap<BundleAccount>) -> AddressSet {
     changed
 }
 
+fn pool_head_caught_up(
+    head: (u64, B256),
+    tip: (u64, B256),
+    mut canonical_hash: impl FnMut(u64) -> Option<B256>,
+) -> bool {
+    head.0 >= tip.0
+        && canonical_hash(tip.0) == Some(tip.1)
+        && canonical_hash(head.0) == Some(head.1)
+}
+
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
@@ -523,6 +533,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
     let metrics = TempoPoolMaintenanceMetrics::default();
 
     let amm_cache = pool.amm_liquidity_cache();
+    let (tip_updates, tip_receiver) = tokio::sync::watch::channel((0, B256::ZERO));
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
@@ -543,6 +554,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         let block_update_start = Instant::now();
 
         let tip = &new;
+        tip_updates.send_replace((tip.tip().number(), tip.tip().hash()));
         let bundle_state = tip.execution_outcome().state().state();
         let tip_timestamp = tip.tip().header().timestamp();
 
@@ -587,21 +599,33 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
                      wait_for_head: bool| {
             let count = removed.len();
             let pool = pool.clone();
-            let tip_hash = tip.tip().hash();
-            let tip_number = tip.tip().number();
+            let mut tip_receiver = tip_receiver.clone();
             tokio::spawn(async move {
                 if wait_for_head {
                     // Reth and Tempo receive the same notification independently. Validate only
-                    // after Reth has updated its validator and pool head.
+                    // after Reth's pool head is on the current canonical chain.
                     loop {
                         let head = pool.block_info();
-                        if head.last_seen_block_number > tip_number
-                            || (head.last_seen_block_number == tip_number
-                                && head.last_seen_block_hash == tip_hash)
-                        {
+                        let tip = *tip_receiver.borrow_and_update();
+                        if pool_head_caught_up(
+                            (head.last_seen_block_number, head.last_seen_block_hash),
+                            tip,
+                            |number| {
+                                pool.client()
+                                    .sealed_header(number)
+                                    .ok()
+                                    .flatten()
+                                    .map(|header| header.hash())
+                            },
+                        ) {
                             break;
                         }
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        tokio::select! {
+                            result = tip_receiver.changed() => {
+                                if result.is_err() { return; }
+                            }
+                            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                        }
                     }
                 }
                 let transactions = removed
@@ -831,6 +855,28 @@ mod tests {
             changed_commitments(&state),
             [registration, rotation].into_iter().collect()
         );
+    }
+
+    #[test]
+    fn reorg_revalidation_waits_for_the_canonical_pool_head() {
+        let old_100 = B256::repeat_byte(1);
+        let new_99 = B256::repeat_byte(2);
+        let new_100 = B256::repeat_byte(3);
+        let mut canonical = [(99, new_99)]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let ready = |head, tip, canonical: &std::collections::BTreeMap<_, _>| {
+            pool_head_caught_up(head, tip, |number| canonical.get(&number).copied())
+        };
+
+        // A reorg from 100 to 99 must not validate against Reth's old height-100 head.
+        assert!(!ready((100, old_100), (99, new_99), &canonical));
+        assert!(ready((99, new_99), (99, new_99), &canonical));
+
+        canonical.insert(100, new_100);
+        assert!(ready((100, new_100), (99, new_99), &canonical));
+        assert!(!ready((100, old_100), (99, new_99), &canonical));
+        assert!(!ready((100, new_100), (99, old_100), &canonical));
     }
 
     mod pending_staleness_tracker_tests {
