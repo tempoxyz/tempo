@@ -346,7 +346,7 @@ fn commitment_rejects_stale_mutated_and_noncanonical_rules() -> eyre::Result<()>
         );
         assert_eq!(registry.verify_rules(hash, &data)?, rules);
         assert!(registry.verify_rules(hash, &[]).is_err());
-        let mut ordered = rules.clone();
+        let mut ordered = rules;
         ordered.enforceOrder = true;
         assert!(registry.verify_rules(hash, &ordered.abi_encode()).is_err());
         registry.set_rules(OWNER, id, ordered.clone())?;

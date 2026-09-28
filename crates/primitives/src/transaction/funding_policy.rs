@@ -268,7 +268,7 @@ mod tests {
                 .with_funding_policy(FundingPolicyAuthorization::Inline(changed));
             assert_ne!(changed.signature_hash(), auth.signature_hash());
         }
-        let mut truncated = encoded.clone();
+        let mut truncated = encoded;
         truncated.pop();
         assert!(KeyAuthorization::decode(&mut truncated.as_slice()).is_err());
     }

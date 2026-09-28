@@ -375,11 +375,11 @@ pub(super) async fn run_demo(
                     FUNDING_DISCOVERY_ADDRESS, IFundingDiscovery,
                 };
                 let discovery = IFundingDiscovery::new(FUNDING_DISCOVERY_ADDRESS, peer.clone())
-                    .discover(
-                        1,
+                    .discover_1(
                         owner.address(),
                         PATH_USD_ADDRESS,
                         U256::from(50 * UNIT),
+                        1,
                         policy_rules(&assets),
                     )
                     .block(height.into())

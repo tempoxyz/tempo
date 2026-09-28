@@ -438,11 +438,11 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
                 tempo_contracts::funding_discovery::FUNDING_DISCOVERY_ADDRESS,
                 provider.clone(),
             )
-            .discover(
-                1,
+            .discover_1(
                 owner.address(),
                 PATH_USD_ADDRESS,
                 U256::from(50 * UNIT),
+                1,
                 policy_rules.clone(),
             )
             .call()
