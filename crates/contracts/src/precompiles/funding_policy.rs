@@ -19,6 +19,7 @@ interface IFundingPolicy {
     struct Rules {
         uint16 maxSlippageBps;
         Route[] routes;
+        bool enforceOrder;
     }
 
     struct Policy {
@@ -55,6 +56,7 @@ mod tests {
     #[test]
     fn rules_encoding_binds_routes_and_source_order() {
         let rules = IFundingPolicy::Rules {
+            enforceOrder: false,
             maxSlippageBps: 100,
             routes: vec![IFundingPolicy::Route {
                 token: Address::repeat_byte(2),
@@ -77,6 +79,7 @@ mod tests {
         );
         let mutations: &[fn(&mut IFundingPolicy::Rules)] = &[
             |r| r.maxSlippageBps = 0,
+            |r| r.enforceOrder = true,
             |r| r.routes[0].token = Address::repeat_byte(4),
             |r| r.routes[0].sources.reverse(),
             |r| r.routes[0].sources[0].data = Bytes::new(),
@@ -92,7 +95,7 @@ mod tests {
         };
         assert_eq!(
             IFundingPolicy::createPolicyCall::SIGNATURE,
-            "createPolicy(address[],(uint16,(address,(address,bytes)[])[]))"
+            "createPolicy(address[],(uint16,(address,(address,bytes)[])[],bool))"
         );
         assert_eq!(
             IFundingPolicy::createPolicyCall::abi_decode_validate(&call.abi_encode()).unwrap(),
@@ -100,7 +103,7 @@ mod tests {
         );
         assert_eq!(
             IFundingPolicy::setRulesCall::SIGNATURE,
-            "setRules(uint64,(uint16,(address,(address,bytes)[])[]))"
+            "setRules(uint64,(uint16,(address,(address,bytes)[])[],bool))"
         );
     }
 }
