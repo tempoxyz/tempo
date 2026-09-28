@@ -708,8 +708,17 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
 # when users and portals have different counts. Keep each fixture nonce lane in
 # order; separate vault/zone deployers and explicit dependencies allow overlap.
 def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, --out-dir: string = ""] {
+    # Keep u64 nonce bounds out of Nushell's YAML parser; only the mix and setup
+    # presence are needed to compose the workload.
+    let result = (^uv run --no-project --with yq==3.4.3 yq -c '
+        {has_setup: ((.setup.steps // []) | length > 0), mix: .mix}
+    ' $spec_path | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to read public-mix spec: ($result.stderr)"}
+    }
+    let spec = ($result.stdout | from json)
     # The render command has already composed this spec. Consume it unchanged.
-    if ((open $spec_path) | get -o setup.steps | default [] | is-not-empty) {
+    if $spec.has_setup {
         return $spec_path
     }
     if $zones < 1 { error make {msg: "Public mix requires at least one zone"} }
@@ -725,7 +734,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let zone_weight = ($zone_spec.mix | where { |entry| $entry.template | str starts-with "zone_deposit_" } | get weight | math sum)
     let scale = $accounts * $zone_weight
     mut mix = []
-    for entry in (open $spec_path).mix {
+    for entry in $spec.mix {
         let name = ($entry | get -o template | default "")
         if $name in [vault_deposit vault_withdraw] {
             let entries = if $name == vault_deposit { $deposits.mix } else { $withdrawals.mix }
