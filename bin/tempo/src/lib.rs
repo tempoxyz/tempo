@@ -934,11 +934,11 @@ mod tests {
     }
 
     #[test]
-    fn gossip_is_opt_in_and_requires_a_consensus_engine() {
+    fn gossip_defaults_on_and_requires_a_consensus_engine() {
         init_defaults_once();
 
         assert!(
-            !parse_node_args(&[
+            parse_node_args(&[
                 "tempo",
                 "node",
                 "--consensus.signing-key",
@@ -946,7 +946,7 @@ mod tests {
             ])
             .has_gossip(false)
         );
-        assert!(!parse_node_args(&["tempo", "node", "--follow"]).has_gossip(false));
+        assert!(parse_node_args(&["tempo", "node", "--follow"]).has_gossip(false));
         assert!(
             parse_node_args(&[
                 "tempo",
@@ -1001,17 +1001,11 @@ mod tests {
             "node",
             "--consensus.signing-key",
             "unused-signing-key",
-            "--consensus.devp2p.finalizations",
         ]);
         assert!(validator.has_gossip(false));
         assert!(!validator.consensus.gossip_transport(false).ingest);
 
-        let follower = parse_node_args(&[
-            "tempo",
-            "node",
-            "--follow",
-            "--consensus.devp2p.finalizations",
-        ]);
+        let follower = parse_node_args(&["tempo", "node", "--follow"]);
         assert!(follower.has_gossip(false));
         assert!(follower.consensus.gossip_transport(true).ingest);
     }
