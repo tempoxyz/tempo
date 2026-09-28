@@ -1637,7 +1637,11 @@ impl StablecoinDEX {
     /// Find the trade path between two tokens
     /// Returns a vector of (book_key, base_for_quote) tuples for each hop
     /// Also validates that all pairs exist
-    fn find_trade_path(&self, token_in: Address, token_out: Address) -> Result<Vec<(B256, bool)>> {
+    pub(crate) fn find_trade_path(
+        &self,
+        token_in: Address,
+        token_out: Address,
+    ) -> Result<Vec<(B256, bool)>> {
         // Cannot trade same token
         if token_in == token_out {
             return Err(StablecoinDEXError::identical_tokens().into());
