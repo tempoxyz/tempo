@@ -295,7 +295,8 @@ abstract contract InvariantChecker is HandlerBase {
 
     function _allowsExpiringNonceDiscriminators() internal pure returns (bool) {
         bytes32 hardfork = keccak256(bytes(vm.getEvmVersion()));
-        return hardfork == keccak256("t12") || hardfork == keccak256("t13");
+        return hardfork == keccak256("t12") || hardfork == keccak256("t13")
+            || hardfork == keccak256("t14");
     }
 
     /// @notice Verify expiring nonce constraints are enforced (TIP-1009, TIP-1106)
