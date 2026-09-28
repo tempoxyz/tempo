@@ -11,6 +11,7 @@ use revm::{
         interpreter_action::FrameInit,
     },
 };
+use tempo_precompiles::tip20_funder::permission::FundingPermission;
 
 /// Protocol-provided callback context, never decoded from application calldata.
 pub(super) struct FundingCall {
@@ -18,6 +19,7 @@ pub(super) struct FundingCall {
     pub source: Address,
     pub data: Bytes,
     pub is_static: bool,
+    pub permission: Option<FundingPermission>,
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
@@ -41,6 +43,36 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
         debug_assert!(evm.frame_stack().index().is_none());
+        if let Some(permission) = &call.permission {
+            if call.is_static
+                || !permission.matches(call.caller, evm.ctx().tx().caller(), call.source)
+            {
+                return Err(EVMError::Custom(
+                    "invalid native funding permission binding".into(),
+                ));
+            }
+            let actions = evm.actions.clone();
+            let limit = gas.remaining();
+            let (initialized, used) = StorageCtx::enter_ctx_with_gas_limit(
+                evm.ctx_mut(),
+                limit,
+                gas.reservoir(),
+                actions,
+                || permission.initialize(),
+            );
+            if let Err(error) = initialized {
+                let output = error
+                    .into_precompile_result(used, gas.reservoir())
+                    .map_err(|error| EVMError::Custom(error.to_string()))?;
+                let mut result = FrameResult::Call(CallOutcome::new(
+                    precompile_output_to_interpreter_result(output, limit),
+                    0..0,
+                ));
+                self.last_frame_result(evm, &mut result, gas)?;
+                return Ok(result);
+            }
+            assert!(gas.record_regular_cost(used));
+        }
         let opcode = if call.is_static { STATICCALL } else { CALL };
         let base_cost = u64::from(evm.inner.instruction.gas_table()[opcode as usize]);
         let ctx = evm.ctx_mut();
@@ -76,32 +108,35 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let mut result = match setup {
             Ok((state_cost, bytecode, hash)) => {
                 ctx.journal_mut().load_account(call.caller)?;
-                run_loop(
-                    self,
-                    evm,
-                    FrameInit {
-                        depth: 0,
-                        memory,
-                        frame_input: FrameInput::Call(Box::new(CallInputs {
-                            input: CallInput::Bytes(call.data),
-                            return_memory_offset: 0..0,
-                            gas_limit: setup_gas.remaining(),
-                            reservoir: setup_gas.reservoir(),
-                            bytecode_address: call.source,
-                            known_bytecode: (hash, bytecode),
-                            target_address: call.source,
-                            caller: call.caller,
-                            value: CallValue::Transfer(U256::ZERO),
-                            scheme: if call.is_static {
-                                CallScheme::StaticCall
-                            } else {
-                                CallScheme::Call
-                            },
-                            is_static: call.is_static,
-                            charged_new_account_state_gas: state_cost != 0,
-                        })),
-                    },
-                )?
+                let input = FrameInit {
+                    depth: 0,
+                    memory,
+                    frame_input: FrameInput::Call(Box::new(CallInputs {
+                        input: CallInput::Bytes(call.data),
+                        return_memory_offset: 0..0,
+                        gas_limit: setup_gas.remaining(),
+                        reservoir: setup_gas.reservoir(),
+                        bytecode_address: call.source,
+                        known_bytecode: (hash, bytecode),
+                        target_address: call.source,
+                        caller: call.caller,
+                        value: CallValue::Transfer(U256::ZERO),
+                        scheme: if call.is_static {
+                            CallScheme::StaticCall
+                        } else {
+                            CallScheme::Call
+                        },
+                        is_static: call.is_static,
+                        charged_new_account_state_gas: state_cost != 0,
+                    })),
+                };
+                if let Some(permission) = &call.permission {
+                    permission
+                        .enter(|| run_loop(self, evm, input))
+                        .map_err(|error| EVMError::Custom(error.to_string()))??
+                } else {
+                    run_loop(self, evm, input)?
+                }
             }
             Err(result) => FrameResult::Call(CallOutcome::new(
                 InterpreterResult {
