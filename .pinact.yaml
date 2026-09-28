@@ -1,0 +1,6 @@
+version: 3
+rules:
+  # This vendored action has no release tags; its pin documents the source commit.
+  - ignore: true
+    conditions:
+      - expr: ActionName == "tempoxyz/changelogs"

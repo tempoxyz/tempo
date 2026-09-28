@@ -929,7 +929,7 @@ async fn verify_header(
             ));
         }
     } else if !block.header().extra_data().is_empty() {
-        let bytes = block.header().extra_data().to_vec();
+        let bytes = block.header().extra_data().clone();
         let dealer = dkg_manager
             .verify_dealer_log(round.epoch(), bytes)
             .await
