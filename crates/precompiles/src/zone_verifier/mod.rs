@@ -20,8 +20,8 @@ const MODE_NITRO_V1: &[u8] = &[1];
 const MODE_NO_PROOF: &[u8] = &[2];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// PCR0/1/2 policy changes, ordered from oldest to newest hardfork. Each entry takes effect at
-/// its hardfork and remains in effect until a newer entry replaces them.
+/// Approved PCR0, PCR1, and PRC2 measurements. Each entry takes effect at its corresponding
+/// hardfork boundary and remains in effect until a newer entry replaces it.
 const APPROVED_PCRS: &[(TempoHardfork, [[u8; 48]; 3])] = &[];
 
 /// Return the measurements accepted by the native verifier at this hardfork.
@@ -53,6 +53,18 @@ impl ZoneVerifier {
         approved_pcrs: [[u8; 48]; 3],
     ) -> Result<bool> {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, Some(approved_pcrs))
+    }
+
+    /// Test-only variant of [`verify_with_pcrs`] which also takes an arbitrary trust root.
+    #[cfg(feature = "test-utils")]
+    pub fn verify_with_test_policy(
+        &self,
+        portal: Address,
+        call: IZoneVerifier::verifyCall,
+        root_der: &[u8],
+        approved_pcrs: [[u8; 48]; 3],
+    ) -> Result<bool> {
+        self.verify_with_policy(portal, call, root_der, Some(approved_pcrs))
     }
 
     fn verify_with_policy(
@@ -335,6 +347,46 @@ mod tests {
                     expected
                 );
             }
+        });
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn test_policy_accepts_only_matching_root_pcrs_and_commitment() {
+        let mut call = call();
+        let portal = portal_address(call.zoneId);
+        let (proof, root, pcrs) = attestation::tests::fixture(batch_commitment(1, &call).as_ref());
+        call.proof = proof.into();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
+        StorageCtx::enter(&mut storage, || {
+            let verifier = ZoneVerifier::new();
+            assert!(
+                verifier
+                    .verify_with_test_policy(portal, call.clone(), &root, pcrs)
+                    .unwrap()
+            );
+            assert!(
+                !verifier
+                    .verify_with_test_policy(portal, call.clone(), AWS_NITRO_ROOT_DER, pcrs)
+                    .unwrap()
+            );
+            let mut wrong_pcrs = pcrs;
+            wrong_pcrs[0][0] ^= 1;
+            assert!(
+                !verifier
+                    .verify_with_test_policy(portal, call.clone(), &root, wrong_pcrs)
+                    .unwrap()
+            );
+            let mut wrong_digest = call.clone();
+            wrong_digest.anchorBlockNumber += 1;
+            assert!(
+                !verifier
+                    .verify_with_test_policy(portal, wrong_digest, &root, pcrs)
+                    .unwrap()
+            );
+            assert!(!verifier.verify_with_pcrs(portal, call, pcrs).unwrap());
         });
     }
 
