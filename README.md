@@ -19,29 +19,32 @@
 
 The blockchain for payments at scale.
 
-## Network identities
-
-These BLS threshold public keys verify consensus finalization certificates. Tempo includes them in its [built-in network identities](./crates/chainspec/src/network_identity.rs).
-
-**Testnet (Moderato), from epoch 51:**
-
-```text
-0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c70474798ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242
-```
-
-**Mainnet, from epoch 0:**
-
-```text
-0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193
-```
-
-See [Run a Tempo node](https://tempo.xyz/developers/guide/node) for setup instructions.
-
-## About Tempo
-
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
 You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://docs.tempo.xyz/guide/use-accounts), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
+
+<a id="as-an-operator"></a>
+
+## Run a node
+
+> [!IMPORTANT]
+> **Network identities**
+>
+> Tempo nodes use these BLS threshold public keys to verify consensus finalization certificates. They are [built into the node](./crates/chainspec/src/network_identity.rs).
+>
+> **Testnet (Moderato), from epoch 51:**
+> `0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c70474798ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242`
+>
+> **Mainnet, from epoch 0:**
+> `0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193`
+
+We provide three different installation paths: installing a pre-built binary, building from source or using our provided Docker image.
+
+- [Pre-built Binary](https://docs.tempo.xyz/guide/node/installation#pre-built-binary)
+- [Build from Source](https://docs.tempo.xyz/guide/node/installation#build-from-source)
+- [Docker](https://docs.tempo.xyz/guide/node/installation#docker)
+
+See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
 
 ## What makes Tempo different
 
@@ -103,16 +106,6 @@ Alternatively, use [`cast`](https://github.com/foundry-rs/foundry):
 ```bash
 cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.moderato.tempo.xyz
 ```
-
-### As an operator
-
-We provide three different installation paths: installing a pre-built binary, building from source or using our provided Docker image.
-
-- [Pre-built Binary](https://docs.tempo.xyz/guide/node/installation#pre-built-binary)
-- [Build from Source](https://docs.tempo.xyz/guide/node/installation#build-from-source)
-- [Docker](https://docs.tempo.xyz/guide/node/installation#docker)
-
-See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
 
 ### As a developer
 
