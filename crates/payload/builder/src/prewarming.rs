@@ -78,6 +78,9 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        // We keep 2x the number of threads in flight to make sure that workers are never idle.
+        let lookahead = pool.current_num_threads() * 2;
+        let mut in_flight = 0;
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -85,11 +88,14 @@ impl BestTransactionsPrewarming {
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+            // Pulls the next source transaction and schedules its prewarm.
+            // Returns `false` if the source is empty.
+            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                           in_flight: &mut usize| {
                 let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
-                    return;
+                    return false;
                 };
+                *in_flight += 1;
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
@@ -114,21 +120,33 @@ impl BestTransactionsPrewarming {
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    let _ = commands_tx.send(BestTransactionsCommand::Prewarmed);
                 });
+                true
             };
 
-            // Fill the initial batch of transactions to execute and prewarm.
-            //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
-            }
+            // Tops the window back up to `lookahead`, so prewarming resumes at full width
+            // once transactions arrive after the source was empty.
+            let refill = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                          in_flight: &mut usize| {
+                while *in_flight < lookahead && advance(ctx, in_flight) {}
+            };
+
+            refill(&mut ctx, &mut in_flight);
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                        // The consumer is waiting for a reply, even if the window is full.
+                        if advance(&mut ctx, &mut in_flight) {
+                            refill(&mut ctx, &mut in_flight);
+                        } else {
+                            let _ = ctx.transactions_tx.send(None);
+                        }
+                    }
+                    BestTransactionsCommand::Prewarmed => {
+                        in_flight -= 1;
+                        refill(&mut ctx, &mut in_flight);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
@@ -270,7 +288,7 @@ impl Iterator for BestTransactionsPrewarming {
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        // An eager advance can also reply empty while this receive is waiting.
+        // An earlier advance can also reply empty while this receive is waiting.
         // Check for buffered transactions before reporting empty to the builder,
         // but do not wait for more replies: it must still check its build budget.
         self.transactions_rx
@@ -428,6 +446,8 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    /// A scheduled prewarm finished, freeing a slot in the lookahead window.
+    Prewarmed,
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -497,7 +517,7 @@ mod tests {
     };
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex},
+        sync::{Arc, Barrier, Mutex},
         thread,
         time::{Duration, Instant},
     };
@@ -520,6 +540,8 @@ mod tests {
 
     struct TestBestTransactions {
         txs: VecDeque<BestTransaction>,
+        /// Transactions arriving after the iterator was created.
+        incoming: Option<Receiver<BestTransaction>>,
         log: Arc<Mutex<TestLog>>,
     }
 
@@ -527,6 +549,7 @@ mod tests {
         fn new(txs: Vec<BestTransaction>, log: Arc<Mutex<TestLog>>) -> Self {
             Self {
                 txs: txs.into(),
+                incoming: None,
                 log,
             }
         }
@@ -536,6 +559,9 @@ mod tests {
         type Item = BestTransaction;
 
         fn next(&mut self) -> Option<Self::Item> {
+            if let Some(incoming) = &self.incoming {
+                self.txs.extend(incoming.try_iter());
+            }
             let tx = self.txs.pop_front();
             {
                 let mut log = self.log.lock().unwrap();
@@ -770,19 +796,80 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_polled_once_initially_and_for_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        wait_until(|| log.lock().unwrap().empty_polls == 2);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        wait_until(|| log.lock().unwrap().empty_polls == 3);
+    }
+
+    #[test]
+    fn prewarming_refills_the_full_window_after_the_source_was_empty() {
+        for parallel in [false, true] {
+            let executor = TaskExecutor::test();
+            let workers = executor.prewarming_pool().current_num_threads();
+            let lookahead = workers * 2;
+            let log = Arc::new(Mutex::new(TestLog::default()));
+            let (incoming, incoming_rx) = mpsc::channel();
+            let mut source = TestBestTransactions::new(Vec::new(), log.clone());
+            source.incoming = Some(incoming_rx);
+            let prewarming = TestPrewarming {
+                prewarming: Some(BestTransactionsPrewarming::new(
+                    prewarming_context(executor.clone(), parallel),
+                    source,
+                )),
+                executor: executor.clone(),
+            };
+            wait_until(|| log.lock().unwrap().empty_polls == 1);
+
+            // Hold every worker so no prewarm completes while the burst is scheduled.
+            let started = Arc::new(Barrier::new(workers + 1));
+            let release = Arc::new(Barrier::new(workers + 1));
+            let blocker = thread::spawn({
+                let executor = executor.clone();
+                let (started, release) = (started.clone(), release.clone());
+                move || {
+                    executor.prewarming_pool().broadcast(workers, |_| {
+                        started.wait();
+                        release.wait();
+                    })
+                }
+            });
+            started.wait();
+
+            let burst = lookahead + 4;
+            for nonce in 0..burst {
+                incoming
+                    .send(test_tx(Address::random(), nonce as u64))
+                    .unwrap();
+            }
+            prewarming
+                .commands_tx
+                .send(BestTransactionsCommand::Advance)
+                .unwrap();
+
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while log.lock().unwrap().yielded < lookahead && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            thread::sleep(Duration::from_millis(20));
+            let scheduled = log.lock().unwrap().yielded;
+            // Release before asserting, so a failure does not deadlock the pool on drop.
+            release.wait();
+            blocker.join().unwrap();
+
+            // A single consumer advance restores the whole window, and no more.
+            assert_eq!(scheduled, lookahead);
+            // Completions keep the window full until the source drains.
+            wait_until(|| log.lock().unwrap().yielded == burst);
+        }
     }
 
     #[test]
