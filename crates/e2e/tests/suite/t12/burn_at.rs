@@ -5,9 +5,9 @@ use std::{future::Future, time::Duration};
 use alloy::{
     eips::Encodable2718,
     network::ReceiptResponse,
-    primitives::{Address, B256, Bytes, TxKind, U256, address, keccak256},
+    primitives::{Address, B256, TxKind, U256, address, keccak256},
     providers::{Provider, ProviderBuilder},
-    rpc::types::{Log, TransactionReceipt, TransactionRequest},
+    rpc::types::Log,
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::{SolCall, SolEvent},
     transports::http::reqwest::Url,
@@ -18,7 +18,11 @@ use commonware_runtime::{
     deterministic::{Config, Runner},
 };
 use futures::future::join_all;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{
+    TempoNetwork,
+    contracts::{MULTICALL3_ADDRESS, Multicall3},
+    rpc::TempoTransactionReceipt,
+};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
@@ -46,38 +50,37 @@ fn burn_at_is_unavailable_before_t12() {
         let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
         let address = create_token(provider.clone(), admin, B256::ZERO).await?;
         let token = ITIP20::new(address, &provider);
-        send_call(
-            &provider,
-            address,
-            IRolesAuth::grantRoleCall {
-                role: BURN_AT_ROLE,
-                account: admin,
-            },
-            true,
-        )
-        .await?;
-        send_call(
-            &provider,
-            address,
-            ITIP20::mintCall {
-                to: admin,
-                amount: U256::from(10),
-            },
-            true,
-        )
-        .await?;
+        let roles = IRolesAuth::new(address, &provider);
+        let receipt = roles
+            .grantRole(BURN_AT_ROLE, admin)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+        let receipt = token
+            .mint(admin, U256::from(10))
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
 
         assert!(token.BURN_AT_ROLE().call().await.is_err());
-        send_call(
-            &provider,
-            address,
-            ITIP20::burnAtCall {
-                from: admin,
-                amount: U256::ONE,
-            },
-            false,
-        )
-        .await?;
+        let receipt = token
+            .burnAt(admin, U256::ONE)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
         assert_eq!(token.balanceOf(admin).call().await?, U256::from(10));
         assert_eq!(token.totalSupply().call().await?, U256::from(10));
         Ok(())
@@ -93,125 +96,137 @@ fn burn_at_permissions_policy_and_protected_balances() {
         let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
         let address = create_token(provider.clone(), admin, B256::ZERO).await?;
         let token = ITIP20::new(address, &provider);
-        send_call(
-            &provider,
-            address,
-            ITIP20::mintCall {
-                to: holder,
-                amount: U256::from(100),
-            },
-            true,
-        )
-        .await?;
+        let roles = IRolesAuth::new(address, &provider);
+        let receipt = token
+            .mint(holder, U256::from(100))
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
         assert_eq!(
             token.BURN_AT_ROLE().call().await?,
             keccak256("BURN_AT_ROLE")
         );
 
         // ISSUER_ROLE and BURN_BLOCKED_ROLE do not authorize burnAt.
-        send_call(
-            &provider,
-            address,
-            ITIP20::burnAtCall {
-                from: holder,
-                amount: U256::ONE,
-            },
-            false,
-        )
-        .await?;
-        send_call(
-            &provider,
-            address,
-            IRolesAuth::grantRoleCall {
-                role: BURN_BLOCKED_ROLE,
-                account: admin,
-            },
-            true,
-        )
-        .await?;
-        send_call(
-            &provider,
-            address,
-            ITIP20::burnAtCall {
-                from: holder,
-                amount: U256::ONE,
-            },
-            false,
-        )
-        .await?;
-        for role in [BURN_AT_ROLE, PAUSE_ROLE, UNPAUSE_ROLE] {
-            send_call(
-                &provider,
-                address,
-                IRolesAuth::grantRoleCall {
-                    role,
-                    account: admin,
-                },
-                true,
-            )
+        let receipt = token
+            .burnAt(holder, U256::ONE)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
             .await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
+        let receipt = roles
+            .grantRole(BURN_BLOCKED_ROLE, admin)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+        let receipt = token
+            .burnAt(holder, U256::ONE)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
+        for role in [BURN_AT_ROLE, PAUSE_ROLE, UNPAUSE_ROLE] {
+            let receipt = roles
+                .grantRole(role, admin)
+                .gas(GAS)
+                .gas_price(GAS_PRICE)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            assert!(receipt.status());
         }
 
         let mut remaining = U256::from(100);
         for policy in [ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID] {
-            send_call(
-                &provider,
-                address,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy,
-                },
-                true,
-            )
-            .await?;
-            let receipt = send_call(
-                &provider,
-                address,
-                ITIP20::burnAtCall {
-                    from: holder,
-                    amount: U256::from(20),
-                },
-                true,
-            )
-            .await?;
+            let receipt = token
+                .changeTransferPolicyId(policy)
+                .gas(GAS)
+                .gas_price(GAS_PRICE)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            assert!(receipt.status());
+            let receipt = token
+                .burnAt(holder, U256::from(20))
+                .gas(GAS)
+                .gas_price(GAS_PRICE)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            assert!(receipt.status());
             assert_burn_events(receipt.logs(), address, admin, holder, U256::from(20));
             remaining -= U256::from(20);
             assert_eq!(token.balanceOf(holder).call().await?, remaining);
             assert_eq!(token.totalSupply().call().await?, remaining);
         }
-        let zero = send_call(
-            &provider,
-            address,
-            ITIP20::burnAtCall {
-                from: holder,
-                amount: U256::ZERO,
-            },
-            true,
-        )
-        .await?;
+        let zero = token
+            .burnAt(holder, U256::ZERO)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(zero.status());
         assert_burn_events(zero.logs(), address, admin, holder, U256::ZERO);
-        send_call(
-            &provider,
-            address,
-            ITIP20::burnAtCall {
-                from: holder,
-                amount: remaining + U256::ONE,
-            },
-            false,
-        )
-        .await?;
+        let receipt = token
+            .burnAt(holder, remaining + U256::ONE)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
 
-        send_call(&provider, address, ITIP20::pauseCall {}, true).await?;
-        send_call(
-            &provider,
-            address,
-            ITIP20::burnAtCall {
-                from: holder,
-                amount: U256::ONE,
-            },
-            false,
-        )
-        .await?;
-        send_call(&provider, address, ITIP20::unpauseCall {}, true).await?;
+        let receipt = token
+            .pause()
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+        let receipt = token
+            .burnAt(holder, U256::ONE)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
+        let receipt = token
+            .unpause()
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
 
         // Zero-amount calls isolate the protected-address check from insufficient balance.
         for from in [
@@ -223,47 +238,46 @@ fn burn_at_permissions_policy_and_protected_balances() {
             address!("5AD0000000000000000000000000000000000000"),
             address!("5AD000000000000000000000ffffffffffffffff"),
         ] {
-            send_call(
-                &provider,
-                address,
-                ITIP20::burnAtCall {
-                    from,
-                    amount: U256::ZERO,
-                },
-                false,
-            )
-            .await?;
-            send_call(
-                &provider,
-                address,
-                ITIP20::burnBlockedCall {
-                    from,
-                    amount: U256::ZERO,
-                },
-                false,
-            )
-            .await?;
+            let receipt = token
+                .burnAt(from, U256::ZERO)
+                .gas(GAS)
+                .gas_price(GAS_PRICE)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            assert!(!receipt.status());
+            assert_no_burn_events(receipt.logs(), address);
+            let receipt = token
+                .burnBlocked(from, U256::ZERO)
+                .gas(GAS)
+                .gas_price(GAS_PRICE)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            assert!(!receipt.status());
+            assert_no_burn_events(receipt.logs(), address);
         }
-        send_call(
-            &provider,
-            address,
-            IRolesAuth::revokeRoleCall {
-                role: BURN_AT_ROLE,
-                account: admin,
-            },
-            true,
-        )
-        .await?;
-        send_call(
-            &provider,
-            address,
-            ITIP20::burnAtCall {
-                from: holder,
-                amount: U256::ONE,
-            },
-            false,
-        )
-        .await?;
+        let receipt = roles
+            .revokeRole(BURN_AT_ROLE, admin)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+        let receipt = token
+            .burnAt(holder, U256::ONE)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
         assert_eq!(token.balanceOf(holder).call().await?, remaining);
         assert_eq!(token.totalSupply().call().await?, remaining);
         Ok(())
@@ -280,39 +294,35 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
         let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
         let address = create_token(provider.clone(), holder, B256::ZERO).await?;
         let token = ITIP20::new(address, &provider);
-        send_call(
-            &provider,
-            address,
-            ITIP20::mintCall {
-                to: holder,
-                amount: U256::from(40),
-            },
-            true,
-        )
-        .await?;
-        let bridge = deploy_bridge(&provider, address, false).await?;
-        let reverting_bridge = deploy_bridge(&provider, address, true).await?;
-        for account in [bridge, reverting_bridge] {
-            send_call(
-                &provider,
-                address,
-                IRolesAuth::grantRoleCall {
-                    role: BURN_AT_ROLE,
-                    account,
-                },
-                true,
-            )
+        let roles = IRolesAuth::new(address, &provider);
+        let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
+        let receipt = token
+            .mint(holder, U256::from(40))
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
             .await?;
-        }
+        assert!(receipt.status());
 
+        // Multicall3 is deployed in the test genesis and acts as the bridge calling burnAt.
+        assert!(!provider.get_code_at(MULTICALL3_ADDRESS).await?.is_empty());
+        let receipt = roles
+            .grantRole(BURN_AT_ROLE, MULTICALL3_ADDRESS)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
         let key = PrivateKeySigner::random();
-        send_call(
-            &provider,
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            IAccountKeychain::authorizeKey_1Call {
-                keyId: key.address(),
-                signatureType: IAccountKeychain::SignatureType::Secp256k1,
-                config: IAccountKeychain::KeyRestrictions {
+        let receipt = keychain
+            .authorizeKey_1(
+                key.address(),
+                IAccountKeychain::SignatureType::Secp256k1,
+                IAccountKeychain::KeyRestrictions {
                     expiry: u64::MAX,
                     enforceLimits: true,
                     limits: vec![
@@ -330,98 +340,165 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
                     allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
-            },
-            true,
-        )
-        .await?;
-        let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
-        let chain_id = provider.get_chain_id().await?;
+            )
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
 
-        for (target, amount, refill, succeeds, balance, limit) in [
-            (bridge, 50, 0, false, 40, 100), // Sufficient limit, insufficient balance: deduction rolls back.
-            (bridge, 20, 0, true, 20, 80),
-            (reverting_bridge, 10, 0, false, 20, 80), // Enclosing revert restores a successful child burn.
-            (bridge, 81, 100, false, 120, 80), // Sufficient balance, insufficient access-key limit.
-            (bridge, 0, 0, true, 120, 80),
-        ] {
-            if refill > 0 {
-                // Raw access-key transactions also advance the root account's nonce.
-                let receipt = token
-                    .mint(holder, U256::from(refill))
-                    .nonce(provider.get_transaction_count(holder).await?)
-                    .gas(GAS)
-                    .gas_price(GAS_PRICE)
-                    .send()
-                    .await?
-                    .get_receipt()
-                    .await?;
-                assert!(receipt.status());
-            }
-            let amount = U256::from(amount);
-            let tx = TempoTransaction {
-                chain_id,
-                gas_limit: GAS,
-                max_fee_per_gas: GAS_PRICE,
-                fee_token: Some(PATH_USD_ADDRESS),
-                nonce: provider.get_transaction_count(holder).await?,
-                calls: vec![Call {
-                    to: TxKind::Call(target),
-                    value: U256::ZERO,
-                    input: ITIP20::burnAtCall {
-                        from: holder,
-                        amount,
-                    }
-                    .abi_encode()
-                    .into(),
-                }],
-                ..Default::default()
-            };
-            let signature = key.sign_hash_sync(&KeychainSignature::signing_hash(
-                tx.signature_hash(),
-                holder,
-            ))?;
-            let envelope: TempoTxEnvelope = tx
-                .into_signed(TempoSignature::Keychain(KeychainSignature::new(
-                    holder,
-                    PrimitiveSignature::Secp256k1(signature),
-                )))
-                .into();
-            let receipt = aa_provider
-                .send_raw_transaction(&envelope.encoded_2718())
-                .await?
-                .get_receipt()
-                .await?;
-            assert_eq!(receipt.status(), succeeds, "burn {amount}: {receipt:#?}");
-            if succeeds {
-                assert_burn_events(receipt.logs(), address, target, holder, amount);
-            } else {
-                assert!(receipt.logs().iter().all(|log| log.address() != address));
-            }
-            let spends: Vec<_> = receipt
-                .logs()
-                .iter()
-                .filter(|log| log.address() == ACCOUNT_KEYCHAIN_ADDRESS)
-                .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(&log.inner).ok())
-                .filter(|event| event.token == address)
-                .collect();
-            assert_eq!(spends.len(), usize::from(succeeds));
-            if let Some(spend) = spends.first() {
-                assert_eq!(spend.amount, amount);
-                assert_eq!(spend.remainingLimit, U256::from(limit));
-            }
-            assert_eq!(token.balanceOf(holder).call().await?, U256::from(balance));
-            assert_eq!(token.totalSupply().call().await?, U256::from(balance));
-            assert_eq!(
-                keychain
-                    .getRemainingLimitWithPeriod(holder, key.address(), address)
-                    .call()
-                    .await?
-                    .remaining,
-                U256::from(limit)
-            );
-        }
+        let burn = |amount| Multicall3::Call3 {
+            target: address,
+            allowFailure: false,
+            callData: token.burnAt(holder, U256::from(amount)).calldata().clone(),
+        };
+
+        // A failed burn must restore the spending limit deducted before the balance check.
+        let receipt = send_access_key_calls(&aa_provider, holder, &key, vec![burn(50)]).await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
+        assert_burn_state(&provider, address, holder, key.address(), 40, 100).await?;
+
+        let receipt = send_access_key_calls(&aa_provider, holder, &key, vec![burn(20)]).await?;
+        assert!(receipt.status());
+        assert_burn_events(
+            receipt.logs(),
+            address,
+            MULTICALL3_ADDRESS,
+            holder,
+            U256::from(20),
+        );
+        assert_access_key_spend(receipt.logs(), address, holder, key.address(), 20, 80);
+        assert_burn_state(&provider, address, holder, key.address(), 20, 80).await?;
+
+        // The first burn succeeds, then a mandatory second call fails and reverts the whole batch.
+        let receipt =
+            send_access_key_calls(&aa_provider, holder, &key, vec![burn(10), burn(50)]).await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
+        assert_burn_state(&provider, address, holder, key.address(), 20, 80).await?;
+
+        // Fund above the requested burn so only the access-key limit can reject it.
+        // Raw access-key transactions also advance the holder's nonce.
+        let receipt = token
+            .mint(holder, U256::from(100))
+            .nonce(provider.get_transaction_count(holder).await?)
+            .gas(GAS)
+            .gas_price(GAS_PRICE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+        let receipt = send_access_key_calls(&aa_provider, holder, &key, vec![burn(81)]).await?;
+        assert!(!receipt.status());
+        assert_no_burn_events(receipt.logs(), address);
+        assert_burn_state(&provider, address, holder, key.address(), 120, 80).await?;
+
+        let receipt = send_access_key_calls(&aa_provider, holder, &key, vec![burn(0)]).await?;
+        assert!(receipt.status());
+        assert_burn_events(
+            receipt.logs(),
+            address,
+            MULTICALL3_ADDRESS,
+            holder,
+            U256::ZERO,
+        );
+        assert_access_key_spend(receipt.logs(), address, holder, key.address(), 0, 80);
+        assert_burn_state(&provider, address, holder, key.address(), 120, 80).await?;
         Ok(())
     });
+}
+
+async fn send_access_key_calls(
+    provider: &impl Provider<TempoNetwork>,
+    holder: Address,
+    key: &PrivateKeySigner,
+    calls: Vec<Multicall3::Call3>,
+) -> eyre::Result<TempoTransactionReceipt> {
+    let tx = TempoTransaction {
+        chain_id: provider.get_chain_id().await?,
+        gas_limit: GAS,
+        max_fee_per_gas: GAS_PRICE,
+        fee_token: Some(PATH_USD_ADDRESS),
+        nonce: provider.get_transaction_count(holder).await?,
+        calls: vec![Call {
+            to: TxKind::Call(MULTICALL3_ADDRESS),
+            value: U256::ZERO,
+            input: Multicall3::aggregate3Call { calls }.abi_encode().into(),
+        }],
+        ..Default::default()
+    };
+    let signature = key.sign_hash_sync(&KeychainSignature::signing_hash(
+        tx.signature_hash(),
+        holder,
+    ))?;
+    let envelope: TempoTxEnvelope = tx
+        .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+            holder,
+            PrimitiveSignature::Secp256k1(signature),
+        )))
+        .into();
+    Ok(provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_receipt()
+        .await?)
+}
+
+async fn assert_burn_state(
+    provider: &impl Provider,
+    address: Address,
+    holder: Address,
+    key: Address,
+    balance: u64,
+    limit: u64,
+) -> eyre::Result<()> {
+    let token = ITIP20::new(address, provider);
+    let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, provider);
+    assert_eq!(token.balanceOf(holder).call().await?, U256::from(balance));
+    assert_eq!(token.totalSupply().call().await?, U256::from(balance));
+    assert_eq!(
+        keychain
+            .getRemainingLimitWithPeriod(holder, key, address)
+            .call()
+            .await?
+            .remaining,
+        U256::from(limit)
+    );
+    Ok(())
+}
+
+fn assert_no_burn_events(logs: &[Log], token: Address) {
+    assert!(logs.iter().all(|log| log.address() != token));
+    assert!(
+        logs.iter()
+            .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(&log.inner).ok())
+            .all(|event| event.token != token)
+    );
+}
+
+fn assert_access_key_spend(
+    logs: &[Log],
+    token: Address,
+    holder: Address,
+    key: Address,
+    amount: u64,
+    remaining: u64,
+) {
+    let spends: Vec<_> = logs
+        .iter()
+        .filter(|log| log.address() == ACCOUNT_KEYCHAIN_ADDRESS)
+        .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(&log.inner).ok())
+        .filter(|event| event.token == token)
+        .collect();
+    assert_eq!(spends.len(), 1);
+    assert_eq!(spends[0].account, holder);
+    assert_eq!(spends[0].publicKey, key);
+    assert_eq!(spends[0].amount, U256::from(amount));
+    assert_eq!(spends[0].remainingLimit, U256::from(remaining));
 }
 
 fn run_burn_at_test<F, Fut>(seed: u64, t12_time: u64, test: F)
@@ -431,7 +508,7 @@ where
 {
     let _ = tempo_eyre::install();
     Runner::from(Config::default().with_seed(seed)).start(|mut context| async move {
-        let setup = Setup::new()
+        let setup = Setup::new(crate::VERIFICATION_MODE)
             .how_many_signers(1)
             .epoch_length(100)
             .seed(seed)
@@ -454,30 +531,6 @@ where
             .unwrap()
             .unwrap();
     });
-}
-
-async fn send_call<P: Provider, C: SolCall>(
-    provider: &P,
-    to: Address,
-    call: C,
-    succeeds: bool,
-) -> eyre::Result<TransactionReceipt> {
-    let receipt = provider
-        .send_transaction(TransactionRequest {
-            to: Some(TxKind::Call(to)),
-            input: call.abi_encode().into(),
-            gas: Some(GAS),
-            gas_price: Some(GAS_PRICE),
-            ..Default::default()
-        })
-        .await?
-        .get_receipt()
-        .await?;
-    assert_eq!(receipt.status(), succeeds, "{}: {receipt:#?}", C::SIGNATURE);
-    if !succeeds {
-        assert!(receipt.logs().iter().all(|log| log.address() != to));
-    }
-    Ok(receipt)
 }
 
 fn assert_burn_events(logs: &[Log], token: Address, burner: Address, from: Address, amount: U256) {
@@ -503,36 +556,4 @@ fn assert_burn_events(logs: &[Log], token: Address, burner: Address, from: Addre
         ]
     );
     assert!(logs[1].inner.data.data.is_empty());
-}
-
-async fn deploy_bridge(
-    provider: &impl Provider,
-    token: Address,
-    revert_after_burn: bool,
-) -> eyre::Result<Address> {
-    // Forward calldata via CALL and bubble failures. Optionally revert after a successful burn.
-    let mut runtime = vec![0x36, 0x5f, 0x5f, 0x37, 0x5f, 0x5f, 0x36, 0x5f, 0x5f, 0x73];
-    runtime.extend_from_slice(token.as_slice());
-    runtime.extend_from_slice(&[0x5a, 0xf1, 0x3d, 0x5f, 0x5f, 0x3e]);
-    let success = u8::try_from(runtime.len() + 6)?;
-    runtime.extend_from_slice(&[0x60, success, 0x57, 0x3d, 0x5f, 0xfd, 0x5b, 0x3d, 0x5f]);
-    runtime.push(if revert_after_burn { 0xfd } else { 0xf3 });
-    let len = u8::try_from(runtime.len())?;
-    let mut init = vec![0x60, len, 0x60, 12, 0x60, 0, 0x39, 0x60, len, 0x60, 0, 0xf3];
-    init.extend_from_slice(&runtime);
-    let receipt = provider
-        .send_transaction(TransactionRequest {
-            to: Some(TxKind::Create),
-            input: Bytes::from(init).into(),
-            gas: Some(GAS),
-            gas_price: Some(GAS_PRICE),
-            ..Default::default()
-        })
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status());
-    let address = receipt.contract_address.expect("bridge deployment address");
-    assert_eq!(provider.get_code_at(address).await?.as_ref(), runtime);
-    Ok(address)
 }
