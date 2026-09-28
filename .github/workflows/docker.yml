@@ -27,9 +27,9 @@ on:
         default: ""
   workflow_call:
     outputs:
-      network_image_tag:
+      tempo_image_tag:
         description: Image tag published by this build attempt
-        value: ${{ jobs.build-and-push.outputs.network_image_tag }}
+        value: ${{ jobs.build-and-push.outputs.tempo_image_tag }}
     inputs:
       source_sha:
         description: Exact commit to build for the network E2E gate
@@ -56,7 +56,7 @@ jobs:
   build-and-push:
     name: Build and Push Docker Images
     outputs:
-      network_image_tag: ${{ steps.source.outputs.network_image_tag }}
+      tempo_image_tag: ${{ steps.meta-tempo.outputs.version }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
@@ -110,7 +110,6 @@ jobs:
                 throw new Error('PR head did not resolve to a commit SHA');
               }
             }
-            core.setOutput('network_image_tag', `network-e2e-${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`);
             core.setOutput('sha', sha);
             core.setOutput('short_sha', sha.slice(0, 7));
             core.setOutput('branch', branch);

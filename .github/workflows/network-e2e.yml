@@ -119,7 +119,7 @@ jobs:
           EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
           SHA: ${{ needs.detect.outputs.sha }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
-          IMAGE_TAG: ${{ needs.build.outputs.network_image_tag }}
+          IMAGE_TAG: ${{ needs.build.outputs.tempo_image_tag }}
         run: |
           set -euo pipefail
           trap 'rm -f "$RUNNER_TEMP/network-e2e.key" "$RUNNER_TEMP/network-e2e.crt"' EXIT
