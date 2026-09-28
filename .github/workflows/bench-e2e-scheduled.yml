@@ -52,7 +52,7 @@ jobs:
       has-nightly-benchmarks: ${{ steps.refs.outputs.has-nightly-benchmarks }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -177,8 +177,6 @@ jobs:
       run-type: ${{ matrix.run_type }}
       run-pairs: "1"
       clickhouse-run: feature-1
-      baseline-env: ${{ matrix.run_type == 'nightly' && 'RETH_ENGINE_PERSISTENCE_THRESHOLD=50 RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=40' || '' }}
-      feature-env: ${{ matrix.run_type == 'nightly' && 'RETH_ENGINE_PERSISTENCE_THRESHOLD=50 RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=40' || '' }}
       samply: ${{ github.event_name == 'workflow_dispatch' && inputs.samply && 'true' || 'false' }}
     secrets:
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
@@ -207,7 +205,7 @@ jobs:
       matrix: ${{ fromJSON(needs.resolve-refs.outputs.save-matrix) }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
 
       - name: Prepare benchmark state
         env:
