@@ -25,9 +25,9 @@ use reth_revm::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    InitialZoneFactoryAccount, NATIVE_MULTISIG_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state, t13_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -232,6 +232,26 @@ where
             let state = EvmState::from_iter([(address, account)]);
             db.commit(state);
         }
+        Ok(())
+    }
+
+    /// Reserves the configured recovery address before native transactions can execute.
+    fn reserve_multisig_factory(&mut self, address: Address) -> Result<(), BlockExecutionError> {
+        let db = self.inner.evm.db_mut();
+        let info = db
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        let marker = Bytecode::new_legacy([0xef].into());
+        if info.code_hash == marker.hash_slow() && info.nonce >= 1 {
+            return Ok(());
+        }
+        let mut account = Account::from(info);
+        account.info.nonce = account.info.nonce.max(1);
+        account.info.code_hash = marker.hash_slow();
+        account.info.code = Some(marker);
+        account.mark_touch();
+        db.commit(EvmState::from_iter([(address, account)]));
         Ok(())
     }
 
@@ -518,6 +538,12 @@ where
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
+        }
+        if self.inner.spec.is_t14_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(NATIVE_MULTISIG_ADDRESS, &[])?;
+            if let Some(factory) = self.evm().block().multisig_recovery_factory {
+                self.reserve_multisig_factory(factory)?;
+            }
         }
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
