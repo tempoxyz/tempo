@@ -4424,3 +4424,28 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
     assert_eq!(result.gas().state_gas_spent(), 0);
     assert_eq!(result.gas().reservoir(), 0);
 }
+
+#[test]
+fn funding_rejected_before_activation_in_execution_and_simulation() {
+    for execution_context in [
+        crate::ExecutionContext::Transaction {
+            tx_hash: B256::ZERO,
+        },
+        crate::ExecutionContext::Simulation,
+    ] {
+        let mut test = TestHandlerEvm::aa(
+            TempoHardfork::T2,
+            TempoBatchCallEnv {
+                require_funds: vec![tempo_primitives::transaction::FundingRequirement::default()],
+                ..Default::default()
+            },
+            |tx| tx.execution_context = execution_context,
+        );
+        assert!(matches!(
+            test.validate_env(),
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::FundingNotActivated
+            ))
+        ));
+    }
+}

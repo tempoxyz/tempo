@@ -38,6 +38,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
+                    require_funds,
                     valid_before,
                     valid_after,
                     fee_payer_signature,
@@ -57,6 +58,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            require_funds,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -76,6 +78,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            require_funds,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -335,6 +338,7 @@ mod tests {
 
         // Build a TempoTransaction so we can compute fee_payer_signature_hash
         let tx = TempoTransaction {
+            require_funds: None,
             chain_id: 4217,
             nonce: 0,
             fee_payer_signature: None,

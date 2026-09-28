@@ -11,6 +11,10 @@ use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersio
 /// validation errors that occur during transaction processing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
+    /// Signed funding fields are understood but execution has not been activated.
+    #[error("funding requirements are not activated")]
+    FundingNotActivated,
+
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
@@ -322,7 +326,8 @@ impl TempoInvalidTransaction {
             | Self::KeychainValidationFailed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
-            | Self::V2KeychainBeforeActivation => false,
+            | Self::V2KeychainBeforeActivation
+            | Self::FundingNotActivated => false,
         }
     }
 }
