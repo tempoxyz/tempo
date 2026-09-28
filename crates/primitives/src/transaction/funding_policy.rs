@@ -51,9 +51,12 @@ pub struct FundingPolicy {
 pub struct FundingPolicyRules {
     /// Maximum aggregate tolerance in basis points.
     pub max_slippage_bps: u16,
-    /// Output routes in ascending token order; source order is significant.
+    /// Output routes in ascending token order.
     #[cfg_attr(feature = "serde", serde(rename = "sources", with = "routes_by_token"))]
     pub routes: Vec<FundingPolicyRoute>,
+    /// Whether requests must follow policy source order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub enforce_order: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
@@ -91,6 +94,7 @@ impl FundingPolicyAuthorization {
 impl From<FundingPolicyRules> for IFundingPolicy::Rules {
     fn from(policy: FundingPolicyRules) -> Self {
         Self {
+            enforceOrder: policy.enforce_order,
             maxSlippageBps: policy.max_slippage_bps,
             routes: policy
                 .routes
@@ -194,6 +198,7 @@ mod tests {
         FundingPolicy {
             admins: vec![Address::repeat_byte(1)],
             rules: FundingPolicyRules {
+                enforce_order: false,
                 max_slippage_bps: 100,
                 routes: vec![FundingPolicyRoute {
                     token: Address::repeat_byte(2),
@@ -248,6 +253,7 @@ mod tests {
         let mutations: &[fn(&mut FundingPolicy)] = &[
             |p| p.admins.push(Address::repeat_byte(5)),
             |p| p.rules.max_slippage_bps = 0,
+            |p| p.rules.enforce_order = true,
             |p| p.rules.routes[0].token = Address::repeat_byte(6),
             |p| p.rules.routes[0].sources[0].target = Address::repeat_byte(7),
             |p| p.rules.routes[0].sources[0].data = Bytes::from_static(&[8]),
@@ -265,6 +271,51 @@ mod tests {
         let mut truncated = encoded.clone();
         truncated.pop();
         assert!(KeyAuthorization::decode(&mut truncated.as_slice()).is_err());
+    }
+
+    #[test]
+    fn rules_encode_order_as_a_canonical_boolean() {
+        for enforce_order in [false, true] {
+            let rules = FundingPolicyRules {
+                max_slippage_bps: 0,
+                routes: vec![],
+                enforce_order,
+            };
+            let expected = [0xc3, 0x80, 0xc0, if enforce_order { 1 } else { 0x80 }];
+            assert_eq!(alloy_rlp::encode(&rules), expected);
+            assert_eq!(
+                FundingPolicyRules::decode(&mut expected.as_slice()).unwrap(),
+                rules
+            );
+            let abi: IFundingPolicy::Rules = rules.into();
+            assert_eq!(abi.enforceOrder, enforce_order);
+        }
+        for invalid in [
+            &[0xc2, 0x80, 0xc0][..],
+            &[0xc3, 0x80, 0xc0, 2],
+            &[0xc3, 0x80, 0xc0, 0],
+        ] {
+            assert!(FundingPolicyRules::decode(&mut &invalid[..]).is_err());
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn omitted_order_defaults_to_false() {
+        let mut value = serde_json::to_value(inline()).unwrap();
+        value["rules"]
+            .as_object_mut()
+            .unwrap()
+            .remove("enforceOrder");
+        let omitted: FundingPolicy = serde_json::from_value(value.clone()).unwrap();
+        assert!(!omitted.rules.enforce_order);
+        value["rules"]["enforceOrder"] = false.into();
+        let explicit: FundingPolicy = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(alloy_rlp::encode(&omitted), alloy_rlp::encode(&explicit));
+        value["rules"]["enforceOrder"] = true.into();
+        let ordered: FundingPolicy = serde_json::from_value(value).unwrap();
+        assert!(ordered.rules.enforce_order);
+        assert_ne!(alloy_rlp::encode(&omitted), alloy_rlp::encode(&ordered));
     }
 
     #[cfg(feature = "serde")]

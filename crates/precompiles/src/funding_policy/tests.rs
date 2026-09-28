@@ -11,6 +11,7 @@ const POLICY: Address = Address::repeat_byte(5);
 
 fn policy() -> IFundingPolicy::Rules {
     IFundingPolicy::Rules {
+        enforceOrder: false,
         maxSlippageBps: 100,
         routes: vec![IFundingPolicy::Route {
             token: TOKEN,
@@ -68,6 +69,7 @@ fn replacement_requires_current_admin_and_preserves_other_fields() -> eyre::Resu
                 OTHER,
                 id,
                 IFundingPolicy::Rules {
+                    enforceOrder: false,
                     maxSlippageBps: 0,
                     routes: vec![]
                 }
@@ -82,6 +84,7 @@ fn replacement_requires_current_admin_and_preserves_other_fields() -> eyre::Resu
             OWNER,
             id,
             IFundingPolicy::Rules {
+                enforceOrder: false,
                 maxSlippageBps: 0,
                 routes: vec![],
             },
@@ -94,6 +97,7 @@ fn replacement_requires_current_admin_and_preserves_other_fields() -> eyre::Resu
             replaced.rulesHash,
             policies.hash_rules_data(
                 &IFundingPolicy::Rules {
+                    enforceOrder: false,
                     maxSlippageBps: 0,
                     routes: vec![]
                 }
@@ -108,6 +112,7 @@ fn replacement_requires_current_admin_and_preserves_other_fields() -> eyre::Resu
             OTHER,
             id,
             IFundingPolicy::Rules {
+                enforceOrder: false,
                 maxSlippageBps: 10_000,
                 routes: policy().routes,
             },
@@ -116,6 +121,7 @@ fn replacement_requires_current_admin_and_preserves_other_fields() -> eyre::Resu
             policies.get_policy(id)?.rulesHash,
             policies.hash_rules_data(
                 &IFundingPolicy::Rules {
+                    enforceOrder: false,
                     maxSlippageBps: 10_000,
                     routes: policy().routes
                 }
@@ -199,6 +205,7 @@ fn access_keys_cannot_create_or_administer_policies() -> eyre::Result<()> {
                 OWNER,
                 id,
                 IFundingPolicy::Rules {
+                    enforceOrder: false,
                     maxSlippageBps: 0,
                     routes: vec![]
                 }
@@ -250,6 +257,7 @@ fn callbacks_cannot_mutate_policies_even_without_account_inputs() -> eyre::Resul
                     OWNER,
                     id,
                     IFundingPolicy::Rules {
+                        enforceOrder: false,
                         maxSlippageBps: 0,
                         routes: vec![]
                     }
@@ -284,6 +292,7 @@ fn policy_state_counter_and_events_follow_rollback() -> eyre::Result<()> {
             OWNER,
             id,
             IFundingPolicy::Rules {
+                enforceOrder: false,
                 maxSlippageBps: 0,
                 routes: vec![],
             },
@@ -298,6 +307,7 @@ fn policy_state_counter_and_events_follow_rollback() -> eyre::Result<()> {
     assert_eq!(created.rules, policy());
     let updated = IFundingPolicy::PolicyRulesUpdated::decode_log_data_validate(&events[1])?;
     let expected = IFundingPolicy::Rules {
+        enforceOrder: false,
         maxSlippageBps: 0,
         routes: vec![],
     };
@@ -336,6 +346,18 @@ fn commitment_rejects_stale_mutated_and_noncanonical_rules() -> eyre::Result<()>
         );
         assert_eq!(registry.verify_rules(hash, &data)?, rules);
         assert!(registry.verify_rules(hash, &[]).is_err());
+        let mut ordered = rules.clone();
+        ordered.enforceOrder = true;
+        assert!(registry.verify_rules(hash, &ordered.abi_encode()).is_err());
+        registry.set_rules(OWNER, id, ordered.clone())?;
+        let ordered_hash = registry.get_policy(id)?.rulesHash;
+        assert_ne!(ordered_hash, hash);
+        assert_eq!(
+            registry.verify_rules(ordered_hash, &ordered.abi_encode())?,
+            ordered
+        );
+        assert!(registry.verify_rules(ordered_hash, &data).is_err());
+
         let mut mutated = data.clone();
         *mutated.last_mut().unwrap() ^= 1;
         assert!(registry.verify_rules(hash, &mutated).is_err());
@@ -347,6 +369,7 @@ fn commitment_rejects_stale_mutated_and_noncanonical_rules() -> eyre::Result<()>
             OWNER,
             id,
             IFundingPolicy::Rules {
+                enforceOrder: false,
                 maxSlippageBps: 0,
                 routes: vec![],
             },

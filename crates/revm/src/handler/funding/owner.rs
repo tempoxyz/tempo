@@ -179,7 +179,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 Ok((key, Some(policy)))
             })?;
             for requirement in requirements {
-                let (slippage, route) = self.funding_storage(evm, gas, || {
+                let (slippage, route, enforce_order) = self.funding_storage(evm, gas, || {
                     if requirement
                         .sources
                         .iter()
@@ -191,7 +191,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         if requirement.policy_rules.is_some() {
                             return Err(invalid_context());
                         }
-                        return Ok((requirement.slippage_bps.unwrap_or_default(), None));
+                        return Ok((requirement.slippage_bps.unwrap_or_default(), None, false));
                     };
                     let rules = tempo_precompiles::funding_policy::FundingPolicy::new(
                         tempo_contracts::precompiles::FUNDING_POLICY_ADDRESS,
@@ -217,7 +217,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 token: requirement.token,
                             },
                         ))?;
-                    Ok((slippage, Some(route)))
+                    Ok((slippage, Some(route), rules.enforceOrder))
                 })?;
                 let mut rules = Vec::with_capacity(requirement.sources.len());
                 let mut position = 0;
@@ -273,7 +273,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                             .into()
                         })
                     })?;
-                    position = index;
+                    if enforce_order {
+                        position = index;
+                    }
                     rules.push(data);
                 }
                 let mut balance = self.funding_storage(evm, gas, || {

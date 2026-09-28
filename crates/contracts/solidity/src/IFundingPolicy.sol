@@ -15,6 +15,7 @@ interface IFundingPolicy {
     struct Rules {
         uint16 maxSlippageBps;
         Route[] routes;
+        bool enforceOrder;
     }
 
     struct Policy {

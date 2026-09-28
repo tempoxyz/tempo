@@ -547,6 +547,7 @@ fn funding_key(
         .with_funding_policy(FundingPolicyAuthorization::Inline(FundingPolicy {
             admins: vec![owner.address()],
             rules: tempo_primitives::transaction::FundingPolicyRules {
+                enforce_order: false,
                 max_slippage_bps: 100,
                 routes: vec![FundingPolicyRoute {
                     token: PATH_USD_ADDRESS,
@@ -566,6 +567,7 @@ fn funding_key(
 
 fn policy_rules(assets: &[Address]) -> Bytes {
     tempo_contracts::precompiles::IFundingPolicy::Rules {
+        enforceOrder: false,
         maxSlippageBps: 100,
         routes: vec![tempo_contracts::precompiles::IFundingPolicy::Route {
             token: PATH_USD_ADDRESS,

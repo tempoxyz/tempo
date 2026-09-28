@@ -109,7 +109,7 @@ contract FundingDiscoveryTest {
     function testRulesHashCheckedBeforeBalanceShortcut() public {
         setSources(new IFundingPolicy.Source[](0), 0);
         token.set(ACCOUNT, 50);
-        rulesData = abi.encode(IFundingPolicy.Rules(1, new IFundingPolicy.Route[](0)));
+        rulesData = abi.encode(IFundingPolicy.Rules(1, new IFundingPolicy.Route[](0), false));
         require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
         rulesData = "";
         require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
@@ -219,7 +219,7 @@ contract FundingDiscoveryTest {
         routes[0] = IFundingPolicy.Route(address(token), sources);
         address[] memory admins = new address[](1);
         admins[0] = address(this);
-        rulesData = abi.encode(IFundingPolicy.Rules(slippage, routes));
+        rulesData = abi.encode(IFundingPolicy.Rules(slippage, routes, false));
         store.set(
             IFundingPolicy.Policy(
                 admins, keccak256(abi.encode(keccak256("tempo.funding-policy.rules.v1"), rulesData))
@@ -293,6 +293,35 @@ contract FundingDiscoveryTest {
         require(token.balanceOf(ACCOUNT) == 20_000_000);
     }
 
+    function testOrderFlagIsCommittedAndPreservesDiscoveryOrder() public {
+        address first = source(50, 50, 1);
+        address second = source(50, 50, 1);
+        IFundingPolicy.Source[] memory sources = new IFundingPolicy.Source[](2);
+        sources[0] = IFundingPolicy.Source(first, hex"1122");
+        sources[1] = IFundingPolicy.Source(second, hex"1122");
+        setSources(sources, 0);
+        bytes memory unordered = rulesData;
+        IFundingDiscovery.Discovery memory expected =
+            helper.discover(ACCOUNT, address(token), 50, 1, rulesData);
+        IFundingPolicy.Rules memory rules = abi.decode(rulesData, (IFundingPolicy.Rules));
+        rules.enforceOrder = true;
+        rulesData = abi.encode(rules);
+        require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
+        store.set(
+            IFundingPolicy.Policy(
+                new address[](0),
+                keccak256(abi.encode(keccak256("tempo.funding-policy.rules.v1"), rulesData))
+            )
+        );
+        IFundingDiscovery.Discovery memory result =
+            helper.discover(ACCOUNT, address(token), 50, 1, rulesData);
+        require(result.sources.length == 2);
+        require(result.sources[0].target == first && result.sources[1].target == second);
+        require(keccak256(abi.encode(result)) == keccak256(abi.encode(expected)));
+        rulesData = unordered;
+        require(bytes4(failure(1, address(token), 0)) == IFundingPolicy.InvalidPolicyData.selector);
+    }
+
     function testBalanceShortcutStillValidatesPolicyAndToken() public {
         setSources(single(address(0), hex"1122"), 100);
         require(bytes4(failure(2, address(token), 0)) == IFundingPolicy.PolicyNotFound.selector);
@@ -303,7 +332,7 @@ contract FundingDiscoveryTest {
     }
 
     function testEmptyRoutesRejectAndEmptySourcesReturnNoCandidates() public {
-        rulesData = abi.encode(IFundingPolicy.Rules(0, new IFundingPolicy.Route[](0)));
+        rulesData = abi.encode(IFundingPolicy.Rules(0, new IFundingPolicy.Route[](0), false));
         store.set(
             IFundingPolicy.Policy(
                 new address[](0),

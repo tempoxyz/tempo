@@ -4428,6 +4428,7 @@ mod tests {
             FundingPolicyAuthorization::Inline(FundingPolicy {
                 admins: vec![root.address()],
                 rules: tempo_primitives::transaction::FundingPolicyRules {
+                    enforce_order: false,
                     max_slippage_bps: 100,
                     routes: vec![FundingPolicyRoute {
                         token: Address::repeat_byte(1),

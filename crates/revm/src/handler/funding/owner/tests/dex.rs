@@ -745,6 +745,7 @@ fn discovery_returns_executable_native_dex_requests() {
             },
         );
         let rules = IFundingPolicy::Rules {
+            enforceOrder: false,
             maxSlippageBps: 0,
             routes: vec![IFundingPolicy::Route {
                 token: PATH_USD_ADDRESS,

@@ -4589,6 +4589,7 @@ fn inline_policy_intrinsic_prices_persisted_tuple_and_binding() {
     inline.authorization.funding_policy = Some(FundingPolicyAuthorization::Inline(FundingPolicy {
         admins: vec![Address::repeat_byte(2)],
         rules: tempo_primitives::transaction::FundingPolicyRules {
+            enforce_order: false,
             max_slippage_bps: 0,
             routes: vec![],
         },

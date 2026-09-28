@@ -528,6 +528,7 @@ async fn funding_rpc_native_dex_payment_and_rollback() -> eyre::Result<()> {
             input: IFundingPolicy::setRulesCall {
                 policyId: 1,
                 rules: IFundingPolicy::Rules {
+                    enforceOrder: false,
                     maxSlippageBps: 100,
                     routes: vec![],
                 },
@@ -708,6 +709,7 @@ fn funding_key(
         .with_funding_policy(FundingPolicyAuthorization::Inline(FundingPolicy {
             admins: vec![owner.address()],
             rules: tempo_primitives::transaction::FundingPolicyRules {
+                enforce_order: false,
                 max_slippage_bps: 100,
                 routes: vec![FundingPolicyRoute {
                     token: PATH_USD_ADDRESS,

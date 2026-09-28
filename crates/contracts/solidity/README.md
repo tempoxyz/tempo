@@ -4,6 +4,8 @@ Call `FundingDiscovery.discover(account, token, amount, slippageBps, sources)` a
 
 The overload `discover(account, token, amount, policyId, rules)` accepts canonical ABI-encoded `IFundingPolicy.Rules` and verifies their stored policy commitment. Both use ordinary EVM static calls to query sources in rule order with the same shortfall and aggregate cost budget. Neither grants spending authority.
 
+`rules.enforceOrder` defaults to `false`. Discovery preserves configured order in either mode; consumers may reorder candidates before signing unless `enforceOrder` is `true`.
+
 Copy candidate `target` and `data` into `requireFunds[].sources`. Candidates are independent estimates, not reserved funds. Access key execution still requires `policyRules` matching its stored policy. Execution validates applicable key permissions, available funds, and slippage.
 
 The node installs the compiled Solidity runtime at T13. Ordinary EVM execution handles source calls; no custom discovery frames are required. Regenerate artifacts from the repository root:

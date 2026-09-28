@@ -761,6 +761,7 @@ mod delegated {
 
     fn rules(output: Address) -> IFundingPolicy::Rules {
         IFundingPolicy::Rules {
+            enforceOrder: false,
             maxSlippageBps: 100,
             routes: vec![IFundingPolicy::Route {
                 token: output,
@@ -858,11 +859,14 @@ mod delegated {
     }
 
     #[test]
-    fn repeated_targets_match_entries_in_order_before_balance_shortcut() {
-        for backwards in [false, true] {
+    fn repeated_targets_respect_order_mode_before_balance_shortcut() {
+        for (enforce_order, backwards) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             let (mut evm, output) = setup(TempoHardfork::T13);
             authorize(&mut evm, output, 50);
             let mut rules = rules(output);
+            rules.enforceOrder = enforce_order;
             rules.routes[0].sources = [RECIPIENT, PATH_USD_ADDRESS]
                 .into_iter()
                 .map(|input| IFundingPolicy::Source {
@@ -889,7 +893,7 @@ mod delegated {
             let result = run(&mut evm, &[req], vec![noop()], true, LIMIT, 0);
             assert_eq!(
                 result.instruction_result().is_ok(),
-                !backwards,
+                !enforce_order || !backwards,
                 "{result:?}"
             );
             assert!(
@@ -902,6 +906,70 @@ mod delegated {
                         && *is_static)
             );
             assert_eq!(remaining(&mut evm, output), U256::from(50));
+        }
+    }
+
+    #[test]
+    fn reversed_sources_execute_only_when_order_is_not_enforced() {
+        for enforce_order in [false, true] {
+            let (mut evm, output) = setup(TempoHardfork::T13);
+            authorize(&mut evm, output, 50);
+            let mut rules = rules(output);
+            rules.enforceOrder = enforce_order;
+            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                let mut keychain = AccountKeychain::new();
+                keychain.set_transaction_key(Address::ZERO).unwrap();
+                FundingPolicy::new(FUNDING_POLICY_ADDRESS)
+                    .set_rules(ACCOUNT, 1, rules.clone())
+                    .unwrap();
+                keychain.set_transaction_key(KEY).unwrap();
+            });
+            evm.inner.ctx.journaled_state.logs.clear();
+            let mut req = requirement(
+                output,
+                50,
+                vec![
+                    source(SOURCE2, 30, 30, 50, 0),
+                    source(SOURCE, 20, 20, 20, 0),
+                ],
+            );
+            req.policy_rules = Some(rules.abi_encode().into());
+            let result = run(&mut evm, &[req], vec![transfer(output, 50)], true, LIMIT, 0);
+            assert_eq!(
+                result.instruction_result().is_ok(),
+                !enforce_order,
+                "{result:?}"
+            );
+            if enforce_order {
+                assert_eq!(
+                    result.output().data().as_ref(),
+                    ITIP20Funder::FundingNotAuthorized { source: SOURCE }.abi_encode()
+                );
+                assert_eq!(remaining(&mut evm, output), U256::from(50));
+                assert_eq!(
+                    balance(&mut evm, PATH_USD_ADDRESS, ACCOUNT),
+                    U256::from(1000)
+                );
+                assert_eq!(balance(&mut evm, output, RECIPIENT), U256::ZERO);
+                assert!(evm.inner.ctx.journaled_state.logs.is_empty());
+            } else {
+                assert_eq!(remaining(&mut evm, output), U256::ZERO);
+                assert_eq!(
+                    balance(&mut evm, PATH_USD_ADDRESS, ACCOUNT),
+                    U256::from(950)
+                );
+                assert_eq!(balance(&mut evm, output, RECIPIENT), U256::from(50));
+                let funded: Vec<_> = evm
+                    .inner
+                    .ctx
+                    .journaled_state
+                    .logs
+                    .iter()
+                    .filter_map(|log| ITIP20Funder::SourceFunded::decode_log(log).ok())
+                    .map(|log| log.source)
+                    .collect();
+                assert_eq!(funded, vec![SOURCE2, SOURCE]);
+            }
         }
     }
 
@@ -939,7 +1007,18 @@ mod delegated {
             match mode {
                 0 => req.token = PATH_USD_ADDRESS,
                 1 => req.slippage_bps = Some(101),
-                2 => req.sources = vec![source(SOURCE2, 0, 0, 0, 0), source(SOURCE, 0, 0, 0, 0)],
+                2 => {
+                    req.sources = vec![source_with_input(
+                        SOURCE,
+                        RECIPIENT,
+                        RATE_SCALE,
+                        U256::ZERO,
+                        0,
+                        0,
+                        0,
+                        0,
+                    )]
+                }
                 3 => req.sources = vec![source(RECIPIENT, 0, 0, 0, 0)],
                 4 => StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                     AccountKeychain::new()
@@ -950,6 +1029,7 @@ mod delegated {
                             ACCOUNT,
                             1,
                             IFundingPolicy::Rules {
+                                enforceOrder: false,
                                 maxSlippageBps: 100,
                                 routes: vec![],
                             },

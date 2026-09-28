@@ -6,7 +6,7 @@ At T13, an access key can use `requireFunds` when its signed authorization inclu
 
 `FUNDING_POLICY_ADDRESS` is `0x1120000000000000000000000000000000000002`. The node installs its marker bytecode at T13 using the existing precompile activation path. This draft address remains subject to protocol review.
 
-The owner signs either a nonzero existing policy ID or an inline policy. An inline policy contains `admins`, `slippageBps`, and token-indexed `sources`; its canonical wire form contains routes sorted by token address. Source order within a route is significant.
+The owner signs a nonzero policy ID or an inline policy containing `admins` and `rules`. Rules contain `maxSlippageBps`, token-indexed `sources`, and `enforceOrder`, with routes sorted by token address. `enforceOrder` defaults to `false`; `true` restricts every referencing key to policy source order.
 
 Policy creation and key binding share the key-installation checkpoint. An invalid policy cannot leave a key installed. Installation precedes the application checkpoint, so a later funding or payment failure preserves the key and policy, as existing key installation does.
 
@@ -14,7 +14,9 @@ Read the ID through `IAccountKeychain.getFundingPolicyId(account, keyId)` or the
 
 ## Execution
 
-The handler snapshots the bound policy before funding. Each requirement must name an allowed output token. All supplied sources must belong to that route in nondecreasing order, including sources that would be skipped once the balance is satisfied. Sources may repeat or be omitted.
+The handler snapshots the bound policy before funding. Each requirement must name an allowed output token. All supplied sources must match individual entries in that route, including sources that would be skipped once the balance is satisfied.
+
+Matching restarts at the first entry for each request unless `enforceOrder` is `true`, which requires nondecreasing policy positions. Sources may repeat or be omitted; execution always follows signed transaction order.
 
 Omitted transaction slippage uses the policy tolerance. An explicit value must equal it. Each requirement has one aggregate budget based on its initial shortfall. The handler passes each source's policy data to `quote`, then grants temporary authority for the quoted input during `fund`.
 

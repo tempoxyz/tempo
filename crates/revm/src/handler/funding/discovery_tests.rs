@@ -135,6 +135,7 @@ fn setup() -> TempoEvm<CacheDB<EmptyDB>, Trace> {
 
 fn rules(sources: Vec<IFundingPolicy::Source>) -> IFundingPolicy::Rules {
     IFundingPolicy::Rules {
+        enforceOrder: false,
         maxSlippageBps: 100,
         routes: vec![IFundingPolicy::Route {
             token: PATH_USD_ADDRESS,

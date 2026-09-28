@@ -338,6 +338,7 @@ mod tests {
                 FundingPolicyAuthorization::Inline(tempo_primitives::transaction::FundingPolicy {
                     admins: vec![OWNER],
                     rules: tempo_primitives::transaction::FundingPolicyRules {
+                        enforce_order: false,
                         max_slippage_bps: 100,
                         routes: vec![],
                     },
