@@ -28,6 +28,7 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
 pub mod zone_factory;
+pub mod zone_verifier;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
@@ -50,6 +51,7 @@ use crate::{
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
     zone_factory::ZoneFactory,
+    zone_verifier::ZoneVerifier,
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -253,6 +255,8 @@ pub fn extend_tempo_precompiles(
             Some(CurrentCommittee::create_precompile(&env))
         } else if *address == ZONE_FACTORY_ADDRESS && env.cfg.spec.is_t10() {
             Some(ZoneFactory::create_precompile(&env))
+        } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t13() {
+            Some(ZoneVerifier::create_precompile(&env))
         } else {
             None
         }
@@ -352,6 +356,13 @@ impl ZoneFactory {
     }
 }
 
+impl ZoneVerifier {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("ZoneVerifier", env: env, |input| { Self::new() })
+    }
+}
+
 impl StablecoinDEX {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
@@ -448,11 +459,11 @@ mod tests {
         tip20::TIP20Token,
     };
     use alloy::{
-        primitives::{Address, Bytes, U256, bytes},
+        primitives::{Address, B256, Bytes, TxKind, U256, bytes},
         sol_types::SolCall,
     };
     use alloy_evm::{
-        EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
+        EthEvmFactory, Evm, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
     };
     use revm::{
@@ -460,7 +471,12 @@ mod tests {
         database::{CacheDB, EmptyDB},
         state::{AccountInfo, Bytecode},
     };
-    use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
+    use tempo_contracts::{
+        precompiles::{ITIP20, IZoneVerifier, UnknownFunctionSelector},
+        zones::T13_ZONE_VERIFIER_RUNTIME,
+    };
+    use tempo_evm::{TempoBlockEnv, TempoEvmFactory};
+    use tempo_revm::TempoTxEnv;
 
     fn test_tempo_precompiles(cfg_env: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
         tempo_precompiles(
@@ -1181,6 +1197,112 @@ mod tests {
             precompiles.get(&zone_factory::portal_address(1)).is_none(),
             "ZonePortal storage handles must not be registered as precompiles"
         );
+    }
+
+    #[test]
+    fn test_zone_verifier_registered_at_t13_only() {
+        let activation = SYSTEM_PRECOMPILES
+            .iter()
+            .find_map(|(address, fork)| (*address == ZONE_VERIFIER_ADDRESS).then_some(*fork))
+            .expect("ZoneVerifier must be listed in SYSTEM_PRECOMPILES");
+        assert_eq!(activation, TempoHardfork::T13);
+
+        for (spec, active) in [
+            (TempoHardfork::T10, false),
+            (TempoHardfork::T11, false),
+            (TempoHardfork::T12, false),
+            (TempoHardfork::T13, true),
+        ] {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(spec);
+            assert_eq!(
+                test_tempo_precompiles(&cfg)
+                    .get(&ZONE_VERIFIER_ADDRESS)
+                    .is_some(),
+                active,
+                "unexpected native ZoneVerifier activation at {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_zone_verifier_runtime_is_shadowed_at_t13() {
+        let calldata = IZoneVerifier::verifyCall {
+            zoneId: 1,
+            tempoBlockNumber: 1,
+            anchorBlockNumber: 1,
+            anchorBlockHash: B256::ZERO,
+            expectedWithdrawalBatchIndex: 0,
+            nextZoneHeight: U256::ZERO,
+            blockTransition: IZoneVerifier::BlockTransition {
+                prevBlockHash: B256::ZERO,
+                nextBlockHash: B256::ZERO,
+            },
+            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+                prevProcessedHash: B256::ZERO,
+                nextProcessedHash: B256::ZERO,
+                prevDepositNumber: 0,
+                nextDepositNumber: 0,
+            },
+            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+                prevProcessedTokenCount: 0,
+                nextProcessedTokenCount: 0,
+            },
+            withdrawalQueueHash: B256::ZERO,
+            verifierConfig: Bytes::new(),
+            proof: Bytes::new(),
+        }
+        .abi_encode();
+
+        let execute = |spec| {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(spec);
+            // Use a runtime with the matching ABI to isolate the native dispatch boundary.
+            let code = Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME);
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                ZONE_VERIFIER_ADDRESS,
+                AccountInfo {
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                },
+            );
+            let mut evm = TempoEvmFactory::default().create_evm(
+                db,
+                EvmEnv {
+                    cfg_env: cfg,
+                    block_env: TempoBlockEnv::default(),
+                },
+            );
+            let result = evm
+                .transact_raw(TempoTxEnv {
+                    inner: TxEnv {
+                        caller: Address::repeat_byte(0x77),
+                        gas_price: 0,
+                        gas_limit: 1_000_000,
+                        kind: TxKind::Call(ZONE_VERIFIER_ADDRESS),
+                        data: calldata.clone().into(),
+                        ..Default::default()
+                    },
+                    is_system_tx: true,
+                    ..Default::default()
+                })
+                .unwrap();
+            let revm::context::result::ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } = result.result
+            else {
+                panic!("unexpected Zone verifier result: {:?}", result.result);
+            };
+            IZoneVerifier::verifyCall::abi_decode_returns(&output).unwrap()
+        };
+
+        assert!(execute(TempoHardfork::T10));
+        assert!(execute(TempoHardfork::T11));
+        assert!(execute(TempoHardfork::T12));
+        assert!(!execute(TempoHardfork::T13));
     }
 
     #[test]

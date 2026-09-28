@@ -101,6 +101,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
+    /// Minimum fee cap accepted by this chain's pool.
+    minimum_fee_cap: u128,
     /// Addresses checked against transaction senders and direct call targets.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
@@ -147,6 +149,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             disable_fee_amm_check: false,
+            minimum_fee_cap: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
@@ -157,6 +160,15 @@ where
     /// Configures whether to skip the FeeAMM liquidity check during pool admission.
     pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
         self.disable_fee_amm_check = disable;
+        self
+    }
+
+    /// Sets the minimum fee cap for chains with a custom protocol fee policy.
+    ///
+    /// Tempo defaults to the T7 fee floor. Zero-base-fee chains such as Zones can opt into
+    /// accepting zero-fee transactions without disabling any other admission checks.
+    pub const fn with_minimum_fee_cap(mut self, minimum_fee_cap: u128) -> Self {
+        self.minimum_fee_cap = minimum_fee_cap;
         self
     }
 
@@ -413,9 +425,9 @@ where
             );
         }
 
-        // T7 is active on all supported networks. Fees below its floor can never become
-        // executable; fees below the current dynamic base fee can wait for block selection.
-        if transaction.max_fee_per_gas() < u128::from(TEMPO_T7_BASE_FEE_FLOOR) {
+        // Fees below the chain's configured floor can never become executable; fees below
+        // the current dynamic base fee can wait for block selection.
+        if transaction.max_fee_per_gas() < self.minimum_fee_cap {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
@@ -2166,6 +2178,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_zero_fee_cap_with_custom_floor() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for transaction in [
+            TxBuilder::aa(Address::random())
+                .max_fee(0)
+                .max_priority_fee(0)
+                .build(),
+            TxBuilder::eip1559(Address::random())
+                .max_fee(0)
+                .max_priority_fee(0)
+                .build_eip1559(),
+        ] {
+            let validator = setup_validator(&transaction, current_time).with_minimum_fee_cap(0);
+            let outcome = validator
+                .validate_transaction(TransactionOrigin::External, transaction)
+                .await;
+            assert!(
+                matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                "zero fee cap should be admitted with a zero floor: {outcome:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_fee_cap_at_floor_below_tip_base_fee_passes() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3199,5 +3238,98 @@ mod tests {
                 "Expected Invalid outcome with TooManyTotalStorageKeys error, got: {outcome:?}"
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_inline_key_authorization_does_not_poison_next_root_aa_transaction() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
+
+        const TIP_TIMESTAMP: u64 = 1_788_393_600;
+
+        let root = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
+        let access_key = PrivateKeySigner::from_bytes(&B256::with_last_byte(2)).unwrap();
+        let chain_id = MODERATO.chain_id();
+
+        let authorization = KeyAuthorization::unrestricted(
+            chain_id,
+            SignatureType::Secp256k1,
+            access_key.address(),
+        )
+        .with_expiry(TIP_TIMESTAMP);
+        let authorization_signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let signed_authorization =
+            authorization.into_signed(PrimitiveSignature::Secp256k1(authorization_signature));
+
+        let build_root_aa = |target: Address, key_authorization| {
+            let tx = TempoTransaction {
+                chain_id,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(PATH_USD_ADDRESS),
+                key_authorization,
+                ..Default::default()
+            };
+            let unsigned = AASigned::new_unhashed(
+                tx.clone(),
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            let signature = root.sign_hash_sync(&unsigned.signature_hash()).unwrap();
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        let rejected = build_root_aa(Address::repeat_byte(0x44), Some(signed_authorization));
+        let valid = build_root_aa(Address::repeat_byte(0x55), None);
+        assert!(rejected.is_aa());
+        assert!(valid.is_aa());
+        assert_eq!(rejected.sender(), root.address());
+        assert_eq!(valid.sender(), root.address());
+
+        let validator = setup_validator(&rejected, TIP_TIMESTAMP);
+        let outcomes = validator
+            .validate_transactions([
+                (TransactionOrigin::External, rejected),
+                (TransactionOrigin::External, valid),
+            ])
+            .await;
+
+        let TransactionValidationOutcome::Invalid(_, error) = &outcomes[0] else {
+            panic!(
+                "the expired inline authorization must be rejected: {:?}",
+                outcomes[0]
+            );
+        };
+        let Some(TempoPoolTransactionError::Evm(
+            TempoInvalidTransaction::KeychainPrecompileError { reason },
+        )) = error.downcast_other_ref::<TempoPoolTransactionError>()
+        else {
+            panic!("unexpected rejection for the expired inline authorization: {error:?}");
+        };
+        assert!(
+            reason.contains("ExpiryInPast"),
+            "unexpected keychain error: {reason}"
+        );
+        assert!(
+            matches!(&outcomes[1], TransactionValidationOutcome::Valid { .. }),
+            "the valid root-signed AA transaction was rejected after the invalid transaction: {:?}",
+            outcomes[1]
+        );
     }
 }
