@@ -30,7 +30,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 > [!IMPORTANT]
 > **Network identities**
 >
-> Tempo nodes use these BLS threshold public keys to verify consensus finalization certificates, including those used to authenticate Tempo snapshots. They are [built into the node](./crates/chainspec/src/network_identity.rs).
+> Both follow/RPC nodes and validators use these BLS threshold public keys to verify consensus finalization certificates, including those used to authenticate Tempo snapshots. They are [built into the node](./crates/chainspec/src/network_identity.rs).
 >
 > **Mainnet, from epoch 0:**
 > `0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193`
@@ -41,7 +41,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 > To override the built-in identity, pass both `--consensus.network-identity` and `--consensus.network-identity-from-epoch` to `tempo node`. For mainnet:
 >
 > ```bash
-> tempo node --chain mainnet --follow \
+> tempo node \
 >   --consensus.network-identity 0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193 \
 >   --consensus.network-identity-from-epoch 0
 > ```
