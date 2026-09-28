@@ -26,7 +26,6 @@ templates:
     gas_limit: 1000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
-    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
     valid_for_secs: 25
     call:
       to: "0x4d50500000000000000000000000000000000000"
