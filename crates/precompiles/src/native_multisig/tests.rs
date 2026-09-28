@@ -162,7 +162,7 @@ fn native_config_error_precedence_through_abi() {
 fn native_factory_is_required_but_getter_remains_available() {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
     StorageCtx::enter(&mut storage, || {
-        let mut native = NativeMultisig::new();
+        let native = NativeMultisig::new();
         assert_eq!(
             native
                 .get_config_commitment(Address::repeat_byte(0x11))

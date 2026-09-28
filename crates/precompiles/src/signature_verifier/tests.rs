@@ -37,7 +37,7 @@ fn keychain_verification_rejects_multisig() -> eyre::Result<()> {
     let signature = TempoSignature::Keychain(KeychainSignature::new(account, multisig));
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
     StorageCtx::enter(&mut storage, || {
-        let mut verifier = SignatureVerifier::new();
+        let verifier = SignatureVerifier::new();
         for result in [
             verifier.verify_keychain(account, B256::ZERO, signature.to_bytes()),
             verifier.verify_keychain_admin(account, B256::ZERO, signature.to_bytes()),
