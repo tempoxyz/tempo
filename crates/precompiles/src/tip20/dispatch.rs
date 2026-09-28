@@ -51,6 +51,8 @@ impl Precompile for TIP20Token {
                     UNPAUSE_ROLE(call) => view(call, |_| Ok(Self::unpause_role())),
                     ISSUER_ROLE(call) => view(call, |_| Ok(Self::issuer_role())),
                     BURN_BLOCKED_ROLE(call) => view(call, |_| Ok(Self::burn_blocked_role())),
+                    #[schedule(since = T12)]
+                    BURN_AT_ROLE(call) => view(call, |_| Ok(Self::burn_at_role())),
 
                     // State changing functions
                     transferFrom(call) => mutate(call, msg_sender, |sender, c| self.transfer_from(sender, c)),
@@ -75,6 +77,8 @@ impl Precompile for TIP20Token {
                     burnBlocked(call) => mutate(call, msg_sender, |sender, c| {
                         self.burn_blocked(sender, c.from, c.amount, true)
                     }),
+                    #[schedule(since = T12)]
+                    burnAt(call) => mutate(call, msg_sender, |sender, c| self.burn_at(sender, c)),
                     transferWithMemo(call) => mutate(call, msg_sender, |sender, c| self.transfer_with_memo(sender, c)),
                     transferFromWithMemo(call) => mutate(call, msg_sender, |sender, c| {
                         self.transfer_from_with_memo(sender, c)
@@ -644,8 +648,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T5 hardfork so all selectors are active.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        // Use T12 so the TIP-1006 selectors are active too.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
