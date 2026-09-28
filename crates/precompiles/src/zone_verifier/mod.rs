@@ -37,12 +37,8 @@ pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
-        self.verify_with_policy(
-            portal,
-            call,
-            AWS_NITRO_ROOT_DER,
-            approved_pcrs(self.storage.spec()),
-        )
+        let pcrs = approved_pcrs(self.storage.spec());
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, pcrs)
     }
 
     /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
