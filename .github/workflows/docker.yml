@@ -26,6 +26,19 @@ on:
         type: string
         default: ""
   workflow_call:
+    outputs:
+      network_image_tag:
+        description: Image tag published by this build attempt
+        value: ${{ jobs.build-and-push.outputs.network_image_tag }}
+    inputs:
+      source_sha:
+        description: Exact commit to build for the network E2E gate
+        type: string
+        default: ""
+      network_e2e:
+        description: Publish isolated network E2E images without normal registry events
+        type: boolean
+        default: false
   # We're building nightly only once a day to let the rollout cook for 24h without interruptions
   schedule:
     - cron: "5 9 * * *"
@@ -42,6 +55,8 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Docker Images
+    outputs:
+      network_image_tag: ${{ steps.source.outputs.network_image_tag }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
@@ -59,11 +74,20 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          NETWORK_E2E: ${{ inputs.network_e2e }}
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
         with:
           script: |
             const number = process.env.PR_NUMBER || '';
             let sha = context.sha;
+            if (process.env.NETWORK_E2E === 'true') {
+              sha = process.env.SOURCE_SHA;
+              if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('source_sha must be a full commit SHA');
+              if (context.payload.pull_request && context.payload.pull_request.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+                throw new Error('Network E2E publishing only supports branches in this repository');
+              }
+            }
             let branch = process.env.BRANCH_NAME;
             if (number) {
               if (!/^[1-9][0-9]*$/.test(number) || !Number.isSafeInteger(Number(number))) {
@@ -86,10 +110,11 @@ jobs:
                 throw new Error('PR head did not resolve to a commit SHA');
               }
             }
+            core.setOutput('network_image_tag', `network-e2e-${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`);
             core.setOutput('sha', sha);
             core.setOutput('short_sha', sha.slice(0, 7));
             core.setOutput('branch', branch);
-            core.setOutput('revision_label', number ? `org.opencontainers.image.revision=${sha}` : '');
+            core.setOutput('revision_label', (number || process.env.NETWORK_E2E === 'true') ? `org.opencontainers.image.revision=${sha}` : '');
             await core.summary
               .addHeading('Docker build source')
               .addTable([
@@ -139,17 +164,18 @@ jobs:
             ${{ steps.docker-labels.outputs.value }}
             ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=network-e2e-${{ github.run_id }}-${{ github.run_attempt }},enable=${{ inputs.network_e2e }}
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
-            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
-            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
-            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-localnet
@@ -164,17 +190,18 @@ jobs:
             ${{ steps.docker-labels.outputs.value }}
             ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=network-e2e-${{ github.run_id }}-${{ github.run_attempt }},enable=${{ inputs.network_e2e }}
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
-            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
-            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
-            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-sidecar
@@ -189,17 +216,18 @@ jobs:
             ${{ steps.docker-labels.outputs.value }}
             ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=network-e2e-${{ github.run_id }}-${{ github.run_attempt }},enable=${{ inputs.network_e2e }}
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
-            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
-            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
-            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-xtask
@@ -214,17 +242,18 @@ jobs:
             ${{ steps.docker-labels.outputs.value }}
             ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=network-e2e-${{ github.run_id }}-${{ github.run_attempt }},enable=${{ inputs.network_e2e }}
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
-            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
-            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
-            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && !inputs.network_e2e && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
+            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=ref,event=pr,enable=${{ inputs.pr_number == '' && !inputs.network_e2e }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry
@@ -250,10 +279,10 @@ jobs:
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
-          targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
+          targets: ${{ ((inputs.pr_number == '' && !inputs.network_e2e && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
-          no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/v') }}
+          no-cache: ${{ inputs.pr_number == '' && !inputs.network_e2e && startsWith(github.ref, 'refs/tags/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
@@ -350,7 +379,7 @@ jobs:
 
       - name: Publish event (sha tag)
         id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && !inputs.network_e2e }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
@@ -383,7 +412,7 @@ jobs:
 
       - name: Publish event (nightly tag)
         id: publish-nightly-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && !inputs.network_e2e && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
