@@ -15,7 +15,7 @@ use tempo_precompiles::{
 pub(in crate::handler) struct FundingRequirement {
     pub token: Address,
     pub amount: U256,
-    pub slippage_bps: u16,
+    pub slippage_bps: Option<u16>,
     pub policy_rules: Option<Bytes>,
     pub sources: Vec<ITIP20Funder::Source>,
 }
@@ -84,7 +84,10 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                     token: entry.token,
                     policy_rules: entry.policy_rules.clone(),
                     amount: entry.amount,
-                    slippage_bps: u16::try_from(entry.slippage_bps.unwrap_or_default())
+                    slippage_bps: entry
+                        .slippage_bps
+                        .map(u16::try_from)
+                        .transpose()
                         .map_err(|_| TempoInvalidTransaction::InvalidFundingSlippage)?,
                     sources: entry
                         .sources
@@ -154,23 +157,130 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let account = evm.ctx().tx().caller();
         let nested = evm.frame_stack().index().is_some();
         let result = (|| -> Result<(), FundingFailure<DB::Error>> {
-            self.funding_storage(evm, gas, || {
-                if nested
-                    || funder.is_zero()
-                    || account.is_zero()
-                    || !AccountKeychain::new()
-                        .get_transaction_key(IAccountKeychain::getTransactionKeyCall {}, account)?
-                        .is_zero()
-                {
+            let (key, policy) = self.funding_storage(evm, gas, || {
+                if nested || funder.is_zero() || account.is_zero() {
                     return Err(invalid_context());
                 }
-                Ok(())
+                let keychain = AccountKeychain::new();
+                let key = keychain
+                    .get_transaction_key(IAccountKeychain::getTransactionKeyCall {}, account)?;
+                if key.is_zero() {
+                    return Ok((key, None));
+                }
+                if !StorageCtx.spec().is_t13() {
+                    return Err(invalid_context());
+                }
+                keychain.validate_funding_key(account)?;
+                let id = keychain.get_funding_policy_id(account, key)?;
+                let policy = tempo_precompiles::funding_policy::FundingPolicy::new(
+                    tempo_contracts::precompiles::FUNDING_POLICY_ADDRESS,
+                )
+                .get_policy(id)?;
+                Ok((key, Some(policy)))
             })?;
             for requirement in requirements {
+                let (slippage, route, enforce_order) = self.funding_storage(evm, gas, || {
+                    if requirement
+                        .sources
+                        .iter()
+                        .any(|source| source.target.is_zero() || source.data.is_empty())
+                    {
+                        return Err(invalid_context());
+                    }
+                    let Some(policy) = &policy else {
+                        if requirement.policy_rules.is_some() {
+                            return Err(invalid_context());
+                        }
+                        return Ok((requirement.slippage_bps.unwrap_or_default(), None, false));
+                    };
+                    let rules = tempo_precompiles::funding_policy::FundingPolicy::new(
+                        tempo_contracts::precompiles::FUNDING_POLICY_ADDRESS,
+                    )
+                    .verify_rules(
+                        policy.rulesHash,
+                        requirement
+                            .policy_rules
+                            .as_ref()
+                            .map_or(&[][..], |data| data.as_ref()),
+                    )?;
+                    let slippage = requirement.slippage_bps.unwrap_or(rules.maxSlippageBps);
+                    if slippage > rules.maxSlippageBps {
+                        return Err(invalid_context());
+                    }
+                    StorageCtx.deduct_gas((rules.routes.len() as u64).saturating_mul(3))?;
+                    let route = rules
+                        .routes
+                        .into_iter()
+                        .find(|route| route.token == requirement.token)
+                        .ok_or(TIP20FunderError::TokenNotAllowed(
+                            ITIP20Funder::TokenNotAllowed {
+                                token: requirement.token,
+                            },
+                        ))?;
+                    Ok((slippage, Some(route), rules.enforceOrder))
+                })?;
+                let mut rules = Vec::with_capacity(requirement.sources.len());
+                let mut position = 0;
+                for request in &requirement.sources {
+                    let Some(route) = &route else {
+                        rules.push(Bytes::new());
+                        continue;
+                    };
+                    let mut matched = None;
+                    for (index, entry) in route.sources.iter().enumerate().skip(position) {
+                        self.funding_storage(evm, gas, || StorageCtx.deduct_gas(3))?;
+                        if entry.target != request.target {
+                            continue;
+                        }
+                        let result = self.execute_funding_call_with(
+                            evm,
+                            gas,
+                            FundingCall {
+                                caller: funder,
+                                source: request.target,
+                                is_static: true,
+                                permission: None,
+                                data: IFundingSource::verifyCall {
+                                    executionData: request.data.clone(),
+                                    configData: entry.data.clone(),
+                                }
+                                .abi_encode()
+                                .into(),
+                            },
+                            &mut run_loop,
+                        )?;
+                        if !result.instruction_result().is_ok() {
+                            return Err(FundingFailure::Frame(Box::new(result)));
+                        }
+                        let allowed = self.funding_storage(evm, gas, || {
+                            IFundingSource::verifyCall::abi_decode_returns_validate(
+                                result.output().data(),
+                            )
+                            .map_err(|_| invalid_quote(request.target))
+                        })?;
+                        if allowed {
+                            matched = Some((index, entry.data.clone()));
+                            break;
+                        }
+                    }
+                    let (index, data) = self.funding_storage(evm, gas, || {
+                        matched.ok_or_else(|| {
+                            TIP20FunderError::FundingNotAuthorized(
+                                ITIP20Funder::FundingNotAuthorized {
+                                    source: request.target,
+                                },
+                            )
+                            .into()
+                        })
+                    })?;
+                    if enforce_order {
+                        position = index;
+                    }
+                    rules.push(data);
+                }
                 let mut balance = self.funding_storage(evm, gas, || {
                     // Context and argument validation precede the existing-balance shortcut.
-                    if requirement.policy_rules.is_some()
-                        || requirement.slippage_bps > 10_000
+                    if slippage > 10_000
                         || requirement
                             .sources
                             .iter()
@@ -182,13 +292,20 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 })?;
                 let initial_balance = balance;
                 let mut remaining_cost = self.funding_storage(evm, gas, || {
-                    cost_budget(
-                        requirement.amount.saturating_sub(balance),
-                        requirement.slippage_bps,
-                    )
-                    .map_err(|_| invalid_context())
+                    cost_budget(requirement.amount.saturating_sub(balance), slippage)
+                        .map_err(|_| invalid_context())
                 })?;
-                for request in &requirement.sources {
+                if balance < requirement.amount && !key.is_zero() {
+                    self.funding_storage(evm, gas, || {
+                        AccountKeychain::new().verify_and_update_spending(
+                            account,
+                            key,
+                            requirement.token,
+                            requirement.amount - balance,
+                        )
+                    })?;
+                }
+                for (request, policy_data) in requirement.sources.iter().zip(rules) {
                     if balance >= requirement.amount {
                         break;
                     }
@@ -206,8 +323,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                                 assetOut: requirement.token,
                                 maxCost: remaining_cost,
                                 executionData: request.data.clone(),
-                                configData: Bytes::new(),
-                                ownerAuthorized: true,
+                                configData: policy_data,
+                                ownerAuthorized: key.is_zero(),
                             }
                             .abi_encode()
                             .into(),
@@ -284,6 +401,11 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         }
                         let received = received.unwrap();
                         if !received.is_zero() {
+                            AccountKeychain::new().add_funding_credit(
+                                account,
+                                requirement.token,
+                                received,
+                            )?;
                             StorageCtx.emit_event(
                                 funder,
                                 ITIP20Funder::SourceFunded {
@@ -319,7 +441,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         funder,
                         ITIP20Funder::FundsRequired {
                             account,
-                            key: Address::ZERO,
+                            key,
                             asset: requirement.token,
                             requiredAmount: requirement.amount,
                             fundedAmount: balance - initial_balance,

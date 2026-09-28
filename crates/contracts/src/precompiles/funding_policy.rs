@@ -2,49 +2,12 @@ pub use IFundingPolicy::{
     IFundingPolicyErrors as FundingPolicyError, IFundingPolicyEvents as FundingPolicyEvent,
 };
 
-crate::sol! {
+crate::sol!(
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-interface IFundingPolicy {
-    struct Source {
-        address target;
-        bytes data;
-    }
-
-    struct Route {
-        address token;
-        Source[] sources;
-    }
-
-    struct Rules {
-        uint16 maxSlippageBps;
-        Route[] routes;
-        bool enforceOrder;
-    }
-
-    struct Policy {
-        address[] admins;
-        bytes32 rulesHash;
-    }
-
-    error PolicyNotFound();
-    error Unauthorized();
-    error InvalidPolicy();
-    error InvalidPolicyData();
-    error TokenNotAllowed(address token);
-
-    function policyIdCounter() external view returns (uint64);
-    function policyExists(uint64 policyId) external view returns (bool);
-    function createPolicy(address[] calldata admins, Rules calldata rules) external returns (uint64 policyId);
-    function getPolicy(uint64 policyId) external view returns (Policy memory policy);
-    function setRules(uint64 policyId, Rules calldata rules) external;
-    function setAdmins(uint64 policyId, address[] calldata admins) external;
-
-    event PolicyCreated(uint64 indexed policyId, address indexed updater, bytes32 rulesHash, Rules rules);
-    event PolicyRulesUpdated(uint64 indexed policyId, address indexed updater, bytes32 rulesHash, Rules rules);
-    event PolicyAdminsUpdated(uint64 indexed policyId, address indexed updater, address[] admins);
-}
-}
+    IFundingPolicy,
+    "abi/IFundingPolicy.json"
+);
 
 #[cfg(test)]
 mod tests {

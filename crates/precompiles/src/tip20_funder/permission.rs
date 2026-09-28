@@ -10,6 +10,10 @@ use crate::{account_keychain::AccountKeychain, error::Result, storage::StorageCt
 scoped_thread_local!(static ACTIVE: FundingPermission);
 const AMOUNT_IN_SLOT: U256 = U256::ZERO;
 
+pub(crate) fn is_active() -> bool {
+    ACTIVE.is_set()
+}
+
 /// Validated authority installed only by the transaction handler around one funding callback.
 #[derive(Debug)]
 pub struct FundingPermission {
@@ -72,14 +76,24 @@ impl FundingPermission {
         (self.funder, self.account, self.source) == (funder, account, source)
     }
 
-    /// Starts fresh counters. Access keys remain disabled until delegated accounting is implemented.
+    /// Starts fresh counters for a protocol-authorized callback.
     pub fn initialize(&self) -> Result<()> {
-        if ACTIVE.is_set()
-            || !AccountKeychain::new()
-                .get_transaction_key(IAccountKeychain::getTransactionKeyCall {}, self.account)?
-                .is_zero()
-        {
+        if ACTIVE.is_set() {
             return Err(invalid_context());
+        }
+        let keychain = AccountKeychain::new();
+        let key = keychain
+            .get_transaction_key(IAccountKeychain::getTransactionKeyCall {}, self.account)?;
+        if !key.is_zero() {
+            if !StorageCtx.spec().is_t13() {
+                return Err(invalid_context());
+            }
+            keychain.validate_keychain_authorization(
+                self.account,
+                key,
+                StorageCtx.timestamp().saturating_to(),
+                None,
+            )?;
         }
         StorageCtx.tstore(self.funder, AMOUNT_IN_SLOT, U256::ZERO)
     }
@@ -156,6 +170,8 @@ fn input_permission(owner: Address, asset: Address, amount: U256, consume: bool)
             );
         }
         if consume {
+            AccountKeychain::new().validate_funding_key(owner)?;
+            AccountKeychain::new().take_funding_credit(owner, asset, amount)?;
             StorageCtx.tstore(permission.funder, AMOUNT_IN_SLOT, next.unwrap())?;
         }
         Ok(true)

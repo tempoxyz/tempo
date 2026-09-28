@@ -21,11 +21,16 @@ contract OwnerFundingSource {
     }
     uint256 public calls;
 
+    function verify(bytes calldata data, bytes calldata configData) external pure returns (bool) {
+        Request memory r = abi.decode(data, (Request));
+        return abi.decode(configData, (address)) == r.assetIn;
+    }
+
     function quote(address, address, uint256 amountOut, uint256 maxCost, bytes calldata data, bytes calldata configData, bool ownerAuthorized)
         external returns (Quote memory)
     {
-        require(ownerAuthorized && configData.length == 0, "context");
         Request memory r = abi.decode(data, (Request));
+        require(ownerAuthorized ? configData.length == 0 : abi.decode(configData, (address)) == r.assetIn, "policy");
         require(r.expectedCost == 0 || r.expectedCost == maxCost, "cost");
         if (r.mode == 8) assembly { return(0, 1) }
         if (r.mode == 9) calls++;

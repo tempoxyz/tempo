@@ -1,6 +1,6 @@
 # Owner funding qualification
 
-This document records the owner-funding release checks for node maintainers. The scope is signed `requireFunds` transactions using the native DEX at T13. Earn vaults and access key funding are separate releases.
+This document records the owner-funding release checks for node maintainers. The scope is signed `requireFunds` transactions using the native DEX at T13. These historical owner measurements precede delegated funding. See [delegated funding](delegated-funding.md) for the extended implementation and test fixture. Earn vault adapters remain an external workstream.
 
 ## Reproduce the payment and gas measurements
 
@@ -54,4 +54,4 @@ The E2E module is included by the existing `tempo-e2e` CI job. The signed RPC mo
 
 ## Release gate
 
-Local qualification does not establish production readiness. Before activation, require green CI for the exact stack revision, independent protocol/security review, acceptance of the fixed addresses, and a network-approved T13 schedule. Load qualification should include fragmented books and maximum-size signed funding arrays. Delegated funding and non-parity pricing must remain unavailable until their own implementations and release checks are complete.
+Local qualification does not establish production readiness. Before activation, require green CI for the exact stack revision, independent protocol/security review, acceptance of the fixed addresses, and a network-approved T13 schedule. Load qualification should include fragmented books and maximum-size signed funding arrays. Non-parity pricing remains unavailable. Delegated activation and qualification are documented separately.

@@ -24,10 +24,10 @@ use reth_revm::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, FUNDING_POLICY_ADDRESS, ICurrentCommittee,
+    INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state, t13_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -231,6 +231,27 @@ where
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
             db.commit(state);
+        }
+        Ok(())
+    }
+
+    /// Installs the stateless discovery runtime using the normal database state hook.
+    fn deploy_funding_discovery_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        use tempo_contracts::funding_discovery::{
+            FUNDING_DISCOVERY_ADDRESS, FUNDING_DISCOVERY_RUNTIME,
+        };
+        let db = self.inner.evm.db_mut();
+        let info = db
+            .basic(FUNDING_DISCOVERY_ADDRESS)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        let code = Bytecode::new_legacy(FUNDING_DISCOVERY_RUNTIME);
+        if info.code_hash != code.hash_slow() {
+            let mut account = Account::from(info);
+            account.info.code_hash = code.hash_slow();
+            account.info.code = Some(code);
+            account.mark_touch();
+            db.commit(EvmState::from_iter([(FUNDING_DISCOVERY_ADDRESS, account)]));
         }
         Ok(())
     }
@@ -518,6 +539,10 @@ where
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
+        }
+        if self.inner.spec.is_t13_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(FUNDING_POLICY_ADDRESS, &[])?;
+            self.deploy_funding_discovery_at_boundary()?;
         }
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
@@ -1709,6 +1734,78 @@ mod tests {
             original_info,
             "state hook account should preserve existing original_info"
         );
+    }
+
+    #[test]
+    fn funding_discovery_runtime_activates_at_t13() {
+        use tempo_contracts::funding_discovery::{
+            FUNDING_DISCOVERY_ADDRESS, FUNDING_DISCOVERY_RUNTIME,
+        };
+        for activation in [0, u64::MAX] {
+            let mut genesis = DEV.genesis().clone();
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t13Time".into(), activation)
+                .unwrap();
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(if activation == 0 {
+                    TempoHardfork::T13
+                } else {
+                    TempoHardfork::T12
+                })
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build(&mut db, &chainspec);
+            executor.apply_pre_execution_changes().unwrap();
+            drop(executor);
+            let info = db
+                .load_cache_account(FUNDING_DISCOVERY_ADDRESS)
+                .unwrap()
+                .account_info();
+            if activation == 0 {
+                assert_eq!(
+                    info.unwrap().code.unwrap().original_bytes(),
+                    FUNDING_DISCOVERY_RUNTIME
+                );
+            } else {
+                assert!(info.is_none_or(|info| info.is_empty_code_hash()));
+            }
+        }
+    }
+
+    #[test]
+    fn discovery_installation_preserves_state_and_is_idempotent() {
+        use std::sync::{Arc, Mutex};
+        use tempo_contracts::funding_discovery::FUNDING_DISCOVERY_ADDRESS;
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let original = AccountInfo {
+            balance: U256::from(42),
+            nonce: 7,
+            ..Default::default()
+        };
+        db.insert_account(FUNDING_DISCOVERY_ADDRESS, original.clone());
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        let changes = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+        let captured = changes.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state| {
+                captured.lock().unwrap().push(state);
+            })));
+        executor.deploy_funding_discovery_at_boundary().unwrap();
+        executor.deploy_funding_discovery_at_boundary().unwrap();
+        let changes = changes.lock().unwrap();
+        assert_eq!(changes.len(), 1);
+        let account = &changes[0][&FUNDING_DISCOVERY_ADDRESS];
+        assert_eq!(account.original_info(), original);
+        assert_eq!(account.info.balance, original.balance);
+        assert_eq!(account.info.nonce, original.nonce);
     }
 
     #[test]
