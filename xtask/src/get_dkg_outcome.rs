@@ -5,9 +5,8 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
 };
 use commonware_codec::{Encode as _, ReadExt as _};
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::{N3f1, NZU64};
+use commonware_utils::N3f1;
 use eyre::{Context as _, eyre};
 use serde::Serialize;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -27,7 +26,7 @@ pub(crate) struct GetDkgOutcome {
     #[arg(long, group = "target")]
     block_hash: Option<B256>,
 
-    /// Epoch number to query (requires --epoch-length)
+    /// Epoch the outcome is used in; reads the previous epoch's boundary (requires --epoch-length)
     #[arg(long, group = "target", requires = "epoch_length")]
     epoch: Option<u64>,
 
@@ -83,11 +82,7 @@ impl GetDkgOutcome {
             } else {
                 let epoch = self.epoch.expect("epoch required when block not provided");
                 let epoch_length = self.epoch_length.expect("epoch_length required with epoch");
-                let epocher = FixedEpocher::new(NZU64!(epoch_length));
-                epocher
-                    .last(Epoch::new(epoch))
-                    .expect("fixed epocher is valid for all epochs")
-                    .get()
+                outcome_block_number(epoch, epoch_length)?
             };
 
             provider
@@ -128,5 +123,33 @@ impl GetDkgOutcome {
         println!("{}", serde_json::to_string_pretty(&info)?);
 
         Ok(())
+    }
+}
+
+fn outcome_block_number(epoch: u64, epoch_length: u64) -> eyre::Result<u64> {
+    eyre::ensure!(epoch > 0, "epoch 0 has no preceding DKG boundary block");
+    eyre::ensure!(epoch_length > 0, "epoch length must be greater than zero");
+    epoch
+        .checked_mul(epoch_length)
+        .and_then(|first_block| first_block.checked_sub(1))
+        .ok_or_else(|| eyre!("epoch boundary block number overflows u64"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outcome_uses_previous_epoch_boundary() {
+        assert_eq!(outcome_block_number(10, 100).unwrap(), 999);
+        assert_eq!(outcome_block_number(1, 100).unwrap(), 99);
+        assert_eq!(outcome_block_number(1, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn invalid_epoch_boundaries_return_errors() {
+        assert!(outcome_block_number(0, 100).is_err());
+        assert!(outcome_block_number(1, 0).is_err());
+        assert!(outcome_block_number(u64::MAX, 2).is_err());
     }
 }
