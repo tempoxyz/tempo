@@ -167,9 +167,7 @@ where
         format!("failed to get state from node provider for hash `{block_hash}`")
     })?;
     let db = State::builder()
-        .with_database(StateProviderDatabase::new(
-            Box::new(state_provider.into_evm_state_provider()) as EvmStateProviderBox,
-        ))
+        .with_database(StateProviderDatabase::new(state_provider))
         .build();
 
     let mut evm = node
