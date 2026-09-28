@@ -31,8 +31,8 @@ use tempo_chainspec::{
     spec::{DEV, MODERATO},
 };
 use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, PATH_USD_ADDRESS,
-    account_keychain::IAccountKeychain, tip20::ITIP20,
+    ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, PATH_USD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, account_keychain::IAccountKeychain, tip20::ITIP20,
 };
 use tempo_evm::{
     StorageActionReplay, StorageActionReplayError, TempoEvmConfig, supports_storage_action_replay,
@@ -697,6 +697,30 @@ fn native_replay_rejects_account_authorization() {
             rejected.push(envelope);
         }
     }
+    let mut verifier_tx = ordinary_tx.clone();
+    verifier_tx.calls[0].to = TxKind::Call(SIGNATURE_VERIFIER_ADDRESS);
+    verifier_tx.calls[0].input = ISignatureVerifier::verifyMultisigCall {
+        account: f.account,
+        hash: signed.tx().signature_hash(),
+        signature: signed.signature().to_bytes(),
+    }
+    .abi_encode()
+    .into();
+    let verifier: TempoTxEnvelope = verifier_tx.into_signed(primitive.clone()).into();
+    assert!(!supports_storage_action_replay(&verifier));
+    rejected.push(verifier);
+    let mut pure_verifier = ordinary_tx.clone();
+    pure_verifier.calls[0].to = TxKind::Call(SIGNATURE_VERIFIER_ADDRESS);
+    pure_verifier.calls[0].input = ISignatureVerifier::verifyCall {
+        signer: f.account,
+        hash: B256::ZERO,
+        signature: Default::default(),
+    }
+    .abi_encode()
+    .into();
+    assert!(supports_storage_action_replay(
+        &pure_verifier.into_signed(primitive.clone()).into()
+    ));
     let mut tx = ordinary_tx;
     tx.key_authorization = Some(SignedKeyAuthorization::new(
         KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(2)),
