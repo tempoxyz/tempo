@@ -22,6 +22,7 @@ use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller},
+    rpc::ForkSchedule,
     transport::{AuthHeaderTransport, RelayConnector, SponsorshipMode},
 };
 
@@ -145,7 +146,8 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
 
     /// Returns `true` if the given Tempo hardfork is active on the connected chain.
     ///
-    /// Queries the node's `tempo_forkSchedule` RPC to determine the currently active hardfork.
+    /// Queries [`Self::get_active_hardfork`] and compares the result with the given hardfork.
+    /// Returns an error if the node reports an unknown hardfork.
     async fn is_hardfork_active(
         &self,
         hardfork: TempoHardfork,
@@ -153,17 +155,32 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
     where
         Self: Sized,
     {
-        #[derive(Debug, serde::Deserialize)]
-        struct Response {
-            active: String,
-        }
+        Ok(self.get_active_hardfork().await? >= hardfork)
+    }
 
-        let resp: Response = self.raw_request("tempo_forkSchedule".into(), ()).await?;
-
-        Ok(resp
+    /// Returns the latest active Tempo hardfork at the connected chain's head.
+    ///
+    /// Queries the node's `tempo_forkSchedule` RPC. Returns an error if the node reports a
+    /// hardfork that this version of the SDK does not recognize.
+    async fn get_active_hardfork(&self) -> Result<TempoHardfork, TransportError>
+    where
+        Self: Sized,
+    {
+        self.get_fork_schedule()
+            .await?
             .active
             .parse::<TempoHardfork>()
-            .is_ok_and(|h| h >= hardfork))
+            .map_err(TransportErrorKind::custom)
+    }
+
+    /// Returns the Tempo fork schedule and active fork at the connected chain's head.
+    ///
+    /// Calls `tempo_forkSchedule` on every invocation, preserving unknown fork names.
+    async fn get_fork_schedule(&self) -> Result<ForkSchedule, TransportError>
+    where
+        Self: Sized,
+    {
+        self.raw_request("tempo_forkSchedule".into(), ()).await
     }
 }
 
@@ -390,6 +407,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use alloy::sol_types::SolCall;
     use alloy_primitives::{Address, Bytes, U64, U256};
     use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
@@ -699,5 +717,112 @@ mod tests {
 
         assert!(matches!(err, alloy_contract::Error::TransportError(_)));
         assert!(err.to_string().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn test_get_active_hardfork() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+
+        for fork in TempoHardfork::VARIANTS {
+            asserter.push_success(&serde_json::json!({
+                "schedule": [],
+                "active": fork.to_string(),
+            }));
+
+            assert_eq!(provider.get_active_hardfork().await.unwrap(), *fork);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_hardfork_active() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+
+        for (fork, expected) in [
+            (TempoHardfork::Genesis, true),
+            (TempoHardfork::T0, true),
+            (TempoHardfork::T1, false),
+        ] {
+            asserter.push_success(&serde_json::json!({ "active": "T0", "schedule": [] }));
+            assert_eq!(provider.is_hardfork_active(fork).await.unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_active_hardfork_rejects_unknown_fork() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+
+        asserter.push_success(&serde_json::json!({ "active": "FutureFork", "schedule": [] }));
+        assert!(matches!(
+            provider.get_active_hardfork().await.unwrap_err(),
+            TransportError::Transport(TransportErrorKind::Custom(_))
+        ));
+
+        asserter.push_success(&serde_json::json!({ "active": "FutureFork", "schedule": [] }));
+        assert!(matches!(
+            provider
+                .is_hardfork_active(TempoHardfork::T0)
+                .await
+                .unwrap_err(),
+            TransportError::Transport(TransportErrorKind::Custom(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_get_active_hardfork_propagates_rpc_errors() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+
+        asserter.push_failure_msg("fork schedule unavailable");
+        let err = provider.get_active_hardfork().await.unwrap_err();
+        assert_eq!(
+            err.as_error_resp().unwrap().message,
+            "fork schedule unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_fork_schedule_preserves_unknown_forks() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let response = serde_json::json!({
+            "active": "T0",
+            "schedule": [
+                { "name": "T0", "activationTime": 0, "active": true, "forkId": "0x471a451c" },
+                { "name": "FutureFork", "activationTime": 100, "active": false }
+            ]
+        });
+        asserter.push_success(&response);
+        assert_eq!(
+            serde_json::to_value(provider.get_fork_schedule().await.unwrap()).unwrap(),
+            response
+        );
+
+        asserter.push_success(&response);
+        assert_eq!(
+            provider.get_active_hardfork().await.unwrap(),
+            TempoHardfork::T0
+        );
+
+        asserter.push_success(&serde_json::json!({ "active": "FutureFork", "schedule": [] }));
+        assert_eq!(
+            provider.get_fork_schedule().await.unwrap().active,
+            "FutureFork"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_active_hardfork_follows_activation_and_reorg() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+
+        for fork in [TempoHardfork::T0, TempoHardfork::T1, TempoHardfork::T0] {
+            asserter
+                .push_success(&serde_json::json!({ "active": fork.to_string(), "schedule": [] }));
+            assert_eq!(provider.get_active_hardfork().await.unwrap(), fork);
+        }
+        assert!(asserter.read_q().is_empty());
     }
 }

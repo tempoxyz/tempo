@@ -38,9 +38,10 @@
 //! for its boundary. This repeats until the node catches up to the network.
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
+use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
-    types::{Epoch, EpochDelta, Epocher as _},
+    types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -54,15 +55,18 @@ use commonware_runtime::{
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
 use commonware_utils::{NZUsize, vec::NonEmptyVec};
-use eyre::{ensure, eyre};
+use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
+use tempo_chainspec::TempoHardforks as _;
+use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
     consensus::Digest,
     epoch::manager::ingress::{EpochTransition, Exit},
+    storage::FinalizedBlocksProvider as _,
 };
 
 use super::ingress::{Content, Message};
@@ -109,6 +113,10 @@ where
             "latest_participants",
             "the number of participants in the most recently started epoch",
         );
+        let elector_version = context.gauge(
+            "elector_version",
+            "the elector version in the most recently started epoch (0 = V0, 1 = V1)",
+        );
         let how_often_signer = context.counter(
             "how_often_signer",
             "how often a node is a signer; a node is a signer if it has a share",
@@ -126,6 +134,7 @@ where
                 active_epochs,
                 latest_epoch,
                 latest_participants,
+                elector_version,
                 how_often_signer,
                 how_often_verifier,
             },
@@ -239,6 +248,26 @@ where
         }
     }
 
+    /// Read an EL header only when covered by its finalized watermark, falling back to marshal.
+    async fn get_header(&mut self, height: Height) -> eyre::Result<TempoHeader> {
+        if let Some(header) = self
+            .config
+            .execution_node
+            .provider
+            .header_by_height(height.get())
+            .wrap_err_with(|| format!("failed reading finalized EL header at height `{height}`"))?
+        {
+            return Ok(header);
+        }
+
+        self.config
+            .marshal
+            .get_block(height)
+            .await
+            .map(|block| block.header().clone())
+            .ok_or_eyre(format!("missing finalized header at height `{height}`"))
+    }
+
     #[instrument(
         parent = &cause,
         skip_all,
@@ -294,7 +323,7 @@ where
 
         self.config.scheme_provider.register(epoch, scheme.clone());
 
-        let floor = match epoch.previous().map(|prev| {
+        let (floor, boundary_timestamp) = match epoch.previous().map(|prev| {
             self.config
                 .epoch_strategy
                 .last(prev)
@@ -315,13 +344,38 @@ where
                         )
                     })?;
 
-                Floor::Genesis(digest)
+                let header = self.get_header(boundary_height).await?;
+                (Floor::Genesis(digest), header.timestamp())
             }
             None => {
-                let genesis_hash = self.config.execution_node.chain_spec().genesis_hash();
-                Floor::Genesis(Digest(genesis_hash))
+                let chain_spec = self.config.execution_node.chain_spec();
+                (
+                    Floor::Genesis(Digest(chain_spec.genesis_hash())),
+                    chain_spec.genesis_header().timestamp(),
+                )
             }
         };
+
+        // Each epoch constructs one elector. Use its preceding finalized boundary so nodes
+        // choose the same version even when entering or restarting at different times.
+        #[expect(deprecated, reason = "retain the pre-T12 leader schedule")]
+        let elector = if self
+            .config
+            .execution_node
+            .chain_spec()
+            .tempo_hardfork_at(boundary_timestamp)
+            .is_t12()
+        {
+            elector::RandomVersion::V1
+        } else {
+            elector::RandomVersion::V0
+        };
+
+        #[expect(deprecated, reason = "retain the pre-T12 leader schedule")]
+        self.metrics.elector_version.metric().set(match elector {
+            elector::RandomVersion::V0 => 0,
+            elector::RandomVersion::V1 => 1,
+        });
 
         let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
         let engine = simplex::Engine::new(
@@ -330,13 +384,7 @@ where
                 epoch,
                 floor,
                 scheme,
-                #[expect(
-                    deprecated,
-                    reason = "switching random leader election from V0 to V1 requires a hardfork"
-                )]
-                elector: elector::Random::<commonware_cryptography::Sha256>::new(
-                    elector::RandomVersion::V0,
-                ),
+                elector: elector::Random::<commonware_cryptography::Sha256>::new(elector),
                 strategy: Sequential,
 
                 reporter: self.config.marshal.clone(),
@@ -405,6 +453,7 @@ where
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
         if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();
+            self.metrics.active_epochs.metric().dec();
             info!("stopped engine backing epoch");
         } else {
             warn!(
@@ -478,6 +527,7 @@ struct Metrics {
     active_epochs: Gauge,
     latest_epoch: Gauge,
     latest_participants: Gauge,
+    elector_version: Gauge,
     how_often_signer: Counter,
     how_often_verifier: Counter,
 }
