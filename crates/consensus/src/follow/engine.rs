@@ -252,7 +252,7 @@ impl<TUpstream> Config<TUpstream> {
 }
 
 type FollowExecutionProvider =
-    BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>>;
+    BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, tempo_node::storage::TempoDatabase>>;
 
 pub struct Engine<TContext, TUpstreamActor>
 where

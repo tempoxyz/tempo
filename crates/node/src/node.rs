@@ -9,7 +9,7 @@ use crate::{
         TempoToken, TempoTokenApiServer,
     },
 };
-use alloy_primitives::B256;
+use alloy_primitives::{B256, keccak256};
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
@@ -437,7 +437,11 @@ where
     type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
-        self.inner.engine_validator_builder()
+        self.inner
+            .engine_validator_builder()
+            .with_retained_storage_tries(vec![keccak256(
+                tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+            )])
     }
 }
 
