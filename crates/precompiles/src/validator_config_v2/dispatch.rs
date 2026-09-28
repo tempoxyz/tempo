@@ -182,7 +182,7 @@ mod tests {
                 ingress: "192.168.1.1:8000".to_string(),
                 egress: "192.168.1.1".to_string(),
                 feeRecipient: validator_addr,
-                signature: signature.encode().to_vec().into(),
+                signature: signature.encode().into(),
             };
             let calldata = add_call.abi_encode();
 
