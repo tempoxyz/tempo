@@ -2388,7 +2388,9 @@ impl BestAA2dTransactions {
                     return Some(IncomingAA2dTransaction::Process(tx));
                 }
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                    // Buffer overflowed; self-corrects on next call.
+                    // The oldest notifications were dropped and are lost to this iterator, which
+                    // can then still yield a transaction they replaced, as it would for any
+                    // replacement that arrives after the iterator was created.
                 }
                 Err(_) => return None,
             }

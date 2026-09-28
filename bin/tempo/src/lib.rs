@@ -303,6 +303,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     let (consensus_startup_tx, consensus_startup_rx) = oneshot::channel::<(
         TempoFullNode,
+        tempo_node::ExecutedState,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
     )>();
@@ -320,10 +321,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args, gossip_transport) = consensus_startup_rx.blocking_recv().wrap_err(
-            "channel closed before consensus-relevant command line args \
+        let (node, executed_state, args, gossip_transport) =
+            consensus_startup_rx.blocking_recv().wrap_err(
+                "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
-        )?;
+            )?;
 
         let datadir = node
             .config
@@ -418,6 +420,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     ctx.child("consensus"),
                     args.consensus,
                     Arc::new(node),
+                    executed_state,
                     cl_feed_state_clone,
                     gossip_transport,
                 ))
@@ -534,19 +537,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        let tempo_node = overrides.apply_tempo_node({
+            let node = TempoNode::new(&args.node_args, validator_key);
+            match gossip_protocol_handler {
+                Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
+                None => node,
+            }
+        });
+        let executed_state = tempo_node.executed_state();
+
         let NodeHandle {
             node,
             node_exit_future,
         } = builder
-            .node(overrides.apply_tempo_node({
-                let node = TempoNode::new(&args.node_args, validator_key);
-                match gossip_protocol_handler {
-                    Some(protocol_handler) => {
-                        node.with_finalization_cert_gossip(protocol_handler)
-                    }
-                    None => node,
-                }
-            }))
+            .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
@@ -639,7 +643,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = consensus_startup_tx.send((node, args, gossip_transport));
+        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport));
 
         // TODO: emit these inside a span
         tokio::select! {

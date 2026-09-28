@@ -92,6 +92,12 @@ impl TempoPayloadAttributes {
         &self.extra_data
     }
 
+    /// Sets the extra data to be included in the block header.
+    pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
+        self.extra_data = extra_data;
+        self
+    }
+
     /// Returns the proposer's public key.
     pub fn proposer_public_key(&self) -> Option<&B256> {
         self.proposer_public_key.as_ref()
