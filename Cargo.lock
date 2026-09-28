@@ -5423,6 +5423,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-literal"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
+
+[[package]]
 name = "hickory-net"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7826,6 +7832,7 @@ dependencies = [
  "ecdsa 0.16.9",
  "elliptic-curve 0.13.8",
  "primeorder 0.13.6",
+ "serdect 0.2.0",
  "sha2 0.10.9",
 ]
 
@@ -13919,6 +13926,9 @@ name = "tempo-nitro-attestation"
 version = "1.14.0"
 dependencies = [
  "arrayvec",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "hex-literal",
  "minicbor",
  "minicbor-serde",
  "serde",
@@ -13957,6 +13967,7 @@ dependencies = [
  "jsonrpsee",
  "metrics",
  "p256 0.13.2",
+ "parking_lot",
  "rand 0.9.4",
  "reqwest 0.13.3",
  "reth-chainspec",
@@ -13984,6 +13995,7 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "revm",
+ "schnellru",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -14077,7 +14089,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
- "aws-lc-rs",
  "base64 0.22.1",
  "bitflags 2.11.1",
  "codspeed-criterion-compat",
