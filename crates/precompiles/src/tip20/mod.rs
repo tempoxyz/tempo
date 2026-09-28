@@ -1720,21 +1720,38 @@ pub(crate) mod tests {
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         receive_policy_guard::ReceivePolicyGuard,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, actions::StorageActions, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
     use alloy::{
-        primitives::{Address, FixedBytes, IntoLogData, U256, address, hex, keccak256},
-        sol_types::{SolCall, SolError},
+        primitives::{
+            Address, Bytes, FixedBytes, IntoLogData, TxKind, U256, address, hex, keccak256,
+        },
+        sol_types::{SolCall, SolError, SolEvent},
     };
+    use alloy_evm::{Evm, EvmEnv};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use proptest::prelude::*;
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
+    use revm::{
+        DatabaseCommit,
+        context::{CfgEnv, TxEnv, result::ExecutionResult},
+        database::{CacheDB, EmptyDB},
+        state::{AccountInfo, Bytecode},
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         AccountKeychainError, AccountKeychainEvent, IAccountKeychain, IReceivePolicyGuard,
         ReceivePolicyGuardEvent, UnknownFunctionSelector, createTokenCall,
     };
+    use tempo_evm::{TempoBlockEnv, evm::TempoEvm};
+    use tempo_primitives::{
+        TempoSignature,
+        transaction::{Call, KeychainSignature, PrimitiveSignature},
+    };
+    use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
@@ -3874,27 +3891,6 @@ pub(crate) mod tests {
 
     #[test]
     fn burn_at_bridge_access_key_spending_and_reverts_in_evm() -> eyre::Result<()> {
-        use crate::storage::actions::StorageActions;
-        use alloy::{
-            primitives::{Bytes, TxKind},
-            sol_types::SolEvent,
-        };
-        use alloy_evm::{Evm, EvmEnv};
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use revm::{
-            DatabaseCommit,
-            context::{CfgEnv, TxEnv, result::ExecutionResult},
-            database::{CacheDB, EmptyDB},
-            state::{AccountInfo, Bytecode},
-        };
-        use tempo_evm::{TempoBlockEnv, evm::TempoEvm};
-        use tempo_primitives::{
-            TempoSignature,
-            transaction::{Call, KeychainSignature, PrimitiveSignature},
-        };
-        use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
-
         // Forward calldata to the token, bubbling its result. The second bridge deliberately
         // reverts after a successful burn to exercise rollback of an enclosing contract call.
         fn bridge_runtime(
@@ -4042,6 +4038,24 @@ pub(crate) mod tests {
                 .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
                 .filter(|log| log.data.token == token)
                 .collect();
+            if token_logs > 0 {
+                let burn = result
+                    .result
+                    .logs()
+                    .iter()
+                    .rfind(|log| log.address == token)
+                    .unwrap();
+                assert_eq!(
+                    burn.topics(),
+                    &[
+                        keccak256("BurnAt(address,address,uint256)"),
+                        target.into_word(),
+                        holder.into_word(),
+                        B256::from(U256::from(amount).to_be_bytes::<32>()),
+                    ]
+                );
+                assert!(burn.data.data.is_empty());
+            }
             assert_eq!(spends.len(), token_logs / 2);
             if let Some(spend) = spends.first() {
                 assert_eq!(spend.data.amount, U256::from(amount));

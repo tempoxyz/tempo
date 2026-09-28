@@ -148,7 +148,7 @@ crate::sol! {
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
-        event BurnAt(address indexed burner, address indexed from, uint256 amount);
+        event BurnAt(address indexed burner, address indexed from, uint256 indexed amount);
         event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
