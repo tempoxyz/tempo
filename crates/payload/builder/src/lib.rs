@@ -810,7 +810,7 @@ where
         info!(target: "prewarm_diagnostics", build_id = diagnostics.id, block = parent_header.number() + 1,
             parent = %parent_header.hash(), included = pool_transactions_included,
             yielded = pool_transactions_yielded, general_gas = non_payment_gas_used,
-            total_gas = cumulative_gas_used, stop = ?block_build_stop_reason,
+            total_gas = cumulative_gas_used, stop = block_build_stop_reason.as_str(),
             fill_ns = execution_start.elapsed().as_nanos() as u64, "prewarm_cutoff");
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
