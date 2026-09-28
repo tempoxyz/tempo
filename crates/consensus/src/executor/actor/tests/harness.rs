@@ -1005,6 +1005,9 @@ impl HarnessBuilder {
                 marshal: marshal.clone(),
                 fcu_heartbeat_interval: options.fcu_heartbeat_interval,
                 public_key: options.public_key,
+                // Assume the archive covers the floor; individual backfill tests
+                // can still inject failures when the actor reads those blocks.
+                reachable_height: Height::new(options.finalized_floor),
             },
         )?;
         let actor = actor.start();

@@ -275,4 +275,8 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
     pub(crate) public_key: Option<PublicKey>,
+
+    /// Highest height reachable from execution finality through the local
+    /// finalized-blocks store, captured before marshal takes ownership of it.
+    pub(crate) reachable_height: Height,
 }

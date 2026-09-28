@@ -19,6 +19,7 @@ mod convergence;
 mod finalization;
 mod metrics;
 mod scheduling;
+mod startup;
 mod verify;
 
 use harness::{make_block, round};

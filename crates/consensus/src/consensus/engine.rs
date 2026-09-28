@@ -150,6 +150,7 @@ where
             finalized_floor,
             finalized_tip,
             finalized_tip_certificate,
+            reachable_height,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -179,6 +180,7 @@ where
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
+                reachable_height,
             },
         )
         .wrap_err("failed initialization executor actor")?;

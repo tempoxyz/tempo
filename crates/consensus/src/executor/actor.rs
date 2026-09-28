@@ -233,15 +233,22 @@ where
             marshal,
             fcu_heartbeat_interval,
             public_key,
+            reachable_height,
         } = config;
         ensure!(
             finalized_tip.1 >= finalized_floor,
             "finalized tip height `{}` is below the finalized floor `{finalized_floor}`",
             finalized_tip.1,
         );
-        let metrics = Metrics::init(&context);
-
         let execution_finalized_num_hash = execution_node.finalized_num_hash();
+        ensure!(
+            execution_finalized_num_hash.number >= finalized_floor.get()
+                || reachable_height >= finalized_floor,
+            "execution layer finalized height `{}` cannot reach finalization \
+             archive floor `{finalized_floor}`. Run as a follower to sync to tip or restore a fresher snapshot",
+            execution_finalized_num_hash.number,
+        );
+        let metrics = Metrics::init(&context);
 
         // The finalized point the executor starts from. Normally this is the
         // execution layer's own finalized tip, from which the startup
