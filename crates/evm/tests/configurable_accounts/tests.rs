@@ -48,10 +48,10 @@ use tempo_primitives::{
 };
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 
-#[test]
-fn native_factory_activation_preserves_state() {
+fn activation_config() -> TempoEvmConfig {
     let factory = Address::repeat_byte(0x71);
     let mut genesis = DEV.genesis().clone();
+    genesis.config.chain_id = 1;
     for (field, value) in [("t12Time", 0), ("t13Time", 0), ("t14Time", 10)] {
         genesis
             .config
@@ -62,7 +62,13 @@ fn native_factory_activation_preserves_state() {
         .config
         .extra_fields
         .insert("multisigRecoveryFactory".into(), serde_json::json!(factory));
-    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)));
+    TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)))
+}
+
+#[test]
+fn native_factory_activation_preserves_state() {
+    let factory = Address::repeat_byte(0x71);
+    let config = activation_config();
     for nonce in [0, 7] {
         for code in [bytes!(""), bytes!("600000")] {
             let mut db = State::builder().with_bundle_update().build();
@@ -297,20 +303,42 @@ fn native_rotation_rejects_access_keys_and_callbacks() {
 }
 
 #[test]
-fn native_commitment_database_lifecycle() {
+fn native_commitment_activation_database_lifecycle() {
     let factory = create_test_provider_factory();
     let mut fixture = Fixture::new();
+    let config = activation_config();
     let mut roots = Vec::new();
     let mut parent_hash = B256::ZERO;
     for block in 0..=2 {
         if block != 0 {
             let tx = fixture.signed(block + 2, vec![fixture.getter()]);
-            let output = fixture
-                .evm
-                .transact(TempoTxEnv::from_recovered_tx(&tx, fixture.account))
+            let block_env = TempoBlock {
+                header: TempoHeader {
+                    inner: Header {
+                        number: block,
+                        timestamp: 9 + block,
+                        gas_limit: 30_000_000,
+                        base_fee_per_gas: Some(0),
+                        blob_gas_used: Some(0),
+                        excess_blob_gas: Some(0),
+                        parent_beacon_block_root: Some(B256::ZERO),
+                        ..Default::default()
+                    },
+                    general_gas_limit: 30_000_000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .seal_slow();
+            let mut executor = config
+                .executor_for_block(fixture.evm.db_mut(), &block_env)
                 .unwrap();
-            assert!(output.result.is_success(), "{:?}", output.result);
-            fixture.evm.db_mut().commit(output.state);
+            assert_eq!(executor.evm().cfg_env().spec, TempoHardfork::T14);
+            executor.apply_pre_execution_changes().unwrap();
+            let recovered = Recovered::new_unchecked(TempoTxEnvelope::AA(tx), fixture.account);
+            executor.execute_transaction(&recovered).unwrap();
+            let (_, result) = executor.finish().unwrap();
+            assert!(result.receipts[0].success);
             fixture
                 .evm
                 .db_mut()
@@ -329,6 +357,7 @@ fn native_commitment_database_lifecycle() {
             .unwrap();
         let mut header = Header {
             number: block,
+            timestamp: 9 + block,
             state_root: root,
             ..Default::default()
         };
