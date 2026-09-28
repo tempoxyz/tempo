@@ -1,4 +1,4 @@
-//! Reviewed expectations registered at the fork introducing a feature.
+//! Reviewed baseline and fork-specific expectations for shadow replay.
 //!
 //! Checks receive one difference, not a transaction. `None` means unexplained and `Some(())`
 //! accepts it.
@@ -52,11 +52,12 @@ impl Context<'_> {
         ))
     }
 
-    /// Returns the normalized log hashes only when both fee transfers match their gas charges.
+    /// Returns normalized log hashes only when both fee transfers match their gas charges.
+    /// Normalization already checked each logged amount against its recorded hook charge.
     pub(super) fn verified_fee_log_hashes(&self) -> Option<(B256, B256)> {
         let (real, shadow) = self.observed_txs()?;
-        let (real_amount, real_hash) = real.fee_normalized?;
-        let (shadow_amount, shadow_hash) = shadow.fee_normalized?;
+        let (real_hash, real_amount) = (real.fee_normalized?, real.fee.post_tx_transfer?.3);
+        let (shadow_hash, shadow_amount) = (shadow.fee_normalized?, shadow.fee.post_tx_transfer?.3);
         let price = self.tx?.effective_gas_price(self.base_fee);
         (real.fee.log_ranges == shadow.fee.log_ranges
             && real_amount == calc_gas_balance_spending(real.gas_used, price)
@@ -275,7 +276,7 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
-/// Forks are ordered oldest-first; canonical features are excluded.
+/// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
 const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
     (
         TempoHardfork::T12,
@@ -283,7 +284,6 @@ const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
             T12_ALLOW_PRECOMPILE_ABI_SUFFIX,
             T12_TIP20_CHANNEL,
             T12_STABLECOIN_DEX,
-            FEE_STATE,
         ],
     ),
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
@@ -293,10 +293,14 @@ pub(crate) fn between(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> Vec<&'static Expectation> {
-    REGISTRY
-        .iter()
-        .filter(|(fork, _)| *fork > canonical && *fork <= candidate)
-        .flat_map(|(_, rules)| *rules)
+    // Gas-derived fee differences can occur for any fork pair, not just when T12 is new.
+    std::iter::once(&FEE_STATE)
+        .chain(
+            REGISTRY
+                .iter()
+                .filter(|(fork, _)| *fork > canonical && *fork <= candidate)
+                .flat_map(|(_, rules)| *rules),
+        )
         .collect()
 }
 
@@ -370,17 +374,18 @@ mod tests {
         assert_eq!(
             ids(T11, T12),
             [
+                FEE_STATE.id,
                 T12_ALLOW_PRECOMPILE_ABI_SUFFIX.id,
                 T12_TIP20_CHANNEL.id,
                 T12_STABLECOIN_DEX.id,
-                FEE_STATE.id,
             ]
         );
-        assert_eq!(ids(T12, T13), [T13_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
         let mut combined = ids(T11, T12);
-        combined.extend(ids(T12, T13));
+        combined.extend(ids(T12, T13).into_iter().skip(1)); // baseline runs only once
         assert_eq!(ids(T11, T13), combined);
-        assert!(ids(T13, T12).is_empty());
+        assert_eq!(ids(T12, T12), [FEE_STATE.id]);
+        assert_eq!(ids(T13, T12), [FEE_STATE.id]);
     }
 
     fn block(txs: Vec<TempoTxEnvelope>) -> RecoveredBlock<Block> {
@@ -490,16 +495,28 @@ mod tests {
         ] {
             tx.receipt_logs_hash = hash;
             tx.fee.log_ranges = std::iter::once(0..1).collect();
-            tx.fee_normalized = Some((U256::from(amount), normalized));
+            tx.fee.post_tx_transfer = Some((
+                0,
+                Address::ZERO,
+                Address::ZERO,
+                U256::from(amount),
+                U256::ZERO,
+            ));
+            tx.fee_normalized = Some(normalized);
         }
         let block = block(vec![signed_tx(vec![])]);
         let report = |shadow: &Evidence| Report::analyze(&real, shadow, &[], &block);
         assert_eq!(report(&shadow).outcome(&shadow), ReplayOutcome::Match);
 
         let mut wrong = shadow;
-        tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = B256::repeat_byte(4);
+        tx_mut(&mut wrong, 0).fee_normalized = Some(B256::repeat_byte(4));
         assert_eq!(report(&wrong).unexplained, 1);
-        tx_mut(&mut wrong, 0).fee_normalized.as_mut().unwrap().1 = normalized;
+        tx_mut(&mut wrong, 0).fee_normalized = Some(normalized);
+        let fee = &mut tx_mut(&mut wrong, 0).fee;
+        fee.post_tx_transfer.as_mut().unwrap().3 = U256::ZERO;
+        assert_eq!(report(&wrong).unexplained, 1);
+        let fee = &mut tx_mut(&mut wrong, 0).fee;
+        fee.post_tx_transfer.as_mut().unwrap().3 = U256::from(1_000);
         tx_mut(&mut wrong, 0).fee.log_ranges = std::iter::once(1..2).collect();
         assert_eq!(report(&wrong).unexplained, 1);
     }

@@ -554,8 +554,8 @@ struct ObservedTx {
     receipt_logs_hash: B256,
     /// Hash of the transaction's output bytes (empty when there is no output).
     output_hash: B256,
-    /// Validated post-fee amount and full receipt hash with only that amount zeroed.
-    fee_normalized: Option<(U256, B256)>,
+    /// Full receipt hash with only the validated post-fee amount zeroed.
+    fee_normalized: Option<B256>,
     /// Fee-hook log, storage, and charge provenance for this transaction.
     fee: FeeWrites,
     /// Net account and storage transitions observed at this transaction boundary.
@@ -644,10 +644,7 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
 
 /// Only the post-fee hook's expected TIP-20 transfer amount can be normalized. Every other
 /// byte and the log positions remain committed by the returned full-receipt hash.
-fn normalized_fee_transfer(
-    logs: &[alloy_primitives::Log],
-    writes: &FeeWrites,
-) -> Option<(U256, B256)> {
+fn normalized_fee_transfer(logs: &[alloy_primitives::Log], writes: &FeeWrites) -> Option<B256> {
     let (index, token, payer, amount, _) = writes.post_tx_transfer?;
     let log = logs.get(index)?;
     if log.address != token || !writes.log_ranges.iter().any(|range| range.contains(&index)) {
@@ -664,7 +661,7 @@ fn normalized_fee_transfer(
     transfer.data.amount = U256::ZERO;
     let mut normalized = logs.to_vec();
     normalized[index] = ITIP20::Transfer::encode_log(&transfer);
-    Some((amount, hash_logs(&normalized)))
+    Some(hash_logs(&normalized))
 }
 
 fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
@@ -729,14 +726,15 @@ mod tests {
         };
         let (canonical, candidate) = (logs(U256::from(85)), logs(U256::from(79)));
         let candidate_writes = writes(U256::from(79));
-        let (_, expected) = normalized_fee_transfer(&canonical, &writes(U256::from(85))).unwrap();
-        let (_, actual) = normalized_fee_transfer(&candidate, &candidate_writes).unwrap();
+        let expected = normalized_fee_transfer(&canonical, &writes(U256::from(85))).unwrap();
+        let actual = normalized_fee_transfer(&candidate, &candidate_writes).unwrap();
         assert_eq!(actual, expected);
         assert_ne!(hash_logs(&canonical), hash_logs(&candidate));
+        assert!(normalized_fee_transfer(&candidate, &writes(U256::from(85))).is_none());
 
         let mut changed = candidate.clone();
         changed[0] = changed[1].clone();
-        let (_, changed_fees) = normalized_fee_transfer(&changed, &candidate_writes).unwrap();
+        let changed_fees = normalized_fee_transfer(&changed, &candidate_writes).unwrap();
         assert_ne!(changed_fees, expected);
         let mut swapped = candidate;
         swapped.swap(0, 1);
