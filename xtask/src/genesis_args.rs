@@ -221,6 +221,10 @@ pub(crate) struct GenesisArgs {
     /// T13 hardfork activation time.
     #[arg(long, default_value = "0")]
     t13_time: u64,
+
+    /// T14 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t14_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -664,17 +668,16 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t13Time".to_string(), self.t13_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t14Time".to_string(), self.t14_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
             if self.no_dkg_in_genesis {
                 println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
             } else {
-                extra_data = consensus_config
-                    .to_genesis_dkg_outcome()
-                    .encode()
-                    .to_vec()
-                    .into();
+                extra_data = consensus_config.to_genesis_dkg_outcome().encode().into();
             }
         }
 
@@ -1163,7 +1166,7 @@ fn initialize_validator_config_v2(
                         ingress: config.ingress.to_string(),
                         egress: config.egress.to_string(),
                         feeRecipient: validator_address,
-                        signature: signature.encode().to_vec().into(),
+                        signature: signature.encode().into(),
                     },
                 )
                 .wrap_err("failed to add validator to V2")?;
