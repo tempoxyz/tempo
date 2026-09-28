@@ -13,6 +13,7 @@ use commonware_cryptography::{
 };
 use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
+use reth_provider::StateProvider as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{ExecutedState, TempoFullNode};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -108,7 +109,12 @@ impl TempoParentState {
         let state = self
             .executed_state
             .state_by_block_hash(self.node.provider.clone(), parent.digest().0)?;
-        read_validator_config_with_state(self.node.as_ref(), state, parent.header(), read_fn)
+        read_validator_config_with_state(
+            self.node.as_ref(),
+            Box::new(state.into_evm_state_provider()),
+            parent.header(),
+            read_fn,
+        )
     }
 }
 

@@ -22,22 +22,12 @@ use std::collections::{BTreeMap, HashSet};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
-    error::TempoPrecompileError,
     storage::StorageActions,
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::TempoAddressExt;
 
-/// TIP-20 token metadata returned alongside simulation results.
-///
-/// `decimals` is omitted because all TIP-20 tokens use a fixed decimal count.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tip20TokenMetadata {
-    pub name: String,
-    pub symbol: String,
-    pub currency: String,
-}
+pub use tempo_precompiles::tip20::Tip20TokenMetadata;
 
 /// Response for `tempo_simulateV1`.
 ///
@@ -201,25 +191,12 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
                         let mut metadata = BTreeMap::new();
 
                         for addr in &addresses {
-                            let result = (|| {
-                                let token = TIP20Token::from_address(*addr)?;
-                                Ok::<_, TempoPrecompileError>((
-                                    token.name()?,
-                                    token.symbol()?,
-                                    token.currency()?,
-                                ))
-                            })();
+                            let result =
+                                TIP20Token::from_address(*addr).and_then(|token| token.metadata());
 
                             match result {
-                                Ok((name, symbol, currency)) => {
-                                    metadata.insert(
-                                        *addr,
-                                        Tip20TokenMetadata {
-                                            name,
-                                            symbol,
-                                            currency,
-                                        },
-                                    );
+                                Ok(token_metadata) => {
+                                    metadata.insert(*addr, token_metadata);
                                 }
                                 Err(e) => {
                                     tracing::warn!(

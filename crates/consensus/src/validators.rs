@@ -12,7 +12,9 @@ use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::ConfigureEvm as _;
-use reth_provider::{HeaderProvider as _, StateProviderBox, StateProviderFactory as _};
+use reth_provider::{
+    EvmStateProviderBox, HeaderProvider as _, StateProvider as _, StateProviderFactory as _,
+};
 use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_precompiles::{
     storage::{StorageActions, StorageCtx},
@@ -31,13 +33,13 @@ use tracing::{Level, debug, instrument, warn};
 pub(crate) trait ExecutionNode {
     fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader>;
 
-    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox>;
+    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<EvmStateProviderBox>;
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
+        db: State<StateProviderDatabase<EvmStateProviderBox>>,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>>;
+    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>>;
 }
 
 impl ExecutionNode for TempoFullNode {
@@ -48,17 +50,19 @@ impl ExecutionNode for TempoFullNode {
             .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
     }
 
-    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox> {
-        self.provider
+    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<EvmStateProviderBox> {
+        let provider = self
+            .provider
             .state_by_block_hash(block_hash)
-            .map_err(eyre::Report::new)
+            .map_err(eyre::Report::new)?;
+        Ok(Box::new(provider.into_evm_state_provider()))
     }
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
+        db: State<StateProviderDatabase<EvmStateProviderBox>>,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
         self.evm_config
             .evm_for_block(db, header)
             .map_err(eyre::Report::new)
@@ -73,15 +77,15 @@ where
         (*self).header(block_hash)
     }
 
-    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox> {
+    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<EvmStateProviderBox> {
         (*self).state_by_block_hash(block_hash)
     }
 
     fn evm_for_block(
         &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
+        db: State<StateProviderDatabase<EvmStateProviderBox>>,
         header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
         (*self).evm_for_block(db, header)
     }
 }
@@ -141,7 +145,7 @@ where
 /// the block with `header`.
 pub(crate) fn read_validator_config_with_state<C, T>(
     node: impl ExecutionNode,
-    state: StateProviderBox,
+    state: EvmStateProviderBox,
     header: &TempoHeader,
     read_fn: impl FnOnce(&C) -> eyre::Result<T>,
 ) -> eyre::Result<T>
