@@ -484,7 +484,7 @@ where
         + 'static,
 {
     let mut pending_staleness = PendingStalenessTracker::default();
-    let mut tip1122_active = false;
+    let mut tip1124_active = false;
     let metrics = TempoPoolMaintenanceMetrics::default();
 
     // Subscribe to canonical chain events.
@@ -549,26 +549,26 @@ where
         // normal mined path rather than being discarded from the pool.
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
-        // TIP-1122 changes transaction validity at T13. Recheck the floor for all
+        // TIP-1124 changes transaction validity at T13. Recheck the floor for all
         // subpools, including queued and 2D-nonce transactions admitted before the fork.
         // Reset on a reorg below T13 so a subsequent activation is checked again.
-        let new_tip1122_active = pool
+        let new_tip1124_active = pool
             .client()
             .chain_spec()
             .tempo_hardfork_at(tip_timestamp)
             .is_t13();
-        if new_tip1122_active && !tip1122_active {
+        if new_tip1124_active && !tip1124_active {
             let snapshot = all_txs.get_or_insert_with(|| pool.all_transactions());
             let hashes: Vec<_> = snapshot
                 .iter()
                 .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                .filter(|tx| !covers_tip1122_calldata_floor(&tx.transaction))
+                .filter(|tx| !covers_tip1124_calldata_floor(&tx.transaction))
                 .map(|tx| *tx.hash())
                 .collect();
             removed_this_iteration.extend(hashes.iter().copied());
             removed_txs.push(pool.remove_transactions(hashes));
         }
-        tip1122_active = new_tip1122_active;
+        tip1124_active = new_tip1124_active;
 
         // 4. Handle potentially invalidating updates
         // When a cached value changes of a token (transfer policy, or quote token) changes,
@@ -703,7 +703,7 @@ where
 }
 
 /// Check the changed floor without rerunning state-dependent admission checks.
-fn covers_tip1122_calldata_floor(tx: &TempoPooledTransaction) -> bool {
+fn covers_tip1124_calldata_floor(tx: &TempoPooledTransaction) -> bool {
     let params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T13);
     let floor = if let Some(aa) = tx.inner().as_aa() {
         aa.tx()
@@ -728,7 +728,7 @@ mod tests {
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
     #[test]
-    fn tip1122_pool_floor_counts_all_batch_inputs_once() {
+    fn tip1124_pool_floor_counts_all_batch_inputs_once() {
         use alloy_primitives::{Bytes, TxKind, U256};
         use tempo_primitives::transaction::Call;
         for byte in [0, 1] {
@@ -748,7 +748,7 @@ mod tests {
                         },
                     ])
                     .build();
-                assert_eq!(covers_tip1122_calldata_floor(&tx), limit >= 85_000);
+                assert_eq!(covers_tip1124_calldata_floor(&tx), limit >= 85_000);
             }
         }
     }

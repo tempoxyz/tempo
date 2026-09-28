@@ -4426,7 +4426,7 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
 }
 
 #[test]
-fn tip1122_floor_validation_for_eth_and_aa() {
+fn tip1124_floor_validation_for_eth_and_aa() {
     for spec in [TempoHardfork::T12, TempoHardfork::T13] {
         for byte in [0, 1] {
             let input = Bytes::from(vec![byte; 1000]);

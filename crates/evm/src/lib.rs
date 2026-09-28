@@ -190,9 +190,6 @@ impl ConfigureEvm for TempoEvmConfig {
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
-        if spec.is_t13() {
-            cfg_env.limit_contract_code_size = Some(reth_revm::primitives::eip7954::MAX_CODE_SIZE);
-        }
 
         Ok(EvmEnv {
             cfg_env,
@@ -248,9 +245,6 @@ impl ConfigureEvm for TempoEvmConfig {
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
-        if spec.is_t13() {
-            cfg_env.limit_contract_code_size = Some(reth_revm::primitives::eip7954::MAX_CODE_SIZE);
-        }
 
         Ok(EvmEnv {
             cfg_env,
@@ -332,7 +326,7 @@ mod tests {
     };
 
     #[test]
-    fn tip1122_execution_and_payload_envs_agree_at_activation() {
+    fn tip1124_execution_and_payload_envs_agree_at_activation() {
         use reth_chainspec::EthChainSpec;
         use reth_revm::context::Cfg;
         use tempo_chainspec::spec::DEV;
@@ -374,14 +368,8 @@ mod tests {
                 config.evm_env(&header).unwrap(),
                 config.next_evm_env(&header, &attributes).unwrap(),
             ] {
-                assert_eq!(
-                    env.cfg_env.max_code_size(),
-                    if timestamp < 1000 { 24_576 } else { 65_536 }
-                );
-                assert_eq!(
-                    env.cfg_env.max_initcode_size(),
-                    if timestamp < 1000 { 49_152 } else { 131_072 }
-                );
+                assert_eq!(env.cfg_env.max_code_size(), 24_576);
+                assert_eq!(env.cfg_env.max_initcode_size(), 49_152);
                 assert_eq!(
                     env.cfg_env.gas_params.tx_floor_cost(&[0, 1]),
                     if timestamp < 1000 { 21_050 } else { 21_128 }
@@ -390,23 +378,6 @@ mod tests {
                 assert!(!env.cfg_env.enable_amsterdam_eip2780);
                 assert_eq!(env.cfg_env.tx_gas_limit_cap, Some(30_000_000));
             }
-        }
-    }
-
-    #[test]
-    fn tip1122_factory_genesis_allocations() {
-        use reth_chainspec::EthChainSpec;
-        use tempo_chainspec::spec::{DEV, MODERATO, PRESTO};
-        use tempo_contracts::{
-            ARACHNID_CREATE2_FACTORY_ADDRESS, contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
-        };
-        for spec in [&*DEV, &*MODERATO, &*PRESTO] {
-            let account = &spec.genesis().alloc[&ARACHNID_CREATE2_FACTORY_ADDRESS];
-            assert_eq!(account.nonce, Some(1));
-            assert_eq!(
-                account.code.as_ref(),
-                Some(&ARACHNID_CREATE2_FACTORY_BYTECODE)
-            );
         }
     }
 

@@ -2335,7 +2335,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         gas.initial_regular_gas += storages as u64 * gas_params.tx_access_list_storage_key_cost(); // 1900 per storage
     }
 
-    // TIP-1122 / EIP-7976: every input byte contributes four floor tokens at T13.
+    // TIP-1124 / EIP-7976: every input byte contributes four floor tokens at T13.
     // Keep ordinary calldata tokens separate and charge the floor base once per batch.
     let floor_tokens = if spec.is_t13() {
         calldata_length * 4

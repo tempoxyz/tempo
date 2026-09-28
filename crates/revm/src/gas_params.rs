@@ -60,7 +60,7 @@ pub fn tempo_gas_params_with_amsterdam(
         return TABLE.get_or_init(amsterdam_gas_params).clone();
     }
 
-    // TIP-1122: adopt EIP-7976 without enabling other Amsterdam gas changes.
+    // TIP-1124: adopt EIP-7976 without enabling other Amsterdam gas changes.
     if spec.is_t13() {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
         return TABLE
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tip1122_changes_only_calldata_floor_prices() {
+    fn tip1124_changes_only_calldata_floor_prices() {
         let before = tempo_gas_params(TempoHardfork::T12);
         let after = tempo_gas_params(TempoHardfork::T13);
         let mut expected = before.clone();
