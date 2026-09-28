@@ -273,6 +273,10 @@ jobs:
     timeout-minutes: 360
 
     env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      # Stable paths let sccache reuse Rust compilations across fresh Depot runners.
+      TEMPO_BUILD_ROOT: /tmp/tempo-benchmark-build
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
@@ -489,6 +493,13 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@ac946e06f5f59daeebc8d33d8e7b9c9501e2ee98 # 2026-09-28T13-48-02Z-ac946e06
         with:
           toolchain: stable
+
+      - name: Require Depot remote cache
+        run: |
+          : "${SCCACHE_WEBDAV_ENDPOINT:?Enable automatic Depot Cache integration for this organization}"
+
+      - name: Setup sccache
+        uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@ac946e06f5f59daeebc8d33d8e7b9c9501e2ee98 # 2026-09-28T13-48-02Z-ac946e06
 
       - name: Configure AWS credentials
         if: env.BENCH_INPUT_CLOUD == 'aws'
