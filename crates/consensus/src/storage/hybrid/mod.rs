@@ -36,8 +36,7 @@
 //!   below).
 //!
 //! Pick `retention_blocks` as a few multiples of `items_per_section` so
-//! section overshoot is a small fraction of the working set; see
-//! [`super::DEFAULT_FINALIZED_BLOCKS_RETENTION`].
+//! section overshoot is a small fraction of the working set.
 //!
 //! # Stale puts
 //!

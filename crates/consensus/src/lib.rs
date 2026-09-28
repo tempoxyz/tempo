@@ -48,6 +48,12 @@ pub use args::{Args, PositiveDuration};
 // snapshots for overlapping archives can be reused.
 pub const PARTITION_PREFIX: &str = "engine";
 
+const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
+
+/// Tempo's peer sync window: nodes up to three mainnet/testnet epochs behind
+/// the finalized tip should be able to sync from peers.
+pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
+
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,

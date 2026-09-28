@@ -358,10 +358,12 @@ pub struct Args {
     /// prunable archive. Anything older is served from reth's database
     /// through the hybrid finalized blocks store.
     ///
-    /// Defaults to about three epochs worth of blocks
+    /// Defaults to three mainnet/testnet epochs worth of blocks. Section
+    /// rounding can retain up to 64,800 + 4,096 - 1 = 68,895 blocks when
+    /// reth is caught up.
     #[arg(
         long = "consensus.finalized-blocks-retention",
-        default_value_t = crate::storage::DEFAULT_FINALIZED_BLOCKS_RETENTION,
+        default_value_t = crate::MINIMAL_PEER_SYNC_FINALIZED_BLOCKS,
     )]
     pub finalized_blocks_retention: u64,
 
