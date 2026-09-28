@@ -11,10 +11,16 @@ dependencies, not updates to Tempo's default dependency pins.
 - `reth.patch`: cancellation of abandoned payload resolution, removal of canceled
   queued payloads, RocksDB cache-shard sizing, opt-in mapped-bytecode page prefetch
   with read-only/read-write transaction coverage, and a read-only Finish checkpoint
-  diagnostic. The completed measurements use these changes; an unpatched build
+  diagnostic, plus a 512 MiB soft pipeline execution-batch limit for cached
+  bytecode (the follower OOM fix). Older measurements predate the OOM fix; their
+  manifests retain the original build hashes. An unpatched build
   is not the same experimental configuration.
 
-Apply each patch to a dedicated checkout at its manifest revision. From this
+For automatic pinned setup, run `node contrib/bench/setup-state-access.cjs --build-tools`
+and source `target/state-access-deps/env.sh` (Bash) or `env.nu` (Nushell).
+See the [complete runbook](../state-access-reproduction.md).
+
+For manual setup, apply each patch to a dedicated checkout at its manifest revision. From this
 Tempo checkout, with `BENCH_RETH` and `BENCH_TXGEN` pointing to those checkouts:
 
 ```sh

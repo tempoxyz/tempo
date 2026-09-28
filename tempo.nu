@@ -92,11 +92,19 @@ def validate-mode [mode: string] {
     }
 }
 
+def benchmark-cargo-config-args [] {
+    let config = ($env.TEMPO_BENCH_CARGO_CONFIG? | default "")
+    if $config == "" { return [] }
+    if not ($config | path exists) { error make {msg: $"Benchmark Cargo config not found: ($config)"} }
+    ["--config" $config]
+}
+
 # Build tempo binary with cargo
 def build-tempo [bins: list<string>, profile: string, features: string, --no-default-features, --extra-rustflags: string = ""] {
     let bin_args = ($bins | each { |bin| ["--bin" $bin] } | flatten)
     let feature_args = (cargo-feature-args $features $no_default_features)
     let build_cmd = ["cargo" "build" "--profile" $profile]
+        | append (benchmark-cargo-config-args)
         | append $feature_args
         | append $bin_args
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
@@ -116,6 +124,7 @@ def tempo-xtask-bin [profile: string] {
 
 def build-tempo-xtask [profile: string] {
     let build_cmd = ["cargo" "build" "-p" "tempo-xtask" "--profile" $profile]
+        | append (benchmark-cargo-config-args)
     print $"Building tempo-xtask: `($build_cmd | str join ' ')`..."
     run-external ($build_cmd | first) ...($build_cmd | skip 1)
 }
@@ -129,7 +138,9 @@ def run-tempo-xtask [profile: string, skip_build: bool, args: list<string>] {
         }
         run-external $xtask_bin ...$args
     } else {
-        let run_cmd = ["cargo" "run" "-p" "tempo-xtask" "--profile" $profile "--"]
+        let run_cmd = ["cargo" "run" "-p" "tempo-xtask" "--profile" $profile]
+            | append (benchmark-cargo-config-args)
+            | append "--"
             | append $args
         run-external ($run_cmd | first) ...($run_cmd | skip 1)
     }
@@ -518,24 +529,57 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 # Build tempo binary in a git worktree (with optional MinIO cache)
 def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
     let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
+    let cargo_config = ($env.TEMPO_BENCH_CARGO_CONFIG? | default "")
+    if $cargo_config != "" and not ($cargo_config | path exists) {
+        error make {msg: $"Benchmark Cargo config not found: ($cargo_config)"}
+    }
+    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
+    # Suite-scoped reuse keeps every cell on the identical executable, including
+    # its embedded build timestamp. The suite creates a fresh directory each run.
+    let suite_cache = ($env.TEMPO_BENCH_SUITE_BUILD_CACHE? | default "")
+    let config_hash = if $cargo_config == "" { "" } else { open --raw $cargo_config | hash sha256 }
+    let suite_key = ({role: ($worktree_dir | path basename), commit: $commit_sha, profile: $profile, features: $features, no_default_features: $no_default_features, rustflags: $rustflags, cargo_config: $config_hash} | to json | hash sha256)
+    let suite_binary = $"($suite_cache)/($suite_key)"
+    let binary = (worktree-bin $worktree_dir $profile "tempo")
+    if $suite_cache != "" and ($suite_binary | path exists) {
+        let actual = (^sha256sum $suite_binary | split row " " | first)
+        if $actual != (open --raw $"($suite_binary).sha256" | str trim) {
+            error make {msg: "Suite-scoped benchmark binary checksum changed"}
+        }
+        mkdir ($binary | path dirname)
+        cp $suite_binary $binary
+        return
+    }
 
     # Try cache first
-    if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
+    if not $no_cache and $cargo_config == "" and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
+        if $suite_cache != "" {
+            mkdir $suite_cache
+            cp $binary $suite_binary
+            ^sha256sum $suite_binary | split row " " | first | save -f $"($suite_binary).sha256"
+        }
         return
     }
 
     print $"Building tempo for ($ref) in ($worktree_dir)..."
-    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     let feature_args = (cargo-feature-args $features $no_default_features)
     let build_cmd = ["cargo" "build" "--profile" $profile]
+        | append (if $cargo_config == "" { [] } else { ["--config" $cargo_config] })
         | append $feature_args
         | append ["--bin" "tempo"]
     with-env { RUSTFLAGS: $rustflags } {
         do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
+        if $env.LAST_EXIT_CODE != 0 { error make {msg: "Benchmark Cargo build failed"} }
+    }
+    if $suite_cache != "" {
+        mkdir $suite_cache
+        cp $binary $suite_binary
+        ^sha256sum $suite_binary | split row " " | first | save -f $"($suite_binary).sha256"
     }
 
     # Upload to cache
-    cache-upload $worktree_dir $profile $commit_sha $cache_key
+    # Patched builds must never read or populate the cache keyed only by Tempo SHA.
+    if $cargo_config == "" { cache-upload $worktree_dir $profile $commit_sha $cache_key }
 }
 
 # Get the path to a built binary in a worktree
@@ -563,12 +607,13 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
     for arg in $base_args {
         if $skip_next {
             $skip_next = false
-            continue
+            # Boolean flags have no value: preserve the following flag.
+            if not ($arg starts-with "--") { continue }
         }
         if ($arg starts-with "--") {
             let key = ($arg | split row "=" | first)
             if ($key in $override_keys) {
-                # Skip this flag; if it's `--flag value` form (no =), skip next token too
+                # Skip a following value, but never swallow another flag.
                 if not ($arg | str contains "=") {
                     $skip_next = true
                 }

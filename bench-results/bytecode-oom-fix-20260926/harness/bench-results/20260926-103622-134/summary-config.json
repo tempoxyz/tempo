@@ -1,0 +1,18 @@
+{
+  "baseline_label": "84dd0be10d38a0d3e2670c7371a16f028a8bcaf0",
+  "feature_label": "bytecode-off-bounded-cache",
+  "bloat_mib": 100000,
+  "token_count": 1,
+  "preset": "history_code_sized",
+  "tps": 1000,
+  "duration": 1200,
+  "benchmark_id": "bytecode-oom-fix-20260926-bytecode",
+  "reference_epoch": 1790418982,
+  "summary_warmup_blocks": 0,
+  "summary_warmup_seconds": 600,
+  "run_side": "feature",
+  "baseline_hardfork": "",
+  "feature_hardfork": "",
+  "baseline_removed_args": "",
+  "feature_removed_args": ""
+}

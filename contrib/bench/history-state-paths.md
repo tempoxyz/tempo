@@ -63,18 +63,25 @@ transactions are not claimed to defeat parent-state prewarming.
 
 The original evidence is in the local archive
 `bench-results/history-state-paths-sustained-20260924-v2/{throughput.md,throughput.json}`;
-raw benchmark archives and the experimental node/dependency patches are not
-included in this benchmark PR.
+compact reports and pinned dependency patches are checked in; large raw logs,
+binaries and databases remain outside Git.
 The historical SLOAD result used another binary; these runs do not establish a
 same-binary ranking against it or a universal worst case.
 
 The subsequent matched run on 2026-09-24 stopped after the SLOAD load phase:
 only one measured block contained multiple transactions, below the audit's
 three-block requirement. That attempt is rejected, not a validated three-way
-comparison. The native command preserves the original 4,096-read workload and
-this fail-closed audit; changing its batching requires a separate experiment.
+comparison. The current ordinary registry uses 128-read transactions to permit
+within-block history changes and retains the fail-closed audit. The separately
+sized/max-transaction registries report bypass coverage rather than claiming
+that singleton blocks defeat parent-state prewarming.
 
 ## Reproduction
+
+Start with the [fresh-checkout runbook](state-access-reproduction.md), which
+builds the pinned patched dependencies and helpers. Source its generated
+environment before the commands below. The build step shown here is only for
+manually rebuilding helpers after setup; pass the generated Cargo config.
 
 Requires the two preserved original block-zero state-access snapshots, the same
 host-specific e2e harness (separate NVMe mounts, CPU sets, systemd and sudo), and
@@ -90,6 +97,7 @@ import is marked incomplete and must not be used as a valid fixture.
 bash contrib/bench/txgen/compile-history-state-paths.sh
 bash contrib/bench/txgen/compile-history-state-paths.sh --test
 RUSTFLAGS='-C target-cpu=native' cargo build -p tempo \
+  --config "$TEMPO_BENCH_CARGO_CONFIG" \
   --example prepare_history_state_paths --example read_finish_checkpoint --profile profiling \
   --features jemalloc,asm-keccak -j8
 bash contrib/bench/prepare-history-state-paths.sh

@@ -1,0 +1,294 @@
+diff --git a/crates/cli/commands/src/stage/dump/merkle.rs b/crates/cli/commands/src/stage/dump/merkle.rs
+index 162379b22..be93f4ce7 100644
+--- a/crates/cli/commands/src/stage/dump/merkle.rs
++++ b/crates/cli/commands/src/stage/dump/merkle.rs
+@@ -108,6 +108,7 @@ fn unwind_and_copy<N: ProviderNodeTypes>(
+         ExecutionStageThresholds {
+             max_blocks: Some(u64::MAX),
+             max_changes: None,
++            max_cached_bytecode_bytes: None,
+             max_cumulative_gas: None,
+             max_duration: None,
+         },
+diff --git a/crates/cli/commands/src/stage/run.rs b/crates/cli/commands/src/stage/run.rs
+index c99946219..92525d922 100644
+--- a/crates/cli/commands/src/stage/run.rs
++++ b/crates/cli/commands/src/stage/run.rs
+@@ -265,6 +265,10 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + Hardforks + EthereumHardforks>
+                         ExecutionStageThresholds {
+                             max_blocks: Some(batch_size),
+                             max_changes: None,
++                            max_cached_bytecode_bytes: config
++                                .stages
++                                .execution
++                                .max_cached_bytecode_bytes,
+                             max_cumulative_gas: None,
+                             max_duration: None,
+                         },
+diff --git a/crates/cli/commands/src/stage/unwind.rs b/crates/cli/commands/src/stage/unwind.rs
+index b3f6f072c..3cda4dbe8 100644
+--- a/crates/cli/commands/src/stage/unwind.rs
++++ b/crates/cli/commands/src/stage/unwind.rs
+@@ -121,6 +121,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
+                     ExecutionStageThresholds {
+                         max_blocks: None,
+                         max_changes: None,
++                        max_cached_bytecode_bytes: None,
+                         max_cumulative_gas: None,
+                         max_duration: None,
+                     },
+diff --git a/crates/config/src/config.rs b/crates/config/src/config.rs
+index e0d286925..7fef13eaa 100644
+--- a/crates/config/src/config.rs
++++ b/crates/config/src/config.rs
+@@ -275,6 +275,9 @@ pub struct ExecutionConfig {
+     pub max_blocks: Option<u64>,
+     /// The maximum number of state changes to keep in memory before the execution stage commits.
+     pub max_changes: Option<u64>,
++    /// Maximum cached bytecode buffer bytes before committing, checked between blocks.
++    /// This includes read-only bytecode and is not a total process memory limit.
++    pub max_cached_bytecode_bytes: Option<u64>,
+     /// The maximum cumulative amount of gas to process before the execution stage commits.
+     pub max_cumulative_gas: Option<u64>,
+     /// The maximum time spent on blocks processing before the execution stage commits.
+@@ -293,6 +296,8 @@ impl Default for ExecutionConfig {
+         Self {
+             max_blocks: Some(500_000),
+             max_changes: Some(5_000_000),
++            max_cached_bytecode_bytes: ExecutionStageThresholds::default()
++                .max_cached_bytecode_bytes,
+             // 50k full blocks of 30M gas
+             max_cumulative_gas: Some(30_000_000 * 50_000),
+             // 10 minutes
+@@ -306,6 +311,7 @@ impl From<ExecutionConfig> for ExecutionStageThresholds {
+         Self {
+             max_blocks: config.max_blocks,
+             max_changes: config.max_changes,
++            max_cached_bytecode_bytes: config.max_cached_bytecode_bytes,
+             max_cumulative_gas: config.max_cumulative_gas,
+             max_duration: config.max_duration,
+         }
+@@ -643,7 +649,7 @@ where
+ 
+ #[cfg(all(test, feature = "serde"))]
+ mod tests {
+-    use super::{Config, EXTENSION};
++    use super::{Config, ExecutionConfig, ExecutionStageThresholds, EXTENSION};
+     use crate::PruneConfig;
+     use alloy_primitives::Address;
+     use reth_network_peers::TrustedPeer;
+@@ -798,6 +804,18 @@ mod tests {
+         })
+     }
+ 
++    #[test]
++    fn execution_bytecode_limit_defaults_and_roundtrips() {
++        let old: ExecutionConfig = toml::from_str("max_changes = 5000000").unwrap();
++        assert_eq!(old.max_cached_bytecode_bytes, Some(512 * 1024 * 1024));
++        let custom: ExecutionConfig =
++            toml::from_str("max_cached_bytecode_bytes = 1048576").unwrap();
++        let thresholds = ExecutionStageThresholds::from(custom);
++        assert_eq!(thresholds.max_cached_bytecode_bytes, Some(1048576));
++        let decoded: ExecutionConfig = toml::from_str(&toml::to_string(&custom).unwrap()).unwrap();
++        assert_eq!(decoded, custom);
++    }
++
+     // ensures config deserialization is backwards compatible
+     #[test]
+     fn test_backwards_compatibility() {
+diff --git a/crates/evm/evm/src/execute.rs b/crates/evm/evm/src/execute.rs
+index 8035ac809..e91261a5d 100644
+--- a/crates/evm/evm/src/execute.rs
++++ b/crates/evm/evm/src/execute.rs
+@@ -150,6 +150,14 @@ pub trait Executor<DB: Database>: Sized {
+     /// This is used to optimize DB commits depending on the size of the state.
+     fn size_hint(&self) -> usize;
+ 
++    /// Estimated bytes of cached bytecode, including code loaded only for reading.
++    ///
++    /// Batch executors that retain bytecode should override this independently of the
++    /// changed-state count returned by [`Self::size_hint`]. This is not total process memory.
++    fn cached_bytecode_size_hint(&self) -> usize {
++        0
++    }
++
+     /// Takes built [`BlockAccessList`] from executor.
+     fn take_bal(&mut self) -> Option<BlockAccessList>;
+ }
+@@ -578,6 +586,14 @@ impl<F, DB: Database> BasicBlockExecutor<F, DB> {
+         let db = State::builder().with_database(db).with_bundle_update().build();
+         Self { strategy_factory, db }
+     }
++
++    /// Bytecode buffers and jump tables retained in the execution cache.
++    fn cached_bytecode_size(&self) -> usize {
++        self.db.cache.contracts.values().fold(0usize, |size, code| {
++            size.saturating_add(code.bytecode().len())
++                .saturating_add(code.legacy_jump_table().map_or(0, |table| table.len().div_ceil(8)))
++        })
++    }
+ }
+ 
+ impl<F, DB> Executor<DB> for BasicBlockExecutor<F, DB>
+@@ -657,6 +673,10 @@ where
+         self.db.bundle_state.size_hint()
+     }
+ 
++    fn cached_bytecode_size_hint(&self) -> usize {
++        self.cached_bytecode_size()
++    }
++
+     fn take_bal(&mut self) -> Option<BlockAccessList> {
+         self.db.take_built_alloy_bal()
+     }
+@@ -729,6 +749,30 @@ mod tests {
+     use reth_ethereum_primitives::EthPrimitives;
+     use revm::database::{CacheDB, EmptyDB};
+ 
++    #[test]
++    fn read_only_bytecode_is_counted_without_state_changes() {
++        use alloy_primitives::Bytes;
++        use revm::{bytecode::Bytecode, Database as _};
++
++        let code = Bytecode::new_raw(Bytes::from(vec![0x5b; 24 * 1024]));
++        let hash = code.hash_slow();
++        let expected = code.bytecode().len() + code.legacy_jump_table().unwrap().len().div_ceil(8);
++        let mut database = CacheDB::<EmptyDB>::default();
++        database.cache.contracts.insert(hash, code);
++        let mut executor = BasicBlockExecutor::new((), database);
++
++        assert_eq!(executor.cached_bytecode_size(), 0);
++        executor.db.code_by_hash(hash).unwrap();
++        assert_eq!(executor.db.bundle_state.size_hint(), 0);
++        assert_eq!(executor.cached_bytecode_size(), expected);
++
++        // Repeated reads share the same cached allocation.
++        executor.db.code_by_hash(hash).unwrap();
++        assert_eq!(executor.cached_bytecode_size(), expected);
++        executor.db.cache.contracts.clear();
++        assert_eq!(executor.cached_bytecode_size(), 0);
++    }
++
+     #[derive(Clone, Debug, Default)]
+     struct TestExecutorProvider;
+ 
+diff --git a/crates/exex/exex/src/backfill/job.rs b/crates/exex/exex/src/backfill/job.rs
+index 5473b48da..74eba57a0 100644
+--- a/crates/exex/exex/src/backfill/job.rs
++++ b/crates/exex/exex/src/backfill/job.rs
+@@ -127,7 +127,10 @@ where
+                 executor.size_hint() as u64,
+                 cumulative_gas,
+                 batch_start.elapsed(),
+-            ) {
++            ) || self
++                .thresholds
++                .is_bytecode_cache_full(executor.cached_bytecode_size_hint() as u64)
++            {
+                 break
+             }
+         }
+diff --git a/crates/stages/stages/src/stages/execution/mod.rs b/crates/stages/stages/src/stages/execution/mod.rs
+index f185df2db..1f026d4b6 100644
+--- a/crates/stages/stages/src/stages/execution/mod.rs
++++ b/crates/stages/stages/src/stages/execution/mod.rs
+@@ -410,6 +410,12 @@ where
+             }
+ 
+             // Check if we should commit now
++            let cached_bytecode_bytes = executor.cached_bytecode_size_hint() as u64;
++            if self.thresholds.is_bytecode_cache_full(cached_bytecode_bytes) {
++                debug!(target: "sync::stages::execution", block_number, cached_bytecode_bytes,
++                    "Committing execution batch at bytecode cache limit");
++                break
++            }
+             if self.thresholds.is_end_of_batch(
+                 block_number - start_block,
+                 executor.size_hint() as u64,
+@@ -814,6 +820,7 @@ mod tests {
+             ExecutionStageThresholds {
+                 max_blocks: Some(100),
+                 max_changes: None,
++                max_cached_bytecode_bytes: None,
+                 max_cumulative_gas: None,
+                 max_duration: None,
+             },
+diff --git a/crates/stages/stages/src/stages/mod.rs b/crates/stages/stages/src/stages/mod.rs
+index bd9daeeed..6a8e52408 100644
+--- a/crates/stages/stages/src/stages/mod.rs
++++ b/crates/stages/stages/src/stages/mod.rs
+@@ -164,6 +164,7 @@ mod tests {
+                 ExecutionStageThresholds {
+                     max_blocks: Some(100),
+                     max_changes: None,
++                    max_cached_bytecode_bytes: None,
+                     max_cumulative_gas: None,
+                     max_duration: None,
+                 },
+diff --git a/crates/stages/types/src/execution.rs b/crates/stages/types/src/execution.rs
+index caf7c2448..7b9ecac3d 100644
+--- a/crates/stages/types/src/execution.rs
++++ b/crates/stages/types/src/execution.rs
+@@ -2,7 +2,8 @@ use core::time::Duration;
+ 
+ /// The thresholds at which the execution stage writes state changes to the database.
+ ///
+-/// If any of the thresholds (`max_blocks`, `max_changes`, `max_cumulative_gas`, or `max_duration`)
++/// If any of the thresholds (`max_blocks`, `max_changes`, `max_cumulative_gas`, `max_duration`,
++/// or `max_cached_bytecode_bytes`)
+ /// are hit, then the execution stage commits all pending changes to the database.
+ #[derive(Debug, Clone)]
+ pub struct ExecutionStageThresholds {
+@@ -10,6 +11,9 @@ pub struct ExecutionStageThresholds {
+     pub max_blocks: Option<u64>,
+     /// The maximum number of state changes to keep in memory before the execution stage commits.
+     pub max_changes: Option<u64>,
++    /// Maximum cached bytecode buffer bytes before committing, checked between blocks.
++    /// This includes read-only bytecode, which is not counted by `max_changes`.
++    pub max_cached_bytecode_bytes: Option<u64>,
+     /// The maximum cumulative amount of gas to process before the execution stage commits.
+     pub max_cumulative_gas: Option<u64>,
+     /// The maximum spent on blocks processing before the execution stage commits.
+@@ -21,6 +25,7 @@ impl Default for ExecutionStageThresholds {
+         Self {
+             max_blocks: Some(500_000),
+             max_changes: Some(5_000_000),
++            max_cached_bytecode_bytes: Some(512 * 1024 * 1024),
+             // 50k full blocks of 30M gas
+             max_cumulative_gas: Some(30_000_000 * 50_000),
+             // 10 minutes
+@@ -30,6 +35,13 @@ impl Default for ExecutionStageThresholds {
+ }
+ 
+ impl ExecutionStageThresholds {
++    /// Whether cached bytecode alone requires ending the batch.
++    ///
++    /// This is a soft limit: one block can exceed it. It does not cap total process memory.
++    pub fn is_bytecode_cache_full(&self, cached_bytecode_bytes: u64) -> bool {
++        self.max_cached_bytecode_bytes.is_some_and(|limit| cached_bytecode_bytes >= limit)
++    }
++
+     /// Check if the batch thresholds have been hit.
+     #[inline]
+     pub fn is_end_of_batch(
+@@ -45,3 +57,20 @@ impl ExecutionStageThresholds {
+             elapsed >= self.max_duration.unwrap_or(Duration::MAX)
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn bytecode_limit_is_independent_of_state_changes() {
++        let mut thresholds = ExecutionStageThresholds::default();
++        let limit = thresholds.max_cached_bytecode_bytes.unwrap();
++        assert!(!thresholds.is_end_of_batch(1, 0, 1, Duration::ZERO));
++        assert!(!thresholds.is_bytecode_cache_full(limit - 1));
++        assert!(thresholds.is_bytecode_cache_full(limit));
++        assert!(thresholds.is_bytecode_cache_full(limit + 1));
++        thresholds.max_cached_bytecode_bytes = None;
++        assert!(!thresholds.is_bytecode_cache_full(u64::MAX));
++    }
++}

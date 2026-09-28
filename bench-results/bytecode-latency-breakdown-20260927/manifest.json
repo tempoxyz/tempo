@@ -1,0 +1,28 @@
+{
+  "created_at": "2026-09-27T08:19:52.981Z",
+  "tempo_head": "ef46cf29962daccfdac2bf96178d0a16b9d77904",
+  "reth_head": "dfcb10454cabf4ce778e0dedfe79c512b37f2c8c",
+  "kernel": "Linux dev-dankrad 6.8.0-139-generic #139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux",
+  "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)\nbinary: rustc\ncommit-hash: 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd\ncommit-date: 2026-06-26\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.1\nLLVM version: 22.1.2\n",
+  "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "devices": "NAME        MAJ:MIN   SIZE MODEL                      MOUNTPOINTS\nnvme1n1     259:0     3.5T MTFDKCC3T8TGP-1BK1DABYY    /mnt\nnvme2n1     259:1     3.5T MTFDKCC3T8TGP-1BK1DABYY    /mnt2\nnvme0n1     259:2   894.3G SAMSUNG MZQL2960HCJR-00A07 \n├─nvme0n1p1 259:4     511M                            /boot/efi\n├─nvme0n1p2 259:5       1G                            \n│ └─md2       9:2    1022M                            /boot\n├─nvme0n1p3 259:6   892.3G                            \n│ └─md3       9:3   892.1G                            /\n└─nvme0n1p4 259:7     512M                            [SWAP]\nnvme3n1     259:3   894.3G SAMSUNG MZQL2960HCJR-00A07 \n├─nvme3n1p1 259:8     511M                            \n├─nvme3n1p2 259:9       1G                            \n│ └─md2       9:2    1022M                            /boot\n├─nvme3n1p3 259:10  892.3G                            \n│ └─md3       9:3   892.1G                            /\n├─nvme3n1p4 259:11    512M                            [SWAP]\n└─nvme3n1p5 259:12      2M                            \n",
+  "source_database": "/reth-bench-b/tempo_e2e_100000mb_state_access_isolated_roles_history_paths/db",
+  "source_mutated": false,
+  "global_eviction": false,
+  "full_node_rerun": false,
+  "sha256": {
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/contrib/bench/bytecode-page-diagnostic.c": "633ca83a50ff0358a7c3e8b033317507d91d5dfde11fc4f30f7dc7293ada1838",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/contrib/bench/bytecode-latency-diagnostic.c": "792e88ed27886edc49636053a8240120c5a74d68cb291b12469711d3ebd57922",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/contrib/bench/bytecode-codec-diagnostic.rs": "8d293eb35facd9281c62afbcea05dd5b689ed91d4686e18e334ee9fd5a70e8fe",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/contrib/bench/bytecode-block-latency.bt": "7e868407438c4576b312e073336e33d6a12bd313788aba84ef8b2d5ad0f280fb",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/contrib/bench/analyze-bytecode-latency.cjs": "da96575d3303bf8fc6a2695bb0ee9d25fe4ad3be548a2a0ba4f48ef16c6260b4",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/build/reth-mdbx-sys-38b243668ec2762b/out/libmdbx.a": "c18577703ae7541a2d381ab0585037df5b81bd9d8fc769f81e0a5285263d2474",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/deps/libreth_primitives_traits-d9f65a99707af4ee.rlib": "a2bf76399f8e3131d28b392bc64394057ebbb8f259a089dcde659c1bfb9b0819",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/deps/libreth_codecs-450c1da9bb662e11.rlib": "9600bbbe272815ecdc8411cf19123a2d311c0f273103542d608698bca9558d9c",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/deps/libtikv_jemallocator-80bef91fdaa522ac.rlib": "e523147bfd9bc02aecc9b6c4bb59a3e391e80fbc468367d2d8b9dd3e8c30932e",
+    "/tmp/tempo-bytecode-latency-diagnostic": "f432de03f0cd186ffbd712d55f0a2588c392394b04ceccab43566227d5983aee",
+    "/tmp/tempo-bytecode-codec-jemalloc": "5a17b70d6d6b23cfa9f49e669c9b0ca63a3f8a4513224348b9180c16d439f463",
+    "/tmp/tempo-bytecode-codec-system": "2405eceabd5587aa80be12bfa5f1ae2df9573537f7d323980324018c54efabd8",
+    "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-latency-breakdown-20260927/records.bin": "b675968885c5baa04797c80bff2b2c2e7d22b80cf8189e6fedb64cdb139b26a6"
+  }
+}

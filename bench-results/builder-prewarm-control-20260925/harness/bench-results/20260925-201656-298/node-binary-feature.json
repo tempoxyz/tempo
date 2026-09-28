@@ -1,0 +1,6 @@
+{
+  "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/declared-storage-20260925/tools/tempo",
+  "sha256": "3cf755ffee2de9d5dc90fbcc327f2dd7a54b40e0fcf821b4d9943cd663bcf19b",
+  "version": "Tempo Version: 1.14.0-dev\nCommit SHA: 84dd0be10d38a0d3e2670c7371a16f028a8bcaf0\nBuild Timestamp: 2026-09-24T15:35:00.000000000Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n",
+  "local_override": true
+}

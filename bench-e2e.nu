@@ -1827,7 +1827,7 @@ def "main e2e" [
         if $xtask_binary != "" {
             run-external $xtask_binary "generate-localnet" "-o" $init_dir "--accounts" ($genesis_accounts | into string) "--validators" $committee ...$follower_args "--seed" ($E2E_SEED | into string) "--force" ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
         } else {
-            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args ...$state_access_args
+            cargo run ...(benchmark-cargo-config-args) -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $committee ...$follower_args --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args ...$state_access_args
         }
         if $env.LAST_EXIT_CODE != 0 { error make { msg: "Localnet generation failed" } }
 
@@ -1849,7 +1849,7 @@ def "main e2e" [
                 let signable_args = if $bloat_keccak_signable_shared { ["--keccak-signable-shared"] } else { [] }
                 $token_args | append $signable_args
             }
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$bloat_args
+            cargo run ...(benchmark-cargo-config-args) -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$bloat_args
         }
 
         let marker = {
@@ -1962,7 +1962,9 @@ def "main e2e" [
             let digest = (^sha256sum $build.binary | split row " " | first)
             let version = (run-external $build.binary "--version" | complete)
             if $version.exit_code != 0 { error make { msg: $"($build.side) binary version check failed" } }
-            {path: $build.binary, sha256: $digest, version: $version.stdout, local_override: ($build.side == "feature" and $feature_binary != "")}
+            let cargo_config = ($env.TEMPO_BENCH_CARGO_CONFIG? | default "")
+            let config_digest = if $cargo_config == "" { null } else { ^sha256sum $cargo_config | split row " " | first }
+            {path: $build.binary, sha256: $digest, version: $version.stdout, local_override: ($build.side == "feature" and $feature_binary != ""), cargo_config: $cargo_config, cargo_config_sha256: $config_digest}
                 | to json | save -f $"($results_dir)/node-binary-($build.side).json"
         }
     }
@@ -2187,6 +2189,9 @@ def run-state-access-case [options: record, config: record, workload: record] {
 def run-state-access-suite [plan_path: string] {
     mut plan = (open $plan_path)
     let suite_dir = ($plan_path | path dirname)
+    if ($env.TEMPO_BENCH_SUITE_BUILD_CACHE? | default "") == "" {
+        $env.TEMPO_BENCH_SUITE_BUILD_CACHE = ($suite_dir | path join "builds" | path expand)
+    }
     let fixture_check = (^node contrib/bench/state-access-config.cjs --ignore-env --check-fixtures | complete)
     if $fixture_check.exit_code != 0 { error make {msg: $fixture_check.stderr} }
     $plan = ($plan | upsert fixture ($fixture_check.stdout | from json))
@@ -2310,6 +2315,30 @@ def "main state-access-bloat-worst-case" [
     $plan | to json | save -f $plan_path
     print $"STATE_ACCESS_SUITE_DIR=($suite_dir)"
     ^flock --nonblock /tmp/tempo-general-state-access-20260922.lock node contrib/bench/state-access-suite-process.cjs $nu.current-exe $plan_path
+}
+
+def "main state-access-prewarm-control" [
+    --baseline: string = "HEAD"
+    --feature: string = "HEAD"
+    --feature-binary: string = ""
+    --duration: int = 1200
+    --summary-warmup-seconds: int = 600
+    --tps: int = 1000
+    --profile: string = $DEFAULT_PROFILE
+    --wait
+    --dry-run
+] {
+    mut args = ["--baseline" $baseline "--feature" $feature "--duration" ($duration | into string)
+        "--summary-warmup-seconds" ($summary_warmup_seconds | into string)
+        "--tps" ($tps | into string) "--profile" $profile]
+    if $feature_binary != "" { $args = ($args | append ["--feature-binary" $feature_binary]) }
+    if $wait { $args = ($args | append "--wait") }
+    if $dry_run { $args = ($args | append "--dry-run") }
+    let final_args = $args
+    with-env {NU_BIN: $nu.current-exe} {
+        ^node contrib/bench/run-builder-prewarm-control.cjs ...$final_args
+        if $env.LAST_EXIT_CODE != 0 { error make {msg: "Builder prewarming control failed"} }
+    }
 }
 
 # Worst-case payment workload: fully signable 100 GB state, active empty blacklist policy,

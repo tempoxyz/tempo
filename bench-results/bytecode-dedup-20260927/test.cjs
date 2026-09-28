@@ -1,0 +1,50 @@
+const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+
+const hash = n => `0x${n.toString(16).padStart(64, '0')}`;
+const address = n => `0x${n.toString(16).padStart(40, '0')}`;
+const run = (args, input) => spawnSync(join(__dirname, 'analyze'), args, { input, encoding: 'utf8' });
+const dir = mkdtempSync(join(tmpdir(), 'code-dedup-test-'));
+try {
+  const csv = `bytecode_hash,bytecode\r\n${hash(0)},\r\n${hash(1)},\\x600000\r\n${hash(2)},\\x00\r\n${hash(3)},\\x0000\r\n`;
+  const parsed = run(['lengths'], csv);
+  assert.equal(parsed.status, 0, parsed.stderr);
+  assert.equal(parsed.stdout, `${hash(0)}\t0\n${hash(1)}\t3\n${hash(2)}\t1\n${hash(3)}\t2\n`);
+  const file = join(dir, 'sizes.tsv');
+  writeFileSync(file, parsed.stdout);
+  const contracts = `address,bytecode_hash,blocknum\n${address(1)},${hash(1)},5\n${address(2)},${hash(1)},10\n${address(3)},${hash(2)},20\n${address(4)},${hash(0)},25\n`;
+  const counted = run(['references', file], contracts);
+  assert.equal(counted.status, 0, counted.stderr);
+  const result = JSON.parse(counted.stdout);
+  assert.equal(result.contract_rows, 4);
+  assert.equal(result.empty_code_contract_rows, 1);
+  assert.equal(result.all_unique_code_bytes, 6);
+  assert.equal(result.deduplicated_referenced_bytes, 4);
+  assert.equal(result.without_deduplication_bytes, 7);
+  assert.equal(result.saved_bytes, 3);
+  assert.equal(result.expansion_factor, 1.75);
+  assert.equal(result.minimum_deployment_block, 5);
+  assert.equal(result.maximum_deployment_block, 25);
+  assert.equal(result.top_savings[0].references, 2);
+  const missingBlock = run(['references', file], contracts + `${address(5)},${hash(1)},\n`);
+  assert.equal(missingBlock.status, 0, missingBlock.stderr);
+  assert.equal(JSON.parse(missingBlock.stdout).missing_deployment_block_rows, 1);
+  assert.equal(JSON.parse(missingBlock.stdout).without_deduplication_bytes, 10);
+  const missingHash = run(['references', file], contracts + `${address(5)},,\n`);
+  assert.equal(missingHash.status, 0, missingHash.stderr);
+  assert.equal(JSON.parse(missingHash.stdout).missing_code_hash_rows, 1);
+  assert.equal(JSON.parse(missingHash.stdout).accounted_contract_rows, 4);
+  assert.equal(JSON.parse(missingHash.stdout).without_deduplication_bytes, 7);
+  assert.notEqual(run(['references', file], contracts + `${address(5)},${hash(1)},5oops\n`).status, 0);
+  assert.notEqual(run(['lengths'], `bytecode_hash,bytecode\n${hash(1)},\\x0\n`).status, 0);
+  assert.notEqual(run(['lengths'], `bytecode_hash,bytecode\n${hash(1)},\\xgg\n`).status, 0);
+  assert.notEqual(run(['references', file], `address,bytecode_hash,blocknum\n${address(1)},${hash(99)},1\n`).status, 0);
+  writeFileSync(file, parsed.stdout + `${hash(1)}\t3\n`);
+  assert.notEqual(run(['references', file], contracts).status, 0);
+  console.log('PASS: lengths, CRLF, empty code, reference weighting, unreferenced exclusion, missing/malformed block, invalid hex, missing hash, duplicate hash');
+} finally {
+  rmSync(dir, { recursive: true, force: true });
+}

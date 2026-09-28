@@ -1,5 +1,9 @@
 # Benchmarks
 
+[Fresh-checkout reproduction](state-access-reproduction.md) builds the pinned
+dependencies and tools, prepares fixtures, and runs every current suite without
+archived binaries. It also indexes the supporting diagnostics and saved evidence.
+
 - [Saved state-access configurations](configs/README.md): matched SLOAD,
   bytecode, and write workloads on a shared bloated database. List them with
   `nu bench-e2e.nu state-access-bloat-worst-case --list`. Run all three with

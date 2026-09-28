@@ -1,0 +1,203 @@
+   Compiling zeroize v1.8.2
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.12
+   Compiling shlex v2.0.1
+   Compiling foldhash v0.2.0
+   Compiling alloy-rlp v0.3.16
+   Compiling derive_more v2.1.1
+   Compiling const-hex v1.18.1
+   Compiling generic-array v0.14.7
+   Compiling cc v1.4.5
+   Compiling der v0.7.10
+   Compiling hashbrown v0.17.0
+   Compiling ruint v1.20.0
+   Compiling thiserror v2.0.20
+   Compiling num-traits v0.2.19
+   Compiling either v1.18.0
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling bitflags v2.13.1
+   Compiling digest v0.10.7
+   Compiling indexmap v2.14.2
+   Compiling bitvec v1.0.1
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.10.9
+   Compiling getrandom v0.2.17
+   Compiling rfc6979 v0.4.0
+   Compiling getrandom v0.4.2
+   Compiling spki v0.7.3
+   Compiling rand_core v0.6.4
+   Compiling pkcs8 v0.10.2
+   Compiling sec1 v0.7.3
+   Compiling ff v0.13.1
+   Compiling crypto-bigint v0.5.5
+   Compiling secp256k1-sys v0.11.0
+   Compiling group v0.13.0
+   Compiling signature v2.2.0
+   Compiling rand_chacha v0.3.1
+   Compiling num-integer v0.1.46
+   Compiling nonmax v0.5.5
+   Compiling rand v0.8.6
+   Compiling hex v0.4.3
+   Compiling num-bigint v0.4.6
+   Compiling itertools v0.14.0
+   Compiling tracing-core v0.1.36
+   Compiling serde_with v3.23.0
+   Compiling elliptic-curve v0.13.8
+   Compiling ark-std v0.6.0
+   Compiling tracing v0.1.44
+   Compiling num-iter v0.1.45
+   Compiling num-complex v0.4.6
+   Compiling nybbles v0.4.8
+   Compiling ecdsa v0.16.9
+   Compiling primeorder v0.13.6
+   Compiling derive-where v1.6.1
+   Compiling secp256k1-sys v0.10.1
+   Compiling keccak v0.1.6
+   Compiling k256 v0.13.4
+   Compiling ark-serialize v0.6.0
+   Compiling num-rational v0.4.2
+   Compiling p256 v0.13.2
+   Compiling ark-ff v0.6.0
+   Compiling num v0.4.3
+   Compiling aurora-engine-modexp v1.2.0
+   Compiling percent-encoding v2.3.2
+   Compiling idna v1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling sha3 v0.10.8
+   Compiling base64 v0.22.1
+   Compiling log v0.4.29
+   Compiling strum v0.27.2
+   Compiling winnow v1.0.1
+   Compiling humantime v2.4.0
+   Compiling url v2.5.8
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling humantime-serde v1.1.1
+   Compiling rustix v1.1.4
+   Compiling fixed-map v0.9.5
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling toml_writer v1.1.1+spec-1.1.0
+   Compiling winnow v0.7.15
+   Compiling tempfile v3.27.0
+   Compiling secp256k1 v0.31.1
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling alloy-primitives v1.7.2
+   Compiling alloy-eip7928 v0.4.10
+   Compiling revm-primitives v43.0.0
+   Compiling alloy-eip7702 v0.6.3
+   Compiling alloy-eip2930 v0.2.3
+   Compiling alloy-eip2124 v0.2.0
+   Compiling revm-bytecode v43.0.0
+   Compiling alloy-serde v2.4.2
+   Compiling alloy-trie v0.9.5
+   Compiling reth-net-banlist v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/net/banlist)
+   Compiling revm-state v43.0.0
+   Compiling alloy-eips v2.4.2
+   Compiling reth-prune-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/prune/types)
+   Compiling secp256k1 v0.30.0
+   Compiling revm-database-interface v43.0.0
+   Compiling enr v0.13.0
+   Compiling revm-context-interface v43.0.1
+   Compiling revm-database v43.0.0
+   Compiling alloy-genesis v2.4.2
+   Compiling alloy-consensus v2.4.2
+   Compiling reth-network-peers v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/net/peers)
+   Compiling reth-network-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/net/network-types)
+   Compiling revm-interpreter v43.0.1
+   Compiling revm-context v43.0.2
+   Compiling reth-primitives-traits v0.7.1
+   Compiling ark-poly v0.6.0
+   Compiling ark-ec v0.6.0
+   Compiling ark-bn254 v0.6.0
+   Compiling ark-bls12-381 v0.6.0
+   Compiling revm-precompile v43.0.2
+   Compiling revm-handler v43.0.2
+   Compiling revm-inspector v43.0.2
+   Compiling revm v43.0.2
+   Compiling reth-trie-common v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/trie/common)
+warning: struct `LazyTrieDataProducer` is never constructed
+   --> crates/trie/common/src/trie_data.rs:205:12
+    |
+205 | pub struct LazyTrieDataProducer {
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `compute_and_publish` and `sort` are never used
+   --> crates/trie/common/src/trie_data.rs:220:12
+    |
+218 | impl LazyTrieDataProducer {
+    | ------------------------- associated items in this implementation
+219 |     /// Computes sorted trie data, publishes it to waiters, and returns it to the task owner.
+220 |     pub fn compute_and_publish(self) -> ComputedTrieData {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+228 |     pub fn sort(
+    |            ^^^^
+
+warning: struct `PendingInputs` is never constructed
+   --> crates/trie/common/src/trie_data.rs:262:8
+    |
+262 | struct PendingInputs {
+    |        ^^^^^^^^^^^^^
+
+warning: unreachable `pub` item
+   --> crates/trie/common/src/trie_data.rs:205:1
+    |
+205 | pub struct LazyTrieDataProducer {
+    | ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | help: consider restricting its visibility: `pub(crate)`
+    |
+    = help: or consider exporting it for use by other crates
+    = note: requested on the command line with `-W unreachable-pub`
+
+warning: unreachable `pub` item
+   --> crates/trie/common/src/trie_data.rs:220:5
+    |
+220 |     pub fn compute_and_publish(self) -> ComputedTrieData {
+    |     ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     help: consider restricting its visibility: `pub(crate)`
+
+warning: unreachable `pub` item
+   --> crates/trie/common/src/trie_data.rs:228:5
+    |
+228 |       pub fn sort(
+    |       ^--
+    |       |
+    |  _____help: consider restricting its visibility: `pub(crate)`
+    | |
+229 | |         hashed_state: Arc<HashedPostState>,
+230 | |         trie_updates: Arc<TrieUpdates>,
+231 | |     ) -> ComputedTrieData {
+    | |_________________________^
+
+   Compiling reth-stages-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/stages/types)
+   Compiling reth-static-file-types v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/static-file/types)
+warning: `reth-trie-common` (lib) generated 6 warnings (run `cargo fix --lib -p reth-trie-common` to apply 3 suggestions)
+   Compiling reth-config v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/config)
+    Finished `profiling` profile [optimized + debuginfo] target(s) in 13.61s
+     Running unittests src/lib.rs (/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/deps/reth_config-f83c921a8126ca59)
+
+running 16 tests
+test config::tests::execution_bytecode_limit_defaults_and_roundtrips ... ok
+test config::tests::test_backwards_compatibility_prune_full ... ok
+test config::tests::test_bootnodes_default_empty ... ok
+test config::tests::test_can_support_dns_in_trusted_nodes ... ok
+test config::tests::test_conf_trust_nodes_only ... ok
+test config::tests::test_backwards_compatibility ... ok
+test config::tests::test_prune_config_merge ... ok
+test config::tests::test_bootnodes ... ok
+test config::tests::test_load_execution_stage ... ok
+test config::tests::test_load_path_creates_directory_if_not_exists ... ok
+test config::tests::test_load_config ... ok
+test config::tests::test_store_config_method ... ok
+test config::tests::test_load_path_works ... ok
+test config::tests::test_load_path_fails_on_invalid_toml ... ok
+test config::tests::test_load_path_reads_existing_config ... ok
+test config::tests::test_store_config ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

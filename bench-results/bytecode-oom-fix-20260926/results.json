@@ -1,0 +1,1086 @@
+{
+  "raw": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-oom-fix-20260926/harness/bench-results/20260926-103622-134",
+  "latency": {
+    "from_unix_ms": 1790420082704,
+    "to_unix_ms": 1790420682704,
+    "duration_seconds": 600,
+    "attempts_started": 1642,
+    "attempts_unfinished": 0,
+    "valid_attempt_execution": {
+      "count": 1642,
+      "p50_ms": 358.828,
+      "p90_ms": 366.024,
+      "p95_ms": 368.933,
+      "p99_ms": 376.729,
+      "max_ms": 436.673,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "invalid_attempt_execution": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_attempts_on_cancelled_jobs": 0,
+    "cancelled_valid_execution": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_before_execution": {
+      "count": 1642,
+      "p50_ms": 1.747,
+      "p90_ms": 2.038,
+      "p95_ms": 2.329,
+      "p99_ms": 2.682,
+      "max_ms": 4.347,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_build_elapsed_at_tx_finish": {
+      "count": 1642,
+      "p50_ms": 360.648,
+      "p90_ms": 367.779,
+      "p95_ms": 370.676,
+      "p99_ms": 378.69,
+      "max_ms": 438.428,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "proposal_jobs": 1642,
+    "cancelled_jobs": 0,
+    "completed_jobs": 1642,
+    "jobs_without_terminal_event": 0,
+    "cancellation_after_job_creation": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "completed_builds": 1642,
+    "completed_nonempty_build_elapsed": {
+      "count": 1642,
+      "p50_ms": 361.432372,
+      "p90_ms": 368.616482,
+      "p95_ms": 371.661706,
+      "p99_ms": 379.280841,
+      "max_ms": 439.146305,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "completed_build_execution_mgas_per_second": 17.37619149336238,
+    "warmup": {
+      "from_unix_ms": 1790419482704,
+      "to_unix_ms": 1790420082704,
+      "duration_seconds": 600,
+      "attempts_started": 1624,
+      "attempts_unfinished": 0,
+      "valid_attempt_execution": {
+        "count": 1624,
+        "p50_ms": 357.177,
+        "p90_ms": 383.049,
+        "p95_ms": 403.501,
+        "p99_ms": 554.322,
+        "max_ms": 652.652,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "invalid_attempt_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_attempts_on_cancelled_jobs": 0,
+      "cancelled_valid_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_before_execution": {
+        "count": 1624,
+        "p50_ms": 1.725,
+        "p90_ms": 1.98,
+        "p95_ms": 2.267,
+        "p99_ms": 2.632,
+        "max_ms": 128.295,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_build_elapsed_at_tx_finish": {
+        "count": 1624,
+        "p50_ms": 358.955,
+        "p90_ms": 384.917,
+        "p95_ms": 405.206,
+        "p99_ms": 555.242,
+        "max_ms": 780.948,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "proposal_jobs": 1623,
+      "cancelled_jobs": 0,
+      "completed_jobs": 1623,
+      "jobs_without_terminal_event": 0,
+      "cancellation_after_job_creation": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_builds": 1623,
+      "completed_nonempty_build_elapsed": {
+        "count": 1623,
+        "p50_ms": 359.871925,
+        "p90_ms": 385.728559,
+        "p95_ms": 406.499191,
+        "p99_ms": 555.588571,
+        "max_ms": 781.304966,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_build_execution_mgas_per_second": 17.159331976851625
+    },
+    "trend": [
+      {
+        "from_unix_ms": 1790420082704,
+        "to_unix_ms": 1790420202704,
+        "duration_seconds": 120,
+        "attempts_started": 329,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 329,
+          "p50_ms": 358.02,
+          "p90_ms": 367.392,
+          "p95_ms": 369.773,
+          "p99_ms": 374.183,
+          "max_ms": 420.278,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 329,
+          "p50_ms": 1.755,
+          "p90_ms": 2.017,
+          "p95_ms": 2.369,
+          "p99_ms": 2.798,
+          "max_ms": 2.998,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 329,
+          "p50_ms": 359.779,
+          "p90_ms": 369.284,
+          "p95_ms": 371.46,
+          "p99_ms": 376.046,
+          "max_ms": 423.118,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 329,
+        "cancelled_jobs": 0,
+        "completed_jobs": 329,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 329,
+        "completed_nonempty_build_elapsed": {
+          "count": 329,
+          "p50_ms": 360.747357,
+          "p90_ms": 370.135021,
+          "p95_ms": 372.582924,
+          "p99_ms": 376.678789,
+          "max_ms": 424.051793,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 17.410669587645167
+      },
+      {
+        "from_unix_ms": 1790420202704,
+        "to_unix_ms": 1790420322704,
+        "duration_seconds": 120,
+        "attempts_started": 328,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 328,
+          "p50_ms": 359.625,
+          "p90_ms": 366.77,
+          "p95_ms": 369.138,
+          "p99_ms": 378.875,
+          "max_ms": 436.673,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 328,
+          "p50_ms": 1.756,
+          "p90_ms": 2.02,
+          "p95_ms": 2.355,
+          "p99_ms": 2.769,
+          "max_ms": 4.169,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 328,
+          "p50_ms": 361.446,
+          "p90_ms": 368.472,
+          "p95_ms": 370.839,
+          "p99_ms": 380.724,
+          "max_ms": 438.428,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 328,
+        "cancelled_jobs": 0,
+        "completed_jobs": 328,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 328,
+        "completed_nonempty_build_elapsed": {
+          "count": 328,
+          "p50_ms": 362.413764,
+          "p90_ms": 369.222098,
+          "p95_ms": 371.471558,
+          "p99_ms": 381.401199,
+          "max_ms": 439.146305,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 17.334472426684066
+      },
+      {
+        "from_unix_ms": 1790420322704,
+        "to_unix_ms": 1790420442704,
+        "duration_seconds": 120,
+        "attempts_started": 327,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 327,
+          "p50_ms": 360.117,
+          "p90_ms": 366.446,
+          "p95_ms": 369.865,
+          "p99_ms": 383.115,
+          "max_ms": 406.377,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 327,
+          "p50_ms": 1.742,
+          "p90_ms": 2.017,
+          "p95_ms": 2.291,
+          "p99_ms": 2.65,
+          "max_ms": 2.684,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 327,
+          "p50_ms": 361.848,
+          "p90_ms": 368.177,
+          "p95_ms": 371.542,
+          "p99_ms": 385.374,
+          "max_ms": 408.057,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 327,
+        "cancelled_jobs": 0,
+        "completed_jobs": 327,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 327,
+        "completed_nonempty_build_elapsed": {
+          "count": 327,
+          "p50_ms": 362.55061,
+          "p90_ms": 369.424167,
+          "p95_ms": 372.483528,
+          "p99_ms": 386.436266,
+          "max_ms": 408.887531,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 17.318630124611285
+      },
+      {
+        "from_unix_ms": 1790420442704,
+        "to_unix_ms": 1790420562704,
+        "duration_seconds": 120,
+        "attempts_started": 329,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 329,
+          "p50_ms": 357.971,
+          "p90_ms": 364.165,
+          "p95_ms": 367.036,
+          "p99_ms": 374.057,
+          "max_ms": 409.049,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 329,
+          "p50_ms": 1.73,
+          "p90_ms": 2.026,
+          "p95_ms": 2.283,
+          "p99_ms": 2.517,
+          "max_ms": 4.303,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 329,
+          "p50_ms": 359.844,
+          "p90_ms": 365.92,
+          "p95_ms": 368.722,
+          "p99_ms": 375.776,
+          "max_ms": 412.329,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 329,
+        "cancelled_jobs": 0,
+        "completed_jobs": 329,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 329,
+        "completed_nonempty_build_elapsed": {
+          "count": 329,
+          "p50_ms": 360.681834,
+          "p90_ms": 366.762614,
+          "p95_ms": 369.34051,
+          "p99_ms": 376.522225,
+          "max_ms": 413.749734,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 17.40788845925502
+      },
+      {
+        "from_unix_ms": 1790420562704,
+        "to_unix_ms": 1790420682704,
+        "duration_seconds": 120,
+        "attempts_started": 329,
+        "attempts_unfinished": 0,
+        "valid_attempt_execution": {
+          "count": 329,
+          "p50_ms": 358.301,
+          "p90_ms": 363.806,
+          "p95_ms": 366.032,
+          "p99_ms": 370.71,
+          "max_ms": 395.081,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "invalid_attempt_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_attempts_on_cancelled_jobs": 0,
+        "cancelled_valid_execution": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_before_execution": {
+          "count": 329,
+          "p50_ms": 1.762,
+          "p90_ms": 2.154,
+          "p95_ms": 2.369,
+          "p99_ms": 2.612,
+          "max_ms": 4.347,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "valid_build_elapsed_at_tx_finish": {
+          "count": 329,
+          "p50_ms": 360.065,
+          "p90_ms": 365.664,
+          "p95_ms": 368.152,
+          "p99_ms": 372.538,
+          "max_ms": 396.782,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "proposal_jobs": 329,
+        "cancelled_jobs": 0,
+        "completed_jobs": 329,
+        "jobs_without_terminal_event": 0,
+        "cancellation_after_job_creation": {
+          "count": 0,
+          "p50_ms": null,
+          "p90_ms": null,
+          "p95_ms": null,
+          "p99_ms": null,
+          "max_ms": null,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_builds": 329,
+        "completed_nonempty_build_elapsed": {
+          "count": 329,
+          "p50_ms": 360.947024,
+          "p90_ms": 366.586714,
+          "p95_ms": 368.767064,
+          "p99_ms": 373.098892,
+          "max_ms": 398.306228,
+          "above_900ms": 0,
+          "above_1200ms": 0
+        },
+        "completed_build_execution_mgas_per_second": 17.409300134014366
+      }
+    ],
+    "origin_unix_ms": 1790419482704,
+    "scenario": "history_code_sized",
+    "accesses_per_transaction": 2250,
+    "chain": {
+      "gas": 10266361159,
+      "transactions": 1641,
+      "blocks": 1641,
+      "gas_per_transaction": 6256161.583790372,
+      "mgas_per_second": 17.110601931666668,
+      "history_advanced_fraction": 0
+    },
+    "follower": {
+      "blocks": 0,
+      "execution_mgas_per_second": null,
+      "nonempty_block_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      }
+    },
+    "io": {
+      "a": {
+        "from_unix_ms": 1790420084941,
+        "to_unix_ms": 1790420679628,
+        "read_mb_per_second": 157.0296501924542,
+        "file_cache_start_gib": 17.543643951416016,
+        "file_cache_end_gib": 17.120098114013672
+      },
+      "b": {
+        "from_unix_ms": 1790420084959,
+        "to_unix_ms": 1790420679642,
+        "read_mb_per_second": 154.5699573587945,
+        "file_cache_start_gib": 15.445724487304688,
+        "file_cache_end_gib": 15.50332260131836
+      }
+    },
+    "caveats": [
+      "Attempt cohort is selected by START time, including completions after the window and canceled payloads. Unfinished attempts are explicitly counted, not silently discarded.",
+      "Transaction execution does not include all proposal overhead; the 1200ms deadline covers more than EVM execution. Completed-build throughput excludes canceled work.",
+      "Exact submission-relative wall window, not a trimmed metric endpoint or first inclusion timestamp. A single calibration run is not a worst-case latency guarantee."
+    ]
+  },
+  "memory": {
+    "a": {
+      "samples": 291,
+      "max_sampled_anon_gib": 0.8782615661621094,
+      "cgroup_peak_gib": 20.000003814697266,
+      "last_anon_gib": 0.6703453063964844,
+      "last_file_gib": 15.117294311523438,
+      "oom": 0,
+      "oom_kill": 0
+    },
+    "b": {
+      "samples": 291,
+      "max_sampled_anon_gib": 2.0029830932617188,
+      "cgroup_peak_gib": 20,
+      "last_anon_gib": 1.1448020935058594,
+      "last_file_gib": 17.39419937133789,
+      "oom": 0,
+      "oom_kill": 0
+    }
+  },
+  "guards": {
+    "a": {
+      "count": 0,
+      "max_cached_bytecode_mib": null
+    },
+    "b": {
+      "count": 327,
+      "max_cached_bytecode_mib": 533.3392467498779,
+      "first": {
+        "timestamp": "2026-09-26T10:47:27.206718Z",
+        "message": "Committing execution batch at bytecode cache limit",
+        "block_number": 460,
+        "cached_bytecode_bytes": 558806595
+      },
+      "last": {
+        "timestamp": "2026-09-26T11:07:53.838364Z",
+        "message": "Committing execution batch at bytecode cache limit",
+        "block_number": 3414,
+        "cached_bytecode_bytes": 558835137
+      }
+    }
+  },
+  "follower_wall": {
+    "from_unix_ms": 1790420084959,
+    "to_unix_ms": 1790420679642,
+    "executed_mgas_per_wall_second": 16.56923044546422,
+    "note": "Execution gas counter over wall time, including pipeline work; not the normal engine execution-only rate."
+  },
+  "sync_injection": {
+    "pid": "1753123",
+    "binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-oom-fix-20260926/tempo",
+    "pause_seconds": 120,
+    "started_at": "2026-09-26T10:47:37.397Z",
+    "reason": "Force the observed pipeline-sync failure path during warmup. Natural follower execution had not entered pipeline sync.",
+    "resumed_at": "2026-09-26T10:49:37.418Z"
+  },
+  "audit": {
+    "ok": true,
+    "scenario": "history_code_sized",
+    "contract": "0x535441544541434345535342454e434800000000",
+    "fixture": {
+      "code_base": "0x6000000000000000000000000000000000000000",
+      "code_bytes": 24576,
+      "code_count": 4266667,
+      "elapsed_seconds": 331.609740242,
+      "hashed_storage_entries": 1638400975,
+      "previous_router_code_hash": "0x586fe8d8d1cbd243fdce7aae1e50234f00971104ade6085582a8836c109f43d5",
+      "router": "0x535441544541434345535342454e434800000000",
+      "router_code_hash": "0xbab30df82c2c6f20abbca26ddc3b6dab274c9741dbc9856e6cf2346a75c07455",
+      "state_root": "0x854463d6ae8abea111a2598b9f1e7b99e8b111f2d226cb486b12d0ae11eba4f1",
+      "storage_layout": "original populated single-account SLOAD tree; writes change slots, code reads change addresses",
+      "total_code_bytes": 104857608192,
+      "version": 1,
+      "page_count": 399999,
+      "sized_accesses": 2250
+    },
+    "timing": {
+      "duration_seconds": 1200,
+      "warmup_seconds": 600,
+      "from_ms": 600000,
+      "to_ms": 1200000,
+      "slice_ms": 120000
+    },
+    "cursor_check": {
+      "first_block": 94,
+      "last_block": 3358,
+      "before": "1",
+      "after": "3266",
+      "transactions": "3265",
+      "ok": true,
+      "transactions_with_prior_workload_in_block": 0,
+      "history_advanced_fraction": 0
+    },
+    "measured_history_coverage": {
+      "blocks": 1641,
+      "transactions": 1641,
+      "non_first_transactions": 0,
+      "fraction": 0,
+      "minimum_required": 0,
+      "transactions_per_block": {
+        "1": 1641
+      }
+    },
+    "trace_sampling": {
+      "policy": "sized-first-allowed",
+      "non_first_samples": 0
+    },
+    "runtime_code_bytes": 2679,
+    "receipts": [
+      {
+        "block": 1718,
+        "count": 1,
+        "gas": "6257679"
+      },
+      {
+        "block": 1952,
+        "count": 1,
+        "gas": "6255179"
+      },
+      {
+        "block": 2186,
+        "count": 1,
+        "gas": "6257679"
+      },
+      {
+        "block": 2420,
+        "count": 1,
+        "gas": "6252679"
+      },
+      {
+        "block": 2655,
+        "count": 1,
+        "gas": "6257679"
+      },
+      {
+        "block": 2889,
+        "count": 1,
+        "gas": "6252679"
+      },
+      {
+        "block": 3123,
+        "count": 1,
+        "gas": "6255167"
+      },
+      {
+        "block": 3358,
+        "count": 1,
+        "gas": "6257679"
+      },
+      {
+        "block": 2538,
+        "count": 1,
+        "gas": "6255167"
+      }
+    ],
+    "traces": [
+      {
+        "hash": "0xfbd31b267bc0807a373884a0be1379d661c263e9596885caff2465fe97513d4d",
+        "cursor_before": "1625",
+        "parent_cursor": "1625",
+        "replay_sender_nonce_override": true,
+        "history_advanced": false,
+        "actual_unique": 2250,
+        "parent_state_unique": 2250,
+        "overlap": 2250,
+        "parent_state_mismatch_fraction": 0,
+        "accesses": 2250,
+        "gas_cost_histogram": {
+          "2603": 2250
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260926-103622-134/history-trace-0xfbd31b267bc0807a373884a0be1379d661c263e9596885caff2465fe97513d4d.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      },
+      {
+        "hash": "0x971a1fc2d4b08b7aeb3b77ea8cd3301ece0fda3cc8de1fbc031b0680f66d0950",
+        "cursor_before": "3265",
+        "parent_cursor": "3265",
+        "replay_sender_nonce_override": true,
+        "history_advanced": false,
+        "actual_unique": 2250,
+        "parent_state_unique": 2250,
+        "overlap": 2250,
+        "parent_state_mismatch_fraction": 0,
+        "accesses": 2250,
+        "gas_cost_histogram": {
+          "2603": 2250
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260926-103622-134/history-trace-0x971a1fc2d4b08b7aeb3b77ea8cd3301ece0fda3cc8de1fbc031b0680f66d0950.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      },
+      {
+        "hash": "0x432b7aba29b42d8e9ae0ab202f5ac3b77edb7b858059613f1e210dd666e6b82a",
+        "cursor_before": "2445",
+        "parent_cursor": "2445",
+        "replay_sender_nonce_override": true,
+        "history_advanced": false,
+        "actual_unique": 2249,
+        "parent_state_unique": 2249,
+        "overlap": 2249,
+        "parent_state_mismatch_fraction": 0,
+        "accesses": 2250,
+        "gas_cost_histogram": {
+          "103": 1,
+          "2603": 2249
+        },
+        "changed_contract_slots": 0,
+        "trace_file": "bench-results/20260926-103622-134/history-trace-0x432b7aba29b42d8e9ae0ab202f5ac3b77edb7b858059613f1e210dd666e6b82a.json.gz",
+        "caveat": "Parent-state replay models current prewarming input; this is not an instrumented log of every prewarm worker. Other transactions may warm overlapping targets."
+      }
+    ],
+    "sampled_receipts": 9,
+    "workload_end_block": 3358,
+    "quiet_target_block": 3418,
+    "persisted_through_workload": true,
+    "drain": [
+      {
+        "unix_ms": 1790420896244,
+        "nodes": {
+          "a": {
+            "head": 3816,
+            "metrics": {
+              "reth_tempo_payload_builder_block_build_stop_total{reason=\"build_budget\"}": 3816,
+              "reth_db_bytecode_prefetch_requests": 7483785,
+              "reth_db_bytecode_prefetch_errors": 0,
+              "reth_sync_execution_gas_processed_total": 0,
+              "reth_db_bytecode_prefetch_bytes": 214575083520,
+              "reth_db_bytecode_prefetch_requests_rw": 0,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 22,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 0,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 16552,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 0,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 7537853,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 79438,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 12680,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 0,
+              "reth_transaction_pool_aa_2d_pending_transactions": 536,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 7484181,
+              "reth_consensus_engine_beacon_executed_blocks": 40,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 1434.7017760019996,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 3816,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 0.6953823010000001,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 1440.995017952996,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 3816,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 1434.7017760019996,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 3816,
+              "reth_tempo_payload_builder_gas_used_sum": 21032556049,
+              "reth_tempo_payload_builder_total_transactions_sum": 7325,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0.310049347,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 3816,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0.12276107199999979,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 3816,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0.3207226469999997,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 3816
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 0,
+                "wbytes": 209301504,
+                "rios": 0,
+                "wios": 825,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 191829458944,
+                "wbytes": 744185856,
+                "rios": 14664936,
+                "wios": 131836,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 32768,
+                "wbytes": 209301504,
+                "rios": 5,
+                "wios": 825,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 32768,
+                "wbytes": 209301504,
+                "rios": 5,
+                "wios": 825,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:0",
+            "memory": {
+              "file": 16232644608,
+              "file_mapped": 16185733120,
+              "file_dirty": 442368,
+              "file_writeback": 0,
+              "workingset_refault_file": 21923620,
+              "pgfault": 22444014,
+              "pgmajfault": 8229031
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "17510686720",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 3669,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/declared-storage-20260925/tools/read_finish_checkpoint",
+            "persisted": {
+              "block": 3806,
+              "state": 3776
+            },
+            "unix_ms": 1790420896312
+          },
+          "b": {
+            "head": 3816,
+            "metrics": {
+              "reth_db_bytecode_prefetch_requests": 7852312,
+              "reth_db_bytecode_prefetch_errors": 0,
+              "reth_sync_execution_gas_processed_total": 22039807116,
+              "reth_db_bytecode_prefetch_requests_rw": 6657854,
+              "reth_db_bytecode_prefetch_bytes": 225141489664,
+              "reth_sync_caching_code_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_code_cache_misses{source=\"engine\"}": 1168631,
+              "reth_sync_caching_account_cache_hits{source=\"engine\"}": 4784,
+              "reth_sync_caching_account_cache_hits{source=\"builder\"}": 0,
+              "reth_consensus_engine_beacon_backpressure_active": 0,
+              "reth_sync_caching_code_cache_hits{source=\"engine\"}": 21,
+              "reth_sync_caching_code_cache_hits{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_hits{source=\"engine\"}": 17769,
+              "reth_sync_caching_storage_cache_hits{source=\"builder\"}": 0,
+              "reth_consensus_engine_beacon_executed_blocks": 45,
+              "reth_sync_caching_storage_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_storage_cache_misses{source=\"engine\"}": 3843,
+              "reth_db_bytecode_prefetch_enabled": 1,
+              "reth_transaction_pool_aa_2d_pending_transactions": 0,
+              "reth_sync_caching_account_cache_misses{source=\"builder\"}": 0,
+              "reth_sync_caching_account_cache_misses{source=\"engine\"}": 1175819,
+              "reth_consensus_engine_beacon_persistence_duration_sum": 30.123231386,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_finalization_duration_seconds_count": 0,
+              "reth_consensus_engine_beacon_backpressure_stall_duration_sum": 0,
+              "reth_tempo_payload_builder_gas_used_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_normal_transaction_fill_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_payload_build_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_total_transaction_execution_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_builder_finish_duration_seconds_count": 0,
+              "reth_tempo_payload_builder_total_transactions_sum": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_sum": 0,
+              "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count": 0
+            },
+            "io": {
+              "259:2": {
+                "rbytes": 118784,
+                "wbytes": 54808576,
+                "rios": 1,
+                "wios": 515,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:3": {
+                "rbytes": 16384,
+                "wbytes": 54808576,
+                "rios": 3,
+                "wios": 515,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "9:3": {
+                "rbytes": 135168,
+                "wbytes": 54808576,
+                "rios": 4,
+                "wios": 515,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:1": {
+                "rbytes": 195621814272,
+                "wbytes": 477294592,
+                "rios": 15062257,
+                "wios": 76703,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "259:0": {
+                "rbytes": 1048576,
+                "wbytes": 0,
+                "rios": 2,
+                "wios": 0,
+                "dbytes": 0,
+                "dios": 0
+              }
+            },
+            "database_device": "259:1",
+            "memory": {
+              "file": 18677227520,
+              "file_mapped": 18636570624,
+              "file_dirty": 299008,
+              "file_writeback": 0,
+              "workingset_refault_file": 22858317,
+              "pgfault": 60691156,
+              "pgmajfault": 8513860
+            },
+            "memory_limits": {
+              "memory.max": "21474836480",
+              "memory.current": "20405112832",
+              "memory.swap.max": "0",
+              "memory.swap.current": "0"
+            },
+            "memory_events": {
+              "low": 0,
+              "high": 0,
+              "max": 4682,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "checkpoint_tool": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/declared-storage-20260925/tools/read_finish_checkpoint",
+            "persisted": {
+              "block": 3771,
+              "state": 3771
+            },
+            "unix_ms": 1790420896335
+          }
+        }
+      }
+    ],
+    "audited_at": "2026-09-26T11:08:16.335Z",
+    "caveat": "Sized transactions may be the first or only transaction in a block. Report measured history coverage; do not infer prewarming bypass from the router design alone."
+  }
+}

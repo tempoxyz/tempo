@@ -1,0 +1,32 @@
+[
+  {
+    "url": "https://lab.ethpandaops.io/api/v1/mainnet/fct_opcode_gas_by_opcode_daily?day_start_date_starts_with=2026-08&page_size=10000",
+    "file": "opcode-daily-0.json",
+    "rows": 4657
+  },
+  {
+    "url": "https://lab.ethpandaops.io/api/v1/mainnet/fct_execution_transactions_daily?day_start_date_starts_with=2026-08&page_size=10000",
+    "file": "transactions-daily-0.json",
+    "rows": 31
+  },
+  {
+    "url": "https://lab.ethpandaops.io/api/v1/mainnet/fct_execution_gas_used_daily?day_start_date_starts_with=2026-08&page_size=10000",
+    "file": "gas-daily-0.json",
+    "rows": 31
+  },
+  {
+    "url": "https://lab.ethpandaops.io/api/v1/mainnet/fct_opcode_ops_daily?day_start_date_starts_with=2026-08&page_size=10000",
+    "file": "ops-daily-0.json",
+    "rows": 31
+  },
+  {
+    "url": "https://lab.ethpandaops.io/api/v1/mainnet/int_execution_block_by_date?block_date_time_gte=1788048000000000&block_date_time_lt=1788134400000000&order_by=block_date_time&page_size=10000",
+    "file": "sample-blocks-us-0.json",
+    "rows": 7177
+  },
+  {
+    "url": "https://lab.ethpandaops.io/api/v1/mainnet/int_transaction_opcode_gas?block_number_gte=25864359&block_number_lte=25871535&opcode_eq=EXTCODECOPY&meta_network_name_eq=mainnet&page_size=10000",
+    "file": "extcodecopy-sample-transactions-0.json",
+    "rows": 7301
+  }
+]

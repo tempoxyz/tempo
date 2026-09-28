@@ -1,0 +1,28 @@
+{
+  "created_at": "2026-09-26T10:34:36.750Z",
+  "tempo_base": "ef46cf29962daccfdac2bf96178d0a16b9d77904",
+  "reth_base": "dfcb10454cabf4ce778e0dedfe79c512b37f2c8c",
+  "sources": {
+    "crates/cli/commands/src/stage/dump/merkle.rs": "9e4725368be673174b1b5ca59a73b36764f9773f307613117790a25871c77385",
+    "crates/cli/commands/src/stage/run.rs": "54a4ad9aad19f56e24d617ce107bbf019fb96d1ad99026f6c97778a768c78e66",
+    "crates/cli/commands/src/stage/unwind.rs": "8031d0e31d40d63e8f5f970e137c2601261b6a83d3438d304aa9e0fbefbaf859",
+    "crates/config/src/config.rs": "892bdc00fd444c435d12b30f307affd1481600194d3b5375d13c14e97c9e37da",
+    "crates/evm/evm/src/execute.rs": "1bf5e70072908ed8f6e8a1d8c10839ee45f04bf46a15a94e6c7c338708a3176b",
+    "crates/exex/exex/src/backfill/job.rs": "868155ffedaf040db82af3736f627e23ef99525252b2110309cb0cac1f8cb623",
+    "crates/payload/basic/src/lib.rs": "835d80dbe2ea3a8050d322f3778f9e7717683299cb52925d372576a700fd3494",
+    "crates/payload/builder/src/service.rs": "2dcbf0737b09fd1f4bbdc29b311426377067411bd26c07abebb01d109477bd5d",
+    "crates/stages/stages/src/stages/execution/mod.rs": "18d9d17a1b6e38cc12ad4aa5f03affb882f1ac82ca146114c753768793af9fab",
+    "crates/stages/stages/src/stages/mod.rs": "e98363498aad54be5f8c251f87818d5e70defd4e37863cd058f7e514eeebe2fe",
+    "crates/stages/types/src/execution.rs": "abc51274c2c997f39bfd0a90f0c0210f2f9f4a92da8042ee0319c090f0ffb736",
+    "crates/storage/db/src/implementation/mdbx/mod.rs": "0ff3401d793646362882d3aad56bd873a9d7732310849a81a035ac787cd29c14",
+    "crates/storage/db/src/implementation/mdbx/tx.rs": "f936fbdbe8fb3a31b39238d2d441dc04db19d3239f42fad5a40d79257b48c4a9",
+    "crates/storage/provider/src/providers/rocksdb/provider.rs": "c2ac27fde738a5a46faa7d0a6dd661bbbab730319c335cbd08a3c36c054b0aa4"
+  },
+  "binary_sha256": "901f5abe49b9e0b4316290863ac5e53dbbac73492f34879a4900da159ba18d96",
+  "build_command": "env RUSTFLAGS='-C target-cpu=native' VERGEN_GIT_SHA=ef46cf2 VERGEN_GIT_DIRTY=true SOURCE_DATE_EPOCH=1790264100 cargo build --offline --config contrib/bench/payload-cancel-patches.toml -p tempo --bin tempo --profile profiling --features jemalloc,asm-keccak -j8",
+  "note": "Only cfg(test) test additions/imports changed after binary compilation; runtime code is identical to this archive. Existing runtime source hashes all matched the previous node archive before the OOM patch.",
+  "test_commands": [
+    "env RUSTFLAGS='-C target-cpu=native' CARGO_TARGET_DIR=/home/ubuntu/repos/tempo-payments-bloat-pr/target cargo test --offline --profile profiling -p reth-evm -p reth-stages-types --features reth-ethereum-primitives/reth-codec --lib -j8",
+    "env RUSTFLAGS='-C target-cpu=native' CARGO_TARGET_DIR=/home/ubuntu/repos/tempo-payments-bloat-pr/target cargo test --offline --profile profiling -p reth-config --features serde --lib -j8"
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "sampled_at": "2026-09-27T11:06:04.384Z",
+  "devices": [
+    {
+      "name": "nvme1",
+      "model": "MTFDKCC3T8TGP-1BK1DABYY",
+      "firmware": "E3MQ005",
+      "max_sectors_kb": 512,
+      "smart": {
+        "critical_warning": 0,
+        "temperature": 319,
+        "avail_spare": 100,
+        "spare_thresh": 10,
+        "percent_used": 0,
+        "endurance_grp_critical_warning_summary": 0,
+        "data_units_read": 365979804,
+        "data_units_written": 291001165,
+        "host_read_commands": 11957042407,
+        "host_write_commands": 5653427367,
+        "controller_busy_time": 5818,
+        "power_cycles": 10,
+        "power_on_hours": 5972,
+        "unsafe_shutdowns": 8,
+        "media_errors": 0,
+        "num_err_log_entries": 0,
+        "warning_temp_time": 0,
+        "critical_comp_time": 0,
+        "temperature_sensor_1": 326,
+        "temperature_sensor_2": 321,
+        "temperature_sensor_3": 319,
+        "thm_temp1_trans_count": 0,
+        "thm_temp2_trans_count": 0,
+        "thm_temp1_total_time": 0,
+        "thm_temp2_total_time": 0
+      }
+    },
+    {
+      "name": "nvme2",
+      "model": "MTFDKCC3T8TGP-1BK1DABYY",
+      "firmware": "E3MQ005",
+      "max_sectors_kb": 512,
+      "smart": {
+        "critical_warning": 0,
+        "temperature": 318,
+        "avail_spare": 100,
+        "spare_thresh": 10,
+        "percent_used": 0,
+        "endurance_grp_critical_warning_summary": 0,
+        "data_units_read": 387255045,
+        "data_units_written": 436002502,
+        "host_read_commands": 13430883395,
+        "host_write_commands": 8754861290,
+        "controller_busy_time": 4854,
+        "power_cycles": 10,
+        "power_on_hours": 5972,
+        "unsafe_shutdowns": 8,
+        "media_errors": 0,
+        "num_err_log_entries": 0,
+        "warning_temp_time": 0,
+        "critical_comp_time": 0,
+        "temperature_sensor_1": 324,
+        "temperature_sensor_2": 319,
+        "temperature_sensor_3": 318,
+        "thm_temp1_trans_count": 0,
+        "thm_temp2_trans_count": 0,
+        "thm_temp1_total_time": 0,
+        "thm_temp2_total_time": 0
+      }
+    }
+  ]
+}

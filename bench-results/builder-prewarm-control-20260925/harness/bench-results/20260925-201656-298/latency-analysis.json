@@ -1,0 +1,636 @@
+{
+  "from_unix_ms": 1790368527256,
+  "to_unix_ms": 1790369127256,
+  "duration_seconds": 600,
+  "attempts_started": 675,
+  "attempts_unfinished": 0,
+  "valid_attempt_execution": {
+    "count": 675,
+    "p50_ms": 447.181,
+    "p90_ms": 465.348,
+    "p95_ms": 468.495,
+    "p99_ms": 476.589,
+    "max_ms": 539.714,
+    "above_900ms": 0,
+    "above_1200ms": 0
+  },
+  "invalid_attempt_execution": {
+    "count": 0,
+    "p50_ms": null,
+    "p90_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null,
+    "above_900ms": 0,
+    "above_1200ms": 0
+  },
+  "valid_attempts_on_cancelled_jobs": 0,
+  "cancelled_valid_execution": {
+    "count": 0,
+    "p50_ms": null,
+    "p90_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null,
+    "above_900ms": 0,
+    "above_1200ms": 0
+  },
+  "valid_before_execution": {
+    "count": 675,
+    "p50_ms": 446.594,
+    "p90_ms": 458.251,
+    "p95_ms": 461.91,
+    "p99_ms": 481.186,
+    "max_ms": 518.702,
+    "above_900ms": 0,
+    "above_1200ms": 0
+  },
+  "valid_build_elapsed_at_tx_finish": {
+    "count": 675,
+    "p50_ms": 893.495,
+    "p90_ms": 909.789,
+    "p95_ms": 915.224,
+    "p99_ms": 942.74,
+    "max_ms": 966.698,
+    "above_900ms": 184,
+    "above_1200ms": 0
+  },
+  "proposal_jobs": 676,
+  "cancelled_jobs": 0,
+  "completed_jobs": 676,
+  "jobs_without_terminal_event": 0,
+  "cancellation_after_job_creation": {
+    "count": 0,
+    "p50_ms": null,
+    "p90_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null,
+    "above_900ms": 0,
+    "above_1200ms": 0
+  },
+  "completed_builds": 676,
+  "completed_nonempty_build_elapsed": {
+    "count": 676,
+    "p50_ms": 893.870085,
+    "p90_ms": 910.190982,
+    "p95_ms": 915.623532,
+    "p99_ms": 943.161369,
+    "max_ms": 967.155407,
+    "above_900ms": 194,
+    "above_1200ms": 0
+  },
+  "completed_build_execution_mgas_per_second": 17.713410338333716,
+  "warmup": {
+    "from_unix_ms": 1790367927256,
+    "to_unix_ms": 1790368527256,
+    "duration_seconds": 600,
+    "attempts_started": 671,
+    "attempts_unfinished": 0,
+    "valid_attempt_execution": {
+      "count": 671,
+      "p50_ms": 449.702,
+      "p90_ms": 468.957,
+      "p95_ms": 477.874,
+      "p99_ms": 547.798,
+      "max_ms": 936.785,
+      "above_900ms": 1,
+      "above_1200ms": 0
+    },
+    "invalid_attempt_execution": {
+      "count": 0,
+      "p50_ms": null,
+      "p90_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "max_ms": null,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    },
+    "valid_attempts_on_cancelled_jobs": 3,
+    "cancelled_valid_execution": {
+      "count": 3,
+      "p50_ms": 879.379,
+      "p90_ms": 936.785,
+      "p95_ms": 936.785,
+      "p99_ms": 936.785,
+      "max_ms": 936.785,
+      "above_900ms": 1,
+      "above_1200ms": 0
+    },
+    "valid_before_execution": {
+      "count": 671,
+      "p50_ms": 446.088,
+      "p90_ms": 461.604,
+      "p95_ms": 471.093,
+      "p99_ms": 522.522,
+      "max_ms": 909.246,
+      "above_900ms": 1,
+      "above_1200ms": 0
+    },
+    "valid_build_elapsed_at_tx_finish": {
+      "count": 671,
+      "p50_ms": 894.413,
+      "p90_ms": 915.753,
+      "p95_ms": 928.235,
+      "p99_ms": 1060.333,
+      "max_ms": 1788.625,
+      "above_900ms": 238,
+      "above_1200ms": 3
+    },
+    "proposal_jobs": 671,
+    "cancelled_jobs": 3,
+    "completed_jobs": 668,
+    "jobs_without_terminal_event": 0,
+    "cancellation_after_job_creation": {
+      "count": 3,
+      "p50_ms": 1202,
+      "p90_ms": 1203,
+      "p95_ms": 1203,
+      "p99_ms": 1203,
+      "max_ms": 1203,
+      "above_900ms": 3,
+      "above_1200ms": 3
+    },
+    "completed_builds": 667,
+    "completed_nonempty_build_elapsed": {
+      "count": 667,
+      "p50_ms": 894.804914,
+      "p90_ms": 915.580338,
+      "p95_ms": 926.270625,
+      "p99_ms": 1044.520266,
+      "max_ms": 1142.3271209999998,
+      "above_900ms": 243,
+      "above_1200ms": 0
+    },
+    "completed_build_execution_mgas_per_second": 17.64455710347029
+  },
+  "trend": [
+    {
+      "from_unix_ms": 1790368527256,
+      "to_unix_ms": 1790368647256,
+      "duration_seconds": 120,
+      "attempts_started": 135,
+      "attempts_unfinished": 0,
+      "valid_attempt_execution": {
+        "count": 135,
+        "p50_ms": 449.031,
+        "p90_ms": 464.484,
+        "p95_ms": 469.593,
+        "p99_ms": 485.994,
+        "max_ms": 515.887,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "invalid_attempt_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_attempts_on_cancelled_jobs": 0,
+      "cancelled_valid_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_before_execution": {
+        "count": 135,
+        "p50_ms": 445.655,
+        "p90_ms": 458.779,
+        "p95_ms": 463.637,
+        "p99_ms": 479.53,
+        "max_ms": 513.615,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_build_elapsed_at_tx_finish": {
+        "count": 135,
+        "p50_ms": 893.297,
+        "p90_ms": 911.063,
+        "p95_ms": 918.658,
+        "p99_ms": 956.932,
+        "max_ms": 966.698,
+        "above_900ms": 38,
+        "above_1200ms": 0
+      },
+      "proposal_jobs": 135,
+      "cancelled_jobs": 0,
+      "completed_jobs": 135,
+      "jobs_without_terminal_event": 0,
+      "cancellation_after_job_creation": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_builds": 135,
+      "completed_nonempty_build_elapsed": {
+        "count": 135,
+        "p50_ms": 893.651894,
+        "p90_ms": 911.478322,
+        "p95_ms": 919.110626,
+        "p99_ms": 957.306983,
+        "max_ms": 967.155407,
+        "above_900ms": 40,
+        "above_1200ms": 0
+      },
+      "completed_build_execution_mgas_per_second": 17.69858166434559
+    },
+    {
+      "from_unix_ms": 1790368647256,
+      "to_unix_ms": 1790368767256,
+      "duration_seconds": 120,
+      "attempts_started": 134,
+      "attempts_unfinished": 0,
+      "valid_attempt_execution": {
+        "count": 134,
+        "p50_ms": 444.565,
+        "p90_ms": 464.043,
+        "p95_ms": 466.292,
+        "p99_ms": 472.47,
+        "max_ms": 474.488,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "invalid_attempt_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_attempts_on_cancelled_jobs": 0,
+      "cancelled_valid_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_before_execution": {
+        "count": 134,
+        "p50_ms": 447.611,
+        "p90_ms": 458.671,
+        "p95_ms": 464.961,
+        "p99_ms": 486.125,
+        "max_ms": 491.441,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_build_elapsed_at_tx_finish": {
+        "count": 134,
+        "p50_ms": 893.42,
+        "p90_ms": 908.295,
+        "p95_ms": 915.317,
+        "p99_ms": 940.447,
+        "max_ms": 942.74,
+        "above_900ms": 37,
+        "above_1200ms": 0
+      },
+      "proposal_jobs": 135,
+      "cancelled_jobs": 0,
+      "completed_jobs": 135,
+      "jobs_without_terminal_event": 0,
+      "cancellation_after_job_creation": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_builds": 135,
+      "completed_nonempty_build_elapsed": {
+        "count": 135,
+        "p50_ms": 893.821366,
+        "p90_ms": 908.707679,
+        "p95_ms": 915.702596,
+        "p99_ms": 940.804976,
+        "max_ms": 943.161369,
+        "above_900ms": 39,
+        "above_1200ms": 0
+      },
+      "completed_build_execution_mgas_per_second": 17.646479686980918
+    },
+    {
+      "from_unix_ms": 1790368767256,
+      "to_unix_ms": 1790368887256,
+      "duration_seconds": 120,
+      "attempts_started": 135,
+      "attempts_unfinished": 0,
+      "valid_attempt_execution": {
+        "count": 135,
+        "p50_ms": 446.905,
+        "p90_ms": 464.438,
+        "p95_ms": 467.646,
+        "p99_ms": 476.589,
+        "max_ms": 539.714,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "invalid_attempt_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_attempts_on_cancelled_jobs": 0,
+      "cancelled_valid_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_before_execution": {
+        "count": 135,
+        "p50_ms": 446.594,
+        "p90_ms": 458.484,
+        "p95_ms": 460.45,
+        "p99_ms": 470.614,
+        "max_ms": 518.702,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_build_elapsed_at_tx_finish": {
+        "count": 135,
+        "p50_ms": 894.276,
+        "p90_ms": 908.77,
+        "p95_ms": 913.701,
+        "p99_ms": 956.064,
+        "max_ms": 963.916,
+        "above_900ms": 38,
+        "above_1200ms": 0
+      },
+      "proposal_jobs": 134,
+      "cancelled_jobs": 0,
+      "completed_jobs": 134,
+      "jobs_without_terminal_event": 0,
+      "cancellation_after_job_creation": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_builds": 135,
+      "completed_nonempty_build_elapsed": {
+        "count": 135,
+        "p50_ms": 894.691925,
+        "p90_ms": 909.174574,
+        "p95_ms": 914.106245,
+        "p99_ms": 956.473138,
+        "max_ms": 964.318326,
+        "above_900ms": 39,
+        "above_1200ms": 0
+      },
+      "completed_build_execution_mgas_per_second": 17.65062803558057
+    },
+    {
+      "from_unix_ms": 1790368887256,
+      "to_unix_ms": 1790369007256,
+      "duration_seconds": 120,
+      "attempts_started": 135,
+      "attempts_unfinished": 0,
+      "valid_attempt_execution": {
+        "count": 135,
+        "p50_ms": 446.849,
+        "p90_ms": 466.209,
+        "p95_ms": 469.176,
+        "p99_ms": 474.877,
+        "max_ms": 480.139,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "invalid_attempt_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_attempts_on_cancelled_jobs": 0,
+      "cancelled_valid_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_before_execution": {
+        "count": 135,
+        "p50_ms": 446.749,
+        "p90_ms": 458.807,
+        "p95_ms": 461.91,
+        "p99_ms": 469.674,
+        "max_ms": 493.976,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_build_elapsed_at_tx_finish": {
+        "count": 135,
+        "p50_ms": 894.835,
+        "p90_ms": 909.553,
+        "p95_ms": 913.879,
+        "p99_ms": 926.645,
+        "max_ms": 933.882,
+        "above_900ms": 34,
+        "above_1200ms": 0
+      },
+      "proposal_jobs": 135,
+      "cancelled_jobs": 0,
+      "completed_jobs": 135,
+      "jobs_without_terminal_event": 0,
+      "cancellation_after_job_creation": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_builds": 134,
+      "completed_nonempty_build_elapsed": {
+        "count": 134,
+        "p50_ms": 895.177724,
+        "p90_ms": 909.935447,
+        "p95_ms": 914.284695,
+        "p99_ms": 927.112411,
+        "max_ms": 934.210411,
+        "above_900ms": 37,
+        "above_1200ms": 0
+      },
+      "completed_build_execution_mgas_per_second": 17.697048463031713
+    },
+    {
+      "from_unix_ms": 1790369007256,
+      "to_unix_ms": 1790369127256,
+      "duration_seconds": 120,
+      "attempts_started": 136,
+      "attempts_unfinished": 0,
+      "valid_attempt_execution": {
+        "count": 136,
+        "p50_ms": 447.283,
+        "p90_ms": 467.667,
+        "p95_ms": 469.589,
+        "p99_ms": 475.845,
+        "max_ms": 476.899,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "invalid_attempt_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_attempts_on_cancelled_jobs": 0,
+      "cancelled_valid_execution": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_before_execution": {
+        "count": 136,
+        "p50_ms": 446.611,
+        "p90_ms": 456.889,
+        "p95_ms": 458.666,
+        "p99_ms": 471.706,
+        "max_ms": 509.694,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "valid_build_elapsed_at_tx_finish": {
+        "count": 136,
+        "p50_ms": 892.097,
+        "p90_ms": 908.567,
+        "p95_ms": 915.224,
+        "p99_ms": 939.169,
+        "max_ms": 943.704,
+        "above_900ms": 37,
+        "above_1200ms": 0
+      },
+      "proposal_jobs": 137,
+      "cancelled_jobs": 0,
+      "completed_jobs": 137,
+      "jobs_without_terminal_event": 0,
+      "cancellation_after_job_creation": {
+        "count": 0,
+        "p50_ms": null,
+        "p90_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "max_ms": null,
+        "above_900ms": 0,
+        "above_1200ms": 0
+      },
+      "completed_builds": 137,
+      "completed_nonempty_build_elapsed": {
+        "count": 137,
+        "p50_ms": 893.260337,
+        "p90_ms": 908.967731,
+        "p95_ms": 915.623532,
+        "p99_ms": 939.587431,
+        "max_ms": 944.079234,
+        "above_900ms": 39,
+        "above_1200ms": 0
+      },
+      "completed_build_execution_mgas_per_second": 17.873781624140246
+    }
+  ],
+  "origin_unix_ms": 1790367927256,
+  "scenario": "history_read_sized",
+  "accesses_per_transaction": 7200,
+  "chain": {
+    "gas": 10559557086,
+    "transactions": 675,
+    "blocks": 675,
+    "gas_per_transaction": 15643788.275555555,
+    "mgas_per_second": 17.599261809999998,
+    "history_advanced_fraction": 0
+  },
+  "follower": {
+    "blocks": 675,
+    "execution_mgas_per_second": 38.73090370936226,
+    "nonempty_block_execution": {
+      "count": 675,
+      "p50_ms": 387.397352,
+      "p90_ms": 476.697258,
+      "p95_ms": 509.598052,
+      "p99_ms": 520.090589,
+      "max_ms": 525.147141,
+      "above_900ms": 0,
+      "above_1200ms": 0
+    }
+  },
+  "io": {
+    "a": {
+      "from_unix_ms": 1790368528218,
+      "to_unix_ms": 1790369123663,
+      "read_mb_per_second": 640.3886348663605,
+      "file_cache_start_gib": 16.589855194091797,
+      "file_cache_end_gib": 16.666728973388672
+    },
+    "b": {
+      "from_unix_ms": 1790368528237,
+      "to_unix_ms": 1790369123682,
+      "read_mb_per_second": 26.426875120288187,
+      "file_cache_start_gib": 17.186744689941406,
+      "file_cache_end_gib": 19.213531494140625
+    }
+  },
+  "caveats": [
+    "Attempt cohort is selected by START time, including completions after the window and canceled payloads. Unfinished attempts are explicitly counted, not silently discarded.",
+    "Transaction execution does not include all proposal overhead; the 1200ms deadline covers more than EVM execution. Completed-build throughput excludes canceled work.",
+    "Exact submission-relative wall window, not a trimmed metric endpoint or first inclusion timestamp. A single calibration run is not a worst-case latency guarantee."
+  ]
+}

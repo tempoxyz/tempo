@@ -1,0 +1,28 @@
+rawtracepoint:block_rq_issue
+/strncmp(comm, "lat-", 4) == 0/
+{
+    $rq = (struct request *)arg0;
+    if (($rq->cmd_flags & 255) == 0) {
+        @collisions = sum(@start[arg0] != 0);
+        @start[arg0] = nsecs;
+        @bytes[arg0] = $rq->__data_len;
+        @mode[arg0] = comm;
+        @issued[comm, $rq->__data_len] = count();
+    }
+}
+
+rawtracepoint:block_rq_complete
+/@start[arg0]/
+{
+    $key = @mode[arg0];
+    $bytes = @bytes[arg0];
+    @partial_completions = sum(arg2 != $bytes);
+    $ns = nsecs - @start[arg0];
+    @completed[$key, $bytes] = count();
+    @total_ns[$key, $bytes] = sum($ns);
+    @latency_us[$key, $bytes] = hist($ns / 1000);
+    @errors = sum(arg1 != 0);
+    delete(@start[arg0]);
+    delete(@bytes[arg0]);
+    delete(@mode[arg0]);
+}

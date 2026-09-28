@@ -1,0 +1,6 @@
+{
+  "path": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-oom-fix-20260926/tempo",
+  "sha256": "901f5abe49b9e0b4316290863ac5e53dbbac73492f34879a4900da159ba18d96",
+  "version": "Tempo Version: 1.14.0-dev\nCommit SHA: 84dd0be10d38a0d3e2670c7371a16f028a8bcaf0\nBuild Timestamp: 2026-09-24T15:35:00.000000000Z\nBuild Features: asm_keccak,default,jemalloc,otlp\nBuild Profile: profiling\n",
+  "local_override": true
+}

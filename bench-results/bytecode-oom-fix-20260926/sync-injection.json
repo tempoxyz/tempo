@@ -1,0 +1,8 @@
+{
+  "pid": "1753123",
+  "binary": "/home/ubuntu/repos/tempo-payments-bloat-pr/bench-results/bytecode-oom-fix-20260926/tempo",
+  "pause_seconds": 120,
+  "started_at": "2026-09-26T10:47:37.397Z",
+  "reason": "Force the observed pipeline-sync failure path during warmup. Natural follower execution had not entered pipeline sync.",
+  "resumed_at": "2026-09-26T10:49:37.418Z"
+}

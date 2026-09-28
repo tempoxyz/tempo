@@ -1,0 +1,34 @@
+{
+  "generated_at": "2026-09-27T11:08:22.988Z",
+  "decimal_GB": true,
+  "devices": {
+    "builder": {
+      "sequential_28k_qd1_GB_s": 1.517852848,
+      "sequential_128k_qd1_GB_s": 2.107636711,
+      "sequential_128k_qd32_GB_s": 6.85244049,
+      "sequential_1m_qd1_GB_s": 2.471770742,
+      "sequential_1m_qd32_GB_s": 6.854364715,
+      "random_4k_qd1_us": 63.9032995,
+      "random_24k_qd1_us": 92.552809349,
+      "random_28k_qd1_us": 97.586781918,
+      "additional_24KiB_us": 33.683482418,
+      "marginal_4k_to_28k_GB_s": 0.729615771167025,
+      "marginal_4k_to_24k_GB_s": 0.7148464356961711,
+      "additional_24KiB_at_peak_sequential_us": 3.586459457161955
+    },
+    "follower": {
+      "sequential_28k_qd1_GB_s": 1.58254188,
+      "sequential_128k_qd1_GB_s": 2.116129327,
+      "sequential_128k_qd32_GB_s": 6.848561147,
+      "sequential_1m_qd1_GB_s": 2.543905558,
+      "sequential_1m_qd32_GB_s": 6.855412767,
+      "random_4k_qd1_us": 63.901940538000005,
+      "random_24k_qd1_us": 92.522727088,
+      "random_28k_qd1_us": 97.496544781,
+      "additional_24KiB_us": 33.59460424299999,
+      "marginal_4k_to_28k_GB_s": 0.7315460489498348,
+      "marginal_4k_to_24k_GB_s": 0.7155638425317842,
+      "additional_24KiB_at_peak_sequential_us": 3.5884909943113343
+    }
+  }
+}

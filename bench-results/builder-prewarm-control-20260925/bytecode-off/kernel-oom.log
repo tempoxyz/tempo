@@ -1,0 +1,95 @@
+Sep 25 22:24:32 dev-dankrad kernel: tokio-rt invoked oom-killer: gfp_mask=0xcc0(GFP_KERNEL), order=0, oom_score_adj=200
+Sep 25 22:24:32 dev-dankrad kernel: CPU: 12 PID: 1383250 Comm: tokio-rt Tainted: P           O       6.8.0-139-generic #139-Ubuntu
+Sep 25 22:24:32 dev-dankrad kernel: Hardware name: MSI MSIS366/S3661, BIOS ES366AOC.10Q 06/19/2025
+Sep 25 22:24:32 dev-dankrad kernel: Call Trace:
+Sep 25 22:24:32 dev-dankrad kernel:  <TASK>
+Sep 25 22:24:32 dev-dankrad kernel:  dump_stack_lvl+0x76/0xa0
+Sep 25 22:24:32 dev-dankrad kernel:  dump_stack+0x10/0x20
+Sep 25 22:24:32 dev-dankrad kernel:  dump_header+0x49/0x210
+Sep 25 22:24:32 dev-dankrad kernel:  oom_kill_process+0x118/0x280
+Sep 25 22:24:32 dev-dankrad kernel:  out_of_memory+0x103/0x350
+Sep 25 22:24:32 dev-dankrad kernel:  mem_cgroup_out_of_memory+0x145/0x170
+Sep 25 22:24:32 dev-dankrad kernel:  try_charge_memcg+0x6d6/0x7d0
+Sep 25 22:24:32 dev-dankrad kernel:  ? vma_alloc_folio+0x7a/0xd0
+Sep 25 22:24:32 dev-dankrad kernel:  __mem_cgroup_charge+0x45/0xc0
+Sep 25 22:24:32 dev-dankrad kernel:  do_anonymous_page+0xb2/0x430
+Sep 25 22:24:32 dev-dankrad kernel:  handle_pte_fault+0x1cb/0x1d0
+Sep 25 22:24:32 dev-dankrad kernel:  __handle_mm_fault+0x654/0x790
+Sep 25 22:24:32 dev-dankrad kernel:  handle_mm_fault+0x18a/0x380
+Sep 25 22:24:32 dev-dankrad kernel:  do_user_addr_fault+0x169/0x670
+Sep 25 22:24:32 dev-dankrad kernel:  exc_page_fault+0x83/0x1b0
+Sep 25 22:24:32 dev-dankrad kernel:  asm_exc_page_fault+0x27/0x30
+Sep 25 22:24:32 dev-dankrad kernel: RIP: 0033:0x7f30b85a19d2
+Sep 25 22:24:32 dev-dankrad kernel: Code: 00 73 35 f6 05 6e 98 06 00 01 74 ac 83 f9 c0 0f 87 49 fe ff ff 48 29 fe 48 83 c7 3f 49 8d 0c 10 48 83 e7 c0 48 01 fe 48 29 f9 <f3> a4 62 c1 fe 48 7f 00 c3 0f 1f 44 00 00 4c 8b 1d 49 98 06 00 4c
+Sep 25 22:24:32 dev-dankrad kernel: RSP: 002b:0000772fc29f5a78 EFLAGS: 00010206
+Sep 25 22:24:32 dev-dankrad kernel: RAX: 00007720322afc00 RBX: 0000000000006000 RCX: 0000000000000800
+Sep 25 22:24:32 dev-dankrad kernel: RDX: 0000000000000c00 RSI: 00007765c14a443a RDI: 00007720322b0000
+Sep 25 22:24:32 dev-dankrad kernel: RBP: 00007765c14a403a R08: 00007720322afc00 R09: 0000000000000005
+Sep 25 22:24:32 dev-dankrad kernel: R10: 0000000000000000 R11: 00000012ed4aef50 R12: 0000772fc29f5b88
+Sep 25 22:24:32 dev-dankrad kernel: R13: 0000000000000c00 R14: 00007720322afc00 R15: 0000000000006000
+Sep 25 22:24:32 dev-dankrad kernel:  </TASK>
+Sep 25 22:24:32 dev-dankrad kernel: memory: usage 20971520kB, limit 20971520kB, failcnt 2245717
+Sep 25 22:24:32 dev-dankrad kernel: swap: usage 0kB, limit 0kB, failcnt 0
+Sep 25 22:24:32 dev-dankrad kernel: Memory cgroup stats for /system.slice/tempo-e2e-b-feature-1.scope:
+Sep 25 22:24:32 dev-dankrad kernel: anon 20809191424
+Sep 25 22:24:32 dev-dankrad kernel: file 98304
+Sep 25 22:24:32 dev-dankrad kernel: kernel 665546752
+Sep 25 22:24:32 dev-dankrad kernel: kernel_stack 3817472
+Sep 25 22:24:32 dev-dankrad kernel: pagetables 374484992
+Sep 25 22:24:32 dev-dankrad kernel: sec_pagetables 0
+Sep 25 22:24:32 dev-dankrad kernel: percpu 1088
+Sep 25 22:24:32 dev-dankrad kernel: sock 0
+Sep 25 22:24:32 dev-dankrad kernel: vmalloc 0
+Sep 25 22:24:32 dev-dankrad kernel: shmem 0
+Sep 25 22:24:32 dev-dankrad kernel: zswap 0
+Sep 25 22:24:32 dev-dankrad kernel: zswapped 0
+Sep 25 22:24:32 dev-dankrad kernel: file_mapped 45056
+Sep 25 22:24:32 dev-dankrad kernel: file_dirty 0
+Sep 25 22:24:32 dev-dankrad kernel: file_writeback 0
+Sep 25 22:24:32 dev-dankrad kernel: swapcached 0
+Sep 25 22:24:32 dev-dankrad kernel: anon_thp 0
+Sep 25 22:24:32 dev-dankrad kernel: file_thp 0
+Sep 25 22:24:32 dev-dankrad kernel: shmem_thp 0
+Sep 25 22:24:32 dev-dankrad kernel: inactive_anon 698023936
+Sep 25 22:24:32 dev-dankrad kernel: active_anon 20111155200
+Sep 25 22:24:32 dev-dankrad kernel: inactive_file 53248
+Sep 25 22:24:32 dev-dankrad kernel: active_file 0
+Sep 25 22:24:32 dev-dankrad kernel: unevictable 0
+Sep 25 22:24:32 dev-dankrad kernel: slab_reclaimable 283912032
+Sep 25 22:24:32 dev-dankrad kernel: slab_unreclaimable 3306936
+Sep 25 22:24:32 dev-dankrad kernel: slab 287218968
+Sep 25 22:24:32 dev-dankrad kernel: workingset_refault_anon 0
+Sep 25 22:24:32 dev-dankrad kernel: workingset_refault_file 17669230
+Sep 25 22:24:32 dev-dankrad kernel: workingset_activate_anon 0
+Sep 25 22:24:32 dev-dankrad kernel: workingset_activate_file 14149609
+Sep 25 22:24:32 dev-dankrad kernel: workingset_restore_anon 0
+Sep 25 22:24:32 dev-dankrad kernel: workingset_restore_file 30
+Sep 25 22:24:32 dev-dankrad kernel: workingset_nodereclaim 0
+Sep 25 22:24:32 dev-dankrad kernel: pgscan 39900617
+Sep 25 22:24:32 dev-dankrad kernel: pgsteal 39899535
+Sep 25 22:24:32 dev-dankrad kernel: pgscan_kswapd 33942995
+Sep 25 22:24:32 dev-dankrad kernel: pgscan_direct 5957622
+Sep 25 22:24:32 dev-dankrad kernel: pgscan_khugepaged 0
+Sep 25 22:24:32 dev-dankrad kernel: pgsteal_kswapd 33942212
+Sep 25 22:24:32 dev-dankrad kernel: pgsteal_direct 5957323
+Sep 25 22:24:32 dev-dankrad kernel: pgsteal_khugepaged 0
+Sep 25 22:24:32 dev-dankrad kernel: pgfault 60365096
+Sep 25 22:24:32 dev-dankrad kernel: pgmajfault 8407444
+Sep 25 22:24:32 dev-dankrad kernel: pgrefill 3374
+Sep 25 22:24:32 dev-dankrad kernel: pgactivate 258
+Sep 25 22:24:32 dev-dankrad kernel: pgdeactivate 0
+Sep 25 22:24:32 dev-dankrad kernel: pglazyfree 0
+Sep 25 22:24:32 dev-dankrad kernel: pglazyfreed 0
+Sep 25 22:24:32 dev-dankrad kernel: zswpin 0
+Sep 25 22:24:32 dev-dankrad kernel: zswpout 0
+Sep 25 22:24:32 dev-dankrad kernel: zswpwb 0
+Sep 25 22:24:32 dev-dankrad kernel: thp_fault_alloc 0
+Sep 25 22:24:32 dev-dankrad kernel: thp_collapse_alloc 0
+Sep 25 22:24:32 dev-dankrad kernel: thp_swpout 0
+Sep 25 22:24:32 dev-dankrad kernel: thp_swpout_fallback 0
+Sep 25 22:24:32 dev-dankrad kernel: Tasks state (memory values in pages):
+Sep 25 22:24:32 dev-dankrad kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Sep 25 22:24:32 dev-dankrad kernel: [1382101]     0 1382101     1971      896       64      832         0    65536        0           200 bash
+Sep 25 22:24:32 dev-dankrad kernel: [1382112]     0 1382112 2189163394  5101273  5079867    21406         0 374419456        0           200 tempo
+Sep 25 22:24:32 dev-dankrad kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=tempo-e2e-b-feature-1.scope,mems_allowed=0,oom_memcg=/system.slice/tempo-e2e-b-feature-1.scope,task_memcg=/system.slice/tempo-e2e-b-feature-1.scope,task=tempo,pid=1382112,uid=0
+Sep 25 22:24:32 dev-dankrad kernel: Memory cgroup out of memory: Killed process 1382112 (tempo) total-vm:8756653576kB, anon-rss:20319468kB, file-rss:85624kB, shmem-rss:0kB, UID:0 pgtables:365644kB oom_score_adj:200

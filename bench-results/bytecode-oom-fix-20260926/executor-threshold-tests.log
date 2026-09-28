@@ -1,0 +1,36 @@
+   Compiling reth-evm v2.5.2 (/home/ubuntu/repos/reth-payload-cancel-fix/crates/evm/evm)
+    Finished `profiling` profile [optimized + debuginfo] target(s) in 2.58s
+     Running unittests src/lib.rs (/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/deps/reth_evm-422e725c632a5458)
+
+running 4 tests
+test execute::tests::test_provider ... ok
+test sender_recovery::tests::failed_recovery_is_not_cached ... ok
+test execute::tests::read_only_bytecode_is_counted_without_state_changes ... ok
+test sender_recovery::tests::recover_populates_cache ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/ubuntu/repos/tempo-payments-bloat-pr/target/profiling/deps/reth_stages_types-39d5d472cb87c909)
+
+running 18 tests
+test checkpoints::EntitiesCheckpointTests::proptest ... ok
+test checkpoints::CheckpointBlockRangeTests::proptest ... ok
+test checkpoints::FinishCheckpointTests::proptest ... ok
+test checkpoints::ExecutionCheckpointTests::proptest ... ok
+test checkpoints::AccountHashingCheckpointTests::proptest ... ok
+test checkpoints::HeadersCheckpointTests::proptest ... ok
+test checkpoints::IndexHistoryCheckpointTests::proptest ... ok
+test checkpoints::MerkleChangeSetsCheckpointTests::proptest ... ok
+test checkpoints::tests::finish_checkpoint_roundtrip ... ok
+test checkpoints::tests::merkle_checkpoint_roundtrip ... ok
+test checkpoints::StageUnitCheckpointTests::proptest ... ok
+test checkpoints::StageCheckpointTests::proptest ... ok
+test checkpoints::tests::merkle_checkpoint_with_storage_root_roundtrip ... ok
+test checkpoints::StorageHashingCheckpointTests::proptest ... ok
+test checkpoints::tests::storage_root_merkle_checkpoint_roundtrip ... ok
+test execution::tests::bytecode_limit_is_independent_of_state_changes ... ok
+test id::tests::is_downloading_stage ... ok
+test id::tests::stage_id_as_string ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

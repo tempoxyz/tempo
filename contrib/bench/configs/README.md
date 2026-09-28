@@ -1,5 +1,10 @@
 # State-access benchmark configurations
 
+Follow the [reproduction runbook](../state-access-reproduction.md) to build pinned
+dependencies and prepare fixtures. `nu bench-e2e.nu state-access-prewarm-control
+--baseline HEAD --feature HEAD --wait` runs the latest sized SLOAD/bytecode
+builder-prewarming on/off matrix sequentially under the shared lock.
+
 The [state-access-bloated.json](state-access-bloated.json) registry is the source
 of truth for the matched bloated-state comparison. Commands below run from the
 repository root:

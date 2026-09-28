@@ -1,0 +1,2457 @@
+{
+  "generated_at": "2026-09-27T08:20:16.511Z",
+  "runs": {
+    "a": {
+      "metadata": {
+        "kind": "latency_metadata",
+        "records": 512,
+        "trials": 9,
+        "cpu": 8,
+        "device": "259:1"
+      },
+      "calibration": {
+        "kind": "timer_calibration",
+        "wall_ns": 104.396,
+        "cpu_ns": 104.425
+      },
+      "residency_checks": 90,
+      "cold": {
+        "prefix": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 68.90294422743055,
+          "cpu_us": 2.6378038194444446,
+          "off_cpu_us": 66.26514040798611,
+          "trial_wall_min_us": 65.8773671875,
+          "trial_wall_max_us": 81.24069921875,
+          "trial_wall_sd_us": 5.210899128052597,
+          "read_requests_per_operation": 1.015625,
+          "read_bytes_per_operation": 4160,
+          "major_faults_per_operation": 1.015625,
+          "minor_faults_per_operation": 0.002170138888888889,
+          "user_us": 0.8146701388888888,
+          "system_us": 1.8231336805555556,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 68.46942187500001,
+              "cpu_us": 2.211228732638889
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.15873111979166665,
+              "cpu_us": 0.1582853732638889
+            }
+          }
+        },
+        "early_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 105.88920811631944,
+          "cpu_us": 7.555989583333333,
+          "off_cpu_us": 98.33321853298611,
+          "trial_wall_min_us": 102.72403515625,
+          "trial_wall_max_us": 115.31946484375,
+          "trial_wall_sd_us": 5.010684781257191,
+          "read_requests_per_operation": 1.015625,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 0.017578125,
+          "minor_faults_per_operation": 1.3791232638888888,
+          "user_us": 2.7934027777777777,
+          "system_us": 4.762586805555555,
+          "stages": {
+            "early_hint": {
+              "wall_us": 3.271205078125,
+              "cpu_us": 3.271605034722222
+            },
+            "lookup_or_read": {
+              "wall_us": 100.27955490451389,
+              "cpu_us": 1.9521827256944444
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.238537326388889,
+              "cpu_us": 1.244521484375
+            }
+          }
+        },
+        "pread_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 171.66320638020832,
+          "cpu_us": 7.979600694444445,
+          "off_cpu_us": 163.68360568576387,
+          "trial_wall_min_us": 160.874140625,
+          "trial_wall_max_us": 218.6696640625,
+          "trial_wall_sd_us": 21.023382441148986,
+          "read_requests_per_operation": 1.99609375,
+          "read_bytes_per_operation": 28616,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.8982204861111112,
+          "system_us": 6.081380208333333,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 69.1403435329861,
+              "cpu_us": 2.194751953125
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 101.54673589409722,
+              "cpu_us": 4.816416015624999
+            }
+          }
+        },
+        "direct_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 168.02906922743057,
+          "cpu_us": 5.185763888888889,
+          "off_cpu_us": 162.84330533854168,
+          "trial_wall_min_us": 158.622166015625,
+          "trial_wall_max_us": 198.355205078125,
+          "trial_wall_sd_us": 14.900697333587507,
+          "read_requests_per_operation": 2,
+          "read_bytes_per_operation": 28672,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.4296875,
+          "system_us": 3.756076388888889,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 67.40179448784723,
+              "cpu_us": 1.7680989583333335
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 99.204673828125,
+              "cpu_us": 2.0007847222222224
+            }
+          }
+        },
+        "late_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 166.0518611111111,
+          "cpu_us": 9.115668402777779,
+          "off_cpu_us": 156.93619270833332,
+          "trial_wall_min_us": 162.217001953125,
+          "trial_wall_max_us": 187.8458828125,
+          "trial_wall_sd_us": 8.288438449916232,
+          "read_requests_per_operation": 2.013671875,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 1.015625,
+          "minor_faults_per_operation": 1.3088107638888888,
+          "user_us": 3.5453559027777777,
+          "system_us": 5.5703125,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 67.02615212673611,
+              "cpu_us": 2.5336208767361112
+            },
+            "late_hint": {
+              "wall_us": 2.6899856770833335,
+              "cpu_us": 2.697717881944444
+            },
+            "copy": {
+              "wall_us": 95.38242968750001,
+              "cpu_us": 2.9463606770833337
+            }
+          }
+        },
+        "pread_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 103.99052582465279,
+          "cpu_us": 6.383897569444445,
+          "off_cpu_us": 97.60662825520835,
+          "trial_wall_min_us": 102.03947265625,
+          "trial_wall_max_us": 112.667548828125,
+          "trial_wall_sd_us": 3.5364880007646926,
+          "read_requests_per_operation": 0.998046875,
+          "read_bytes_per_operation": 28616,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 2.0199652777777777,
+          "system_us": 4.363932291666667,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 103.00661046006945,
+              "cpu_us": 5.400725694444444
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10082899305555555,
+              "cpu_us": 0.10068250868055553
+            }
+          }
+        },
+        "direct_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 105.43674457465278,
+          "cpu_us": 3.5822482638888893,
+          "off_cpu_us": 101.85449631076389,
+          "trial_wall_min_us": 99.5117890625,
+          "trial_wall_max_us": 138.1160390625,
+          "trial_wall_sd_us": 12.983653337296484,
+          "read_requests_per_operation": 1,
+          "read_bytes_per_operation": 28672,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.6549479166666667,
+          "system_us": 1.9273003472222223,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 103.99572504340279,
+              "cpu_us": 2.1417994791666666
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10079492187500001,
+              "cpu_us": 0.10070421006944445
+            }
+          }
+        },
+        "serial_full": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 461.25415494791673,
+          "cpu_us": 17.4296875,
+          "off_cpu_us": 443.82446744791673,
+          "trial_wall_min_us": 455.716720703125,
+          "trial_wall_max_us": 496.26792578125,
+          "trial_wall_sd_us": 13.16981430378862,
+          "read_requests_per_operation": 7.00390625,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 7.00390625,
+          "minor_faults_per_operation": 0.002170138888888889,
+          "user_us": 5.824435763888889,
+          "system_us": 11.60525173611111,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 66.81288324652778,
+              "cpu_us": 2.467345052083333
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 393.6089314236112,
+              "cpu_us": 14.137231770833333
+            }
+          }
+        },
+        "pread_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 65.64218446180556,
+          "cpu_us": 2.5049913194444446,
+          "off_cpu_us": 63.13719314236111,
+          "trial_wall_min_us": 64.67742578125,
+          "trial_wall_max_us": 70.49008203125,
+          "trial_wall_sd_us": 1.8381739594721582,
+          "read_requests_per_operation": 0.998046875,
+          "read_bytes_per_operation": 4088,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.6974826388888888,
+          "system_us": 1.8075086805555556,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.23449392361111,
+              "cpu_us": 2.1038179253472222
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10049327256944444,
+              "cpu_us": 0.10050108506944445
+            }
+          }
+        },
+        "direct_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 66.51309223090279,
+          "cpu_us": 1.9854600694444442,
+          "off_cpu_us": 64.52763216145834,
+          "trial_wall_min_us": 64.522095703125,
+          "trial_wall_max_us": 74.316076171875,
+          "trial_wall_sd_us": 3.6508139110480724,
+          "read_requests_per_operation": 1,
+          "read_bytes_per_operation": 4096,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.8268229166666666,
+          "system_us": 1.1586371527777777,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 66.07973980034723,
+              "cpu_us": 1.55619140625
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10063671874999998,
+              "cpu_us": 0.10044921875000001
+            }
+          }
+        }
+      },
+      "warm": {
+        "prefix": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 0.7097684461805556,
+          "cpu_us": 0.7105034722222223,
+          "off_cpu_us": -0.0007350260416667531,
+          "trial_wall_min_us": 0.697046875,
+          "trial_wall_max_us": 0.729021484375,
+          "trial_wall_sd_us": 0.010605008744515948,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 0.2899305555555556,
+          "system_us": 0.4205729166666667,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3565256076388889,
+              "cpu_us": 0.3571592881944444
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10447960069444445,
+              "cpu_us": 0.10495052083333334
+            }
+          }
+        },
+        "early_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.819036892361111,
+          "cpu_us": 2.819444444444444,
+          "off_cpu_us": -0.00040755208333331794,
+          "trial_wall_min_us": 2.733712890625,
+          "trial_wall_max_us": 2.944810546875,
+          "trial_wall_sd_us": 0.0774531658015937,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 2.3912760416666665,
+          "system_us": 0.4281684027777778,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0.29805099826388887,
+              "cpu_us": 0.29103255208333334
+            },
+            "lookup_or_read": {
+              "wall_us": 0.31633311631944444,
+              "cpu_us": 0.31683072916666666
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.1982573784722226,
+              "cpu_us": 1.2045720486111111
+            }
+          }
+        },
+        "pread_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.9036395399305555,
+          "cpu_us": 2.9038628472222223,
+          "off_cpu_us": -0.00022330729166686325,
+          "trial_wall_min_us": 2.705318359375,
+          "trial_wall_max_us": 3.139001953125,
+          "trial_wall_sd_us": 0.14593157229786322,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.6226128472222222,
+          "system_us": 2.28125,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.575866970486111,
+              "cpu_us": 0.5693721788194446
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.4025442708333333,
+              "cpu_us": 1.408932291666667
+            }
+          }
+        },
+        "late_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.694541666666667,
+          "cpu_us": 2.6953125,
+          "off_cpu_us": -0.0007708333333331652,
+          "trial_wall_min_us": 2.5765625,
+          "trial_wall_max_us": 3.1239140625,
+          "trial_wall_sd_us": 0.16813764870012904,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 2.3658854166666665,
+          "system_us": 0.3294270833333333,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.33957031249999997,
+              "cpu_us": 0.33201215277777774
+            },
+            "late_hint": {
+              "wall_us": 0.269697265625,
+              "cpu_us": 0.26994140625
+            },
+            "copy": {
+              "wall_us": 1.1911052517361114,
+              "cpu_us": 1.1965069444444443
+            }
+          }
+        },
+        "pread_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.4860980902777774,
+          "cpu_us": 2.486111111111111,
+          "off_cpu_us": -0.00001302083333376558,
+          "trial_wall_min_us": 2.36411328125,
+          "trial_wall_max_us": 3.113388671875,
+          "trial_wall_sd_us": 0.23654981824532428,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.7593315972222222,
+          "system_us": 1.7267795138888888,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 1.5794116753472223,
+              "cpu_us": 1.5781692708333332
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10082573784722222,
+              "cpu_us": 0.10064952256944444
+            }
+          }
+        },
+        "serial_full": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.4351759982638885,
+          "cpu_us": 2.435763888888889,
+          "off_cpu_us": -0.0005878906250003091,
+          "trial_wall_min_us": 2.278642578125,
+          "trial_wall_max_us": 2.672953125,
+          "trial_wall_sd_us": 0.1252190701692911,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 1.8255208333333333,
+          "system_us": 0.6102430555555556,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.34870659722222225,
+              "cpu_us": 0.34145203993055556
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.2347009548611112,
+              "cpu_us": 1.2403973524305556
+            }
+          }
+        },
+        "pread_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 0.7976436631944444,
+          "cpu_us": 0.7979600694444444,
+          "off_cpu_us": -0.0003164062500000675,
+          "trial_wall_min_us": 0.7133671875,
+          "trial_wall_max_us": 0.87871484375,
+          "trial_wall_sd_us": 0.045332114685966464,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.14539930555555555,
+          "system_us": 0.6525607638888888,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.4477886284722223,
+              "cpu_us": 0.44875130208333336
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10071375868055554,
+              "cpu_us": 0.10074283854166666
+            }
+          }
+        },
+        "source_account_lookup": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 0.10788911132812498,
+          "cpu_us": 0.1078826904296875,
+          "off_cpu_us": 0.000006420898437484168,
+          "trial_wall_min_us": 0.10709031677246093,
+          "trial_wall_max_us": 0.10988117980957031,
+          "trial_wall_sd_us": 0.0011849116250944687,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.1078826904296875,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        },
+        "source_code_lookup": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 0.11479550476074218,
+          "cpu_us": 0.1147918701171875,
+          "off_cpu_us": 0.000003634643554684125,
+          "trial_wall_min_us": 0.11273947143554687,
+          "trial_wall_max_us": 0.11668759155273438,
+          "trial_wall_sd_us": 0.0014822696603403619,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.1147918701171875,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        },
+        "source_code_lookup_copy_verify": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 1.271277520751953,
+          "cpu_us": 1.27120361328125,
+          "off_cpu_us": 0.00007390747070301629,
+          "trial_wall_min_us": 1.2600827026367187,
+          "trial_wall_max_us": 1.2830158081054688,
+          "trial_wall_sd_us": 0.009141557387243338,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.27120361328125,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        }
+      }
+    },
+    "traced": {
+      "metadata": {
+        "kind": "latency_metadata",
+        "records": 512,
+        "trials": 9,
+        "cpu": 8,
+        "device": "259:1"
+      },
+      "calibration": {
+        "kind": "timer_calibration",
+        "wall_ns": 104.4,
+        "cpu_ns": 104.39
+      },
+      "residency_checks": 90,
+      "cold": {
+        "prefix": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 67.15825629340277,
+          "cpu_us": 2.8012152777777777,
+          "off_cpu_us": 64.357041015625,
+          "trial_wall_min_us": 66.811685546875,
+          "trial_wall_max_us": 67.6623046875,
+          "trial_wall_sd_us": 0.25924462487724215,
+          "read_requests_per_operation": 1.015625,
+          "read_bytes_per_operation": 4160,
+          "major_faults_per_operation": 1.015625,
+          "minor_faults_per_operation": 0.002170138888888889,
+          "user_us": 0.25390625,
+          "system_us": 2.5473090277777777,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 66.72661349826387,
+              "cpu_us": 2.3748092447916664
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.16050607638888892,
+              "cpu_us": 0.16046571180555558
+            }
+          }
+        },
+        "early_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 104.61601801215278,
+          "cpu_us": 7.825520833333333,
+          "off_cpu_us": 96.79049717881945,
+          "trial_wall_min_us": 103.960837890625,
+          "trial_wall_max_us": 105.3050390625,
+          "trial_wall_sd_us": 0.40752515356536656,
+          "read_requests_per_operation": 1.015625,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 0.017578125,
+          "minor_faults_per_operation": 1.37890625,
+          "user_us": 2.888671875,
+          "system_us": 4.936848958333333,
+          "stages": {
+            "early_hint": {
+              "wall_us": 3.569524522569444,
+              "cpu_us": 3.5692899305555548
+            },
+            "lookup_or_read": {
+              "wall_us": 98.750466796875,
+              "cpu_us": 1.9653743489583337
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.245215060763889,
+              "cpu_us": 1.2502973090277778
+            }
+          }
+        },
+        "pread_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 163.47016536458335,
+          "cpu_us": 8.299913194444445,
+          "off_cpu_us": 155.1702521701389,
+          "trial_wall_min_us": 162.564869140625,
+          "trial_wall_max_us": 164.03833203125,
+          "trial_wall_sd_us": 0.46848696787549793,
+          "read_requests_per_operation": 1.99609375,
+          "read_bytes_per_operation": 28616,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 3.343967013888889,
+          "system_us": 4.955946180555555,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.72411111111111,
+              "cpu_us": 2.3773836805555555
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 96.82263823784723,
+              "cpu_us": 5.007720269097222
+            }
+          }
+        },
+        "direct_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 161.02606206597224,
+          "cpu_us": 5.422960069444445,
+          "off_cpu_us": 155.60310199652778,
+          "trial_wall_min_us": 160.5453984375,
+          "trial_wall_max_us": 161.232291015625,
+          "trial_wall_sd_us": 0.23214602166146941,
+          "read_requests_per_operation": 2,
+          "read_bytes_per_operation": 28672,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.7662760416666666,
+          "system_us": 4.656684027777778,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.49817534722222,
+              "cpu_us": 1.9284240451388888
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 94.20168988715278,
+              "cpu_us": 2.174777126736111
+            }
+          }
+        },
+        "late_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 164.82979166666667,
+          "cpu_us": 9.305989583333332,
+          "off_cpu_us": 155.52380208333332,
+          "trial_wall_min_us": 164.443197265625,
+          "trial_wall_max_us": 165.265341796875,
+          "trial_wall_sd_us": 0.3005610028247685,
+          "read_requests_per_operation": 2.013671875,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 1.015625,
+          "minor_faults_per_operation": 1.3088107638888888,
+          "user_us": 1.962890625,
+          "system_us": 7.343098958333333,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 67.14601888020833,
+              "cpu_us": 2.7034309895833335
+            },
+            "late_hint": {
+              "wall_us": 2.782444878472223,
+              "cpu_us": 2.7892050781250006
+            },
+            "copy": {
+              "wall_us": 94.03323242187501,
+              "cpu_us": 2.957767578125
+            }
+          }
+        },
+        "pread_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 103.47506553819444,
+          "cpu_us": 6.504123263888888,
+          "off_cpu_us": 96.97094227430556,
+          "trial_wall_min_us": 103.25737109375,
+          "trial_wall_max_us": 103.629552734375,
+          "trial_wall_sd_us": 0.11176892385804145,
+          "read_requests_per_operation": 0.998046875,
+          "read_bytes_per_operation": 28616,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 2.0687934027777777,
+          "system_us": 4.435329861111111,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 102.55803125,
+              "cpu_us": 5.58731271701389
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10152235243055556,
+              "cpu_us": 0.10131987847222222
+            }
+          }
+        },
+        "direct_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 102.50338454861111,
+          "cpu_us": 3.6807725694444446,
+          "off_cpu_us": 98.82261197916667,
+          "trial_wall_min_us": 100.642486328125,
+          "trial_wall_max_us": 115.864193359375,
+          "trial_wall_sd_us": 5.011456291343563,
+          "read_requests_per_operation": 1,
+          "read_bytes_per_operation": 28672,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.6089409722222222,
+          "system_us": 3.0718315972222223,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 101.10854144965278,
+              "cpu_us": 2.2852473958333333
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10134570312499999,
+              "cpu_us": 0.10104904513888886
+            }
+          }
+        },
+        "serial_full": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 463.43563910590285,
+          "cpu_us": 18.634765625,
+          "off_cpu_us": 444.80087348090285,
+          "trial_wall_min_us": 461.802833984375,
+          "trial_wall_max_us": 465.812064453125,
+          "trial_wall_sd_us": 1.226102958762955,
+          "read_requests_per_operation": 7.00390625,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 7.00390625,
+          "minor_faults_per_operation": 0.0026041666666666665,
+          "user_us": 4.770833333333333,
+          "system_us": 13.863932291666666,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 67.05510394965277,
+              "cpu_us": 2.6433736979166667
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 395.5398732638889,
+              "cpu_us": 15.156402994791664
+            }
+          }
+        },
+        "pread_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 66.12923697916666,
+          "cpu_us": 2.718967013888889,
+          "off_cpu_us": 63.41026996527778,
+          "trial_wall_min_us": 65.94946484375,
+          "trial_wall_max_us": 66.30070703125,
+          "trial_wall_sd_us": 0.10787657375226725,
+          "read_requests_per_operation": 0.998046875,
+          "read_bytes_per_operation": 4088,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.18880208333333334,
+          "system_us": 2.5301649305555554,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.72056575520833,
+              "cpu_us": 2.3165590277777777
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10130034722222223,
+              "cpu_us": 0.101224609375
+            }
+          }
+        },
+        "direct_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 66.07911263020833,
+          "cpu_us": 2.229817708333333,
+          "off_cpu_us": 63.84929492187499,
+          "trial_wall_min_us": 65.420228515625,
+          "trial_wall_max_us": 69.464708984375,
+          "trial_wall_sd_us": 1.2912731801998043,
+          "read_requests_per_operation": 1,
+          "read_bytes_per_operation": 4096,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.400390625,
+          "system_us": 1.8294270833333333,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.63737543402777,
+              "cpu_us": 1.7933407118055555
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10158420138888889,
+              "cpu_us": 0.101400390625
+            }
+          }
+        }
+      },
+      "warm": {
+        "prefix": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 0.7056790364583334,
+          "cpu_us": 0.7055121527777777,
+          "off_cpu_us": 0.00016688368055572944,
+          "trial_wall_min_us": 0.696794921875,
+          "trial_wall_max_us": 0.7174375,
+          "trial_wall_sd_us": 0.007141839456266966,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 0.1642795138888889,
+          "system_us": 0.5412326388888888,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3530197482638889,
+              "cpu_us": 0.3534151475694445
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10523958333333333,
+              "cpu_us": 0.10522829861111112
+            }
+          }
+        },
+        "early_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.7603337673611117,
+          "cpu_us": 2.7599826388888893,
+          "off_cpu_us": 0.0003511284722224062,
+          "trial_wall_min_us": 2.555845703125,
+          "trial_wall_max_us": 3.014107421875,
+          "trial_wall_sd_us": 0.1575280119234737,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 2.0010850694444446,
+          "system_us": 0.7588975694444444,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0.2972842881944444,
+              "cpu_us": 0.28945486111111113
+            },
+            "lookup_or_read": {
+              "wall_us": 0.30927018229166664,
+              "cpu_us": 0.30964973958333336
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.181625217013889,
+              "cpu_us": 1.1871449652777777
+            }
+          }
+        },
+        "pread_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.6988715277777775,
+          "cpu_us": 2.69921875,
+          "off_cpu_us": -0.00034722222222249854,
+          "trial_wall_min_us": 2.57655078125,
+          "trial_wall_max_us": 2.833498046875,
+          "trial_wall_sd_us": 0.09265929433714985,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.1927083333333333,
+          "system_us": 1.5065104166666667,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.5526041666666666,
+              "cpu_us": 0.545816623263889
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.3098836805555554,
+              "cpu_us": 1.315892578125
+            }
+          }
+        },
+        "late_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.647266059027778,
+          "cpu_us": 2.6473524305555554,
+          "off_cpu_us": -0.00008637152777746238,
+          "trial_wall_min_us": 2.514578125,
+          "trial_wall_max_us": 2.806609375,
+          "trial_wall_sd_us": 0.09256931481669885,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 1.1631944444444444,
+          "system_us": 1.4841579861111112,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3378122829861111,
+              "cpu_us": 0.33025737847222225
+            },
+            "late_hint": {
+              "wall_us": 0.2692009548611111,
+              "cpu_us": 0.26963888888888893
+            },
+            "copy": {
+              "wall_us": 1.1796417100694443,
+              "cpu_us": 1.1853441840277776
+            }
+          }
+        },
+        "pread_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.3392061631944445,
+          "cpu_us": 2.3391927083333335,
+          "off_cpu_us": 0.000013454861111039662,
+          "trial_wall_min_us": 2.15351171875,
+          "trial_wall_max_us": 2.596763671875,
+          "trial_wall_sd_us": 0.1370337694242654,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.5572916666666667,
+          "system_us": 0.7819010416666666,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 1.4905360243055554,
+              "cpu_us": 1.4887018229166666
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10193359375000001,
+              "cpu_us": 0.1017970920138889
+            }
+          }
+        },
+        "serial_full": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.36480078125,
+          "cpu_us": 2.365017361111111,
+          "off_cpu_us": -0.00021657986111112137,
+          "trial_wall_min_us": 2.1935859375,
+          "trial_wall_max_us": 2.63607421875,
+          "trial_wall_sd_us": 0.13403395803592624,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 1.5154079861111112,
+          "system_us": 0.849609375,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.33871158854166666,
+              "cpu_us": 0.3308016493055555
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.2025889756944441,
+              "cpu_us": 1.20741015625
+            }
+          }
+        },
+        "pread_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 0.8142300347222223,
+          "cpu_us": 0.814236111111111,
+          "off_cpu_us": -0.00000607638888872053,
+          "trial_wall_min_us": 0.789095703125,
+          "trial_wall_max_us": 0.91247265625,
+          "trial_wall_sd_us": 0.03762943331403228,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.04991319444444445,
+          "system_us": 0.7643229166666666,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.46115993923611115,
+              "cpu_us": 0.46111328125
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10152126736111113,
+              "cpu_us": 0.10201584201388887
+            }
+          }
+        },
+        "source_account_lookup": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 0.11246693115234374,
+          "cpu_us": 0.11246337890625,
+          "off_cpu_us": 0.0000035522460937464917,
+          "trial_wall_min_us": 0.10947575378417969,
+          "trial_wall_max_us": 0.11501762390136719,
+          "trial_wall_sd_us": 0.00227438792389345,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.11246337890625,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        },
+        "source_code_lookup": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 0.12295134582519532,
+          "cpu_us": 0.12294921875,
+          "off_cpu_us": 0.0000021270751953128553,
+          "trial_wall_min_us": 0.12199465942382813,
+          "trial_wall_max_us": 0.12527626037597656,
+          "trial_wall_sd_us": 0.0013490679809578586,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.12294921875,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        },
+        "source_code_lookup_copy_verify": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 1.2419331573486327,
+          "cpu_us": 1.241925048828125,
+          "off_cpu_us": 0.000008108520507699168,
+          "trial_wall_min_us": 1.231049057006836,
+          "trial_wall_max_us": 1.259645477294922,
+          "trial_wall_sd_us": 0.011949349793476574,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.241925048828125,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        }
+      }
+    },
+    "builder": {
+      "metadata": {
+        "kind": "latency_metadata",
+        "records": 512,
+        "trials": 9,
+        "cpu": 0,
+        "device": "259:0"
+      },
+      "calibration": {
+        "kind": "timer_calibration",
+        "wall_ns": 106.26,
+        "cpu_ns": 106.366
+      },
+      "residency_checks": 90,
+      "cold": {
+        "prefix": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 66.34002126736112,
+          "cpu_us": 2.5922309027777777,
+          "off_cpu_us": 63.747790364583345,
+          "trial_wall_min_us": 65.693994140625,
+          "trial_wall_max_us": 66.83668359375,
+          "trial_wall_sd_us": 0.3550105254378512,
+          "read_requests_per_operation": 1.015625,
+          "read_bytes_per_operation": 4160,
+          "major_faults_per_operation": 1.015625,
+          "minor_faults_per_operation": 0.002170138888888889,
+          "user_us": 0.4906684027777778,
+          "system_us": 2.1015625,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.89262044270832,
+              "cpu_us": 2.1505698784722225
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.16285177951388888,
+              "cpu_us": 0.162876953125
+            }
+          }
+        },
+        "early_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 110.22912434895835,
+          "cpu_us": 7.609809027777778,
+          "off_cpu_us": 102.61931532118058,
+          "trial_wall_min_us": 103.14977734375,
+          "trial_wall_max_us": 138.274859375,
+          "trial_wall_sd_us": 13.863897729564478,
+          "read_requests_per_operation": 1.015625,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 0.017578125,
+          "minor_faults_per_operation": 1.3773871527777777,
+          "user_us": 2.3530815972222223,
+          "system_us": 5.256727430555555,
+          "stages": {
+            "early_hint": {
+              "wall_us": 3.5736115451388892,
+              "cpu_us": 3.5666595052083334
+            },
+            "lookup_or_read": {
+              "wall_us": 104.60644097222222,
+              "cpu_us": 1.9930193142361108
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 1.2293452690972222,
+              "cpu_us": 1.2352207031250002
+            }
+          }
+        },
+        "pread_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 163.1212102864583,
+          "cpu_us": 7.361111111111112,
+          "off_cpu_us": 155.7600991753472,
+          "trial_wall_min_us": 160.432599609375,
+          "trial_wall_max_us": 179.757775390625,
+          "trial_wall_sd_us": 6.247280937645034,
+          "read_requests_per_operation": 1.99609375,
+          "read_bytes_per_operation": 28616,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.5694444444444444,
+          "system_us": 5.791666666666667,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.38904817708334,
+              "cpu_us": 2.1520909288194447
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 96.99257378472223,
+              "cpu_us": 4.464896484375
+            }
+          }
+        },
+        "direct_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 161.14091666666664,
+          "cpu_us": 5.070746527777778,
+          "off_cpu_us": 156.07017013888887,
+          "trial_wall_min_us": 158.61737890625,
+          "trial_wall_max_us": 177.67193359375,
+          "trial_wall_sd_us": 6.2039137377803035,
+          "read_requests_per_operation": 2,
+          "read_bytes_per_operation": 28672,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.5004340277777777,
+          "system_us": 3.5703125,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 65.33680924479165,
+              "cpu_us": 1.7621460503472222
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 94.49294162326389,
+              "cpu_us": 2.0043665364583334
+            }
+          }
+        },
+        "late_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 163.34288888888892,
+          "cpu_us": 8.267144097222221,
+          "off_cpu_us": 155.0757447916667,
+          "trial_wall_min_us": 161.96369140625,
+          "trial_wall_max_us": 172.153564453125,
+          "trial_wall_sd_us": 3.322580480913922,
+          "read_requests_per_operation": 2.013671875,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 1.015625,
+          "minor_faults_per_operation": 1.3088107638888888,
+          "user_us": 1.4542100694444444,
+          "system_us": 6.812934027777778,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 66.49031792534723,
+              "cpu_us": 2.460729383680556
+            },
+            "late_hint": {
+              "wall_us": 2.0197819010416667,
+              "cpu_us": 2.0284945746527776
+            },
+            "copy": {
+              "wall_us": 94.03784505208331,
+              "cpu_us": 2.984450954861111
+            }
+          }
+        },
+        "pread_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 101.94116796875,
+          "cpu_us": 5.972439236111111,
+          "off_cpu_us": 95.96872873263888,
+          "trial_wall_min_us": 101.072740234375,
+          "trial_wall_max_us": 102.23175,
+          "trial_wall_sd_us": 0.34773484554220263,
+          "read_requests_per_operation": 0.998046875,
+          "read_bytes_per_operation": 28616,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.0160590277777777,
+          "system_us": 4.956380208333333,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 101.11898697916666,
+              "cpu_us": 5.13523806423611
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10349088541666666,
+              "cpu_us": 0.10370225694444443
+            }
+          }
+        },
+        "direct_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 105.68997960069444,
+          "cpu_us": 3.5555555555555554,
+          "off_cpu_us": 102.13442404513889,
+          "trial_wall_min_us": 99.564876953125,
+          "trial_wall_max_us": 153.767783203125,
+          "trial_wall_sd_us": 18.02961832377909,
+          "read_requests_per_operation": 1,
+          "read_bytes_per_operation": 28672,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 1.4928385416666667,
+          "system_us": 2.062717013888889,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 104.29207031250002,
+              "cpu_us": 2.1565078125000006
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10373133680555555,
+              "cpu_us": 0.10367382812499999
+            }
+          }
+        },
+        "serial_full": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 457.37961762152776,
+          "cpu_us": 17.01953125,
+          "off_cpu_us": 440.36008637152776,
+          "trial_wall_min_us": 455.148892578125,
+          "trial_wall_max_us": 461.170951171875,
+          "trial_wall_sd_us": 2.0959277671169954,
+          "read_requests_per_operation": 7.00390625,
+          "read_bytes_per_operation": 28688,
+          "major_faults_per_operation": 7.00390625,
+          "minor_faults_per_operation": 0.002170138888888889,
+          "user_us": 5.223524305555555,
+          "system_us": 11.796006944444445,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 66.26916666666666,
+              "cpu_us": 2.419748263888889
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 390.4221037326389,
+              "cpu_us": 13.908113281250001
+            }
+          }
+        },
+        "pread_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 65.16904839409723,
+          "cpu_us": 2.5915798611111107,
+          "off_cpu_us": 62.57746853298612,
+          "trial_wall_min_us": 64.92634375,
+          "trial_wall_max_us": 65.429396484375,
+          "trial_wall_sd_us": 0.15368461813372303,
+          "read_requests_per_operation": 0.998046875,
+          "read_bytes_per_operation": 4088,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.4815538194444444,
+          "system_us": 2.1100260416666665,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 64.75113823784721,
+              "cpu_us": 2.1815959201388893
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10360286458333334,
+              "cpu_us": 0.10352452256944443
+            }
+          }
+        },
+        "direct_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 64.84933224826389,
+          "cpu_us": 2.0288628472222223,
+          "off_cpu_us": 62.82046940104167,
+          "trial_wall_min_us": 64.571578125,
+          "trial_wall_max_us": 65.21563671875,
+          "trial_wall_sd_us": 0.23571274236329853,
+          "read_requests_per_operation": 1,
+          "read_bytes_per_operation": 4096,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.10004340277777778,
+          "system_us": 1.9288194444444444,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 64.40804752604168,
+              "cpu_us": 1.5949869791666669
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10405707465277778,
+              "cpu_us": 0.1039763454861111
+            }
+          }
+        }
+      },
+      "warm": {
+        "prefix": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 0.7253784722222221,
+          "cpu_us": 0.7256944444444444,
+          "off_cpu_us": -0.00031597222222234933,
+          "trial_wall_min_us": 0.716048828125,
+          "trial_wall_max_us": 0.732232421875,
+          "trial_wall_sd_us": 0.007159657414419814,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 0.3031684027777778,
+          "system_us": 0.4225260416666667,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3605340711805555,
+              "cpu_us": 0.3617465277777778
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10747157118055556,
+              "cpu_us": 0.10738151041666666
+            }
+          }
+        },
+        "early_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.273235894097222,
+          "cpu_us": 2.2738715277777777,
+          "off_cpu_us": -0.0006356336805555252,
+          "trial_wall_min_us": 2.157734375,
+          "trial_wall_max_us": 2.5843359375,
+          "trial_wall_sd_us": 0.13168938775568526,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 1.7055121527777777,
+          "system_us": 0.568359375,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0.3185991753472222,
+              "cpu_us": 0.29735763888888894
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3050062934027778,
+              "cpu_us": 0.30600542534722225
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.888089626736111,
+              "cpu_us": 0.8960872395833334
+            }
+          }
+        },
+        "pread_4k_then_24k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 1.9590772569444443,
+          "cpu_us": 1.9594184027777777,
+          "off_cpu_us": -0.0003411458333333339,
+          "trial_wall_min_us": 1.89417578125,
+          "trial_wall_max_us": 2.113296875,
+          "trial_wall_sd_us": 0.0680963769267611,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.8595920138888888,
+          "system_us": 1.0998263888888888,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.4817795138888889,
+              "cpu_us": 0.461248046875
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.8213522135416667,
+              "cpu_us": 0.8301302083333335
+            }
+          }
+        },
+        "late_prefetch": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 2.1750946180555557,
+          "cpu_us": 2.175564236111111,
+          "off_cpu_us": -0.0004696180555554541,
+          "trial_wall_min_us": 2.12928515625,
+          "trial_wall_max_us": 2.308994140625,
+          "trial_wall_sd_us": 0.055083628755162886,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 1.861328125,
+          "system_us": 0.3142361111111111,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3309618055555556,
+              "cpu_us": 0.31521788194444444
+            },
+            "late_hint": {
+              "wall_us": 0.27401757812499994,
+              "cpu_us": 0.27368142361111114
+            },
+            "copy": {
+              "wall_us": 0.826918185763889,
+              "cpu_us": 0.834771701388889
+            }
+          }
+        },
+        "pread_28k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 1.731128689236111,
+          "cpu_us": 1.7317708333333333,
+          "off_cpu_us": -0.0006421440972221859,
+          "trial_wall_min_us": 1.647052734375,
+          "trial_wall_max_us": 1.9124921875,
+          "trial_wall_sd_us": 0.07661501556143169,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.5887586805555556,
+          "system_us": 1.1430121527777777,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.9771942274305554,
+              "cpu_us": 0.9648016493055555
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.10431423611111112,
+              "cpu_us": 0.103443359375
+            }
+          }
+        },
+        "serial_full": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 1.8406762152777776,
+          "cpu_us": 1.841362847222222,
+          "off_cpu_us": -0.0006866319444445157,
+          "trial_wall_min_us": 1.761875,
+          "trial_wall_max_us": 2.08404296875,
+          "trial_wall_sd_us": 0.11057524642562304,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0.439453125,
+          "user_us": 1.4416232638888888,
+          "system_us": 0.3997395833333333,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3309548611111111,
+              "cpu_us": 0.31165820312500003
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.866322482638889,
+              "cpu_us": 0.8742065972222223
+            }
+          }
+        },
+        "pread_4k": {
+          "trials": 9,
+          "operations": 4608,
+          "wall_us": 0.7435399305555556,
+          "cpu_us": 0.7437065972222222,
+          "off_cpu_us": -0.0001666666666666483,
+          "trial_wall_min_us": 0.734794921875,
+          "trial_wall_max_us": 0.7564375,
+          "trial_wall_sd_us": 0.0069925636649693385,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.04600694444444445,
+          "system_us": 0.6976996527777778,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0.3852230902777778,
+              "cpu_us": 0.38597569444444446
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0.103697265625,
+              "cpu_us": 0.10343381076388888
+            }
+          }
+        },
+        "source_account_lookup": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 0.11374114990234377,
+          "cpu_us": 0.1137420654296875,
+          "off_cpu_us": -9.155273437283507e-7,
+          "trial_wall_min_us": 0.11246832275390625,
+          "trial_wall_max_us": 0.11452447509765624,
+          "trial_wall_sd_us": 0.0007988603355604541,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.1137420654296875,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        },
+        "source_code_lookup": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 0.13075860595703123,
+          "cpu_us": 0.1307586669921875,
+          "off_cpu_us": -6.10351562624345e-8,
+          "trial_wall_min_us": 0.12887754821777345,
+          "trial_wall_max_us": 0.13454261779785157,
+          "trial_wall_sd_us": 0.00224671292504047,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.1307586669921875,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        },
+        "source_code_lookup_copy_verify": {
+          "trials": 5,
+          "operations": 327680,
+          "wall_us": 0.8852901367187501,
+          "cpu_us": 0.88529052734375,
+          "off_cpu_us": -3.906249999019451e-7,
+          "trial_wall_min_us": 0.8841649475097656,
+          "trial_wall_max_us": 0.886597640991211,
+          "trial_wall_sd_us": 0.001102438851958104,
+          "read_requests_per_operation": 0,
+          "read_bytes_per_operation": 0,
+          "major_faults_per_operation": 0,
+          "minor_faults_per_operation": 0,
+          "user_us": 0.88529052734375,
+          "system_us": 0,
+          "stages": {
+            "early_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "lookup_or_read": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "late_hint": {
+              "wall_us": 0,
+              "cpu_us": 0
+            },
+            "copy": {
+              "wall_us": 0,
+              "cpu_us": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "wide_source": {
+    "wide_source_account_lookup": {
+      "trials": 5,
+      "operations": 2621440,
+      "wall_us": 0.6056380374908448,
+      "cpu_us": 0.6056190490722656,
+      "off_cpu_us": 0.000018988418579168886,
+      "trial_wall_min_us": 0.6006012382507324,
+      "trial_wall_max_us": 0.6193663730621338,
+      "trial_wall_sd_us": 0.007759739134180676,
+      "read_requests_per_operation": 0,
+      "read_bytes_per_operation": 0,
+      "major_faults_per_operation": 0,
+      "minor_faults_per_operation": 0,
+      "user_us": 0.6056190490722656,
+      "system_us": 0,
+      "stages": {
+        "early_hint": {
+          "wall_us": 0,
+          "cpu_us": 0
+        },
+        "lookup_or_read": {
+          "wall_us": 0,
+          "cpu_us": 0
+        },
+        "late_hint": {
+          "wall_us": 0,
+          "cpu_us": 0
+        },
+        "copy": {
+          "wall_us": 0,
+          "cpu_us": 0
+        }
+      }
+    },
+    "wide_source_code_lookup": {
+      "trials": 5,
+      "operations": 2621440,
+      "wall_us": 0.8218424339294434,
+      "cpu_us": 0.821826171875,
+      "off_cpu_us": 0.000016262054443494378,
+      "trial_wall_min_us": 0.8202471828460693,
+      "trial_wall_max_us": 0.8235513343811035,
+      "trial_wall_sd_us": 0.0012917472398146408,
+      "read_requests_per_operation": 0,
+      "read_bytes_per_operation": 0,
+      "major_faults_per_operation": 0,
+      "minor_faults_per_operation": 0,
+      "user_us": 0.821826171875,
+      "system_us": 0,
+      "stages": {
+        "early_hint": {
+          "wall_us": 0,
+          "cpu_us": 0
+        },
+        "lookup_or_read": {
+          "wall_us": 0,
+          "cpu_us": 0
+        },
+        "late_hint": {
+          "wall_us": 0,
+          "cpu_us": 0
+        },
+        "copy": {
+          "wall_us": 0,
+          "cpu_us": 0
+        }
+      }
+    }
+  },
+  "codecs": {
+    "jemalloc": {
+      "512_drop": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 0.4152104722222222,
+        "cpu_us": 0.4152227444444445,
+        "off_cpu_us": -0.000012272222222331486,
+        "trial_wall_min_us": 0.41242776388888885,
+        "trial_wall_max_us": 0.4175589027777778,
+        "trial_wall_sd_us": 0.002093726694683271,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 0,
+        "decode_us": 0.4151814666666666,
+        "drop_us": 0.000008297222222222222
+      },
+      "512_retain": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 2.274603497222222,
+        "cpu_us": 2.2745600055555553,
+        "off_cpu_us": 0.000043491666666728435,
+        "trial_wall_min_us": 2.083981777777778,
+        "trial_wall_max_us": 2.6428635,
+        "trial_wall_sd_us": 0.22197325434058918,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 1.143825,
+        "decode_us": 2.053076644444445,
+        "drop_us": 0.22149456944444443
+      },
+      "8192_drop": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 0.9477124777777777,
+        "cpu_us": 0.9477025750000001,
+        "off_cpu_us": 0.000009902777777570648,
+        "trial_wall_min_us": 0.9399489305555556,
+        "trial_wall_max_us": 0.9545750833333334,
+        "trial_wall_sd_us": 0.005518080175274394,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 0,
+        "decode_us": 0.9476695777777778,
+        "drop_us": 0.000009038888888888887
+      },
+      "8192_retain": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 2.8191430138888887,
+        "cpu_us": 2.8190812472222224,
+        "off_cpu_us": 0.00006176666666624087,
+        "trial_wall_min_us": 2.6226353472222224,
+        "trial_wall_max_us": 3.0266787916666664,
+        "trial_wall_sd_us": 0.1808858704853002,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 1.2598972222222222,
+        "decode_us": 2.5976715194444444,
+        "drop_us": 0.22144276388888887
+      }
+    },
+    "system": {
+      "512_drop": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 0.4064562222222222,
+        "cpu_us": 0.40646664444444436,
+        "off_cpu_us": -0.00001042222222213951,
+        "trial_wall_min_us": 0.404691,
+        "trial_wall_max_us": 0.4075901805555555,
+        "trial_wall_sd_us": 0.0012429547185201977,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 0,
+        "decode_us": 0.4064265944444444,
+        "drop_us": 0.000008555555555555558
+      },
+      "512_retain": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 4.944885094444444,
+        "cpu_us": 4.944720280555556,
+        "off_cpu_us": 0.00016481388888767157,
+        "trial_wall_min_us": 4.915531180555556,
+        "trial_wall_max_us": 4.969370541666667,
+        "trial_wall_sd_us": 0.025131019207639885,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 6.773777777777778,
+        "decode_us": 4.3412227111111115,
+        "drop_us": 0.6035951333333334
+      },
+      "8192_drop": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 1.042851747222222,
+        "cpu_us": 1.0427983027777779,
+        "off_cpu_us": 0.000053444444444217254,
+        "trial_wall_min_us": 1.0316040555555555,
+        "trial_wall_max_us": 1.0493798749999999,
+        "trial_wall_sd_us": 0.00775621368102639,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 0,
+        "decode_us": 1.0427775916666666,
+        "drop_us": 0.00001283611111111111
+      },
+      "8192_retain": {
+        "trials": 5,
+        "operations": 360000,
+        "wall_us": 5.349431694444445,
+        "cpu_us": 5.3493589055555555,
+        "off_cpu_us": 0.00007278888888961887,
+        "trial_wall_min_us": 5.3103361527777775,
+        "trial_wall_max_us": 5.375488722222222,
+        "trial_wall_sd_us": 0.025108928621930374,
+        "read_requests_per_operation": 0,
+        "read_bytes_per_operation": 0,
+        "major_faults_per_operation": 0,
+        "minor_faults_per_operation": 6.773777777777778,
+        "decode_us": 4.804450838888889,
+        "drop_us": 0.5449148694444443
+      }
+    }
+  },
+  "block": {
+    "lat-direct4,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 83.21377777777778
+    },
+    "lat-direct28,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 84.57077777777778
+    },
+    "lat-pread2,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 83.18933333333332
+    },
+    "lat-pread28,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 113.81788888888889
+    },
+    "lat-direct2,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 113.44355555555556
+    },
+    "lat-late,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 112.825
+    },
+    "lat-direct4,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 114.3398888888889
+    },
+    "lat-prefix,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 84.898
+    },
+    "lat-direct2,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 84.59188888888889
+    },
+    "lat-serial,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 83.52677777777778
+    },
+    "lat-pread2,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 113.14344444444444
+    },
+    "lat-early,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 91.99833333333333
+    },
+    "lat-serial,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 112.68233333333333
+    },
+    "lat-pread4,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 112.86633333333333
+    },
+    "lat-early,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 127.99577777777777
+    },
+    "lat-pread4,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 83.91622222222222
+    },
+    "lat-prefix,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 112.95077777777779
+    },
+    "lat-pread28,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 83.77844444444443
+    },
+    "lat-late,16384": {
+      "requests": 9,
+      "issue_to_completion_us": 85.38455555555556
+    },
+    "lat-direct28,32768": {
+      "requests": 9,
+      "issue_to_completion_us": 113.76422222222222
+    },
+    "lat-early,4096": {
+      "requests": 81,
+      "issue_to_completion_us": 76.76567901234567
+    },
+    "lat-pread2,4096": {
+      "requests": 4599,
+      "issue_to_completion_us": 63.61729202000435
+    },
+    "lat-pread2,24576": {
+      "requests": 4599,
+      "issue_to_completion_us": 92.16441139378125
+    },
+    "lat-pread4,4096": {
+      "requests": 4599,
+      "issue_to_completion_us": 63.674054577081975
+    },
+    "lat-late,24576": {
+      "requests": 4599,
+      "issue_to_completion_us": 92.26436594911937
+    },
+    "lat-early,28672": {
+      "requests": 4599,
+      "issue_to_completion_us": 97.71279865188085
+    },
+    "lat-pread28,28672": {
+      "requests": 4599,
+      "issue_to_completion_us": 97.32059447706024
+    },
+    "lat-late,4096": {
+      "requests": 4680,
+      "issue_to_completion_us": 63.56273055555556
+    },
+    "lat-prefix,4096": {
+      "requests": 4680,
+      "issue_to_completion_us": 63.48214978632478
+    },
+    "lat-direct28,28672": {
+      "requests": 9216,
+      "issue_to_completion_us": 98.34475162760417
+    },
+    "lat-direct2,4096": {
+      "requests": 9216,
+      "issue_to_completion_us": 63.71345594618055
+    },
+    "lat-direct2,24576": {
+      "requests": 9216,
+      "issue_to_completion_us": 92.23167795138889
+    },
+    "lat-direct4,4096": {
+      "requests": 9216,
+      "issue_to_completion_us": 64.05327235243055
+    },
+    "lat-serial,4096": {
+      "requests": 32274,
+      "issue_to_completion_us": 63.625316012889634
+    }
+  },
+  "decomposition": {
+    "follower_device_cold": {
+      "late_prefetch_minus_two_prefix_us": 28.24597265624999,
+      "off_cpu_excess_us": 24.405911892361104,
+      "cpu_excess_us": 3.8400607638888893
+    },
+    "builder_device_cold": {
+      "late_prefetch_minus_two_prefix_us": 30.662846354166675,
+      "off_cpu_excess_us": 27.580164062500003,
+      "cpu_excess_us": 3.082682291666666
+    },
+    "second_request_minus_first_service_us": 28.701635393563805
+  }
+}

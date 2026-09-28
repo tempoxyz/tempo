@@ -1,0 +1,133 @@
+{
+  "target_gas_per_second": 1000000000,
+  "anchors": [
+    {
+      "id": "RD",
+      "kind": "measured",
+      "mgas_per_second": 189.95685223699238,
+      "useful_operations_per_second": 80530.24896076013,
+      "existing_workload_gas_per_operation": 2358.826089430723,
+      "target_gas_per_operation": 12417.694132390783,
+      "scope": "Builder durable frontier (slightly slower than follower)",
+      "notes": "Existing EIP-2930 lists plus speculative prewarming, not a dedicated declared-key fetcher."
+    },
+    {
+      "id": "RS",
+      "kind": "measured",
+      "mgas_per_second": 36.45002744,
+      "useful_operations_per_second": 16776,
+      "existing_workload_gas_per_operation": 2172.7484167858843,
+      "target_gas_per_operation": 59608.96518836433,
+      "scope": "Canonical production / full wall time; builder prewarming disabled",
+      "notes": "Engine prewarming remains enabled. Large transactions do not establish within-block prewarming bypass."
+    },
+    {
+      "id": "WD",
+      "kind": "measured",
+      "mgas_per_second": 14.916243873741017,
+      "useful_operations_per_second": 2805.7551448722106,
+      "existing_workload_gas_per_operation": 5316.302778951292,
+      "target_gas_per_operation": 356410.2882703777,
+      "scope": "Follower durable frontier",
+      "notes": "Backlog grew; provisional service rate from overload, not demonstrated sustainable capacity."
+    },
+    {
+      "id": "WS",
+      "kind": "measured",
+      "mgas_per_second": 8.403797522313434,
+      "useful_operations_per_second": 1627.109215005198,
+      "existing_workload_gas_per_operation": 5164.863824022155,
+      "target_gas_per_operation": 614586.8948304158,
+      "scope": "Follower durable frontier; history-dependent writes with speculative prewarming enabled",
+      "notes": "Older run with different memory controls; backlog grew. One SLOAD plus changed nonzero-to-nonzero SSTORE per unit."
+    },
+    {
+      "id": "BS",
+      "kind": "measured",
+      "mgas_per_second": 16.56923044546422,
+      "useful_operations_per_second": 5959.048212387681,
+      "existing_workload_gas_per_operation": 2780.5162594623876,
+      "target_gas_per_operation": 167812.03379445698,
+      "scope": "Follower executed gas / wall time, including pipeline work; operations inferred from canonical gas mix",
+      "notes": "Read-only bytecode, OOM-fixed node; warmup catch-up intervention. Not a durable-frontier count. Account record is not independently cold.",
+      "operation_count_kind": "inferred from measured gas and workload gas per access"
+    },
+    {
+      "id": "BD",
+      "kind": "estimated",
+      "mgas_per_second": 79.53768793880782,
+      "useful_operations_per_second": 28605.36695951076,
+      "existing_workload_gas_per_operation": 2780.5162594623876,
+      "target_gas_per_operation": 34958.474800041615,
+      "scope": "Hypothetical known-target bytecode prefetch; no direct benchmark",
+      "notes": "Apply the observed declared/serial storage-read operation-rate ratio to serial code. Mgas/s is equivalent at the serial bytecode workload gas/access, NOT measured access-list gas throughput. May overstate gains if bytes, CPU, staging, or cache capacity limit code prefetch.",
+      "operation_count_kind": "inferred from measured gas and workload gas per access",
+      "model_gain": 4.800324806912263,
+      "source_ids": [
+        "RD",
+        "RS",
+        "BS"
+      ]
+    }
+  ],
+  "proxy_rows": [
+    {
+      "operation": "Account metadata read",
+      "mode": "access_list",
+      "kind": "estimated",
+      "source_id": "RD",
+      "proxy_mgas_per_second": 189.95685223699238,
+      "useful_operations_per_second": 80530.24896076013,
+      "target_gas_per_operation": 12417.694132390783,
+      "note": "Transfer per-operation service time from the corresponding storage benchmark. Mgas/s is the proxy benchmark rate, not an account-op measurement. Account-table/trie behavior is not isolated."
+    },
+    {
+      "operation": "Account metadata read",
+      "mode": "serial",
+      "kind": "estimated",
+      "source_id": "RS",
+      "proxy_mgas_per_second": 36.45002744,
+      "useful_operations_per_second": 16776,
+      "target_gas_per_operation": 59608.96518836433,
+      "note": "Transfer per-operation service time from the corresponding storage benchmark. Mgas/s is the proxy benchmark rate, not an account-op measurement. Account-table/trie behavior is not isolated."
+    },
+    {
+      "operation": "Existing account metadata update",
+      "mode": "access_list",
+      "kind": "estimated",
+      "source_id": "WD",
+      "proxy_mgas_per_second": 14.916243873741017,
+      "useful_operations_per_second": 2805.7551448722106,
+      "target_gas_per_operation": 356410.2882703777,
+      "note": "Transfer per-operation service time from the corresponding storage benchmark. Mgas/s is the proxy benchmark rate, not an account-op measurement. Account-table/trie behavior is not isolated."
+    },
+    {
+      "operation": "Existing account metadata update",
+      "mode": "serial",
+      "kind": "estimated",
+      "source_id": "WS",
+      "proxy_mgas_per_second": 8.403797522313434,
+      "useful_operations_per_second": 1627.109215005198,
+      "target_gas_per_operation": 614586.8948304158,
+      "note": "Transfer per-operation service time from the corresponding storage benchmark. Mgas/s is the proxy benchmark rate, not an account-op measurement. Account-table/trie behavior is not isolated."
+    }
+  ],
+  "read_prefetch_model_gain": 4.800324806912263,
+  "sources_sha256": {
+    "bench-results/declared-storage-20260925/results.json": "b43abe2d2d7a85e3907cd5dafc0d56a5752b8fe7db58c9eb7e73759dd4c787fa",
+    "bench-results/builder-prewarm-control-20260925/experiment.json": "715325d677355d69956c379302d6d888af4e6bc2471e5b47b5cb7ef0b7eb94f6",
+    "bench-results/history-state-paths-sustained-20260924-v2/throughput.json": "e8c6c606aae68e78787b3361b3bfa690c6bcf77ae67b7eaf28844b7817420378",
+    "bench-results/20260924-064732-969/report-feature-1.json": "9e2c827b872e39d52217b6df8653e244d0feab9e8392be9abf62c372fb1455aa",
+    "bench-results/bytecode-oom-fix-20260926/results.json": "9942344441a93bb0da29982712c70e00f44909c8c8889f15a5ccccab5e12f7d5"
+  },
+  "gas_meaning": "Amortized whole-workload budget per useful resource operation, not an isolated opcode price or additive surcharge. No safety margin.",
+  "not_calibrated": [
+    "new storage slots",
+    "account creation",
+    "deletion/refunds",
+    "code deployment or replacement",
+    "sustained mixed workloads",
+    "account-only cold fixtures",
+    "dedicated declared-code prefetch"
+  ]
+}

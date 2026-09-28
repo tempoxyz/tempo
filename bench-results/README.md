@@ -1,11 +1,19 @@
 # State-access benchmark evidence
 
-Completed experiments through 2026-09-25. Source, presets, audits, and analyzers
+Completed experiments through 2026-09-28. Source, presets, audits, and analyzers
 are under [contrib/bench](../contrib/bench/README.md). The separate txgen and Reth
 changes are included as pinned [dependency patches](../contrib/bench/patches/README.md).
 
 | Experiment | Report | Scope |
 | --- | --- | --- |
+| Latest runbook | [Fresh-checkout setup](../contrib/bench/state-access-reproduction.md) | Pinned builds, fixtures and native suite commands; no archived binaries required |
+| Builder prewarming | [Four-cell control](builder-prewarm-control-20260925/RESULTS.md) | SLOAD on/off; bytecode on and failed/OOM off run, preserving failure status |
+| Bytecode OOM fix | [Bounded pipeline cache](bytecode-oom-fix-20260926/README.md) | Successful 20 GiB follower regression with warmup catch-up intervention; not a strict A/B |
+| Bytecode latency | [I/O and CPU decomposition](bytecode-latency-breakdown-20260927/README.md) | Cold/warm MDBX, direct I/O, block tracing and actual codec/allocator controls |
+| SSD performance | [Read bandwidth](ssd-read-bandwidth-20260927/README.md) | Read-only sequential/random controls on both devices |
+| Ethereum opcodes | [Mainnet prevalence](mainnet-bytecode-opcodes-20260927/README.md) | Public trace data and selection/coverage limits |
+| Code deduplication | [Size accounting](bytecode-dedup-20260927/README.md) | Historical public dataset; not a current live-state census |
+| Gas calibration | [Measured and estimated costs](gas-calibration-20260928/README.md) | Explicit operation counts and metric boundaries at a 1 Ggas/s target |
 | Declared storage | [Read/write results](declared-storage-20260925/README.md) | Existing access lists, 128 slots/tx, separate read and changed-slot-write cases |
 | Write slowdown | [Persistence diagnosis](declared-storage-20260925/diagnosis/README.md) | Hashed-state/trie updates, page faults, I/O, and post-load drain |
 | Latency calibration | [Sized transactions](state-access-latency-20260925/README.md) | 7,200 SLOADs or 2,250 code accesses; canceled work and full wall windows |
@@ -37,10 +45,14 @@ identify the measurement host and do not refer to files available in a fresh clo
 are committed and their SHA-256 digests, plus the paths and sizes of retained
 local raw artifacts. Raw node logs, compressed traces, metric streams, executable
 binaries, and databases are not Git blobs. They remain in the original local
-archive; no hosted raw-artifact download is claimed. The raw archives total about
-28 GB, and full reanalysis scripts require their referenced raw inputs. A fresh
+archive; no hosted raw-artifact download is claimed. Raw artifact sizes are listed
+in the inventory, and full reanalysis scripts require their referenced raw inputs. A fresh
 clone can inspect the reports and rebuild/rerun the workloads with the documented
 fixtures and dependency patches. Build manifests retain binary and source hashes.
 
-The separate builder-prewarming control experiment was still running when this
-snapshot was prepared; its live files are excluded from this completed-results set.
+The builder-prewarming control and follow-up OOM regression are now included.
+The latency, SSD, opcode-prevalence and gas-calibration analyses have compact
+checked-in inputs and can be recomputed without raw node archives; see the runbook.
+Full deduplication analysis downloads checksum-verified public ZIPs rather than
+checking in multiple gigabytes of data. Historical absolute paths and frozen
+runners describe the original host; current entry points live in `contrib/bench`.
