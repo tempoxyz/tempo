@@ -36,17 +36,17 @@ jobs:
       packages: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/actions/secure-runner@ac946e06f5f59daeebc8d33d8e7b9c9501e2ee98 # 2026-09-28T13-48-02Z-ac946e06
 
       - name: Log in to GitHub Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@ac946e06f5f59daeebc8d33d8e7b9c9501e2ee98 # 2026-09-28T13-48-02Z-ac946e06
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@ac946e06f5f59daeebc8d33d8e7b9c9501e2ee98 # 2026-09-28T13-48-02Z-ac946e06
 
       - name: Resolve image digest
         id: image
