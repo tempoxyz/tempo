@@ -73,6 +73,7 @@ serde_json.workspace = true
 commonware-macros.workspace = true
 commonware-parallel.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }
+tempo-alloy.workspace = true
 tempo-eyre.workspace = true
 tempo-primitives.workspace = true
 tracing-subscriber.workspace = true

@@ -13788,6 +13788,7 @@ dependencies = [
  "reth-static-file",
  "serde_json",
  "tempfile",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-dkg-onchain-artifacts",
