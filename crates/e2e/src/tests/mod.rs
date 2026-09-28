@@ -13,6 +13,7 @@ mod consensus_rpc;
 mod dkg;
 mod fee_recipient;
 mod follow;
+mod funding;
 mod linkage;
 mod metrics;
 mod payload_builder;
