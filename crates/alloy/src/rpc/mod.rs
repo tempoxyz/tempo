@@ -17,3 +17,6 @@ mod reth_compat;
 
 /// Various helper types for paginated queries.
 pub mod pagination;
+
+mod fork_schedule;
+pub use fork_schedule::{ForkInfo, ForkSchedule};
