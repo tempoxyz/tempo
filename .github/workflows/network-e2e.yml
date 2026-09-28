@@ -22,7 +22,7 @@ jobs:
       sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac
+        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
       - name: Resolve exact revision
         id: target
         env:
@@ -34,7 +34,7 @@ jobs:
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
       - name: Detect consensus changes
         id: paths
-        uses: tempoxyz/gh-actions/actions/changed-paths@dbb0256f9aa5b834d1f64bc7db4c14f75fa16453
+        uses: tempoxyz/gh-actions/actions/changed-paths@c28778f589e9cd5b6e17a395a3203cedbd0f3f6f # 2026-09-28T07-25-04Z-c28778f5
         with:
           base: ${{ steps.target.outputs.base }}
           head: ${{ steps.target.outputs.sha }}
@@ -43,7 +43,8 @@ jobs:
               - 'crates/consensus/**'
       - name: Detect Reth revision changes
         id: reth
-        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@dbb0256f9aa5b834d1f64bc7db4c14f75fa16453
+        # Before rollout, replace this reviewed PR pin with the tagged merge commit.
+        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@7338adb8da6455a7134ac5cdb31b91c0163d2078 # refs/pull/299/head
         with:
           base: ${{ steps.target.outputs.base }}
           head: ${{ steps.target.outputs.sha }}
@@ -87,7 +88,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac
+        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
       - name: Check prerequisites
         env:
           DETECT_RESULT: ${{ needs.detect.result }}
@@ -137,7 +138,7 @@ jobs:
             -H 'Content-Type: application/json' --data "$payload"
       - name: Wait for this Argo run
         if: needs.detect.outputs.required == 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SHA: ${{ needs.detect.outputs.sha }}
           STATUS_CONTEXT: Workflows / tempo-network-e2e / ${{ github.run_id }}-${{ github.run_attempt }}
