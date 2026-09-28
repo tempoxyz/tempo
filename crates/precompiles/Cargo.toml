@@ -78,14 +78,10 @@ serde = [
 	"alloy/serde",
 	"alloy-primitives/serde",
 	"bitflags/serde",
-	"p256/serde",
-	"p384/serde",
-	"rand_08/serde",
 	"revm/serde",
 	"tempo-chainspec/serde",
 	"tempo-contracts/serde",
-	"tempo-primitives/serde",
-	"tempo-revm/serde"
+	"tempo-primitives/serde"
 ]
 
 [[test]]

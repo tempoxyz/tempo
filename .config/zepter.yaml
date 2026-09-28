@@ -20,6 +20,12 @@ workflows:
         # PublicKey serializes via B256, not ed25519-consensus's serde impl.
         # Propagating would also break no_std (ed25519-consensus/serde pulls serde/std).
         "--ignore-missing-propagate=tempo-primitives/serde:ed25519-consensus/serde",
+        # `tempo-precompiles/serde` only derives serde for `Tip20TokenMetadata`. Propagating it to
+        # dev-dependencies breaks workspace test builds (`p384/serde` is enabled without `serdect`).
+        "--ignore-missing-propagate=tempo-precompiles/serde:p256/serde",
+        "--ignore-missing-propagate=tempo-precompiles/serde:p384/serde",
+        "--ignore-missing-propagate=tempo-precompiles/serde:rand/serde",
+        "--ignore-missing-propagate=tempo-precompiles/serde:tempo-revm/serde",
         # Auxiliary flags:
         "--offline",
         "--locked",
