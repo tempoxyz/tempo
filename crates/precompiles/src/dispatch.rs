@@ -34,6 +34,16 @@ pub const fn abi_decoder_config_for_spec(
 pub mod typed {
     use super::*;
 
+    #[inline]
+    fn reject_static_call() -> PrecompileResult {
+        if !StorageCtx.spec().is_t12() {
+            let encoded = StaticCallNotAllowed {}.abi_encode().into();
+            return Ok(PrecompileOutput::revert(0, encoded, StorageCtx.reservoir()));
+        }
+        error::TempoPrecompileError::StaticCallNotAllowed
+            .into_precompile_result(0, StorageCtx.reservoir())
+    }
+
     /// Dispatches a parameterless view call, encoding the return via `T`.
     #[inline]
     pub fn metadata<T: SolCall, E: IntoPrecompileResult>(
@@ -53,7 +63,7 @@ pub mod typed {
 
     /// Dispatches a state-mutating call that returns ABI-encoded data.
     ///
-    /// Rejects static calls with [`StaticCallNotAllowed`].
+    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
     #[inline]
     pub fn mutate<T: SolCall, E: IntoPrecompileResult>(
         call: T,
@@ -61,18 +71,14 @@ pub mod typed {
         f: impl FnOnce(Address, T) -> core::result::Result<T::Return, E>,
     ) -> PrecompileResult {
         if StorageCtx.is_static() {
-            return Ok(PrecompileOutput::revert(
-                0,
-                StaticCallNotAllowed {}.abi_encode().into(),
-                StorageCtx.reservoir(),
-            ));
+            return reject_static_call();
         }
         f(sender, call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
     }
 
     /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
     ///
-    /// Rejects static calls with [`StaticCallNotAllowed`].
+    /// Rejects static calls: pre-T12 with [`StaticCallNotAllowed`], T12 with an execution halt.
     #[inline]
     pub fn mutate_void<T: SolCall, E: IntoPrecompileResult>(
         call: T,
@@ -80,11 +86,7 @@ pub mod typed {
         f: impl FnOnce(Address, T) -> core::result::Result<(), E>,
     ) -> PrecompileResult {
         if StorageCtx.is_static() {
-            return Ok(PrecompileOutput::revert(
-                0,
-                StaticCallNotAllowed {}.abi_encode().into(),
-                StorageCtx.reservoir(),
-            ));
+            return reject_static_call();
         }
         f(sender, call).encode_precompile_result(0, 0, |()| Bytes::new())
     }
