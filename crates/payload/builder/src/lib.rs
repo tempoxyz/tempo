@@ -1091,7 +1091,6 @@ where
         );
 
         drop(db);
-        drop(evm_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }
