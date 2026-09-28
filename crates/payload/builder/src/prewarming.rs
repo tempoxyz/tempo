@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -354,7 +354,11 @@ impl Iterator for BestTransactionsPrewarming {
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        self.transactions_rx.recv().ok()?.or_else(|| self.transactions_rx.try_iter().flatten().next()).map(gate)
+        self.transactions_rx
+            .recv()
+            .ok()?
+            .or_else(|| self.transactions_rx.try_iter().flatten().next())
+            .map(gate)
     }
 }
 
@@ -528,7 +532,7 @@ where
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -556,6 +560,8 @@ where
             inner: state_provider,
         });
 
+        let mut state_provider: EvmStateProviderBox =
+            Box::new(state_provider.into_evm_state_provider());
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(
                 state_provider,
@@ -994,6 +1000,9 @@ mod tests {
                 transactions_rx,
                 commands_tx,
                 stop: Arc::default(),
+                exec_driven: false,
+                invalid_senders: Default::default(),
+                invalid_seq_ids: Default::default(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
@@ -1027,6 +1036,9 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            exec_driven: false,
+            invalid_senders: Default::default(),
+            invalid_seq_ids: Default::default(),
         };
 
         let next = prewarming.next();
@@ -1053,6 +1065,9 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            exec_driven: false,
+            invalid_senders: Default::default(),
+            invalid_seq_ids: Default::default(),
         };
 
         assert!(prewarming.next().is_none());
@@ -1080,6 +1095,9 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            exec_driven: false,
+            invalid_senders: Default::default(),
+            invalid_seq_ids: Default::default(),
         };
 
         assert_eq!(
