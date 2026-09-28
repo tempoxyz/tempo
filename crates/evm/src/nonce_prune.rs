@@ -5,7 +5,7 @@ use alloy_evm::{Database, EvmEnv, block::BlockExecutionError};
 use reth_revm::{
     Database as _, context::JournalTr, database::StateProviderDatabase, state::EvmState,
 };
-use reth_storage_api::{StateProviderBox, errors::ProviderResult};
+use reth_storage_api::{StateProvider as _, StateProviderBox, errors::ProviderResult};
 use std::sync::{Arc, Mutex, mpsc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
@@ -58,7 +58,11 @@ impl TempoEvmConfig {
                 let start = std::time::Instant::now();
                 let block = env.block_env.number;
                 let result = (|| {
-                    let mut db = StateProviderDatabase::new(provider().map_err(BlockExecutionError::other)?);
+                    let mut db = StateProviderDatabase::new(
+                        provider()
+                            .map_err(BlockExecutionError::other)?
+                            .into_evm_state_provider(),
+                    );
                     // Deployment initializes the cursor on the execution thread. There is
                     // nothing to prune in the parent of the deployment block.
                     let info = db.basic(EXPIRING_NONCE_PRECOMPILE_ADDRESS)
