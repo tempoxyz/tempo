@@ -17,7 +17,10 @@ use crate::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
         payload_budget_decision, scaled_build_time_multiplier,
     },
-    encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
+    encode::{
+        EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
+        block_transaction_length,
+    },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
@@ -50,7 +53,10 @@ use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention, state::EvmState,
 };
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
+use reth_storage_api::{
+    EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
+    StateRootProvider,
+};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -330,19 +336,24 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let mut evm_state_provider: Box<dyn EvmStateProvider + '_> =
+            Box::new((&state_provider).into_evm_state_provider());
         if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
-                state_provider,
+            evm_state_provider = Box::new(CachedStateProvider::new(
+                evm_state_provider,
                 execution_cache.cache().clone(),
                 Some(self.cache_metrics.clone()),
             ));
         }
         if self.config.state_provider_metrics {
-            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
+            evm_state_provider = Box::new(InstrumentedStateProvider::new(
+                evm_state_provider,
+                "builder",
+            ));
         }
 
-        let state = StateProviderDatabase::new(&state_provider);
+        let state = StateProviderDatabase::new(&evm_state_provider);
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
@@ -610,7 +621,8 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = tx.transaction.encoded_length();
+            let tx_rlp_length =
+                block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -1079,6 +1091,7 @@ where
         );
 
         drop(db);
+        drop(evm_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }
