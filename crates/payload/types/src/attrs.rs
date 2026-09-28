@@ -5,8 +5,8 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
-use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
+use std::time::Duration;
+use tempo_primitives::TempoConsensusContext;
 
 /// Container type for all components required to build a payload.
 ///
@@ -47,10 +47,6 @@ pub struct TempoPayloadAttributes {
     proposer_public_key: Option<B256>,
     /// Consensus view for this block
     consensus_context: Option<TempoConsensusContext>,
-    /// Subblocks closure.
-    #[debug(skip)]
-    #[serde(skip, default = "default_subblocks")]
-    subblocks: Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static>,
 }
 
 impl Default for TempoPayloadAttributes {
@@ -71,7 +67,6 @@ impl TempoPayloadAttributes {
         timestamp_millis_part: u64,
         extra_data: Bytes,
         consensus_context: Option<TempoConsensusContext>,
-        subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         Self {
             inner: EthPayloadAttributes {
@@ -89,7 +84,6 @@ impl TempoPayloadAttributes {
             extra_data,
             proposer_public_key,
             consensus_context,
-            subblocks: Arc::new(subblocks),
         }
     }
 
@@ -153,11 +147,6 @@ impl TempoPayloadAttributes {
     pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
         self.consensus_context
     }
-
-    /// Returns the subblocks.
-    pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
-        (self.subblocks)()
-    }
 }
 
 // Required by reth's e2e-test-utils for integration tests.
@@ -173,7 +162,6 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             extra_data: Bytes::default(),
             proposer_public_key: None,
             consensus_context: None,
-            subblocks: Arc::new(Vec::new),
         }
     }
 }
@@ -247,10 +235,6 @@ fn payload_id_from_parent_and_context(
     )
 }
 
-fn default_subblocks() -> Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static> {
-    Arc::new(Vec::new)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,10 +244,6 @@ mod tests {
     trait TestExt: Sized {
         fn random() -> Self;
         fn with_timestamp(self, millis: u64) -> Self;
-        fn with_subblocks(
-            self,
-            f: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
-        ) -> Self;
     }
 
     impl TestExt for TempoPayloadAttributes {
@@ -274,21 +254,12 @@ mod tests {
                 0,
                 Bytes::default(),
                 None,
-                Vec::new,
             )
         }
 
         fn with_timestamp(mut self, millis: u64) -> Self {
             self.inner.timestamp = millis / 1000;
             self.timestamp_millis_part = millis % 1000;
-            self
-        }
-
-        fn with_subblocks(
-            mut self,
-            f: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
-        ) -> Self {
-            self.subblocks = Arc::new(f);
             self
         }
     }
@@ -305,7 +276,6 @@ mod tests {
             500, // 1.5s
             extra_data.clone(),
             None,
-            Vec::new,
         );
         assert_eq!(attrs.extra_data(), &extra_data);
         assert_eq!(attrs.suggested_fee_recipient, Address::ZERO);
@@ -328,7 +298,6 @@ mod tests {
             0,
             Bytes::default(),
             None,
-            Vec::new,
         );
         assert_eq!(attrs2.extra_data(), &Bytes::default());
         assert_eq!(attrs2.timestamp(), 2);
@@ -360,26 +329,6 @@ mod tests {
         let attrs = TempoPayloadAttributes::random().with_timestamp(large_ts + 500);
         assert_eq!(attrs.timestamp_millis_part(), 500);
         assert!(attrs.timestamp_millis() >= large_ts);
-    }
-
-    #[test]
-    fn test_builder_attributes_subblocks() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let count_clone = call_count.clone();
-
-        let attrs = TempoPayloadAttributes::random().with_subblocks(move || {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-            Vec::new()
-        });
-
-        // Closure invoked each call
-        assert_eq!(call_count.load(Ordering::SeqCst), 0);
-        let _ = attrs.subblocks();
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-        let _ = attrs.subblocks();
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -417,7 +366,6 @@ mod tests {
         // Tempo-specific defaults
         assert_eq!(tempo_attrs.timestamp_millis_part(), 0);
         assert_eq!(tempo_attrs.extra_data(), &Bytes::default());
-        assert!(tempo_attrs.subblocks().is_empty());
     }
 
     #[test]

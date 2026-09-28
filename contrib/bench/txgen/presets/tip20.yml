@@ -12,7 +12,7 @@ accounts:
       - ${TXGEN_ACCOUNTS}
 
 artifacts:
-  ERC20: ../erc20.abi.json
+  ERC20: ../tip20.abi.json
 
 templates:
   tip20_transfer:
@@ -25,6 +25,7 @@ templates:
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
     valid_for_secs: 10
     call:
       to:

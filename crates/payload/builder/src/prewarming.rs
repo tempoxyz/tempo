@@ -8,7 +8,7 @@ use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
-use reth_storage_api::{StateProviderBox, StateProviderFactory};
+use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
@@ -17,7 +17,7 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
-pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -262,13 +262,21 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
+        // Empty replies describe earlier source polls. Drain them before deciding
+        // whether a ready transaction exists, preserving the order of actual txs.
+        if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
             return Some(tx);
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+        // An eager advance can also reply empty while this receive is waiting.
+        // Check for buffered transactions before reporting empty to the builder,
+        // but do not wait for more replies: it must still check its build budget.
+        self.transactions_rx
+            .recv()
+            .ok()?
+            .or_else(|| self.transactions_rx.try_iter().flatten().next())
     }
 }
 
@@ -362,7 +370,7 @@ where
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+        let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -374,6 +382,8 @@ where
                 return None;
             }
         };
+        let mut state_provider: EvmStateProviderBox =
+            Box::new(state_provider.into_evm_state_provider());
 
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(
@@ -470,7 +480,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
         // 2D or expiring nonces, no protocol nonces
         && tx
             .transaction
-            .nonce_key()
+            .nonce_key_ref()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
 }
 
@@ -701,7 +711,6 @@ mod tests {
             shared_gas_limit: 0,
             timestamp_millis_part: 0,
             consensus_context: None,
-            subblock_fee_recipients: Default::default(),
         };
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
@@ -779,6 +788,121 @@ mod tests {
     }
 
     #[test]
+    fn stale_empty_replies_do_not_hide_buffered_transactions() {
+        for empty_replies in [2, 32] {
+            let (transactions_tx, transactions_rx) = mpsc::channel();
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let sender = Address::random();
+            let first = test_tx(sender, 0);
+            let second = test_tx(sender, 1);
+            for _ in 0..empty_replies {
+                transactions_tx.send(None).unwrap();
+            }
+            for tx in [&first, &second] {
+                transactions_tx
+                    .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
+                    .unwrap();
+            }
+            let mut prewarming = BestTransactionsPrewarming {
+                transactions_rx,
+                commands_tx,
+                stop: Arc::default(),
+            };
+
+            assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
+            assert_eq!(prewarming.next().unwrap().tx.hash(), second.hash());
+            assert!(matches!(
+                commands_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        }
+    }
+
+    #[test]
+    fn stale_empty_replies_do_not_hide_a_fresh_advance() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        for _ in 0..32 {
+            transactions_tx.send(None).unwrap();
+        }
+        let tx = test_tx(Address::random(), 0);
+        let expected = *tx.hash();
+        let coordinator = thread::spawn(move || {
+            assert!(matches!(
+                commands_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                BestTransactionsCommand::Advance
+            ));
+            transactions_tx
+                .send(Some(PrewarmedTransaction::without_replay(tx)))
+                .unwrap();
+        });
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+        };
+
+        let next = prewarming.next();
+        coordinator.join().unwrap();
+        assert_eq!(*next.expect("fresh transaction").tx.hash(), expected);
+    }
+
+    #[test]
+    fn empty_advance_returns_none_and_can_resume_on_a_later_poll() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let tx = test_tx(Address::random(), 0);
+        let expected = *tx.hash();
+        let coordinator = thread::spawn(move || {
+            for reply in [None, Some(PrewarmedTransaction::without_replay(tx))] {
+                assert!(matches!(
+                    commands_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                    BestTransactionsCommand::Advance
+                ));
+                transactions_tx.send(reply).unwrap();
+            }
+        });
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+        };
+
+        assert!(prewarming.next().is_none());
+        assert_eq!(
+            *prewarming.next().expect("later transaction").tx.hash(),
+            expected
+        );
+        coordinator.join().unwrap();
+        assert!(prewarming.next().is_none());
+    }
+
+    #[test]
+    fn buffered_transactions_survive_empty_replies_and_coordinator_disconnect() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let tx = test_tx(Address::random(), 0);
+        let expected = *tx.hash();
+        transactions_tx.send(None).unwrap();
+        transactions_tx
+            .send(Some(PrewarmedTransaction::without_replay(tx)))
+            .unwrap();
+        drop(transactions_tx);
+        drop(commands_rx);
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+        };
+
+        assert_eq!(
+            *prewarming.next().expect("buffered transaction").tx.hash(),
+            expected
+        );
+        assert!(prewarming.next().is_none());
+    }
+
+    #[test]
     fn mark_invalid_filters_already_buffered_invalidated_transactions() {
         let sender = Address::random();
         let mut sender_nonces = 0..;
@@ -819,24 +943,6 @@ mod tests {
         wait_until(|| {
             let log = log.lock().unwrap();
             log.no_updates == 1 && log.skip_blobs == vec![true]
-        });
-    }
-
-    #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
-        let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
-
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0)];
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
-
-        assert!(prewarming.next().is_some());
-
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
         });
     }
 

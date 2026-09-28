@@ -11,7 +11,12 @@ use std::{
     time::SystemTime,
 };
 
-use alloy_consensus::Header;
+use crate::{
+    epoch::SchemeProvider,
+    gossip::Certificate,
+    test_utils::{dkg_fixture, make_certificate},
+};
+use alloy_consensus::{Header, Sealable as _};
 use commonware_actor::{Feedback, Unreliable};
 use commonware_codec::Encode as _;
 use commonware_consensus::{
@@ -23,7 +28,11 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{self as dkg, Logs, Output, SignedDealerLog},
-        primitives::{group::Share, sharing::Sharing, variant::MinSig},
+        primitives::{
+            group::Share,
+            sharing::{Mode, Sharing},
+            variant::MinSig,
+        },
     },
     ed25519::{Batch, PrivateKey, PublicKey},
     transcript::Summary,
@@ -39,16 +48,21 @@ use commonware_utils::{
     Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
 };
 use futures::{StreamExt as _, channel::mpsc};
+use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
+use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_core::primitives::SealedBlock;
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{BlockBody, TempoHeader};
 
 use super::super::{
     super::{Config, Mailbox, init},
-    Block, Digest, EpochManager, ExecutionLayer, Marshal, State,
+    Actor, Block, Digest, EpochManager, ExecutionLayer, Marshal, State,
     state::{self, Round, ShareState},
 };
+
+type TestActor = Actor<Context, StubExecutionProvider, StubMarshal, StubEpochManager>;
 
 pub(super) struct Harness {
     context: Context,
@@ -57,6 +71,8 @@ pub(super) struct Harness {
     identity: PrivateKey,
     last_finalized_height: Height,
     initial_state: Option<State>,
+    network_identity: NetworkIdentity,
+    finalized_tip: Option<(Height, Certificate)>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
     handle: Option<Handle<()>>,
@@ -65,6 +81,7 @@ pub(super) struct Harness {
     pub(super) execution: StubExecutionProvider,
     pub(super) marshal: StubMarshal,
     pub(super) epoch_manager: StubEpochManager,
+    pub(super) scheme_provider: SchemeProvider,
 }
 
 enum InitialState {
@@ -80,6 +97,8 @@ pub(super) struct HarnessBuilder {
     identity: PrivateKey,
     last_finalized_height: Height,
     initial_state: InitialState,
+    network_identity: Option<NetworkIdentity>,
+    finalized_tip: Option<(Height, Certificate)>,
     execution: StubExecutionProvider,
     marshal: StubMarshal,
     epoch_manager: StubEpochManager,
@@ -114,6 +133,16 @@ impl HarnessBuilder {
         self
     }
 
+    pub(super) fn startup(
+        mut self,
+        identity: NetworkIdentity,
+        tip: Option<(Height, Certificate)>,
+    ) -> Self {
+        self.network_identity = Some(identity);
+        self.finalized_tip = tip;
+        self
+    }
+
     pub(super) fn execution(mut self, execution: StubExecutionProvider) -> Self {
         self.execution = execution;
         self
@@ -130,6 +159,47 @@ impl HarnessBuilder {
             InitialState::Epoch(epoch) => Some(dkg_state(&mut self.context, epoch, 4, false).0),
             InitialState::State(state) => Some(*state),
         };
+        if let Some(state) = &initial_state {
+            let boundary = state.epoch.previous().map_or(Height::zero(), |epoch| {
+                self.epoch_strategy.last(epoch).unwrap()
+            });
+            self.execution
+                .headers
+                .lock()
+                .unwrap()
+                .entry(boundary)
+                .or_insert_with(|| outcome_header(boundary, state));
+        }
+        let (network_identity, finalized_tip) = if let Some(identity) = self.network_identity {
+            (identity, self.finalized_tip)
+        } else {
+            // Most actor tests exercise recovery and ceremonies. Model a newer
+            // binary bootstrapping from historical data; startup verification
+            // tests supply their own identity and certificate explicitly.
+            let tip_epoch = self
+                .epoch_strategy
+                .containing(self.last_finalized_height)
+                .unwrap()
+                .epoch();
+            let identity_epoch = initial_state
+                .as_ref()
+                .map_or(tip_epoch, |state| state.epoch.max(tip_epoch))
+                .next();
+            let fixture = dkg_fixture(&mut self.context, identity_epoch);
+            let tip = (!self.last_finalized_height.is_zero()).then(|| {
+                let header = header(self.last_finalized_height);
+                let certificate =
+                    make_certificate(Digest(header.hash_slow()), tip_epoch, 1, &fixture.schemes);
+                (self.last_finalized_height, certificate)
+            });
+            (
+                NetworkIdentity {
+                    from_epoch: identity_epoch.get(),
+                    identity: *fixture.outcome.network_identity(),
+                },
+                tip,
+            )
+        };
         let storage = if let Some(state) = initial_state.clone() {
             Some(
                 state::builder()
@@ -138,8 +208,7 @@ impl HarnessBuilder {
                     .await
                     .unwrap()
                     .init_verified(state)
-                    .await
-                    .unwrap(),
+                    .await,
             )
         } else {
             None
@@ -152,6 +221,8 @@ impl HarnessBuilder {
             identity: self.identity,
             last_finalized_height: self.last_finalized_height,
             initial_state,
+            network_identity,
+            finalized_tip,
             storage,
             mailbox: None,
             handle: None,
@@ -160,6 +231,7 @@ impl HarnessBuilder {
             execution: self.execution,
             marshal: self.marshal,
             epoch_manager: self.epoch_manager,
+            scheme_provider: SchemeProvider::new(),
         }
     }
 }
@@ -173,6 +245,8 @@ impl Harness {
             identity: PrivateKey::from_seed(0),
             last_finalized_height: Height::new(9),
             initial_state: InitialState::None,
+            network_identity: None,
+            finalized_tip: None,
             execution: StubExecutionProvider::default(),
             marshal: StubMarshal::default(),
             epoch_manager: StubEpochManager::default(),
@@ -192,10 +266,16 @@ impl Harness {
             .expect("DKG storage is not open while the actor is running")
     }
 
-    pub(super) async fn start(&mut self) {
+    pub(super) fn storage_mut(&mut self) -> &mut state::Storage<Context> {
+        self.storage
+            .as_mut()
+            .expect("DKG storage is not open while the actor is running")
+    }
+
+    pub(super) async fn init(&mut self) -> eyre::Result<(TestActor, Mailbox)> {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
-        let (actor, mailbox) = init(
+        init(
             self.context.child("actor"),
             Config {
                 epoch_strategy: self.epoch_strategy.clone(),
@@ -205,14 +285,19 @@ impl Harness {
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
+                finalized_tip: self.finalized_tip.clone(),
+                network_identity: self.network_identity.clone(),
+                scheme_provider: self.scheme_provider.clone(),
                 partition_prefix: self.partition_prefix.clone(),
                 execution_node: self.execution.clone(),
                 initial_share: None,
             },
         )
         .await
-        .unwrap();
+    }
 
+    pub(super) async fn start(&mut self) {
+        let (actor, mailbox) = self.init().await.unwrap();
         self.mailbox = Some(mailbox);
         self.handle = Some(match &self.network {
             Some(network) => actor.start(network.register(self.identity.public_key())),
@@ -229,6 +314,7 @@ impl Harness {
     }
 
     pub(super) async fn report_finalized_header(&mut self, header: TempoHeader) {
+        self.execution.add_header(header.clone());
         let (acknowledgement, waiter) = Exact::handle();
         assert!(
             self.mailbox
@@ -259,10 +345,23 @@ impl Harness {
     }
 
     pub(super) async fn wait_for_exit(&mut self) {
+        self.wait_for_actor_exit().await;
+        self.reopen_storage().await;
+    }
+
+    pub(super) async fn wait_for_actor_exit(&mut self) {
         let handle = self.handle.take().expect("DKG actor is not running");
         handle.await.expect("DKG actor should stop");
         self.mailbox.take();
-        self.reopen_storage().await;
+    }
+
+    pub(super) async fn wait_for_actor_panic(&mut self) {
+        let handle = self.handle.take().expect("DKG actor is not running");
+        assert!(matches!(
+            handle.await,
+            Err(commonware_runtime::Error::Exited)
+        ));
+        self.mailbox.take();
     }
 
     async fn reopen_storage(&mut self) {
@@ -272,7 +371,7 @@ impl Harness {
             .await
             .unwrap();
         self.storage = if let Some(state) = unverified.state().cloned() {
-            Some(unverified.init_verified(state).await.unwrap())
+            Some(unverified.init_verified(state).await)
         } else {
             None
         };
@@ -471,8 +570,9 @@ impl CheckedSender for RecordingCheckedSender {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct StubExecutionProvider {
+    pub(super) chain_spec: Arc<TempoChainSpec>,
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
     next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
@@ -480,7 +580,38 @@ pub(super) struct StubExecutionProvider {
     fail_next_full_dkg_epoch: Arc<AtomicBool>,
 }
 
+impl Default for StubExecutionProvider {
+    fn default() -> Self {
+        Self {
+            chain_spec: DEV.clone(),
+            headers: Default::default(),
+            reads: Default::default(),
+            next_players: Default::default(),
+            fail_next_players: Default::default(),
+            fail_next_full_dkg_epoch: Default::default(),
+        }
+    }
+}
+
 impl StubExecutionProvider {
+    pub(super) fn set_t12_activation(&mut self, activation: Option<u64>) {
+        let mut genesis = DEV.genesis().clone();
+        for &fork in TempoHardfork::VARIANTS {
+            if fork > TempoHardfork::T12 {
+                genesis
+                    .config
+                    .extra_fields
+                    .remove(&format!("{}Time", fork.name().to_lowercase()));
+            }
+        }
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t12Time".into(), activation)
+            .unwrap();
+        self.chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis));
+    }
+
     pub(super) fn add_header(&self, header: TempoHeader) {
         self.headers
             .lock()
@@ -506,6 +637,10 @@ impl StubExecutionProvider {
 }
 
 impl ExecutionLayer for StubExecutionProvider {
+    fn chain_spec(&self) -> Arc<TempoChainSpec> {
+        self.chain_spec.clone()
+    }
+
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
         self.reads.lock().unwrap().push(height);
         Ok(self.headers.lock().unwrap().get(&height).cloned())
@@ -653,7 +788,7 @@ pub(super) fn block(header: TempoHeader) -> Block {
 
 pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {
     let outcome = OnchainDkgOutcome {
-        epoch: state.epoch,
+        epoch: state.epoch.get(),
         output: state.output.clone(),
         next_players: state.players().clone(),
         is_next_full_dkg: state.is_full_dkg,
@@ -678,7 +813,7 @@ pub(super) fn dkg_state(
     let players = ordered::Set::try_from_iter(keys.iter().map(|key| key.public_key()))
         .expect("test players should be unique");
     let (output, shares) =
-        dkg::deal::<MinSig, _, N3f1>(&mut *rng, Default::default(), players.clone())
+        dkg::deal::<MinSig, _, N3f1>(&mut *rng, Mode::NonZeroCounter, players.clone())
             .expect("test DKG");
     let shares = keys
         .iter()
@@ -705,51 +840,84 @@ pub(super) struct RevealedRecoveryFixture {
     pub(super) identity: PrivateKey,
     pub(super) recovered_share: Share,
     signed_logs: Vec<SignedDealerLog<MinSig, PrivateKey>>,
-    recovered_state: State,
+    pub(super) recovered_state: State,
+}
+
+/// Run a dealer round offline and return each dealer's signed log, checked
+/// against `info`.
+///
+/// `dealer_rng(i)` seeds dealer `i`, so callers can reuse polynomial randomness
+/// across rounds. `withhold(dealer, player)` skips that player's ACK, forcing
+/// the dealer to reveal the dealing.
+pub(super) fn signed_dealer_logs<R: CryptoRng>(
+    info: &dkg::Info<MinSig, PublicKey>,
+    dealers: &[(PrivateKey, Option<Share>)],
+    players: &[PrivateKey],
+    mut dealer_rng: impl FnMut(usize) -> R,
+    withhold: impl Fn(&PublicKey, &PublicKey) -> bool,
+) -> Vec<SignedDealerLog<MinSig, PrivateKey>> {
+    dealers
+        .iter()
+        .enumerate()
+        .map(|(index, (key, share))| {
+            let dealer_public_key = key.public_key();
+            let (mut dealer, public, private) = dkg::Dealer::start::<N3f1>(
+                dealer_rng(index),
+                info.clone(),
+                key.clone(),
+                share.clone(),
+            )
+            .unwrap();
+            for (player, private) in private {
+                if withhold(&dealer_public_key, &player) {
+                    continue;
+                }
+                let player_key = players
+                    .iter()
+                    .find(|key| key.public_key() == player)
+                    .unwrap();
+                let ack = dkg::Player::new(info.clone(), player_key.clone())
+                    .unwrap()
+                    .dealer_message::<N3f1>(dealer_public_key.clone(), public.clone(), private)
+                    .expect("test dealing must be valid")
+                    .expect("test dealing must be new");
+                dealer.receive_player_ack(player, ack).unwrap();
+            }
+            let signed = dealer.finalize::<N3f1>();
+            signed
+                .clone()
+                .check(info)
+                .expect("test dealer log must verify");
+            signed
+        })
+        .collect()
 }
 
 pub(super) fn revealed_recovery_fixture(
     rng: &mut impl CryptoRng,
     ceremony_epoch: Epoch,
+    t12_active: bool,
 ) -> RevealedRecoveryFixture {
     let (ceremony_state, keys, _) = dkg_state(rng, ceremony_epoch, 4, true);
-    let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE);
+    let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE, t12_active);
     let identity = keys[0].clone();
+    // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
+    let dealers = keys
+        .iter()
+        .take(3)
+        .map(|key| (key.clone(), None))
+        .collect::<Vec<_>>();
+    let signed_logs = signed_dealer_logs(
+        round.info(),
+        &dealers,
+        &keys,
+        |_| StdRng::from_rng(&mut *rng),
+        |_, player| *player == identity.public_key(),
+    );
     let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-    let mut signed_logs = Vec::new();
-    for dealer_key in keys.iter().take(3) {
-        let dealer_public_key = dealer_key.public_key();
-        let (mut dealer, public_message, private_messages) =
-            dkg::Dealer::start::<N3f1>(&mut *rng, round.info().clone(), dealer_key.clone(), None)
-                .unwrap();
-
-        for (player_public_key, private_message) in private_messages {
-            if player_public_key == identity.public_key() {
-                continue;
-            }
-            let player_key = keys
-                .iter()
-                .find(|key| key.public_key() == player_public_key)
-                .unwrap();
-            let mut player = dkg::Player::new(round.info().clone(), player_key.clone()).unwrap();
-            let dkg::Verdict::Valid(ack) = player.dealer_message::<N3f1>(
-                dealer_public_key.clone(),
-                public_message.clone(),
-                private_message,
-            ) else {
-                panic!("test dealing must be valid");
-            };
-            dealer.receive_player_ack(player_public_key, ack).unwrap();
-        }
-
-        // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
-        let signed_log: SignedDealerLog<MinSig, PrivateKey> = dealer.finalize::<N3f1>();
-        let (dealer, log) = signed_log
-            .clone()
-            .check(round.info())
-            .expect("test dealer log must verify");
+    for signed in &signed_logs {
+        let (dealer, log) = signed.clone().check(round.info()).unwrap();
         logs.record(dealer, log);
-        signed_logs.push(signed_log);
     }
 
     let player = dkg::Player::new(round.info().clone(), identity.clone()).unwrap();

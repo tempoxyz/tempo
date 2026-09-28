@@ -19,8 +19,6 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::{epoch::SchemeProvider, subblocks};
-
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
 ) -> eyre::Result<(Actor<TContext>, Mailbox)>
@@ -54,9 +52,6 @@ pub(super) struct Config<TContext> {
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: Arc<TempoFullNode>,
 
-    /// A handle to the subblocks service to get subblocks for proposals.
-    pub(crate) subblocks: Option<subblocks::Mailbox>,
-
     /// Local proposal return budget, excluding the network propagation allowance.
     ///
     /// Starts at `target_block_time - network_budget`; `handle_propose`
@@ -66,7 +61,4 @@ pub(super) struct Config<TContext> {
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,
-
-    /// The scheme provider to use for the application.
-    pub(crate) scheme_provider: SchemeProvider,
 }

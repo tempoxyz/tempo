@@ -1,0 +1,13 @@
+name: Dependency Scan
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  dependency-scan:
+    permissions:
+      contents: read
+      id-token: write
+    uses: tempoxyz/gh-actions/.github/workflows/dependency-scan.yml@ac946e06f5f59daeebc8d33d8e7b9c9501e2ee98 # 2026-09-28T13-48-02Z-ac946e06

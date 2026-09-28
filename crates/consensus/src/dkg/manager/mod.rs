@@ -15,6 +15,7 @@ use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
 use futures::{Stream, channel::mpsc};
 use rand_core::CryptoRng;
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_node::TempoFullNode;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
@@ -28,11 +29,14 @@ pub(crate) use ingress::Mailbox;
 
 use crate::{
     consensus::{Block, Digest},
+    epoch::SchemeProvider,
+    gossip::Certificate,
     validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
 };
 
 use ingress::{Command, Message};
 
+/// Authenticates the startup tip and registers its trusted identity before returning the actor.
 pub(crate) async fn init<TContext, TExecutionLayer, TMarshal, TEpochManager>(
     context: TContext,
     config: Config<TExecutionLayer, TMarshal, TEpochManager>,
@@ -76,6 +80,16 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
     /// boundary block that seeds the initial DKG state.
     pub(crate) last_finalized_height: Height,
 
+    /// Archive height and certificate to authenticate during initialization.
+    /// `None` only at genesis.
+    pub(crate) finalized_tip: Option<(Height, Certificate)>,
+
+    /// Trusted identity supplied by the binary or its explicit configuration.
+    pub(crate) network_identity: NetworkIdentity,
+
+    /// Registers the trusted identity during initialization, before any actor starts.
+    pub(crate) scheme_provider: SchemeProvider,
+
     /// The partition prefix to use when persisting ceremony metadata during
     /// rounds.
     pub(crate) partition_prefix: String,
@@ -93,6 +107,9 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
 /// public polynomial. During normal operation, they provide the validator
 /// configuration used at the end of each epoch.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
+    /// Chain specification used to select the ceremony transcript version.
+    fn chain_spec(&self) -> Arc<TempoChainSpec>;
+
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
 
@@ -159,6 +176,10 @@ pub(crate) trait EpochManager: Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
+    fn chain_spec(&self) -> Arc<TempoChainSpec> {
+        self.as_ref().chain_spec()
+    }
+
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
         use reth_provider::HeaderProvider as _;
 
