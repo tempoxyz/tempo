@@ -1,4 +1,4 @@
-//! Owner-authorized funding before application calls; transaction admission remains disabled.
+//! Owner-authorized funding before application calls.
 
 use super::*;
 use alloy_primitives::keccak256;
@@ -16,6 +16,7 @@ pub(in crate::handler) struct FundingRequirement {
     pub token: Address,
     pub amount: U256,
     pub slippage_bps: u16,
+    pub policy_rules: Option<Bytes>,
     pub sources: Vec<ITIP20Funder::Source>,
 }
 
@@ -51,11 +52,54 @@ fn funding_balance(asset: Address, account: Address) -> tempo_precompiles::error
     token.balance_of(ITIP20::balanceOfCall { account })
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "funding transaction admission is not enabled")
-)]
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    pub(in crate::handler) fn require_transaction_funds_with<F>(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        gas: &mut GasTracker,
+        run_loop: F,
+    ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>>
+    where
+        F: FnMut(
+            &mut Self,
+            &mut TempoEvm<DB, I>,
+            FrameInit,
+        ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
+    {
+        let Some(tx) = evm
+            .ctx
+            .tx
+            .tempo_tx_env
+            .as_ref()
+            .filter(|tx| !tx.require_funds.is_empty())
+        else {
+            return Ok(None);
+        };
+        let funder = tempo_contracts::precompiles::TIP20_FUNDER_ADDRESS;
+        let requirements = tx
+            .require_funds
+            .iter()
+            .map(|entry| {
+                Ok(FundingRequirement {
+                    token: entry.token,
+                    policy_rules: entry.policy_rules.clone(),
+                    amount: entry.amount,
+                    slippage_bps: u16::try_from(entry.slippage_bps.unwrap_or_default())
+                        .map_err(|_| TempoInvalidTransaction::InvalidFundingSlippage)?,
+                    sources: entry
+                        .sources
+                        .iter()
+                        .map(|source| ITIP20Funder::Source {
+                            target: source.target,
+                            data: source.data.clone(),
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, TempoInvalidTransaction>>()?;
+        self.require_owner_funds_with(evm, gas, funder, &requirements, run_loop)
+    }
+
     /// Runs native accounting under the same gas budget as the source callbacks.
     fn funding_storage<T>(
         &mut self,
@@ -125,7 +169,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             for requirement in requirements {
                 let mut balance = self.funding_storage(evm, gas, || {
                     // Context and argument validation precede the existing-balance shortcut.
-                    if requirement.slippage_bps > 10_000
+                    if requirement.policy_rules.is_some()
+                        || requirement.slippage_bps > 10_000
                         || requirement
                             .sources
                             .iter()

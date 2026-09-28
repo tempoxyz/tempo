@@ -7,6 +7,7 @@ mod createx;
 mod eth_call;
 mod eth_transactions;
 mod fork_schedule;
+mod funding;
 mod gas;
 mod key_authorization;
 mod liquidity;
