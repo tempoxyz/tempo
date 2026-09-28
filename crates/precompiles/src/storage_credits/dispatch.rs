@@ -1,7 +1,7 @@
 //! ABI dispatch for the storage credits precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate_void, storage_credits::StorageCredits, view,
+    Precompile, charge_input_cost, dispatch, mutate, storage_credits::StorageCredits, view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
@@ -20,10 +20,10 @@ impl Precompile for StorageCredits {
                     balanceOf(call) => view(call, |c| self.balance_of(c.account)),
                     modeOf(call) => view(call, |c| self.mode_of(c.account).map(Into::into)),
                     budgetOf(call) => view(call, |c| self.budget_of(c.account)),
-                    setMode(call) => mutate_void(call, msg_sender, |sender, c| {
+                    setMode(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_mode(sender, c.newMode)
                     }),
-                    setBudget(call) => mutate_void(call, msg_sender, |sender, c| {
+                    setBudget(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_budget(sender, c.credits)
                     })
                 }
