@@ -43,12 +43,7 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_signature().into())
     }
 
-    pub fn verify_keychain(
-        &mut self,
-        account: Address,
-        hash: B256,
-        signature: Bytes,
-    ) -> Result<bool> {
+    pub fn verify_keychain(&self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
         let (embedded_account, key_id, signature_type) =
             self.recover_keychain_key(hash, signature)?;
         if embedded_account != account {
@@ -59,7 +54,7 @@ impl SignatureVerifier {
     }
 
     pub fn verify_keychain_admin(
-        &mut self,
+        &self,
         account: Address,
         hash: B256,
         signature: Bytes,
@@ -73,7 +68,7 @@ impl SignatureVerifier {
         self.verify_registered_key(account, key_id, signature_type, true)
     }
 
-    pub fn verify_multisig(&mut self, account: Address, hash: B256, bytes: Bytes) -> Result<bool> {
+    pub fn verify_multisig(&self, account: Address, hash: B256, bytes: Bytes) -> Result<bool> {
         let signature = TempoSignature::from_bytes(&bytes)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
         let Some(signature) = signature.as_multisig() else {
@@ -143,11 +138,7 @@ impl SignatureVerifier {
         }
     }
 
-    fn recover_keychain_key(
-        &mut self,
-        hash: B256,
-        signature: Bytes,
-    ) -> Result<(Address, Address, u8)> {
+    fn recover_keychain_key(&self, hash: B256, signature: Bytes) -> Result<(Address, Address, u8)> {
         let sig = TempoSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
         let keychain_sig = sig
