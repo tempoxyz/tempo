@@ -10,7 +10,8 @@ use std::{sync::Arc, time::Duration};
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
-/// A feed that never publishes, modelling a node whose finalization has stalled.
+/// A feed with no publisher of its own, modelling a node whose finalization has stalled.
+/// Tests that need events send them on `events_tx` directly.
 struct IdleFeed {
     events_tx: broadcast::Sender<Arc<SharedEvent>>,
 }

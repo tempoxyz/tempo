@@ -68,7 +68,6 @@ pub enum Event {
 /// The JSON encoding is computed by the first subscriber that needs it and reused by the rest.
 /// A tokio [`OnceCell`] makes concurrent subscribers await that first encoding instead of
 /// blocking runtime threads.
-#[derive(Debug)]
 pub struct SharedEvent {
     event: Event,
     json: OnceCell<Box<RawValue>>,
@@ -95,6 +94,16 @@ impl SharedEvent {
                 serde_json::value::to_raw_value(&self.event).expect("Event should be serializable")
             })
             .await
+    }
+}
+
+impl std::fmt::Debug for SharedEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The cached JSON duplicates the event, so only report whether it has been encoded.
+        f.debug_struct("SharedEvent")
+            .field("event", &self.event)
+            .field("encoded", &self.json.initialized())
+            .finish()
     }
 }
 
