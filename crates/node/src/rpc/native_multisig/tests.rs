@@ -166,7 +166,9 @@ fn prepares_independent_delegate_and_parent_roles(version: u64, admin: bool) {
         db.insert_commitment(parent, parent_spec.config.commitment().unwrap());
         db.insert_commitment(delegate, delegate_spec.config.commitment().unwrap());
     }
-    let mut authorization = KeyAuthorization::unrestricted(4217, SignatureType::Multisig, delegate);
+    let recipient = if admin { spec(3, version).0 } else { delegate };
+    let mut authorization =
+        KeyAuthorization::unrestricted(4217, SignatureType::Multisig, recipient);
     if admin {
         authorization.account = Some(parent);
     }
