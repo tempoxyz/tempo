@@ -43,8 +43,7 @@ jobs:
               - 'crates/consensus/**'
       - name: Detect Reth revision changes
         id: reth
-        # Before rollout, replace this reviewed PR pin with the tagged merge commit.
-        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@7338adb8da6455a7134ac5cdb31b91c0163d2078 # refs/pull/299/head
+        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@f7d27204eeb7d11e0148267e070b179efa053fa3 # 2026-09-28T13-05-41Z-f7d27204
         with:
           base: ${{ steps.target.outputs.base }}
           head: ${{ steps.target.outputs.sha }}
