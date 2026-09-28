@@ -2413,12 +2413,20 @@ async fn execute_build(
     fields(
         block.digest = %request.block.digest(),
         block.height = %request.block.height(),
+        proposal.epoch = tracing::field::Empty,
+        proposal.view = tracing::field::Empty,
     ),
 )]
 async fn execute_finalization(
     execution_node: impl ExecutionLayer,
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskOutcome {
+    // The block may have been re-proposed in a later round. These fields describe
+    // its original header, not the view currently processing its finalization.
+    if let Some(context) = request.block.header().consensus_context {
+        Span::current().record("proposal.epoch", context.epoch);
+        Span::current().record("proposal.view", context.view);
+    }
     let status = deliver_block(&execution_node, request.block.clone()).await;
     ExecutionTaskOutcome::FinalizedDelivered { request, status }
 }
@@ -2432,6 +2440,8 @@ async fn execute_finalization(
         block.digest = %block.digest(),
         block.height = %block.height(),
         block.parent_digest = %block.parent_digest(),
+        proposal.epoch = tracing::field::Empty,
+        proposal.view = tracing::field::Empty,
     ),
 )]
 async fn execute_delivery(
@@ -2440,6 +2450,10 @@ async fn execute_delivery(
     cause: Span,
     block: Arc<Block>,
 ) -> ExecutionTaskOutcome {
+    if let Some(context) = block.header().consensus_context {
+        Span::current().record("proposal.epoch", context.epoch);
+        Span::current().record("proposal.view", context.view);
+    }
     let digest = block.digest();
     let started = Instant::now();
     let status = deliver_block(&execution_node, block)
