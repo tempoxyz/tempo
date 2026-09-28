@@ -72,6 +72,8 @@ pub fn mode() -> FlatMode {
 
 /// One applied block in the retained chain suffix.
 struct Entry {
+    /// Immutable parent state for concurrent reads after optimistic application.
+    parent_snapshot: FlatSnapshot,
     /// Block number this entry produced (parent number + 1).
     number: u64,
     /// Root of the state this entry was applied on.
@@ -531,6 +533,8 @@ impl FlatShadow {
 
         self.unwind_to(parent_root)?;
 
+        let parent_snapshot = self.snapshot();
+
         let n_ops = ops.len();
         let t = Instant::now();
         mpt_flat_poc::prof::reset();
@@ -546,6 +550,7 @@ impl FlatShadow {
         debug_assert_eq!(root, self.db.root());
 
         self.commit_entry(
+            parent_snapshot,
             parent_number,
             parent_root,
             fingerprint,
@@ -663,6 +668,7 @@ impl FlatShadow {
     #[allow(clippy::too_many_arguments)]
     fn commit_entry(
         &mut self,
+        parent_snapshot: FlatSnapshot,
         parent_number: u64,
         parent_root: B256,
         ops_hash: [u8; 32],
@@ -688,6 +694,7 @@ impl FlatShadow {
         self.timings.flush()?;
 
         self.entries.push(Entry {
+            parent_snapshot,
             number,
             parent_root: parent_root.0,
             root,
@@ -728,6 +735,18 @@ impl FlatShadow {
         self.db
             .gc_install(batch)
             .map_err(|e| anyhow::anyhow!("gc install: {e:#}"))
+    }
+
+    /// Resolve an exact parent without rewinding the writer or following its newest candidate.
+    pub fn snapshot_at_parent(&self, parent_root: B256) -> Option<FlatSnapshot> {
+        if self.at_parent(parent_root) {
+            return Some(self.snapshot());
+        }
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.parent_root == parent_root.0)
+            .map(|entry| entry.parent_snapshot.clone())
     }
 }
 
@@ -1088,6 +1107,77 @@ mod tests {
         assert!(shadow.at_parent(header_root));
         shadow.unwind_to(header_root).unwrap();
         assert_eq!(shadow.current_root(), B256::from(checkpoint_root));
+    }
+
+    #[test]
+    fn retained_parent_snapshot_survives_advance_and_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = keccak256([1; 20]).0;
+        let slot = [3; 32];
+        let genesis = vec![
+            acct(1, 1),
+            acct(2, 1),
+            (
+                key,
+                StateOp::SetStorage {
+                    slot,
+                    value: storage_value_rlp(U256::from(1)),
+                },
+            ),
+        ];
+        let mut oracle =
+            FlatMpt::create(dir.path().join("oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        let genesis_root = B256::from(root);
+        let mut shadow = FlatShadow::init(
+            dir.path().join("shadow").to_str().unwrap(),
+            genesis,
+            genesis_root,
+        )
+        .unwrap();
+        let r1 = shadow
+            .root_for(
+                0,
+                genesis_root,
+                vec![
+                    acct(1, 2),
+                    (
+                        key,
+                        StateOp::SetStorage {
+                            slot,
+                            value: storage_value_rlp(U256::from(2)),
+                        },
+                    ),
+                ],
+            )
+            .unwrap();
+        let pinned = shadow.snapshot_at_parent(genesis_root).unwrap();
+        shadow.root_for(1, r1, vec![acct(1, 3)]).unwrap();
+        assert_eq!(
+            FlatShadow::decode_account_rlp(
+                &shadow
+                    .snapshot_at_parent(r1)
+                    .unwrap()
+                    .get_value(&key)
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap()
+            .0,
+            2
+        );
+        shadow.root_for(0, genesis_root, vec![acct(1, 4)]).unwrap();
+        assert_eq!(
+            FlatShadow::decode_account_rlp(&pinned.get_value(&key).unwrap().unwrap())
+                .unwrap()
+                .0,
+            1
+        );
+        assert!(shadow.snapshot_at_parent(B256::repeat_byte(99)).is_none());
+        assert_eq!(
+            overlay_storage(&[], &pinned, &key, &slot).unwrap(),
+            Some(U256::from(1))
+        );
     }
 
     #[test]

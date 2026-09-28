@@ -50,6 +50,7 @@ reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
 reth-storage-api.workspace = true
+reth-storage-overlay.workspace = true
 reth-db-api.workspace = true
 reth-trie-common.workspace = true
 reth-trie.workspace = true

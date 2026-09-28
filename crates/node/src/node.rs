@@ -30,7 +30,9 @@ use reth_node_builder::{
     },
 };
 use reth_primitives_traits::SealedHeader;
-use reth_provider::providers::ProviderFactoryBuilder;
+use reth_provider::{
+    BlockReaderIdExt as _, HeaderProvider as _, providers::ProviderFactoryBuilder,
+};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
@@ -668,14 +670,9 @@ where
             }
         }
         // TEMPO_NO_STATE_KV: the duplicate state KV is not persisted, so
-        // latest-state point reads (engine validation misses, txpool, RPC)
-        // must come from the flat store. Install the canonical-tip read hook
-        // that reth's latest-state provider consults. Correctness: these
-        // reads sit underneath the engine's in-memory overlay of unpersisted
-        // blocks, which shadows every key written after the last persisted
-        // block — so serving the canonical tip state is exact. The tip
-        // anchor (not "newest flat state") keeps not-yet-canonical candidate
-        // blocks out of the served state.
+        // Execution point reads must come from the flat store. The overlay provider
+        // pins a complete snapshot at its requested parent, before reading account or
+        // storage state. Legacy latest-state callers retain the canonical-tip hook.
         if std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all") {
             let provider = ctx.node.provider().clone();
             let chain_spec = chain_spec;
@@ -689,59 +686,78 @@ where
             );
             let cached: Arc<std::sync::Mutex<Option<Arc<TipState>>>> =
                 Arc::new(std::sync::Mutex::new(None));
-            let resolve = move || -> Result<Arc<TipState>, reth_errors::ProviderError> {
-                use reth_provider::BlockReaderIdExt as _;
-                let err = |m: &str| {
-                    reth_errors::ProviderError::other(std::io::Error::other(m.to_string()))
+            let resolve =
+                move |tip_root: B256| -> Result<Arc<TipState>, reth_errors::ProviderError> {
+                    let err = |m: &str| {
+                        reth_errors::ProviderError::other(std::io::Error::other(m.to_string()))
+                    };
+                    if let Ok(guard) = cached.lock()
+                        && let Some(state) = guard.as_ref()
+                        && state.0 == tip_root
+                    {
+                        return Ok(state.clone());
+                    }
+                    let shadow = tempo_flatmpt::shadow(|| {
+                        (
+                            tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                            chain_spec.inner.genesis_header().state_root(),
+                        )
+                    })
+                    .expect("flat root mode is on");
+                    // Transient gaps (publish/retire races around an apply) heal
+                    // within an apply cycle; a persistent failure is loud.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    loop {
+                        if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
+                            && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
+                        {
+                            let state = Arc::new((tip_root, snap, chain));
+                            if let Ok(mut g) = cached.lock() {
+                                *g = Some(state.clone());
+                            }
+                            return Ok(state);
+                        }
+                        if let Some(g) = shadow.try_read_for(std::time::Duration::from_millis(2))
+                            && let Some(snap) = g.snapshot_at_parent(tip_root)
+                        {
+                            drop(g);
+                            let state = Arc::new((tip_root, snap, Vec::new()));
+                            if let Ok(mut g) = cached.lock() {
+                                *g = Some(state.clone());
+                            }
+                            return Ok(state);
+                        }
+                        if std::time::Instant::now() > deadline {
+                            return Err(err("flat store cannot serve the canonical tip state"));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
                 };
-                let tip_root = provider
+            let resolve = Arc::new(resolve);
+            let block_provider = provider.clone();
+            let resolve_block = resolve.clone();
+            reth_storage_overlay::EXTERNAL_STATE_SNAPSHOT
+                .set(Box::new(move |hash| {
+                    let root = block_provider
+                        .header(hash)?
+                        .ok_or(reth_errors::ProviderError::HeaderNotFound(hash.into()))?
+                        .state_root();
+                    let state = resolve_block(root)?;
+                    Ok(flat_read_snapshot(state.1.clone(), state.2.clone()))
+                }))
+                .map_err(|_| eyre::eyre!("external state snapshot hook already installed"))?;
+            info!(target: "flatmpt", "flat block-state snapshot hook installed (no state KV)");
+            let resolve_acct = Arc::new(move || {
+                let root = provider
                     .latest_header()?
-                    .ok_or_else(|| err("no canonical head for flat tip read"))?
+                    .ok_or_else(|| {
+                        reth_errors::ProviderError::other(std::io::Error::other(
+                            "no canonical head for flat tip read",
+                        ))
+                    })?
                     .state_root();
-                if let Ok(guard) = cached.lock()
-                    && let Some(state) = guard.as_ref()
-                    && state.0 == tip_root
-                {
-                    return Ok(state.clone());
-                }
-                let shadow = tempo_flatmpt::shadow(|| {
-                    (
-                        tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
-                        chain_spec.inner.genesis_header().state_root(),
-                    )
-                })
-                .expect("flat root mode is on");
-                // Transient gaps (publish/retire races around an apply) heal
-                // within an apply cycle; a persistent failure is loud.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                loop {
-                    if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
-                        && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
-                    {
-                        let state = Arc::new((tip_root, snap, chain));
-                        if let Ok(mut g) = cached.lock() {
-                            *g = Some(state.clone());
-                        }
-                        return Ok(state);
-                    }
-                    if let Some(g) = shadow.try_read_for(std::time::Duration::from_millis(2))
-                        && g.at_parent(tip_root)
-                    {
-                        let snap = g.snapshot();
-                        drop(g);
-                        let state = Arc::new((tip_root, snap, Vec::new()));
-                        if let Ok(mut g) = cached.lock() {
-                            *g = Some(state.clone());
-                        }
-                        return Ok(state);
-                    }
-                    if std::time::Instant::now() > deadline {
-                        return Err(err("flat store cannot serve the canonical tip state"));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-            };
-            let resolve_acct = Arc::new(resolve);
+                resolve(root)
+            });
             let resolve_slot = resolve_acct.clone();
             let _ = reth_provider::providers::FLAT_STATE_READS.set(
                 reth_provider::providers::FlatStateReads {
@@ -1303,6 +1319,45 @@ fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
                 .map_err(|error| format!("invalid address list in `{value}`: {error}"))
         }
     }
+}
+
+/// Adapt a pinned flat snapshot and its pending chain into immutable execution reads.
+fn flat_read_snapshot(
+    snapshot: tempo_flatmpt::FlatSnapshot,
+    chain: Vec<Arc<tempo_flatmpt::PendingBlock>>,
+) -> Arc<reth_storage_overlay::ExternalStateSnapshot> {
+    let state = Arc::new((snapshot, chain));
+    let storage_state = state.clone();
+    Arc::new(reth_storage_overlay::ExternalStateSnapshot {
+        account: Box::new(move |address| {
+            let key = alloy_primitives::keccak256(address);
+            tempo_flatmpt::overlay_account(&state.1, &state.0, &key.0)
+                .map(|account| {
+                    account.map(
+                        |(nonce, balance, code_hash)| reth_primitives_traits::Account {
+                            nonce,
+                            balance,
+                            bytecode_hash: (code_hash != alloy_primitives::keccak256([]).0)
+                                .then(|| B256::from(code_hash)),
+                        },
+                    )
+                })
+                .map_err(|error| {
+                    reth_errors::ProviderError::other(std::io::Error::other(format!("{error:#}")))
+                })
+        }),
+        storage: Box::new(move |address, slot| {
+            tempo_flatmpt::overlay_storage(
+                &storage_state.1,
+                &storage_state.0,
+                &alloy_primitives::keccak256(address).0,
+                &alloy_primitives::keccak256(slot.0).0,
+            )
+            .map_err(|error| {
+                reth_errors::ProviderError::other(std::io::Error::other(format!("{error:#}")))
+            })
+        }),
+    })
 }
 
 #[cfg(test)]
