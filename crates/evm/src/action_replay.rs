@@ -10,12 +10,14 @@ use alloy_primitives::{
     Address, B256, TxKind, U256,
     map::{AddressMap, U256Map},
 };
+use alloy_sol_types::SolCall;
 use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
     context::result::{ExecutionResult, HaltReason},
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
+use tempo_contracts::precompiles::{ISignatureVerifier, SIGNATURE_VERIFIER_ADDRESS};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     nonce::NonceManager,
@@ -26,18 +28,19 @@ use tempo_revm::evm::TempoContext;
 
 /// Storage actions do not represent configurable account reads/writes or keychain
 /// parent or named grant-recipient eligibility. Such authorizations and direct calls to
-/// these precompiles must execute through the handler.
+/// AccountKeychain, NativeMultisig, or `verifyMultisig` must execute through the handler.
 /// These exclusions apply even before T14; this only disables the
 /// replay optimization, not historical transaction execution.
 pub fn supports_storage_action_replay(tx: &TempoTxEnvelope) -> bool {
     tx.as_aa().is_none_or(|aa| {
         matches!(aa.signature(), TempoSignature::Primitive(_))
             && aa.tx().key_authorization.is_none()
-    }) && !tx.calls().any(|(to, _)| {
+    }) && !tx.calls().any(|(to, input)| {
         matches!(
             to,
             TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS | NATIVE_MULTISIG_ADDRESS)
-        )
+        ) || (to == TxKind::Call(SIGNATURE_VERIFIER_ADDRESS)
+            && input.starts_with(&ISignatureVerifier::verifyMultisigCall::SELECTOR))
     })
 }
 
