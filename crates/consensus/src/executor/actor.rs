@@ -233,7 +233,7 @@ where
             marshal,
             fcu_heartbeat_interval,
             public_key,
-            reachable_height,
+            backfill_available_through,
         } = config;
         ensure!(
             finalized_tip.1 >= finalized_floor,
@@ -241,9 +241,10 @@ where
             finalized_tip.1,
         );
         let execution_finalized_num_hash = execution_node.finalized_num_hash();
+        // If execution is below the floor, local backfill must cover the entire gap.
         ensure!(
             execution_finalized_num_hash.number >= finalized_floor.get()
-                || reachable_height >= finalized_floor,
+                || backfill_available_through >= finalized_floor,
             "execution layer finalized height `{}` cannot reach finalization \
              archive floor `{finalized_floor}`. Run as a follower to sync to tip or restore a fresher snapshot",
             execution_finalized_num_hash.number,

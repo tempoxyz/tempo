@@ -1007,7 +1007,7 @@ impl HarnessBuilder {
                 public_key: options.public_key,
                 // Assume the archive covers the floor; individual backfill tests
                 // can still inject failures when the actor reads those blocks.
-                reachable_height: Height::new(options.finalized_floor),
+                backfill_available_through: Height::new(options.finalized_floor),
             },
         )?;
         let actor = actor.start();

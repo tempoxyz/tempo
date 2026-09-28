@@ -6,7 +6,7 @@ use harness::{FakeExecution, FakeMarshal, GENESIS};
 
 #[test]
 fn initialization_requires_a_reachable_finalized_floor() {
-    for (execution_finalized, floor, reachable, should_start) in [
+    for (execution_finalized, floor, backfill_available_through, should_start) in [
         (0, 0, 0, true),
         (1, 1, 0, true),
         (2, 1, 0, true),
@@ -36,12 +36,15 @@ fn initialization_requires_a_reachable_finalized_floor() {
                     marshal: FakeMarshal::new(),
                     fcu_heartbeat_interval: std::time::Duration::from_secs(1),
                     public_key: None,
-                    reachable_height: Height::new(reachable),
+                    backfill_available_through: Height::new(backfill_available_through),
                 },
             );
 
             if should_start {
-                assert!(result.is_ok(), "{execution_finalized}/{floor}/{reachable}");
+                assert!(
+                    result.is_ok(),
+                    "{execution_finalized}/{floor}/{backfill_available_through}"
+                );
             } else {
                 let error = result
                     .err()

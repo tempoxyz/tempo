@@ -276,7 +276,7 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
     /// consensus. Not set if not, for example for followers.
     pub(crate) public_key: Option<PublicKey>,
 
-    /// Highest height reachable from execution finality through the local
-    /// finalized-blocks store, captured before marshal takes ownership of it.
-    pub(crate) reachable_height: Height,
+    /// Inclusive upper height of contiguous local backfill coverage starting at
+    /// execution finality, captured before marshal takes ownership of the store.
+    pub(crate) backfill_available_through: Height,
 }
