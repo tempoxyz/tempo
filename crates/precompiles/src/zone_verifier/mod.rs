@@ -24,18 +24,18 @@ const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 /// its hardfork and remains in effect until a newer entry replaces them.
 ///
 /// Measurements for the T11 EIF built from `tempoxyz/zones` at commit
-/// `154f2e4603809f706bd1b8a6066d71d96bb0f054`.
+/// `a59930c56ed60b2d08eb3cc5cda1da2a51211c02`.
 const APPROVED_PCRS: &[(TempoHardfork, [[u8; 48]; 3])] = &[(
     TempoHardfork::T13,
     [
         alloy::primitives::hex!(
-            "02a1b83bdd8e97e8097536f3298a8bc2006260ca8b8a7ef2429c0b3c60b304c8542c3d4cc31ffaf427c3b37ec12066b6"
+            "491776bc14f245c237c53d778b07d0b2bd3f243b53bbde92d1d084b2f7c264c9fce0de775c45d0e7f786b741f188710f"
         ),
         alloy::primitives::hex!(
             "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
         ),
         alloy::primitives::hex!(
-            "cd9bdf7065daab5e8f1280126ab9efc572530932c943d649553895e49cce616d645cce6ab42e193bd4b27c7af7bf013a"
+            "baba95b8584cce04f28767219f8d13a1390ba5cbdad038385437247429b401ece6b575bab64fbd47d3d557ff053cddd4"
         ),
     ],
 )];
