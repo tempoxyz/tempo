@@ -63,13 +63,14 @@ pub enum Event {
     },
 }
 
-/// A consensus event shared by all subscribers.
+/// A consensus event broadcast to all subscribers.
 ///
-/// The JSON encoding is computed by the first subscriber that needs it and reused by the rest.
-/// A tokio [`OnceCell`] makes concurrent subscribers await that first encoding instead of
-/// blocking runtime threads.
+/// Every subscriber gets a cheap [`Arc`] clone, and the event, which can carry a large block, is
+/// serialized to JSON only once and reused for every subscription notification.
 pub struct SharedEvent {
     event: Event,
+    /// Encoded on first use. tokio's [`OnceCell`] makes concurrent subscribers await that
+    /// encoding instead of blocking runtime threads.
     json: OnceCell<Box<RawValue>>,
 }
 
@@ -87,7 +88,7 @@ impl SharedEvent {
         &self.event
     }
 
-    /// Returns the JSON encoding of the event, serializing it on first use.
+    /// Returns the JSON encoding of the event, serializing it on the first call.
     pub async fn json(&self) -> &RawValue {
         self.json
             .get_or_init(|| async {
