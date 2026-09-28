@@ -364,9 +364,9 @@ where
             // fully lock-free: the follower's last published snapshot plus
             // the chain of queued-but-unapplied blocks overlaid on top —
             // the builder never waits on the follower's apply. The direct
-            // bounded lock read covers startup (nothing published yet);
-            // past that, this block reads from MDBX — unless the KV copy
-            // isn't persisted at all, in which case the only correct
+            // bounded lock read also serves retained parents after an optimistic
+            // apply or candidate rebuild. Otherwise this block reads from MDBX,
+            // unless the KV copy isn't persisted, in which case the only correct
             // option is to wait for the pending chain to become available.
             let parent_root = parent_header.state_root();
             let resolve = || {
@@ -378,7 +378,10 @@ where
             let mut snap = resolve().or_else(|| {
                 shadow
                     .try_read_for(std::time::Duration::from_millis(50))
-                    .and_then(|g| g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new())))
+                    .and_then(|g| {
+                        g.snapshot_at_parent(parent_root)
+                            .map(|snap| (snap, Vec::new()))
+                    })
             });
             if snap.is_none() && flat_reads::no_state_kv_active() {
                 warn!(
@@ -395,7 +398,8 @@ where
                         shadow
                             .try_read_for(std::time::Duration::from_millis(5))
                             .and_then(|g| {
-                                g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new()))
+                                g.snapshot_at_parent(parent_root)
+                                    .map(|snap| (snap, Vec::new()))
                             })
                     });
                 }
