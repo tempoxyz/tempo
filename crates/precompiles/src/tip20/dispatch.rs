@@ -31,78 +31,78 @@ impl Precompile for TIP20Token {
             |call| match call {
                 ITIP20::ITIP20Calls {
                     // Metadata functions
-                    name(call) => view(self, call, |this, _| this.name()),
-                    symbol(call) => view(self, call, |this, _| this.symbol()),
-                    decimals(call) => view(self, call, |this, _| this.decimals()),
-                    currency(call) => view(self, call, |this, _| this.currency()),
-                    totalSupply(call) => view(self, call, |this, _| this.total_supply()),
-                    supplyCap(call) => view(self, call, |this, _| this.supply_cap()),
-                    transferPolicyId(call) => view(self, call, |this, _| this.transfer_policy_id()),
-                    paused(call) => view(self, call, |this, _| this.paused()),
+                    name(call) => view(call, |_| self.name()),
+                    symbol(call) => view(call, |_| self.symbol()),
+                    decimals(call) => view(call, |_| self.decimals()),
+                    currency(call) => view(call, |_| self.currency()),
+                    totalSupply(call) => view(call, |_| self.total_supply()),
+                    supplyCap(call) => view(call, |_| self.supply_cap()),
+                    transferPolicyId(call) => view(call, |_| self.transfer_policy_id()),
+                    paused(call) => view(call, |_| self.paused()),
                     #[schedule(since = T5)]
-                    logoURI(call) => view(self, call, |this, _| this.logo_uri()),
+                    logoURI(call) => view(call, |_| self.logo_uri()),
 
                     // View functions
-                    balanceOf(call) => view(self, call, |this, c| this.balance_of(c)),
-                    allowance(call) => view(self, call, |this, c| this.allowance(c)),
-                    quoteToken(call) => view(self, call, |this, _| this.quote_token()),
-                    nextQuoteToken(call) => view(self, call, |this, _| this.next_quote_token()),
-                    PAUSE_ROLE(call) => view(self, call, |_, _| Ok(Self::pause_role())),
-                    UNPAUSE_ROLE(call) => view(self, call, |_, _| Ok(Self::unpause_role())),
-                    ISSUER_ROLE(call) => view(self, call, |_, _| Ok(Self::issuer_role())),
-                    BURN_BLOCKED_ROLE(call) => view(self, call, |_, _| Ok(Self::burn_blocked_role())),
+                    balanceOf(call) => view(call, |c| self.balance_of(c)),
+                    allowance(call) => view(call, |c| self.allowance(c)),
+                    quoteToken(call) => view(call, |_| self.quote_token()),
+                    nextQuoteToken(call) => view(call, |_| self.next_quote_token()),
+                    PAUSE_ROLE(call) => view(call, |_| Ok(Self::pause_role())),
+                    UNPAUSE_ROLE(call) => view(call, |_| Ok(Self::unpause_role())),
+                    ISSUER_ROLE(call) => view(call, |_| Ok(Self::issuer_role())),
+                    BURN_BLOCKED_ROLE(call) => view(call, |_| Ok(Self::burn_blocked_role())),
 
                     // State changing functions
-                    transferFrom(call) => mutate(self, call, msg_sender, |this, s, c| this.transfer_from(s, c)),
-                    transfer(call) => mutate(self, call, msg_sender, |this, s, c| this.transfer(s, c)),
-                    approve(call) => mutate(self, call, msg_sender, |this, s, c| this.approve(s, c)),
-                    changeTransferPolicyId(call) => mutate(self, call, msg_sender, |this, s, c| {
-                        this.change_transfer_policy_id(s, c)
+                    transferFrom(call) => mutate(call, msg_sender, |sender, c| self.transfer_from(sender, c)),
+                    transfer(call) => mutate(call, msg_sender, |sender, c| self.transfer(sender, c)),
+                    approve(call) => mutate(call, msg_sender, |sender, c| self.approve(sender, c)),
+                    changeTransferPolicyId(call) => mutate(call, msg_sender, |sender, c| {
+                        self.change_transfer_policy_id(sender, c)
                     }),
-                    setSupplyCap(call) => mutate(self, call, msg_sender, |this, s, c| this.set_supply_cap(s, c)),
+                    setSupplyCap(call) => mutate(call, msg_sender, |sender, c| self.set_supply_cap(sender, c)),
                     #[schedule(since = T5)]
-                    setLogoURI(call) => mutate(self, call, msg_sender, |this, s, c| this.set_logo_uri(s, c)),
-                    pause(call) => mutate(self, call, msg_sender, |this, s, c| this.pause(s, c)),
-                    unpause(call) => mutate(self, call, msg_sender, |this, s, c| this.unpause(s, c)),
-                    setNextQuoteToken(call) => mutate(self, call, msg_sender, |this, s, c| this.set_next_quote_token(s, c)),
-                    completeQuoteTokenUpdate(call) => mutate(self, call, msg_sender, |this, s, c| {
-                        this.complete_quote_token_update(s, c)
+                    setLogoURI(call) => mutate(call, msg_sender, |sender, c| self.set_logo_uri(sender, c)),
+                    pause(call) => mutate(call, msg_sender, |sender, c| self.pause(sender, c)),
+                    unpause(call) => mutate(call, msg_sender, |sender, c| self.unpause(sender, c)),
+                    setNextQuoteToken(call) => mutate(call, msg_sender, |sender, c| self.set_next_quote_token(sender, c)),
+                    completeQuoteTokenUpdate(call) => mutate(call, msg_sender, |sender, c| {
+                        self.complete_quote_token_update(sender, c)
                     }),
-                    mint(call) => mutate(self, call, msg_sender, |this, s, c| this.mint(s, c)),
-                    mintWithMemo(call) => mutate(self, call, msg_sender, |this, s, c| this.mint_with_memo(s, c)),
-                    burn(call) => mutate(self, call, msg_sender, |this, s, c| this.burn(s, c)),
-                    burnWithMemo(call) => mutate(self, call, msg_sender, |this, s, c| this.burn_with_memo(s, c)),
-                    burnBlocked(call) => mutate(self, call, msg_sender, |this, s, c| {
-                        this.burn_blocked(s, c.from, c.amount, true)
+                    mint(call) => mutate(call, msg_sender, |sender, c| self.mint(sender, c)),
+                    mintWithMemo(call) => mutate(call, msg_sender, |sender, c| self.mint_with_memo(sender, c)),
+                    burn(call) => mutate(call, msg_sender, |sender, c| self.burn(sender, c)),
+                    burnWithMemo(call) => mutate(call, msg_sender, |sender, c| self.burn_with_memo(sender, c)),
+                    burnBlocked(call) => mutate(call, msg_sender, |sender, c| {
+                        self.burn_blocked(sender, c.from, c.amount, true)
                     }),
-                    transferWithMemo(call) => mutate(self, call, msg_sender, |this, s, c| this.transfer_with_memo(s, c)),
-                    transferFromWithMemo(call) => mutate(self, call, msg_sender, |this, sender, c| {
-                        this.transfer_from_with_memo(sender, c)
+                    transferWithMemo(call) => mutate(call, msg_sender, |sender, c| self.transfer_with_memo(sender, c)),
+                    transferFromWithMemo(call) => mutate(call, msg_sender, |sender, c| {
+                        self.transfer_from_with_memo(sender, c)
                     }),
-                    distributeReward(call) => mutate(self, call, msg_sender, |this, s, c| this.distribute_reward(s, c)),
-                    setRewardRecipient(call) => mutate(self, call, msg_sender, |this, s, c| this.set_reward_recipient(s, c)),
-                    claimRewards(call) => mutate(self, call, msg_sender, |this, _, _| this.claim_rewards(msg_sender)),
-                    globalRewardPerToken(call) => view(self, call, |this, _| this.get_global_reward_per_token()),
-                    optedInSupply(call) => view(self, call, |this, _| this.get_opted_in_supply()),
-                    userRewardInfo(call) => view(self, call, |this, c| this.get_user_reward_info(c.account).map(|info| info.into())),
-                    getPendingRewards(call) => view(self, call, |this, c| this.get_pending_rewards(c.account)),
+                    distributeReward(call) => mutate(call, msg_sender, |sender, c| self.distribute_reward(sender, c)),
+                    setRewardRecipient(call) => mutate(call, msg_sender, |sender, c| self.set_reward_recipient(sender, c)),
+                    claimRewards(call) => mutate(call, msg_sender, |sender, _| self.claim_rewards(sender)),
+                    globalRewardPerToken(call) => view(call, |_| self.get_global_reward_per_token()),
+                    optedInSupply(call) => view(call, |_| self.get_opted_in_supply()),
+                    userRewardInfo(call) => view(call, |c| self.get_user_reward_info(c.account).map(|info| info.into())),
+                    getPendingRewards(call) => view(call, |c| self.get_pending_rewards(c.account)),
 
                     #[schedule(since = T2)]
-                    permit(call) => mutate(self, call, msg_sender, |this, _s, c| this.permit(c)),
+                    permit(call) => mutate(call, msg_sender, |_, c| self.permit(c)),
                     #[schedule(since = T2)]
-                    nonces(call) => view(self, call, |this, c| this.nonces(c)),
+                    nonces(call) => view(call, |c| self.nonces(c)),
                     #[schedule(since = T2)]
-                    DOMAIN_SEPARATOR(call) => view(self, call, |this, _| this.domain_separator())
+                    DOMAIN_SEPARATOR(call) => view(call, |_| self.domain_separator())
                 }
 
                 IRolesAuth::IRolesAuthCalls {
                     // RolesAuth functions
-                    hasRole(call) => view(self, call, |this, c| this.has_role(c)),
-                    getRoleAdmin(call) => view(self, call, |this, c| this.get_role_admin(c)),
-                    grantRole(call) => mutate(self, call, msg_sender, |this, s, c| this.grant_role(s, c)),
-                    revokeRole(call) => mutate(self, call, msg_sender, |this, s, c| this.revoke_role(s, c)),
-                    renounceRole(call) => mutate(self, call, msg_sender, |this, s, c| this.renounce_role(s, c)),
-                    setRoleAdmin(call) => mutate(self, call, msg_sender, |this, s, c| this.set_role_admin(s, c))
+                    hasRole(call) => view(call, |c| self.has_role(c)),
+                    getRoleAdmin(call) => view(call, |c| self.get_role_admin(c)),
+                    grantRole(call) => mutate(call, msg_sender, |sender, c| self.grant_role(sender, c)),
+                    revokeRole(call) => mutate(call, msg_sender, |sender, c| self.revoke_role(sender, c)),
+                    renounceRole(call) => mutate(call, msg_sender, |sender, c| self.renounce_role(sender, c)),
+                    setRoleAdmin(call) => mutate(call, msg_sender, |sender, c| self.set_role_admin(sender, c))
                 }
             }
         )

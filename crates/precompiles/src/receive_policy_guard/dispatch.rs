@@ -16,10 +16,10 @@ impl Precompile for ReceivePolicyGuard {
             calldata,
             |call| match call {
                 IReceivePolicyGuard::IReceivePolicyGuardCalls {
-                    balanceOf(call) => view(self, call, |this, c| this.balance_of(c.receipt)),
-                    claim(call) => mutate(self, call, msg_sender, |this, s, c| this.claim(s, c.to, c.receipt)),
-                    burnBlockedReceipt(call) => mutate(self, call, msg_sender, |this, s, c| {
-                        this.burn_blocked_receipt(s, c.receipt)
+                    balanceOf(call) => view(call, |c| self.balance_of(c.receipt)),
+                    claim(call) => mutate(call, msg_sender, |sender, c| self.claim(sender, c.to, c.receipt)),
+                    burnBlockedReceipt(call) => mutate(call, msg_sender, |sender, c| {
+                        self.burn_blocked_receipt(sender, c.receipt)
                     })
                 }
             }

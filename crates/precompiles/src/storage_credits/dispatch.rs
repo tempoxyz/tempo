@@ -17,14 +17,14 @@ impl Precompile for StorageCredits {
             calldata,
             |call| match call {
                 IStorageCredits::IStorageCreditsCalls {
-                    balanceOf(call) => view(self, call, |this, c| this.balance_of(c.account)),
-                    modeOf(call) => view(self, call, |this, c| this.mode_of(c.account).map(Into::into)),
-                    budgetOf(call) => view(self, call, |this, c| this.budget_of(c.account)),
-                    setMode(call) => mutate(self, call, msg_sender, |this, sender, c| {
-                        this.set_mode(sender, c.newMode)
+                    balanceOf(call) => view(call, |c| self.balance_of(c.account)),
+                    modeOf(call) => view(call, |c| self.mode_of(c.account).map(Into::into)),
+                    budgetOf(call) => view(call, |c| self.budget_of(c.account)),
+                    setMode(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_mode(sender, c.newMode)
                     }),
-                    setBudget(call) => mutate(self, call, msg_sender, |this, sender, c| {
-                        this.set_budget(sender, c.credits)
+                    setBudget(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_budget(sender, c.credits)
                     })
                 }
             }

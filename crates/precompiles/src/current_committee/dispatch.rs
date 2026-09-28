@@ -19,9 +19,9 @@ impl Precompile for CurrentCommittee {
             calldata,
             |call| match call {
                 ICurrentCommittee::ICurrentCommitteeCalls {
-                    getCommitteeMembers(call) => view(self, call, |this, _| this.get_committee_members()),
+                    getCommitteeMembers(call) => view(call, |_| self.get_committee_members()),
                     setCommitteeMembers(call) => {
-                        mutate(self, call, msg_sender, |this, s, c| this.set_committee_members(s, c))
+                        mutate(call, msg_sender, |sender, c| self.set_committee_members(sender, c))
                     }
                 }
             }

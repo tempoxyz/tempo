@@ -17,18 +17,18 @@ impl Precompile for ZoneFactory {
             calldata,
             |call| match call {
                 IZoneFactory::IZoneFactoryCalls {
-                    owner(call) => view(self, call, |this, _| this.owner()),
+                    owner(call) => view(call, |_| self.owner()),
                     transferOwnership(call) => {
-                        mutate(self, call, msg_sender, |this, sender, call| {
-                            this.transfer_ownership(sender, call)
+                        mutate(call, msg_sender, |sender, call| {
+                            self.transfer_ownership(sender, call)
                         })
                     },
                     createZone(call) => {
-                        mutate(self, call, msg_sender, |this, sender, call| this.create_zone(sender, call))
+                        mutate(call, msg_sender, |sender, call| self.create_zone(sender, call))
                     },
-                    nextZoneId(call) => view(self, call, |this, _| this.next_zone_id()),
-                    zones(call) => view(self, call, |this, call| this.zone(call.id)),
-                    isZonePortal(call) => view(self, call, |this, call| this.is_zone_portal(call.portal)),
+                    nextZoneId(call) => view(call, |_| self.next_zone_id()),
+                    zones(call) => view(call, |call| self.zone(call.id)),
+                    isZonePortal(call) => view(call, |call| self.is_zone_portal(call.portal)),
                 }
             }
         )
