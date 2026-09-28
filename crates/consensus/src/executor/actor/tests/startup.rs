@@ -1,4 +1,4 @@
-use commonware_runtime::{Runner as _, deterministic};
+use commonware_runtime::deterministic;
 
 use super::*;
 use crate::executor::{Config, init};
