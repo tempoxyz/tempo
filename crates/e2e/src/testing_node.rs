@@ -35,7 +35,8 @@ use std::{
 use tempo_consensus::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT, consensus, feed::FeedStateHandle,
+    RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT, VerificationMode, consensus,
+    feed::FeedStateHandle,
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
@@ -94,6 +95,8 @@ where
     /// Proposal budget estimator shared by this node's builder and consensus
     /// engine. Pinned to `proposal_return_budget` so tests stay deterministic.
     pub estimator: Arc<tempo_node::Estimator>,
+    /// Verification mode used whenever the consensus engine starts.
+    pub verification_mode: VerificationMode,
     n_starts: u32,
 }
 
@@ -114,6 +117,7 @@ where
         network_identity: tempo_chainspec::NetworkIdentity,
         feed_state: FeedStateHandle,
         proposal_return_budget: Duration,
+        verification_mode: VerificationMode,
         execution_runtime: ExecutionRuntimeHandle,
         mut execution_config: ExecutionNodeConfig,
         network_address: SocketAddr,
@@ -141,6 +145,7 @@ where
             feed_state,
             proposal_return_budget,
             estimator,
+            verification_mode,
             consensus_handle: None,
             execution_node: None,
             execution_node_datadir,
@@ -195,6 +200,7 @@ where
         self.proposal_return_budget = identity_source.proposal_return_budget;
         self.estimator = identity_source.estimator;
         self.execution_config.estimator = Some(self.estimator.clone());
+        self.verification_mode = identity_source.verification_mode;
         self.network_address = identity_source.network_address;
         self.chain_address = identity_source.chain_address;
     }
@@ -316,15 +322,15 @@ where
                 transport,
                 verify_rate: GOSSIP_VERIFY_RATE,
             });
-        let execution_node = self
+        let running = self
             .execution_node
             .as_ref()
-            .expect("execution node must be running before consensus")
-            .node
-            .clone()
-            .into();
+            .expect("execution node must be running before consensus");
+        let execution_node = running.node.clone().into();
+        let executed_state = running.executed_state.clone();
         let config = consensus::Builder {
             execution_node: Some(execution_node),
+            executed_state,
             network_identity: self.network_identity.clone(),
             gossip,
             blocker: self.oracle.control(self.public_key()),
@@ -335,6 +341,7 @@ where
             mailbox_size: commonware_utils::NZUsize!(1024),
             deque_size: 10,
             max_message_size: crate::MAX_MESSAGE_SIZE,
+            verification_mode: self.verification_mode,
             time_to_propose: Duration::from_secs(2),
             time_to_collect_notarizations: Duration::from_secs(3),
             time_to_retry_nullify_broadcast: Duration::from_secs(10),
@@ -634,120 +641,5 @@ where
 
         debug!(%self.uid, target, "execution layer unwound successfully");
         (current, target)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{Setup, setup_validators};
-    use alloy::providers::{Provider, ProviderBuilder};
-    use commonware_p2p::simulated::Link;
-    use commonware_runtime::{
-        Runner as _,
-        deterministic::{Config, Runner},
-    };
-    use std::time::Duration;
-    use tokio::sync::{oneshot, oneshot::Sender};
-
-    enum Message {
-        Stop(Sender<()>),
-        Start(Sender<std::net::SocketAddr>),
-    }
-
-    /// Start node and verify RPC is accessible
-    async fn start_and_verify(tx_msg: &tokio::sync::mpsc::UnboundedSender<Message>) -> String {
-        let (tx_rpc_addr, rx_rpc_addr) = oneshot::channel();
-        let _ = tx_msg.send(Message::Start(tx_rpc_addr));
-        let rpc_addr = rx_rpc_addr.await.unwrap();
-        let rpc_url = format!("http://{rpc_addr}");
-
-        // Verify RPC is accessible
-        let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
-        let block_number = provider.get_block_number().await;
-        assert!(block_number.is_ok(), "RPC should be accessible after start");
-
-        rpc_url
-    }
-
-    #[tokio::test]
-    async fn just_restart() {
-        // Ensures that the node can be stopped completely and brought up inside a test.
-        let _ = tempo_eyre::install();
-
-        let runner = Runner::from(Config::default().with_seed(0));
-        let (tx_msg, mut rx_msg) = tokio::sync::mpsc::unbounded_channel::<Message>();
-
-        std::thread::spawn(move || {
-            runner.start(|mut context| async move {
-                let setup = Setup::new()
-                    .how_many_signers(1)
-                    .linkage(Link {
-                        latency: Duration::from_millis(10),
-                        jitter: Duration::from_millis(1),
-                        success_rate: commonware_utils::probability!(1.0),
-                    })
-                    .epoch_length(100);
-
-                let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
-
-                let mut node = nodes.pop().unwrap();
-
-                loop {
-                    match rx_msg.blocking_recv() {
-                        Some(Message::Stop(tx_stopped)) => {
-                            node.stop().await;
-                            assert!(!node.is_running(), "node should not be running after stop");
-                            assert!(
-                                !node.is_consensus_running(),
-                                "consensus should not be running after stop"
-                            );
-                            assert!(
-                                !node.is_execution_running(),
-                                "execution should not be running after stop"
-                            );
-
-                            let _ = tx_stopped.send(());
-                        }
-                        Some(Message::Start(tx_rpc_addr)) => {
-                            node.start(&context).await;
-                            assert!(node.is_running(), "node should be running after start");
-
-                            // Get the RPC HTTP address while running
-                            let rpc_addr = node
-                                .execution()
-                                .rpc_server_handles
-                                .rpc
-                                .http_local_addr()
-                                .expect("http rpc server should be running");
-
-                            let _ = tx_rpc_addr.send(rpc_addr);
-                        }
-                        None => {
-                            break;
-                        }
-                    }
-                }
-            });
-        });
-
-        // Start the node initially
-        let rpc_url = start_and_verify(&tx_msg).await;
-
-        // Signal to stop the node
-        let (tx_stopped, rx_stopped) = oneshot::channel();
-        let _ = tx_msg.send(Message::Stop(tx_stopped));
-        rx_stopped.await.unwrap();
-
-        // Verify RPC is no longer accessible after stopping
-        let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
-        let result =
-            tokio::time::timeout(Duration::from_millis(500), provider.get_block_number()).await;
-        assert!(
-            result.is_err() || result.unwrap().is_err(),
-            "RPC should not be accessible after stopping"
-        );
-
-        // Start the node again
-        start_and_verify(&tx_msg).await;
     }
 }

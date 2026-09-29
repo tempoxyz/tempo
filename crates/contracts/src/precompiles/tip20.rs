@@ -88,6 +88,8 @@ crate::sol! {
         function logoURI() external view returns (string memory);
         function setLogoURI(string calldata newLogoURI) external;
         function burnBlocked(address from, uint256 amount) external;
+        /// @notice Burns from any unprotected account (requires BURN_AT_ROLE, T12+).
+        function burnAt(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
@@ -117,6 +119,9 @@ crate::sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
+        /// @notice Returns the role identifier for burning from any unprotected account (T12+).
+        function BURN_AT_ROLE() external view returns (bytes32);
+
         // EIP-2612 Permit Functions
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
         function nonces(address owner) external view returns (uint256);
@@ -143,6 +148,7 @@ crate::sol! {
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
+        event BurnAt(address indexed burner, address indexed from, uint256 indexed amount);
         event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);

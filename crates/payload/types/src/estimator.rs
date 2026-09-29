@@ -1,18 +1,18 @@
 //! Holistic proposal budget estimator shared by consensus and the payload builder.
 //!
-//! A block's wall-clock time is spent in four places that the proposer has to
+//! A block's wall-clock time is spent in three places that the proposer has to
 //! reserve for before it stops adding transactions:
 //!
 //! 1. its own replayable build work, including the non-interruptible finish
 //!    (state root, block assembly) that follows the transaction cutoff,
-//! 2. persisting the encoded block through the consensus marshal, once on the
-//!    proposer and once on every validator,
-//! 3. the validators replaying the block through their execution layer,
-//! 4. the network: shipping the proposal to a quorum and getting the next
+//! 2. the validators replaying the block through their execution layer,
+//! 3. the network: shipping the proposal to a quorum and getting the next
 //!    leader started on top of it.
 //!
-//! Each of those was previously estimated in a different place (a process-wide
-//! static, a builder-local atomic, an actor-local sample window and a fixed CLI
+//! Marshal persistence is not part of the model: the marshal wrapper persists
+//! a block concurrently with voting, so it gates finalization rather than the
+//! next block. Each of the three was previously estimated in a different
+//! place (a builder-local atomic, an actor-local sample window and a fixed CLI
 //! constant). The [`Estimator`] owns all of them so that consensus and the
 //! builder read one consistent picture, and so that the whole model can be
 //! driven by a simulated block sequence in tests.
@@ -25,8 +25,8 @@
 //! # Robustness
 //!
 //! Every learned quantity is a percentile over a bounded window of recent
-//! samples that also expire by age. A single slow observation (a persistence
-//! commit landing on a block, one slow finish) therefore moves the estimate by
+//! samples that also expire by age. A single slow observation (a finish that
+//! waited on a persistence commit, one slow round trip) therefore moves the estimate by
 //! at most one window slot instead of resetting it to the outlier, while a
 //! sustained change still takes over within a fraction of the window. The
 //! network reservation skips that damping on the way up by default, see
@@ -41,8 +41,7 @@ use std::{
 use tracing::debug;
 
 use crate::budget::{
-    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
-    ValidationLatencyWorkload,
+    ValidationLatencyEstimate, ValidationLatencyEstimator, ValidationLatencyWorkload,
 };
 
 /// Target wall-clock time between blocks used when no configuration is given.
@@ -87,17 +86,6 @@ const BUILD_TIME_SAMPLE_WINDOW: usize = 16;
 /// Finished builds older than this no longer influence the multiplier.
 const BUILD_TIME_SAMPLE_TTL: Duration = Duration::from_secs(60);
 
-/// Ignore tiny blocks so fixed archive overhead does not become a large-block byte cost.
-const MARSHAL_PERSIST_MIN_SAMPLE_BYTES: usize = 128 * 1024;
-/// Number of persistence observations the per-byte rate is derived from.
-///
-/// Validators persist every verified block, so with 10 validators this covers
-/// roughly the last 20 seconds of chain activity instead of the proposer's own
-/// last few proposals.
-const MARSHAL_PERSIST_SAMPLE_WINDOW: usize = 32;
-/// Persistence observations older than this are dropped.
-const MARSHAL_PERSIST_SAMPLE_TTL: Duration = Duration::from_secs(60);
-
 /// Number of own proposals the network reservation is derived from.
 const NETWORK_SAMPLE_WINDOW: usize = 16;
 /// Network observations older than this are dropped.
@@ -112,8 +100,7 @@ const PENDING_PROPOSAL_TTL: Duration = Duration::from_secs(10);
 /// Upper bound on proposals awaiting their notarization.
 const MAX_PENDING_PROPOSALS: usize = 8;
 
-/// Percentile used for the marshal persistence and build time reservations:
-/// the 75th.
+/// Percentile used for the build time reservation: the 75th.
 ///
 /// The median ignores too much of the tail for a reservation, the 90th
 /// percentile of a 16 sample window is a single observation again. The
@@ -347,42 +334,6 @@ impl<T: Copy + Ord> SampleWindow<T> {
     }
 }
 
-/// Learns the marshal persistence cost per encoded block byte.
-#[derive(Clone, Debug)]
-struct MarshalPersistTracker {
-    samples: SampleWindow<u64>,
-}
-
-impl MarshalPersistTracker {
-    fn new() -> Self {
-        Self {
-            samples: SampleWindow::new(MARSHAL_PERSIST_SAMPLE_WINDOW, MARSHAL_PERSIST_SAMPLE_TTL),
-        }
-    }
-
-    fn observe(&mut self, now: Instant, block_size_bytes: usize, elapsed: Duration) -> bool {
-        if block_size_bytes < MARSHAL_PERSIST_MIN_SAMPLE_BYTES || elapsed == Duration::ZERO {
-            return false;
-        }
-        let block_size = block_size_bytes as u128;
-        let ns_per_byte = elapsed
-            .as_nanos()
-            .saturating_add(block_size.saturating_sub(1))
-            / block_size;
-        self.samples
-            .push(now, ns_per_byte.min(u128::from(u64::MAX)) as u64);
-        true
-    }
-
-    fn estimate(&self) -> MarshalPersistEstimator {
-        MarshalPersistEstimator::from_ns_per_byte(
-            self.samples
-                .percentile(RESERVE_PERCENTILE.0, RESERVE_PERCENTILE.1)
-                .unwrap_or(0),
-        )
-    }
-}
-
 /// Learns how much replayable work follows the transaction cutoff.
 #[derive(Clone, Debug)]
 struct BuildTimeTracker {
@@ -442,17 +393,13 @@ impl BuildTimeTracker {
 
 /// What a proposer expects its validators to spend on a proposal.
 ///
-/// These are subtracted from the time between returning the proposal and the
+/// This is subtracted from the time between returning the proposal and the
 /// next leader building on it, so the network tracker only learns propagation
 /// and vote time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProposalExpectation {
-    /// Approximate encoded size of the proposal.
-    pub block_size_bytes: usize,
     /// Expected execution-layer validation time on a validator.
     pub validator_work: Duration,
-    /// Expected marshal persistence time on a validator.
-    pub validator_persist: Duration,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -541,9 +488,7 @@ impl NetworkTracker {
             key,
             returned_at: now,
             returned_unix_ms,
-            expected_remote: expectation
-                .validator_work
-                .saturating_add(expectation.validator_persist),
+            expected_remote: expectation.validator_work,
         });
     }
 
@@ -639,7 +584,6 @@ pub struct BuildPlan {
     /// Remaining proposal budget handed to this build.
     pub build_budget: Duration,
     multiplier_scaled: u64,
-    marshal_persist: MarshalPersistEstimator,
     validation_latency: Option<ValidationLatencyEstimate>,
 }
 
@@ -650,9 +594,7 @@ pub struct PayloadBudgetDecision {
     pub predicted_builder_work: Duration,
     /// Validator replay work, from feedback when available.
     pub predicted_validator_work: Duration,
-    /// Marshal persistence for the current block size, charged per side.
-    pub marshal_persist: Duration,
-    /// Everything the proposal still needs: idle, builder, validator, both persists.
+    /// Everything the proposal still needs: idle, builder and validator work.
     pub total_reserved: Duration,
 }
 
@@ -661,13 +603,11 @@ impl BuildPlan {
     pub fn new(
         build_budget: Duration,
         build_time_multiplier: f64,
-        marshal_persist: MarshalPersistEstimator,
         validation_latency: Option<ValidationLatencyEstimate>,
     ) -> Self {
         Self {
             build_budget,
             multiplier_scaled: scaled_build_time_multiplier(build_time_multiplier),
-            marshal_persist,
             validation_latency,
         }
     }
@@ -691,25 +631,17 @@ impl BuildPlan {
         self.validation_latency
     }
 
-    /// The marshal persistence rate in use.
-    pub fn marshal_persist(&self) -> MarshalPersistEstimator {
-        self.marshal_persist
-    }
-
     /// Computes what the proposal still has to reserve.
     ///
     /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed`
     /// is the proposer-only time spent waiting for more transactions, which
     /// validators do not replay and therefore counts once. Builder work is
-    /// projected from the current build, validator work uses feedback from
-    /// previously validated blocks capped at that projection, and marshal
-    /// persistence is charged once for the proposer and once for validators
-    /// because both persist before the block can progress.
+    /// projected from the current build and validator work uses feedback from
+    /// previously validated blocks, capped at that projection.
     pub fn decision(
         &self,
         elapsed: Duration,
         idle_elapsed: Duration,
-        block_size_bytes: usize,
         current_workload: ValidationLatencyWorkload,
     ) -> PayloadBudgetDecision {
         let work_elapsed = elapsed.saturating_sub(idle_elapsed);
@@ -719,16 +651,12 @@ impl BuildPlan {
             .and_then(|estimate| estimate.estimate(current_workload))
             .map(|estimate| estimate.min(predicted_builder_work))
             .unwrap_or(predicted_builder_work);
-        let marshal_persist = self.marshal_persist.estimate(block_size_bytes);
         let total_reserved = idle_elapsed
             .saturating_add(predicted_builder_work)
-            .saturating_add(predicted_validator_work)
-            .saturating_add(marshal_persist)
-            .saturating_add(marshal_persist);
+            .saturating_add(predicted_validator_work);
         PayloadBudgetDecision {
             predicted_builder_work,
             predicted_validator_work,
-            marshal_persist,
             total_reserved,
         }
     }
@@ -744,10 +672,6 @@ impl BuildPlan {
 pub struct EstimatorSnapshot {
     /// Recent P90 execution-layer validation time, if observed.
     pub validation_latency_p90: Option<Duration>,
-    /// Marshal persistence cost in nanoseconds per encoded byte.
-    pub marshal_persist_ns_per_byte: u64,
-    /// Number of persistence observations in the window.
-    pub marshal_persist_samples: usize,
     /// Build time multiplier in use.
     pub build_time_multiplier: f64,
     /// Number of finished builds in the window.
@@ -772,12 +696,12 @@ pub struct EstimatorSnapshot {
 #[derive(Debug)]
 struct State {
     validation: ValidationLatencyEstimator,
-    persist: MarshalPersistTracker,
     build_time: BuildTimeTracker,
     network: NetworkTracker,
 }
 
-/// The shared proposal budget estimator. See the [module docs](self).
+/// The shared proposal budget estimator; the module documentation describes
+/// the model.
 #[derive(Debug)]
 pub struct Estimator {
     config: EstimatorConfig,
@@ -797,7 +721,6 @@ impl Estimator {
             config,
             state: Mutex::new(State {
                 validation: ValidationLatencyEstimator::default(),
-                persist: MarshalPersistTracker::new(),
                 build_time: BuildTimeTracker::new(config.build_time_multiplier),
                 network: NetworkTracker::new(&config),
             }),
@@ -829,23 +752,6 @@ impl Estimator {
         elapsed: Duration,
     ) {
         self.state().validation.observe(height, workload, elapsed);
-    }
-
-    /// Records time spent persisting an encoded block through the marshal.
-    ///
-    /// Both proposers (after building) and validators (after verifying)
-    /// persist, so every block yields one sample per node.
-    pub fn on_marshal_persist(&self, now: Instant, block_size_bytes: usize, elapsed: Duration) {
-        let mut state = self.state();
-        if state.persist.observe(now, block_size_bytes, elapsed) {
-            debug!(
-                block_size_bytes,
-                ?elapsed,
-                estimated_ns_per_byte = state.persist.estimate().ns_per_byte(),
-                samples = state.persist.samples.len(),
-                "updated marshal persistence estimate"
-            );
-        }
     }
 
     /// Records the replayable work of a finished consensus payload build.
@@ -947,11 +853,6 @@ impl Estimator {
         self.state().validation.estimate()
     }
 
-    /// The current marshal persistence rate.
-    pub fn marshal_persist(&self) -> MarshalPersistEstimator {
-        self.state().persist.estimate()
-    }
-
     /// The current build time multiplier.
     pub fn build_time_multiplier(&self) -> f64 {
         self.state().build_time.scaled() as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64
@@ -963,7 +864,6 @@ impl Estimator {
         BuildPlan {
             build_budget,
             multiplier_scaled: state.build_time.scaled(),
-            marshal_persist: state.persist.estimate(),
             validation_latency: state.validation.estimate(),
         }
     }
@@ -974,8 +874,6 @@ impl Estimator {
         let network_reserve = state.network.reserve();
         EstimatorSnapshot {
             validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
-            marshal_persist_ns_per_byte: state.persist.estimate().ns_per_byte(),
-            marshal_persist_samples: state.persist.samples.len(),
             build_time_multiplier: state.build_time.scaled() as f64
                 / BUILD_TIME_MULTIPLIER_SCALE as f64,
             build_time_samples: state.build_time.samples.len(),
@@ -1112,41 +1010,6 @@ mod tests {
     }
 
     #[test]
-    fn marshal_persist_ignores_a_single_slow_commit() {
-        let estimator = Estimator::new(config());
-        let now = Instant::now();
-        let block = 1_000_000;
-        // 10 ns per byte is a healthy 10 ms persist for a 1 MB block.
-        for i in 0..24u64 {
-            estimator.on_marshal_persist(now + ms(i), block, ms(10));
-        }
-        assert_eq!(estimator.marshal_persist().ns_per_byte(), 10);
-        // One block lands on a persistence commit and takes 96 ms.
-        estimator.on_marshal_persist(now + ms(30), block, ms(96));
-        assert_eq!(
-            estimator.marshal_persist().ns_per_byte(),
-            10,
-            "one outlier must not set the rate"
-        );
-        // A sustained slowdown takes over once it fills a quarter of the window.
-        for i in 0..12u64 {
-            estimator.on_marshal_persist(now + ms(40 + i), block, ms(40));
-        }
-        assert_eq!(estimator.marshal_persist().ns_per_byte(), 40);
-        assert_eq!(estimator.marshal_persist().estimate(2 * block), ms(80));
-    }
-
-    #[test]
-    fn marshal_persist_ignores_tiny_blocks_and_empty_samples() {
-        let estimator = Estimator::new(config());
-        let now = Instant::now();
-        estimator.on_marshal_persist(now, MARSHAL_PERSIST_MIN_SAMPLE_BYTES - 1, ms(50));
-        estimator.on_marshal_persist(now, 1_000_000, Duration::ZERO);
-        assert_eq!(estimator.marshal_persist().ns_per_byte(), 0);
-        assert_eq!(estimator.snapshot().marshal_persist_samples, 0);
-    }
-
-    #[test]
     fn build_time_multiplier_rises_in_capped_steps_and_follows_the_window_down() {
         let estimator = Estimator::new(config());
         let now = Instant::now();
@@ -1244,12 +1107,10 @@ mod tests {
         assert_eq!(estimator.snapshot().network_samples, 0);
 
         // Own proposals: the next leader starts building 420 ms after the
-        // return, of which validators were expected to spend 225 ms
-        // validating and 15 ms persisting.
+        // return, of which validators were expected to spend 240 ms
+        // validating.
         let expectation = ProposalExpectation {
-            block_size_bytes: 2_600_000,
-            validator_work: ms(225),
-            validator_persist: ms(15),
+            validator_work: ms(240),
         };
         for view in 1..=4u64 {
             let returned = now + ms(view * 1000);
@@ -1274,9 +1135,7 @@ mod tests {
         let now = Instant::now();
         let base_ms = 1_800_000_000_000u64;
         let expectation = ProposalExpectation {
-            block_size_bytes: 2_600_000,
             validator_work: ms(200),
-            validator_persist: Duration::ZERO,
         };
         // Faster than the floor: stays at the floor.
         estimator.on_proposal_returned(now, base_ms, (0, 1), expectation);
@@ -1426,43 +1285,24 @@ mod tests {
 
     #[test]
     fn build_plan_accounts_for_leader_idle_once() {
-        let plan = BuildPlan::new(
-            ms(500),
-            1.0,
-            MarshalPersistEstimator::from_ns_per_byte(0),
-            None,
-        );
+        let plan = BuildPlan::new(ms(500), 1.0, None);
         let decision = plan.decision(
             ms(300),
             ms(100),
-            1_000_000,
             ValidationLatencyWorkload::new(1_000_000, 10),
         );
         assert_eq!(decision.predicted_builder_work, ms(200));
         assert_eq!(decision.predicted_validator_work, ms(200));
         assert_eq!(decision.total_reserved, ms(500));
         assert!(plan.exhausted(&decision));
-        assert!(
-            !BuildPlan::new(
-                ms(501),
-                1.0,
-                MarshalPersistEstimator::from_ns_per_byte(0),
-                None
-            )
-            .exhausted(&decision)
-        );
+        assert!(!BuildPlan::new(ms(501), 1.0, None).exhausted(&decision));
     }
 
     #[test]
     fn build_plan_uses_validator_feedback_when_available() {
         let workload = ValidationLatencyWorkload::new(1_000_000, 10);
-        let plan = BuildPlan::new(
-            ms(500),
-            1.0,
-            MarshalPersistEstimator::from_ns_per_byte(0),
-            validation_latency_estimate(workload, ms(120)),
-        );
-        let decision = plan.decision(ms(200), Duration::ZERO, 1_000_000, workload);
+        let plan = BuildPlan::new(ms(500), 1.0, validation_latency_estimate(workload, ms(120)));
+        let decision = plan.decision(ms(200), Duration::ZERO, workload);
         assert_eq!(decision.predicted_builder_work, ms(200));
         assert_eq!(decision.predicted_validator_work, ms(120));
         assert_eq!(decision.total_reserved, ms(320));
@@ -1473,7 +1313,6 @@ mod tests {
         let plan = BuildPlan::new(
             ms(500),
             1.0,
-            MarshalPersistEstimator::from_ns_per_byte(0),
             validation_latency_estimate(ValidationLatencyWorkload::new(1_000_000, 10), ms(120)),
         );
         // Four times the feedback workload would scale the estimate to 480 ms,
@@ -1481,29 +1320,21 @@ mod tests {
         let decision = plan.decision(
             ms(200),
             Duration::ZERO,
-            1_000_000,
             ValidationLatencyWorkload::new(4_000_000, 40),
         );
         assert_eq!(decision.predicted_validator_work, ms(200));
     }
 
     #[test]
-    fn build_plan_accounts_for_marshal_persist_on_both_sides() {
-        let plan = BuildPlan::new(
-            ms(500),
-            1.35,
-            MarshalPersistEstimator::from_ns_per_byte(10),
-            None,
-        );
+    fn build_plan_scales_builder_work_by_the_multiplier() {
+        let plan = BuildPlan::new(ms(500), 1.35, None);
         let decision = plan.decision(
             ms(100),
             Duration::ZERO,
-            1_000_000,
             ValidationLatencyWorkload::new(1_000_000, 10),
         );
         assert_eq!(decision.predicted_builder_work, ms(135));
-        assert_eq!(decision.marshal_persist, ms(10));
-        assert_eq!(decision.total_reserved, ms(135 + 135 + 10 + 10));
+        assert_eq!(decision.total_reserved, ms(135 + 135));
         assert!((plan.build_time_multiplier() - 1.35).abs() < 1e-9);
     }
 
@@ -1529,17 +1360,15 @@ mod tests {
     }
 
     /// A ten validator network with 2.6 MB blocks, as measured on the
-    /// multi-region benchmark: validators need ~225 ms to validate and ~15 ms
-    /// to persist, and the next leader starts building ~210 ms of network
-    /// time after that (body to the quorum plus votes to the next leader).
+    /// multi-region benchmark: validators need ~225 ms to validate, and the
+    /// next leader starts building ~210 ms of network time after that (body
+    /// to the quorum plus votes to the next leader).
     struct SimulatedNetwork {
         estimator: Estimator,
         now: Instant,
         unix_ms: u64,
         validators: u64,
-        block_size: usize,
         validation: Duration,
-        persist: Duration,
         network: Duration,
     }
 
@@ -1550,9 +1379,7 @@ mod tests {
                 now: Instant::now(),
                 unix_ms: 1_800_000_000_000,
                 validators: 10,
-                block_size: 2_600_000,
                 validation: ms(225),
-                persist: ms(15),
                 network: ms(210),
             }
         }
@@ -1574,45 +1401,32 @@ mod tests {
                 if ours {
                     let budget = self.estimator.proposal_budget();
                     budgets.push(budget.return_budget);
-                    let expected_persist =
-                        self.estimator.marshal_persist().estimate(self.block_size);
                     let expected_work = self
                         .estimator
                         .expected_validation(workload)
                         .unwrap_or(self.validation);
                     // Build for whatever the budget leaves after the expected
-                    // remote work, then persist and return.
-                    self.advance(
-                        budget
-                            .return_budget
-                            .saturating_sub(expected_work)
-                            .saturating_sub(expected_persist),
-                    );
-                    self.estimator
-                        .on_marshal_persist(self.now, self.block_size, self.persist);
+                    // remote work, then return.
+                    self.advance(budget.return_budget.saturating_sub(expected_work));
                     self.estimator.on_proposal_returned(
                         self.now,
                         self.unix_ms,
                         key,
                         ProposalExpectation {
-                            block_size_bytes: self.block_size,
                             validator_work: expected_work,
-                            validator_persist: expected_persist,
                         },
                     );
                     // The next leader starts building once the quorum has
                     // validated and its votes reached it.
-                    self.advance(self.network + self.validation + self.persist);
+                    self.advance(self.network + self.validation);
                     self.estimator
                         .on_child_block_built(self.now, key, height + 1, self.unix_ms);
                 } else {
-                    // Someone else proposed: we receive, validate and persist,
-                    // and see the next block's timestamp when we verify it.
-                    self.advance(ms(240) + self.network / 2);
+                    // Someone else proposed: we receive and validate, and see
+                    // the next block's timestamp when we verify it.
+                    self.advance(self.validation + self.network / 2);
                     self.estimator
                         .on_block_verified(height, workload, self.validation);
-                    self.estimator
-                        .on_marshal_persist(self.now, self.block_size, self.persist);
                     self.advance(self.network / 2);
                     self.estimator
                         .on_child_block_built(self.now, key, height + 1, self.unix_ms);
@@ -1628,21 +1442,11 @@ mod tests {
         let budgets = network.run(60);
         // The first own proposal still uses the configured 50 ms reservation.
         assert_eq!(budgets[0], ms(500));
-        // Afterwards the reservation converges on the measured 210 ms, up to
-        // the rounding of the per-byte persistence rate.
-        let last = *budgets.last().unwrap();
-        assert!(
-            last >= ms(339) && last <= ms(341),
-            "expected a return budget of about 340 ms, got {last:?}"
-        );
+        // Afterwards the reservation is the measured 210 ms.
+        assert_eq!(*budgets.last().unwrap(), ms(340));
         let snapshot = network.estimator.snapshot();
-        assert!(
-            snapshot.network_reserve >= ms(209) && snapshot.network_reserve <= ms(211),
-            "expected a network reserve of about 210 ms, got {:?}",
-            snapshot.network_reserve
-        );
+        assert_eq!(snapshot.network_reserve, ms(210));
         assert_eq!(snapshot.validation_latency_p90, Some(ms(225)));
-        assert_eq!(snapshot.marshal_persist_ns_per_byte, 6);
     }
 
     #[test]
@@ -1651,27 +1455,5 @@ mod tests {
         network.network = ms(20);
         let budgets = network.run(60);
         assert!(budgets.iter().all(|budget| *budget == ms(500)));
-    }
-
-    #[test]
-    fn simulation_persistence_spike_does_not_shrink_the_next_proposals() {
-        let mut network = SimulatedNetwork::new(Estimator::new(config()));
-        network.run(40);
-        let before = network
-            .estimator
-            .marshal_persist()
-            .estimate(network.block_size);
-        // One block hits a persistence commit and takes 10x as long to persist.
-        network.persist = ms(150);
-        network.run(1);
-        network.persist = ms(15);
-        let after = network
-            .estimator
-            .marshal_persist()
-            .estimate(network.block_size);
-        assert_eq!(
-            before, after,
-            "a single slow persist must not change the reservation for the next proposals"
-        );
     }
 }

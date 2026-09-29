@@ -10,8 +10,7 @@ mod estimator;
 use alloy_primitives::Bytes;
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{
-    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
-    ValidationLatencyWorkload,
+    ValidationLatencyEstimate, ValidationLatencyEstimator, ValidationLatencyWorkload,
 };
 pub use estimator::{
     BUILD_TIME_MULTIPLIER_SCALE, BuildPlan, DEFAULT_BUILD_TIME_MULTIPLIER, DEFAULT_NETWORK_BUDGET,

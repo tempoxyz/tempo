@@ -6,30 +6,6 @@ const VALIDATION_LATENCY_SAMPLE_WINDOW: usize = 64;
 /// Fixed-point scale for validation workload multipliers.
 const VALIDATION_LATENCY_WORKLOAD_SCALE: u128 = 1_000_000;
 
-/// Point-in-time marshal persistence cost per encoded block byte.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MarshalPersistEstimator {
-    ns_per_byte: u64,
-}
-
-impl MarshalPersistEstimator {
-    /// Creates an estimator from a raw nanoseconds-per-byte rate.
-    pub fn from_ns_per_byte(ns_per_byte: u64) -> Self {
-        Self { ns_per_byte }
-    }
-
-    /// The learned persistence cost in nanoseconds per encoded byte.
-    pub fn ns_per_byte(self) -> u64 {
-        self.ns_per_byte
-    }
-
-    /// Estimates marshal persistence time for an encoded block size.
-    pub fn estimate(self, block_size_bytes: usize) -> Duration {
-        let nanos = u128::from(self.ns_per_byte).saturating_mul(block_size_bytes as u128);
-        Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
-    }
-}
-
 /// Gas and transaction count used to estimate validation latency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ValidationLatencyWorkload {

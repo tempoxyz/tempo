@@ -12,7 +12,10 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 pub use tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
 
 use crate::{
-    encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
+    encode::{
+        EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
+        block_transaction_length,
+    },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
@@ -45,7 +48,10 @@ use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention, state::EvmState,
 };
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
+use reth_storage_api::{
+    EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
+    StateRootProvider,
+};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -133,7 +139,7 @@ pub struct TempoPayloadBuilder<Provider> {
     enable_bal: bool,
     /// Shared proposal budget estimator.
     ///
-    /// Consensus feeds it validation, persistence and network observations;
+    /// Consensus feeds it validation and network observations;
     /// the builder reads one [`tempo_payload_types::BuildPlan`] per paced build
     /// from it and reports the finished build's replayable work back.
     estimator: Arc<Estimator>,
@@ -209,7 +215,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
     /// Shares a proposal budget estimator with consensus.
     ///
     /// Without this the builder learns from its own builds only and never
-    /// sees validation, persistence or network feedback.
+    /// sees validation or network feedback.
     pub fn with_estimator(mut self, estimator: Arc<Estimator>) -> Self {
         self.estimator = estimator;
         self
@@ -322,19 +328,24 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let mut evm_state_provider: Box<dyn EvmStateProvider + '_> =
+            Box::new((&state_provider).into_evm_state_provider());
         if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
-                state_provider,
+            evm_state_provider = Box::new(CachedStateProvider::new(
+                evm_state_provider,
                 execution_cache.cache().clone(),
                 Some(self.cache_metrics.clone()),
             ));
         }
         if self.config.state_provider_metrics {
-            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
+            evm_state_provider = Box::new(InstrumentedStateProvider::new(
+                evm_state_provider,
+                "builder",
+            ));
         }
 
-        let state = StateProviderDatabase::new(&state_provider);
+        let state = StateProviderDatabase::new(&evm_state_provider);
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
@@ -497,9 +508,9 @@ where
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
-        // build uses the same multiplier, persistence rate and validation
-        // feedback. Consensus may attach a validation snapshot taken when it
-        // dispatched the build; prefer that when present.
+        // build uses the same multiplier and validation feedback. Consensus
+        // may attach a validation snapshot taken when it dispatched the build;
+        // prefer that when present.
         let build_plan = payload_build_budget.map(|build_budget| {
             self.estimator
                 .build_plan(build_budget)
@@ -521,7 +532,6 @@ where
                 let budget_decision = plan.decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
-                    estimated_rlp_block_size,
                     current_workload,
                 );
                 if plan.exhausted(&budget_decision) {
@@ -533,7 +543,6 @@ where
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
                         total_reserved = ?budget_decision.total_reserved,
-                        marshal_persist = ?budget_decision.marshal_persist,
                         ?current_workload,
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
@@ -608,7 +617,8 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = tx.transaction.encoded_length();
+            let tx_rlp_length =
+                block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -1083,6 +1093,7 @@ where
         );
 
         drop(db);
+        drop(evm_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }

@@ -161,7 +161,7 @@ impl Builder {
             }
         }
 
-        genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
+        genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
@@ -210,7 +210,6 @@ impl Builder {
                                             fee_recipient,
                                         )
                                         .encode()
-                                        .to_vec()
                                         .into(),
                                     },
                                 )
@@ -404,7 +403,6 @@ impl ExecutionRuntime {
                                         fee_recipient,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
@@ -492,7 +490,6 @@ impl ExecutionRuntime {
                                         egress,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
@@ -809,6 +806,8 @@ pub struct ExecutionNode {
     /// The consensus layer takes this when it starts. It carries receivers, so
     /// only one consensus instance can own it.
     pub gossip: Option<tempo_node::gossip::TransportHandle>,
+    /// Reads the state of blocks that this node's engine has executed.
+    pub executed_state: tempo_node::ExecutedState,
 }
 
 impl ExecutionNode {
@@ -969,6 +968,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,
     };
+    let executed_state = tempo_node.executed_state();
 
     let node_handle = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
@@ -1000,6 +1000,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         runtime,
         exit_fut: node_handle.node_exit_future,
         gossip: gossip_transport,
+        executed_state,
     })
 }
 

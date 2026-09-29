@@ -13,9 +13,8 @@ use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
-const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
-const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
-const MINIMAL_PEER_SYNC_RETENTION_BLOCKS: u64 = MINIMAL_PEER_SYNC_FINALIZED_BLOCKS + 64;
+const MINIMAL_PEER_SYNC_RETENTION_BLOCKS: u64 =
+    tempo_consensus::MINIMAL_PEER_SYNC_FINALIZED_BLOCKS + 64;
 
 /// CLI arguments for telemetry configuration.
 #[derive(Debug, Clone, clap::Args)]

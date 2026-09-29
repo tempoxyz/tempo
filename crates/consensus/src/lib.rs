@@ -42,16 +42,23 @@ pub use crate::config::{
     RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
-pub use args::{Args, PositiveDuration};
+pub use args::{Args, PositiveDuration, VerificationMode};
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.
 pub const PARTITION_PREFIX: &str = "engine";
 
+const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
+
+/// Tempo's peer sync window: nodes up to three mainnet/testnet epochs behind
+/// the finalized tip should be able to sync from peers.
+pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
+
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
     execution_node: Arc<TempoFullNode>,
+    executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
     estimator: Arc<tempo_payload_types::Estimator>,
@@ -111,6 +118,7 @@ pub async fn run_consensus_stack(
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
         execution_node: Some(execution_node),
+        executed_state,
         gossip: gossip_transport.map(|transport| gossip::Config {
             transport,
             verify_rate: config.gossip_verify_rate,
@@ -126,6 +134,7 @@ pub async fn run_consensus_stack(
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
         max_message_size: config.max_message_size_bytes,
+        verification_mode: config.verification_mode,
 
         time_to_propose: config.wait_for_proposal.into_duration(),
         time_to_collect_notarizations: config.wait_for_notarizations.into_duration(),
