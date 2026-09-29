@@ -50,6 +50,20 @@ async fn native_rpc_registration_revert_retry_and_rotation() -> eyre::Result<()>
         commitment(&env, account.address).await?,
         account.config.commitment().unwrap()
     );
+    let account_info: serde_json::Value = env
+        .provider()
+        .raw_request("eth_getAccount".into(), (account.address, "latest"))
+        .await?;
+    let extension = account_info["extension"]
+        .as_str()
+        .expect("registered account extension missing");
+    assert_eq!(extension.len(), 2 + 66);
+    assert_eq!(
+        account_info["extension"],
+        serde_json::json!(tempo_primitives::account::encode_config_commitment(
+            account.config.commitment().unwrap()
+        ))
+    );
     let registered_estimate: U256 = env
         .provider()
         .raw_request(
