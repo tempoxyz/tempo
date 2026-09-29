@@ -704,9 +704,9 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
 
-# Reuse the standalone renderers, preserving aggregate transaction shares even
-# when users and portals have different counts. Keep each fixture nonce lane in
-# order; separate vault/zone deployers and explicit dependencies allow overlap.
+# Reuse the standalone vault renderers, preserving aggregate transaction shares
+# across user counts. Setup retains ordered nonces and explicit dependencies.
+# Keep the unused count/zones arguments for the multi-region runner's call interface.
 def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, --out-dir: string = ""] {
     # Keep u64 nonce bounds out of Nushell's YAML parser; only the mix and setup
     # presence are needed to compose the workload.
@@ -721,29 +721,22 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     if $spec.has_setup {
         return $spec_path
     }
-    if $zones < 1 { error make {msg: "Public mix requires at least one zone"} }
     let presets = ($spec_path | path dirname)
     let deposits = (open (txgen-prepare-vault-preset ($presets | path join vault-deposit.yml) $accounts $chain_id))
     let withdrawals = (open (txgen-prepare-vault-preset ($presets | path join vault-withdraw.yml) $accounts $chain_id))
-    let zone_spec = (open (txgen-prepare-zones-preset ($presets | path join zones.yml) $count $accounts $zones mixed))
     let vault_setup = (open ($presets | path join vault setup.yml)).setup.steps
     # Seed withdrawal shares and retain equally deep pathUSD balances for deposits.
     let users = ($withdrawals.append.setup.steps | each { |step|
         $step | update tx.calls.0.args.1 "2000000000000000000000000"
     })
-    let zone_weight = ($zone_spec.mix | where { |entry| $entry.template | str starts-with "zone_deposit_" } | get weight | math sum)
-    let scale = $accounts * $zone_weight
     mut mix = []
     for entry in $spec.mix {
         let name = ($entry | get -o template | default "")
         if $name in [vault_deposit vault_withdraw] {
             let entries = if $name == vault_deposit { $deposits.mix } else { $withdrawals.mix }
-            $mix = ($mix | append ($entries | each { |item| $item | update weight ($entry.weight * $zone_weight) }))
-        } else if $name in [zone_deposit zone_withdraw] {
-            let entries = ($zone_spec.mix | where { |item| $item.template | str starts-with $"($name)_" })
-            $mix = ($mix | append ($entries | each { |item| $item | update weight ($item.weight * $entry.weight * $accounts) }))
+            $mix = ($mix | append ($entries | each { |item| $item | update weight $entry.weight }))
         } else {
-            $mix = ($mix | append ($entry | update weight ($entry.weight * $scale)))
+            $mix = ($mix | append ($entry | update weight ($entry.weight * $accounts)))
         }
     }
     let output_dir = if $out_dir == "" {
@@ -752,13 +745,13 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     mkdir $output_dir
     let output = ($output_dir | path join public-mix.yml)
     # Match the other public-mix workloads without account-nonce dependencies.
-    # Setup and standalone vault/zone presets retain their ordered nonce lanes.
-    let templates = ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates
+    # Setup and standalone vault presets retain their ordered nonce lanes.
+    let templates = ($deposits.templates | merge $withdrawals.templates
         | items { |name, template|
             {name: $name, value: ($template | upsert expiring_nonce true | upsert valid_for_secs 25)}
         } | transpose -r -d)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
+        setup: {steps: ($vault_setup | append $users)},
         templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output
@@ -811,7 +804,7 @@ def txgen-run-preset-pipeline [
     let is_public_mix = $preset_name == "public-mix"
     let tx_count = [($tps * $duration) 1] | math max
     mut zone_metadata = []
-    if $preset_name == "zones" or $is_public_mix {
+    if $preset_name == "zones" {
         if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
             error make { msg: "zones requires local chain 1337 and 1–100000 accounts" }
         }
@@ -834,11 +827,10 @@ def txgen-run-preset-pipeline [
         if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
         $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
         print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
-        $spec_path = if $is_public_mix {
-            txgen-prepare-public-mix-preset $spec_path $tx_count $accounts $zones $chain_id
-        } else {
-            txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode
-        }
+        $spec_path = (txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode)
+    }
+    if $is_public_mix {
+        $spec_path = (txgen-prepare-public-mix-preset $spec_path $tx_count $accounts 0 $chain_id)
     }
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
