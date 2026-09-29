@@ -18,7 +18,9 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
-use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
+use tempo_transaction_pool::{
+    StateAwarePoolTransaction, best::BestTransaction, transaction::TempoPoolTransactionError,
+};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
@@ -181,7 +183,7 @@ impl BestTransactionsPrewarming {
                         GeneralSkip::NonFitting => ctx.best_txs.mark_invalid(
                             &tx,
                             InvalidPoolTransactionError::Other(Box::new(
-                                tempo_transaction_pool::transaction::TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
                             )),
                         ),
                     }
@@ -379,14 +381,16 @@ impl Iterator for BestTransactionsPrewarming {
                 GeneralSkip::No => return Some(tx),
                 GeneralSkip::Skip => {}
                 GeneralSkip::NonFitting => {
-                    let _ = self.commands_tx.send(BestTransactionsCommand::InvalidWithoutDrain(
-                        InvalidTransaction {
-                            tx: tx.tx,
-                            kind: InvalidPoolTransactionError::Other(Box::new(
-                                tempo_transaction_pool::transaction::TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                            )),
-                        },
-                    ));
+                    let _ = self
+                        .commands_tx
+                        .send(BestTransactionsCommand::InvalidWithoutDrain(
+                            InvalidTransaction {
+                                tx: tx.tx,
+                                kind: InvalidPoolTransactionError::Other(Box::new(
+                                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                                )),
+                            },
+                        ));
                 }
             }
         }
