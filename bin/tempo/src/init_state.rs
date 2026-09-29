@@ -73,7 +73,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     InitFromBinaryDump<C>
 {
     /// Execute the init-from-binary-dump command.
-    pub(crate) async fn execute<N>(self, runtime: Runtime) -> eyre::Result<()>
+    ///
+    /// The caller chooses the node types and chain specification, allowing derived
+    /// chains to reuse the importer with their own database configuration.
+    /// This updates storage and trie nodes, but does not rewrite the genesis header.
+    pub async fn execute<N>(self, runtime: Runtime) -> eyre::Result<()>
     where
         N: CliNodeTypes<ChainSpec = C::ChainSpec>,
     {
