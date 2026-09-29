@@ -2440,8 +2440,8 @@ async fn execute_finalization(
         block.digest = %block.digest(),
         block.height = %block.height(),
         block.parent_digest = %block.parent_digest(),
-        proposal.epoch = tracing::field::Empty,
-        proposal.view = tracing::field::Empty,
+        proposal.epoch = block.context().round.epoch().get(),
+        proposal.view = block.context().round.view().get(),
     ),
 )]
 async fn execute_delivery(
@@ -2450,10 +2450,6 @@ async fn execute_delivery(
     cause: Span,
     block: Arc<Block>,
 ) -> ExecutionTaskOutcome {
-    if let Some(context) = block.header().consensus_context {
-        Span::current().record("proposal.epoch", context.epoch);
-        Span::current().record("proposal.view", context.view);
-    }
     let digest = block.digest();
     let started = Instant::now();
     let status = deliver_block(&execution_node, block)
