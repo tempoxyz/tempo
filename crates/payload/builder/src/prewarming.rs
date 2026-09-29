@@ -372,6 +372,9 @@ impl Iterator for BestTransactionsPrewarming {
                 self.commands_tx
                     .send(BestTransactionsCommand::Advance)
                     .ok()?;
+                // An eager advance can also reply empty while this receive is waiting.
+                // Check for buffered transactions before reporting empty to the builder,
+                // but do not wait for more replies: it must still check its build budget.
                 self.transactions_rx
                     .recv()
                     .ok()?
