@@ -70,7 +70,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, TempoHardfork, hardfork::TempoHardforks};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
     TempoTxResult, evm::TempoEvm,
@@ -79,8 +79,9 @@ use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationL
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
-    transaction::TempoPoolTransactionError,
+    StateAwareBestTransactions, TempoTransactionPool,
+    best::BestTransaction,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
@@ -485,7 +486,9 @@ where
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
+            general_gas_limit,
         );
+        let general_gas_remaining = prewarm_ctx.general_gas_remaining();
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
@@ -590,11 +593,7 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
-                tx.transaction.is_payment()
-            } else {
-                tx.transaction.inner().is_payment_v1()
-            };
+            let is_payment = is_payment_transaction(&tx.transaction, hardfork);
 
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
@@ -641,6 +640,10 @@ where
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
                     non_payment_gas_used += result.block_gas_used();
+                    general_gas_remaining.store(
+                        general_gas_limit.saturating_sub(non_payment_gas_used),
+                        Ordering::Relaxed,
+                    );
                 }
 
                 // Score payload value by the validator-credited fee amount that the
@@ -1176,6 +1179,16 @@ where
             msg_tx: task_tx,
             bal_rx,
         }
+    }
+}
+
+/// Returns whether `tx` is a payment at `hardfork`. Payments don't count toward the general gas
+/// limit.
+pub(crate) fn is_payment_transaction(tx: &TempoPooledTransaction, hardfork: TempoHardfork) -> bool {
+    if hardfork.is_t5() {
+        tx.is_payment()
+    } else {
+        tx.inner().is_payment_v1()
     }
 }
 

@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 
@@ -17,7 +17,12 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
+use crate::is_payment_transaction;
+
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
+
+/// Gas limit for a prewarm run when its result is discarded (non-parallel mode).
+const MAX_PREWARM_GAS_LIMIT: u64 = 5_000_000;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -107,6 +112,13 @@ impl BestTransactionsPrewarming {
                     let _ = ctx
                         .transactions_tx
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+
+                    // The builder can no longer include it, so don't spend a worker on it.
+                    // Pull the next transaction the way a finished prewarm job would.
+                    if !ctx.prewarm.fits_general_lane(&tx) {
+                        let _ = ctx.commands_tx.send(BestTransactionsCommand::Advance);
+                        return;
+                    }
                 }
 
                 scope.spawn(move |_| {
@@ -189,6 +201,11 @@ impl BestTransactionsPrewarming {
             }
 
             let mut tx_env = tx.transaction.clone_tx_env();
+            if !prewarm.parallel {
+                // The result is discarded, so a capped run still warms the state the
+                // transaction touches first, and bounds the cost of ones that never get included.
+                tx_env.gas_limit = tx_env.gas_limit.min(MAX_PREWARM_GAS_LIMIT);
+            }
             if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
                 tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
             }
@@ -344,6 +361,9 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// General gas the builder can still give to non-payment transactions, lowered by the
+    /// builder as it includes them.
+    general_gas_remaining: Arc<AtomicU64>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -357,6 +377,7 @@ where
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
+        general_gas_limit: u64,
     ) -> Self {
         Self {
             provider,
@@ -366,6 +387,7 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            general_gas_remaining: Arc::new(AtomicU64::new(general_gas_limit)),
         }
     }
 
@@ -423,6 +445,23 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 
     pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns the general gas left for non-payment transactions, for the builder to update.
+    pub(crate) fn general_gas_remaining(&self) -> Arc<AtomicU64> {
+        self.general_gas_remaining.clone()
+    }
+
+    /// Returns whether the builder can still include `tx`. The remaining general gas only
+    /// shrinks, so a stale value never excludes a transaction that fits.
+    fn fits_general_lane(&self, tx: &BestTransaction) -> bool {
+        if is_payment_transaction(&tx.transaction, self.evm_env.cfg_env.spec) {
+            return true;
+        }
+        let max_gas = tx
+            .gas_limit()
+            .min(self.evm_env.cfg_env.tx_gas_limit_cap.unwrap_or(u64::MAX));
+        max_gas <= self.general_gas_remaining.load(Ordering::Relaxed)
     }
 }
 
@@ -723,6 +762,7 @@ mod tests {
             evm_env,
             stop: Arc::default(),
             parallel,
+            general_gas_remaining: Arc::new(AtomicU64::new(30_000_000)),
         }
     }
 
@@ -930,6 +970,41 @@ mod tests {
         assert_eq!(next.tx.hash(), tx3.hash());
         assert_ne!(next.tx.hash(), tx2.hash());
         wait_until(|| log.lock().unwrap().invalid == 1);
+    }
+
+    #[test]
+    fn general_lane_check_follows_remaining_general_gas() {
+        let context = prewarming_context(TaskExecutor::test(), false);
+        let non_payment = test_tx_with_gas_limit(Address::random(), 0, 1_000_000);
+        let payment = test_payment_tx(Address::random(), 1_000_000);
+        assert!(context.fits_general_lane(&non_payment));
+
+        context
+            .general_gas_remaining()
+            .store(999_999, Ordering::Relaxed);
+        assert!(!context.fits_general_lane(&non_payment));
+        assert!(context.fits_general_lane(&payment));
+    }
+
+    #[test]
+    fn transactions_outside_the_general_lane_are_forwarded_without_prewarming() {
+        let executor = TaskExecutor::test();
+        let context = prewarming_context(executor.clone(), false);
+        context.general_gas_remaining().store(0, Ordering::Relaxed);
+        let tx1 = test_tx(Address::random(), 0);
+        let tx2 = test_tx(Address::random(), 0);
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = TestPrewarming {
+            prewarming: Some(BestTransactionsPrewarming::new(
+                context,
+                TestBestTransactions::new(vec![tx1.clone(), tx2.clone()], log),
+            )),
+            executor,
+        };
+
+        assert_eq!(prewarming.next().map(|tx| *tx.tx.hash()), Some(*tx1.hash()));
+        assert_eq!(prewarming.next().map(|tx| *tx.tx.hash()), Some(*tx2.hash()));
+        assert!(prewarming.next().is_none());
     }
 
     #[test]
