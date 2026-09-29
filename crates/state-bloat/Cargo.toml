@@ -14,7 +14,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["cli"] }
 tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 
