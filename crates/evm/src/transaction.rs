@@ -9,7 +9,7 @@ pub use evm2::ethereum::RecoveredTxEnvelope;
 use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
 use reth_primitives_traits::WithEncoded;
-use std::{borrow::Borrow, boxed::Box, ops::Deref};
+use std::{borrow::Borrow, ops::Deref, sync::Arc};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
 
 /// Identifies the kind of execution represented by a transaction environment.
@@ -27,7 +27,7 @@ pub enum ExecutionContext {
 /// Recovered Tempo AA transaction and block-local execution metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TempoAaTx {
-    transaction: Box<Recovered<AASigned>>,
+    transaction: Arc<Recovered<AASigned>>,
     fee_payer: Option<Address>,
     expiring_nonce_idx: Option<usize>,
     override_key_id: Option<Address>,
@@ -41,7 +41,7 @@ impl TempoAaTx {
             .recover_fee_payer(transaction.signer())
             .ok();
         Self {
-            transaction: Box::new(transaction),
+            transaction: Arc::new(transaction),
             fee_payer,
             expiring_nonce_idx: None,
             override_key_id: None,
@@ -137,7 +137,7 @@ impl TempoEvmTx {
     }
 
     /// Returns the recovered transaction signer.
-    pub const fn signer(&self) -> Address {
+    pub fn signer(&self) -> Address {
         match self {
             Self::Legacy { transaction, .. } => transaction.signer(),
             Self::Eip2930(transaction) => transaction.signer(),
@@ -283,7 +283,7 @@ impl From<Recovered<TempoTxEnvelope>> for TempoEvmTx {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TempoTxEnv {
     evm_tx: TempoEvmTx,
-    recovered: Recovered<TempoTxEnvelope>,
+    recovered: Arc<Recovered<TempoTxEnvelope>>,
     execution_context: ExecutionContext,
     unique_tx_identifier_override: Option<B256>,
     fee_payer_override: Option<Address>,
@@ -365,7 +365,7 @@ impl TempoTxEnv {
 
         Some(Self {
             evm_tx,
-            recovered,
+            recovered: Arc::new(recovered),
             execution_context: ExecutionContext::Simulation,
             unique_tx_identifier_override: None,
             fee_payer_override: None,
@@ -415,12 +415,12 @@ impl TempoTxEnv {
     }
 
     /// Returns the original recovered Tempo transaction.
-    pub const fn recovered(&self) -> &Recovered<TempoTxEnvelope> {
+    pub fn recovered(&self) -> &Recovered<TempoTxEnvelope> {
         &self.recovered
     }
 
     /// Returns the original transaction envelope.
-    pub const fn transaction(&self) -> &TempoTxEnvelope {
+    pub fn transaction(&self) -> &TempoTxEnvelope {
         self.recovered.inner()
     }
 
@@ -566,7 +566,7 @@ impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
         let tx_hash = *recovered.inner().tx_hash();
         Self {
             evm_tx: recovered.clone().into(),
-            recovered,
+            recovered: Arc::new(recovered),
             execution_context: ExecutionContext::Transaction { tx_hash },
             unique_tx_identifier_override: None,
             fee_payer_override: None,

@@ -321,8 +321,14 @@ impl TempoPooledTransaction {
     }
 
     /// Returns the transaction environment consumed by the EVM2 block executor.
-    pub fn executable(&self) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
-        self.clone_into_with_tx_env()
+    ///
+    /// The recovered transaction is borrowed because execution consumes this wrapper
+    /// synchronously, avoiding a clone of the original transaction envelope.
+    pub fn executable(&self) -> (Recovered<TempoTxEnv>, &Recovered<TempoTxEnvelope>) {
+        (
+            Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
+            self.inner(),
+        )
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
