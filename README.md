@@ -179,7 +179,7 @@ These BLS threshold public keys are built into Tempo nodes and used by both foll
 0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c70474798ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242
 ```
 
-See the [compiled network identities](./crates/chainspec/src/network_identity.rs) for the built-in values. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/guide/node/validator-troubleshooting#override-network-identity).
+See the [compiled network identities](./crates/chainspec/src/network_identity.rs) for the built-in values. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/docs/guide/node/validator-troubleshooting#override-network-identity).
 
 ## Security
 
