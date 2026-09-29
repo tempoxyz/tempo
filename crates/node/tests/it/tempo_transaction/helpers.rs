@@ -17,6 +17,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use core::num::NonZeroU64;
+use reth_e2e_test_utils::wait::poll_until;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
@@ -167,16 +168,11 @@ pub(super) async fn wait_until_pool_not_contains(
     tx_hash: &alloy::primitives::B256,
     label: &str,
 ) -> eyre::Result<()> {
-    let timeout = std::time::Duration::from_secs(10);
-    let interval = std::time::Duration::from_millis(10);
-    let start = std::time::Instant::now();
-    while pool.contains(tx_hash) {
-        if start.elapsed() > timeout {
-            eyre::bail!("Timed out waiting for tx {tx_hash} to leave pool ({label})");
-        }
-        tokio::time::sleep(interval).await;
-    }
-    Ok(())
+    poll_until(
+        format!("tx {tx_hash} to leave pool ({label})"),
+        || async move { Ok((!pool.contains(tx_hash)).then_some(())) },
+    )
+    .await
 }
 
 /// Fixed funding amount: 500 tokens (6 decimals).

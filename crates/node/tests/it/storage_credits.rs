@@ -13,6 +13,7 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
+use reth_e2e_test_utils::wait::poll_until;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
@@ -41,26 +42,19 @@ async fn wait_for_latest_beneficiary<P: Provider>(
     provider: &P,
     expected: Address,
 ) -> eyre::Result<()> {
-    for _ in 0..30 {
-        let beneficiary = provider
-            .get_block(BlockId::latest())
-            .await?
-            .ok_or_else(|| eyre::eyre!("latest block missing"))?
-            .header
-            .beneficiary;
-        if beneficiary == expected {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-
-    let beneficiary = provider
-        .get_block(BlockId::latest())
-        .await?
-        .ok_or_else(|| eyre::eyre!("latest block missing"))?
-        .header
-        .beneficiary;
-    eyre::bail!("latest beneficiary {beneficiary:?} did not become {expected:?}");
+    poll_until(
+        format!("latest beneficiary to become {expected}"),
+        || async move {
+            let beneficiary = provider
+                .get_block(BlockId::latest())
+                .await?
+                .ok_or_else(|| eyre::eyre!("latest block missing"))?
+                .header
+                .beneficiary;
+            Ok((beneficiary == expected).then_some(()))
+        },
+    )
+    .await
 }
 
 fn transfer_blocked(
