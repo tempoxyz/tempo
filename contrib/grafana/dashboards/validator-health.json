@@ -224,7 +224,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_network_spawner_connections{${instance_label}=~\"$instance.*\"}",
+          "expr": "count by (sequencer) (consensus_network_tracker_connected{${instance_label}=~\"$instance.*\"})",
           "legendFormat": "{{sequencer}}",
           "range": true,
           "refId": "A"
