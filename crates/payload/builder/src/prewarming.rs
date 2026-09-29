@@ -4,7 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, map::HashMap};
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -14,7 +14,11 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
-use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
+use tempo_transaction_pool::{
+    StateAwarePoolTransaction,
+    best::{BestTransaction, TempoBestTransactions},
+    transaction::TempoPoolTransactionError,
+};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
@@ -27,6 +31,7 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    skip_non_payment: Arc<AtomicBool>,
 }
 
 impl BestTransactionsPrewarming {
@@ -36,15 +41,17 @@ impl BestTransactionsPrewarming {
         best_txs: Txs,
     ) -> Self
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: TempoBestTransactions<Item = BestTransaction> + Send + 'static,
         Provider: StateProviderFactory + Clone + 'static,
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
+        let skip_non_payment = Arc::new(AtomicBool::new(false));
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            skip_non_payment: skip_non_payment.clone(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -60,6 +67,7 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        skip_non_payment,
                     },
                 );
             });
@@ -74,7 +82,7 @@ impl BestTransactionsPrewarming {
         executor: TaskExecutor,
         mut ctx: BestTransactionsPrewarmingContext<Txs, Provider>,
     ) where
-        Txs: BestTransactions<Item = BestTransaction>,
+        Txs: TempoBestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
@@ -102,6 +110,7 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
+                let skip_non_payment = ctx.skip_non_payment.clone();
 
                 if !parallel {
                     let _ = ctx
@@ -110,7 +119,13 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    let tx = if skip_non_payment.load(Ordering::Relaxed)
+                        && !tx.transaction.is_payment()
+                    {
+                        PrewarmedTransaction::without_replay(tx)
+                    } else {
+                        Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset)
+                    };
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -151,6 +166,46 @@ impl BestTransactionsPrewarming {
                     }
                     BestTransactionsCommand::SkipBlobs(skip_blobs) => {
                         ctx.best_txs.set_skip_blobs(skip_blobs);
+                    }
+                    BestTransactionsCommand::SkipNonPayment { old_rx, new_tx } => {
+                        ctx.best_txs.skip_non_payment();
+                        ctx.transactions_tx = new_tx;
+
+                        // Wait for in-flight workers on the old channel before filtering. Parallel
+                        // execution can return a payment before its non-payment ancestor.
+                        let buffered = old_rx.into_iter().flatten().collect::<Vec<_>>();
+                        let mut blocked_sequences = HashMap::new();
+                        for tx in &buffered {
+                            if !tx.tx.transaction.is_payment() {
+                                ctx.best_txs.mark_invalid(
+                                    &tx.tx,
+                                    InvalidPoolTransactionError::Other(Box::new(
+                                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                                    )),
+                                );
+                                if !tx.tx.transaction.is_expiring_nonce() {
+                                    let nonce = blocked_sequences
+                                        .entry((
+                                            tx.tx.transaction.sender(),
+                                            tx.tx.transaction.nonce_key().unwrap_or_default(),
+                                        ))
+                                        .or_insert(tx.tx.nonce());
+                                    *nonce = (*nonce).min(tx.tx.nonce());
+                                }
+                            }
+                        }
+                        for tx in buffered {
+                            if tx.tx.transaction.is_payment()
+                                && !blocked_sequences
+                                    .get(&(
+                                        tx.tx.transaction.sender(),
+                                        tx.tx.transaction.nonce_key().unwrap_or_default(),
+                                    ))
+                                    .is_some_and(|nonce| tx.tx.nonce() >= *nonce)
+                            {
+                                let _ = ctx.transactions_tx.send(Some(tx));
+                            }
+                        }
                     }
                     BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
@@ -317,6 +372,19 @@ impl BestTransactions for BestTransactionsPrewarming {
     }
 }
 
+impl TempoBestTransactions for BestTransactionsPrewarming {
+    fn skip_non_payment(&mut self) {
+        if self.skip_non_payment.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let (new_tx, new_rx) = mpsc::channel();
+        let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::SkipNonPayment { old_rx, new_tx });
+    }
+}
+
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
@@ -325,6 +393,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    skip_non_payment: Arc<AtomicBool>,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -449,6 +518,10 @@ enum BestTransactionsCommand {
     },
     NoUpdates,
     SkipBlobs(bool),
+    SkipNonPayment {
+        old_rx: Receiver<Option<PrewarmedTransaction>>,
+        new_tx: Sender<Option<PrewarmedTransaction>>,
+    },
     Stop {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -532,6 +605,7 @@ mod tests {
         invalid: usize,
         no_updates: usize,
         skip_blobs: Vec<bool>,
+        skip_non_payment: usize,
     }
 
     struct TestBestTransactions {
@@ -584,6 +658,22 @@ mod tests {
         }
     }
 
+    impl TempoBestTransactions for TestBestTransactions {
+        fn skip_non_payment(&mut self) {
+            self.log.lock().unwrap().skip_non_payment += 1;
+            let skipped = self
+                .txs
+                .iter()
+                .filter(|tx| !tx.transaction.is_payment())
+                .cloned()
+                .collect::<Vec<_>>();
+            self.txs.retain(|tx| tx.transaction.is_payment());
+            for tx in skipped {
+                self.mark_invalid(&tx, InvalidPoolTransactionError::ExceedsGasLimit(1, 0));
+            }
+        }
+    }
+
     fn test_tx(sender: Address, nonce: u64) -> BestTransaction {
         test_tx_with_gas_limit(sender, nonce, 21_000)
     }
@@ -620,6 +710,15 @@ mod tests {
         gas_limit: u64,
         nonce_key: U256,
     ) -> BestTransaction {
+        test_payment_tx_with_nonce(sender, gas_limit, nonce_key, 0)
+    }
+
+    fn test_payment_tx_with_nonce(
+        sender: Address,
+        gas_limit: u64,
+        nonce_key: U256,
+        nonce: u64,
+    ) -> BestTransaction {
         let mut token = [0u8; 20];
         token[..2].copy_from_slice(&[0x20, 0xc0]);
         let token = Address::from(token);
@@ -638,12 +737,13 @@ mod tests {
             }],
             nonce_key,
             valid_before: (nonce_key == U256::MAX).then_some(NonZeroU64::new(100).unwrap()),
+            nonce,
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
         let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
         Arc::new(ValidPoolTransaction {
-            transaction_id: TransactionId::new(0u64.into(), 0),
+            transaction_id: TransactionId::new(0u64.into(), nonce),
             transaction: pooled,
             propagate: true,
             timestamp: Instant::now(),
@@ -690,7 +790,16 @@ mod tests {
         txs: Vec<BestTransaction>,
         log: Arc<Mutex<TestLog>>,
     ) -> TestPrewarming {
-        let context = prewarming_context(executor.clone(), false);
+        prewarming_with_mode(executor, txs, log, false)
+    }
+
+    fn prewarming_with_mode(
+        executor: TaskExecutor,
+        txs: Vec<BestTransaction>,
+        log: Arc<Mutex<TestLog>>,
+        parallel: bool,
+    ) -> TestPrewarming {
+        let context = prewarming_context(executor.clone(), parallel);
         let prewarming =
             BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
         TestPrewarming {
@@ -773,6 +882,43 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn skip_non_payment_filters_buffered_transactions_and_nonce_dependencies() {
+        for parallel in [false, true] {
+            check_skip_non_payment_buffered_transactions(parallel);
+        }
+    }
+
+    fn check_skip_non_payment_buffered_transactions(parallel: bool) {
+        let sender = Address::random();
+        let included_payment = test_payment_tx_with_nonce(sender, 100_000, U256::ZERO, 0);
+        let general = test_tx(sender, 1);
+        let dependent_payment = test_payment_tx_with_nonce(sender, 100_000, U256::ZERO, 2);
+        let independent_payment = test_payment_tx(sender, 100_000);
+        // Put the descendant first to cover out-of-order worker completion as well.
+        let txs = vec![
+            dependent_payment,
+            included_payment.clone(),
+            general,
+            independent_payment.clone(),
+        ];
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming_with_mode(TaskExecutor::test(), txs, log.clone(), parallel);
+        wait_until(|| log.lock().unwrap().yielded == 4);
+
+        prewarming.skip_non_payment();
+        prewarming.skip_non_payment();
+        let mut actual = (0..2)
+            .map(|_| *prewarming.next().expect("independent payment").tx.hash())
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        let mut expected = vec![*included_payment.hash(), *independent_payment.hash()];
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+        assert!(prewarming.next().is_none());
+        assert_eq!(log.lock().unwrap().skip_non_payment, 1);
     }
 
     #[test]

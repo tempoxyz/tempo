@@ -59,7 +59,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -81,7 +81,8 @@ use tempo_payload_types::{
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+    StateAwareBestTransactions, TempoTransactionPool,
+    best::{BestTransaction, TempoBestTransactions},
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
@@ -96,7 +97,7 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
-    Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
+    Sequential(StateAwareBestTransactions<Box<dyn TempoBestTransactions<Item = BestTransaction>>>),
     Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
     Parallel(BestTransactionsPrewarming),
 }
@@ -130,6 +131,15 @@ impl PayloadTransactions {
             Self::Parallel(_) => {
                 // Parallel does not use state-aware best transactions iterator.
             }
+        }
+    }
+
+    /// Stop yielding and prewarming non-payment transactions once the general lane is full.
+    fn skip_non_payment(&mut self) {
+        match self {
+            Self::Sequential(txs) => txs.skip_non_payment(),
+            Self::Prewarming(txs) => txs.skip_non_payment(),
+            Self::Parallel(txs) => txs.skip_non_payment(),
         }
     }
 }
@@ -299,7 +309,7 @@ where
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: TempoBestTransactions<Item = BestTransaction> + Send + 'static,
     {
         let BuildArguments {
             cached_reads,
@@ -472,7 +482,7 @@ where
         }
 
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
+        let mut raw_best_txs = best_txs(BestTransactionsAttributes::new(
             executor.evm().block().basefee,
             executor
                 .evm()
@@ -480,6 +490,11 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let minimum_transaction_gas = executor.evm().cfg.gas_params.tx_base_stipend();
+        let mut skip_non_payment = hardfork.is_t5() && general_gas_limit < minimum_transaction_gas;
+        if skip_non_payment {
+            raw_best_txs.skip_non_payment();
+        }
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -520,6 +535,16 @@ where
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
+
+            // The iterator uses the T5 payment classification. Before T5, keep checking each
+            // transaction against the legacy classification below.
+            if !skip_non_payment
+                && hardfork.is_t5()
+                && general_gas_limit.saturating_sub(non_payment_gas_used) < minimum_transaction_gas
+            {
+                skip_non_payment = true;
+                best_txs.skip_non_payment();
+            }
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();

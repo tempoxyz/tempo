@@ -1,14 +1,15 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    ordering::TempoTipOrdering,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
+    BestTransactions, PoolTransaction, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
@@ -25,6 +26,7 @@ pub struct MergeBestTransactions {
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
     base_fee: u64,
+    skip_non_payment: bool,
 }
 
 impl MergeBestTransactions {
@@ -40,6 +42,7 @@ impl MergeBestTransactions {
             next_protocol_pool: None,
             next_aa_2d_pool: None,
             base_fee,
+            skip_non_payment: false,
         }
     }
 }
@@ -91,7 +94,19 @@ impl Iterator for MergeBestTransactions {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_best().map(|(tx, _)| tx)
+        loop {
+            let (tx, _) = self.next_best()?;
+            if self.skip_non_payment && !tx.transaction.is_payment() {
+                self.mark_invalid(
+                    &tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                    )),
+                );
+                continue;
+            }
+            return Some(tx);
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -101,9 +116,13 @@ impl Iterator for MergeBestTransactions {
         let (aa_2d_lower, aa_2d_upper) = self.aa_2d_pool.size_hint();
 
         (
-            buffered
-                .saturating_add(protocol_lower)
-                .saturating_add(aa_2d_lower),
+            if self.skip_non_payment {
+                0
+            } else {
+                buffered
+                    .saturating_add(protocol_lower)
+                    .saturating_add(aa_2d_lower)
+            },
             protocol_upper
                 .zip(aa_2d_upper)
                 .and_then(|(protocol_upper, aa_2d_upper)| protocol_upper.checked_add(aa_2d_upper))
@@ -116,8 +135,24 @@ impl BestTransactions for MergeBestTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
+            if !transaction.transaction.is_expiring_nonce()
+                && self.next_aa_2d_pool.as_ref().is_some_and(|(next, _)| {
+                    next.transaction.aa_transaction_id().map(|id| id.seq_id)
+                        == transaction
+                            .transaction
+                            .aa_transaction_id()
+                            .map(|id| id.seq_id)
+                })
+            {
+                self.next_aa_2d_pool = None;
+            }
         } else {
             self.protocol_pool.mark_invalid(transaction, kind);
+            if self.next_protocol_pool.as_ref().is_some_and(|(next, _)| {
+                next.transaction.sender() == transaction.transaction.sender()
+            }) {
+                self.next_protocol_pool = None;
+            }
         }
     }
 
@@ -241,6 +276,40 @@ impl StateAwarePoolTransaction for BestTransaction {
     }
 }
 
+/// Tempo-specific controls for best-transaction iterators.
+pub trait TempoBestTransactions: BestTransactions {
+    /// Only yield T5 payments, excluding transactions that depend on skipped non-payments.
+    ///
+    /// This affects this iterator only and does not remove transactions from the pool.
+    fn skip_non_payment(&mut self);
+}
+
+impl TempoBestTransactions for MergeBestTransactions {
+    fn skip_non_payment(&mut self) {
+        self.skip_non_payment = true;
+    }
+}
+
+impl<I> TempoBestTransactions for StateAwareBestTransactions<I>
+where
+    I: TempoBestTransactions,
+    I::Item: StateAwarePoolTransaction,
+{
+    fn skip_non_payment(&mut self) {
+        self.inner.skip_non_payment();
+    }
+}
+
+impl<I: TempoBestTransactions + ?Sized> TempoBestTransactions for Box<I> {
+    fn skip_non_payment(&mut self) {
+        (**self).skip_non_payment();
+    }
+}
+
+impl<T> TempoBestTransactions for std::iter::Empty<T> {
+    fn skip_non_payment(&mut self) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +327,7 @@ mod tests {
     };
     use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+    use tempo_primitives::transaction::Call;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -346,6 +416,82 @@ mod tests {
             aa_2d_best_transactions(aa_2d_txs),
             TEMPO_T1_BASE_FEE,
         )
+    }
+
+    fn payment_tx(sender: Address, nonce_key: U256, nonce: u64, priority: u128) -> TestTx {
+        let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
+        input.resize(68, 0);
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(nonce)
+            .max_priority_fee(priority)
+            .max_fee(u128::from(TEMPO_T1_BASE_FEE) + priority)
+            .calls(vec![Call {
+                to: alloy_primitives::TxKind::Call(tempo_precompiles::PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: input.into(),
+            }])
+            .build();
+        assert!(tx.is_payment());
+        Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
+    }
+
+    #[test]
+    fn skip_non_payment_filters_both_pools_and_buffered_candidates() {
+        for first_is_protocol in [false, true] {
+            let protocol_general = protocol_tx(0, if first_is_protocol { 10 } else { 9 });
+            let aa_general = aa_2d_tx(0, if first_is_protocol { 9 } else { 10 });
+            let protocol_payment = payment_tx(Address::random(), U256::ZERO, 0, 2);
+            let aa_payment = payment_tx(Address::random(), U256::ONE, 0, 1);
+            let mut best = merged_best_transactions(
+                vec![protocol_general, protocol_payment.clone()],
+                vec![aa_general, aa_payment.clone()],
+            );
+            assert!(!best.next().unwrap().transaction.is_payment());
+            best.skip_non_payment();
+            best.skip_non_payment();
+            assert_eq!(best.size_hint().0, 0);
+            assert_eq!(
+                best.map(|tx| *tx.hash()).collect::<Vec<_>>(),
+                vec![*protocol_payment.hash(), *aa_payment.hash()],
+            );
+        }
+    }
+
+    #[test]
+    fn skip_non_payment_excludes_dependent_payments_but_preserves_other_nonce_keys() {
+        let sender = Address::random();
+        let protocol_general = protocol_tx_for_sender(sender, 0, 10);
+        let protocol_child = payment_tx(sender, U256::ZERO, 1, 9);
+        let aa_general = aa_2d_tx_for_sequence(sender, 0, 8);
+        let aa_child = payment_tx(sender, U256::ONE, 1, 7);
+        let independent = payment_tx(sender, U256::from(2), 0, 6);
+        let mut best = merged_best_transactions(
+            vec![protocol_general, protocol_child],
+            vec![aa_general, aa_child, independent.clone()],
+        );
+        best.skip_non_payment();
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*independent.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn skip_non_payment_keeps_payments_after_an_included_general_transaction() {
+        for nonce_key in [U256::ZERO, U256::ONE] {
+            let sender = Address::random();
+            let general = tx_with_nonce_key(nonce_key, sender, 0, 2);
+            let payment = payment_tx(sender, nonce_key, 1, 1);
+            let txs = vec![general.clone(), payment.clone()];
+            let mut best = if nonce_key.is_zero() {
+                merged_best_transactions(txs, vec![])
+            } else {
+                merged_best_transactions(vec![], txs)
+            };
+            assert_eq!(best.next().map(|tx| *tx.hash()), Some(*general.hash()));
+            best.skip_non_payment();
+            assert_eq!(best.next().map(|tx| *tx.hash()), Some(*payment.hash()));
+            assert!(best.next().is_none());
+        }
     }
 
     #[test]
@@ -575,5 +721,56 @@ mod tests {
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn skip_non_payment_invalidates_cached_descendants_after_prewarming() {
+        for nonce_key in [U256::ZERO, U256::ONE] {
+            let sender = Address::random();
+            let general = tx_with_nonce_key(nonce_key, sender, 0, 10);
+            let child = payment_tx(sender, nonce_key, 1, 1);
+            let other_key = if nonce_key.is_zero() {
+                U256::ONE
+            } else {
+                U256::ZERO
+            };
+            let other = payment_tx(Address::random(), other_key, 0, 5);
+            let txs = vec![general.clone(), child];
+            let mut best = if nonce_key.is_zero() {
+                merged_best_transactions(txs, vec![other.clone()])
+            } else {
+                merged_best_transactions(vec![other.clone()], txs)
+            };
+            let skipped = best.next().unwrap();
+            assert_eq!(*skipped.hash(), *general.hash());
+            assert_eq!(best.next().map(|tx| *tx.hash()), Some(*other.hash()));
+            // Prewarming has buffered the general transaction and the merged iterator has
+            // already pulled its descendant from the underlying pool.
+            best.skip_non_payment();
+            best.mark_invalid(
+                &skipped,
+                InvalidPoolTransactionError::Other(Box::new(
+                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                )),
+            );
+            assert!(best.next().is_none());
+        }
+    }
+
+    #[test]
+    fn skip_non_payment_keeps_independent_expiring_nonce_payments() {
+        let sender = Address::random();
+        let general = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::MAX)
+                .valid_before(u64::MAX)
+                .build(),
+            TransactionOrigin::External,
+        ));
+        let payment = payment_tx(sender, U256::MAX, 0, 1);
+        let mut best = merged_best_transactions(vec![], vec![general, payment.clone()]);
+        best.skip_non_payment();
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*payment.hash()));
+        assert!(best.next().is_none());
     }
 }
