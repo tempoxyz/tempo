@@ -217,17 +217,24 @@
           "values": false
         },
         "showPercentChange": false,
-        "textMode": "auto",
+        "textMode": "value_and_name",
         "wideLayout": true
       },
       "pluginVersion": "12.4.0-21024277089.patch2",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count by (sequencer) (consensus_network_tracker_connected{${instance_label}=~\"$instance.*\"})",
-          "legendFormat": "{{sequencer}}",
+          "expr": "count(consensus_network_tracker_connected{${instance_label}=~\"$instance.*\"})",
+          "legendFormat": "connected",
           "range": true,
           "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max(consensus_network_tracker_tracked{${instance_label}=~\"$instance.*\"})",
+          "legendFormat": "tracked",
+          "range": true,
+          "refId": "B"
         }
       ],
       "title": "CW Peers",
