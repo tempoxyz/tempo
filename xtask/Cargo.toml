@@ -22,7 +22,7 @@ tempo-primitives = { workspace = true, features = ["reth-codec"] }
 tempo-consensus-config.workspace = true
 tempo-validator-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["genesis"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
 

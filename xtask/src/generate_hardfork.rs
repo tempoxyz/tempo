@@ -5,7 +5,6 @@ use serde::Serialize;
 
 const HARDFORK_SOURCE: &str = "crates/hardfork/src/lib.rs";
 const CHAINSPEC_SOURCE: &str = "crates/chainspec/src/spec.rs";
-const GENESIS_ARGS_SOURCE: &str = "xtask/src/genesis_args.rs";
 const FOUNDRY_CONFIG: &str = "tips/verify/foundry.toml";
 const BENCH_WORKFLOW: &str = ".github/workflows/bench.yml";
 const DEV_GENESIS: &str = "crates/chainspec/src/genesis/dev.json";
@@ -87,18 +86,12 @@ fn add_hardfork(root: &Path, hardfork: &str) -> eyre::Result<HardforkMetadata> {
         &append_hardfork_source(&hardfork_source, previous, hardfork)?,
     )?;
 
+    // Genesis fields and `--<fork>-time` generator flags are derived from the variant list.
     let chainspec_path = root.join(CHAINSPEC_SOURCE);
     let chainspec = read(&chainspec_path)?;
     write(
         &chainspec_path,
-        &append_genesis_info_field(&chainspec, previous, hardfork)?,
-    )?;
-
-    let genesis_args_path = root.join(GENESIS_ARGS_SOURCE);
-    let genesis_args = read(&genesis_args_path)?;
-    write(
-        &genesis_args_path,
-        &append_genesis_arg(&genesis_args, previous, hardfork)?,
+        &append_future_activation_asserts(&chainspec, previous, hardfork)?,
     )?;
 
     write(
@@ -228,16 +221,11 @@ fn append_hardfork_source(source: &str, previous: &str, hardfork: &str) -> eyre:
     Ok(output)
 }
 
-fn append_genesis_info_field(source: &str, previous: &str, hardfork: &str) -> eyre::Result<String> {
-    let previous_field = format!(
-        "    /// Activation timestamp for {previous} hardfork.\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    {}_time: Option<u64>,\n",
-        previous.to_ascii_lowercase()
-    );
-    let new_field = format!(
-        "{previous_field}    /// Activation timestamp for {hardfork} hardfork.\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    {}_time: Option<u64>,\n",
-        hardfork.to_ascii_lowercase()
-    );
-    let source = insert_once(source, &previous_field, &new_field)?;
+fn append_future_activation_asserts(
+    source: &str,
+    previous: &str,
+    hardfork: &str,
+) -> eyre::Result<String> {
     let previous_assert = format!(
         "            assert!(!cs.is_{}_active_at_timestamp(u64::MAX));\n",
         previous.to_ascii_lowercase()
@@ -252,31 +240,6 @@ fn append_genesis_info_field(source: &str, previous: &str, hardfork: &str) -> ey
         "expected two future activation assertions for {previous}, found {count}"
     );
     Ok(source.replace(&previous_assert, &new_assert))
-}
-
-fn append_genesis_arg(source: &str, previous: &str, hardfork: &str) -> eyre::Result<String> {
-    let previous_arg = format!(
-        "    /// {previous} hardfork activation time.\n    #[arg(long, default_value = \"0\")]\n    {}_time: u64,\n",
-        previous.to_ascii_lowercase()
-    );
-    let new_arg = format!(
-        "{previous_arg}\n    /// {hardfork} hardfork activation time.\n    #[arg(long, default_value = \"0\")]\n    {}_time: u64,\n",
-        hardfork.to_ascii_lowercase()
-    );
-    let mut output = insert_once(source, &previous_arg, &new_arg)?;
-
-    let previous_insert = format!(
-        "        chain_config\n            .extra_fields\n            .insert_value(\"{}Time\".to_string(), self.{}_time)?;\n",
-        previous.to_ascii_lowercase(),
-        previous.to_ascii_lowercase()
-    );
-    let new_insert = format!(
-        "{previous_insert}        chain_config\n            .extra_fields\n            .insert_value(\"{}Time\".to_string(), self.{}_time)?;\n",
-        hardfork.to_ascii_lowercase(),
-        hardfork.to_ascii_lowercase()
-    );
-    output = insert_once(&output, &previous_insert, &new_insert)?;
-    Ok(output)
 }
 
 fn ensure_profile_pair(source: &str, current: &str, previous: &str) -> eyre::Result<()> {
@@ -477,6 +440,24 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&metadata).unwrap(),
             r#"{"current":"T10","next":"T11","ordered":["T9","T10","T11"],"hardforks":[{"hardfork":"T10","genesisArgs":"--t9-time=0 --t10-time=0 --t11-time=4102444800"},{"hardfork":"T11","genesisArgs":"--t9-time=0 --t10-time=0 --t11-time=0"}]}"#
+        );
+    }
+
+    #[test]
+    fn current_chainspec_accepts_future_activation_asserts() {
+        let variants = parse_variants(include_str!("../../crates/hardfork/src/lib.rs")).unwrap();
+        let latest = variants.last().unwrap();
+        let updated = append_future_activation_asserts(
+            include_str!("../../crates/chainspec/src/spec.rs"),
+            latest,
+            "T99",
+        )
+        .unwrap();
+        assert_eq!(
+            updated
+                .matches("assert!(!cs.is_t99_active_at_timestamp(u64::MAX));")
+                .count(),
+            2
         );
     }
 

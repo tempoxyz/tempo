@@ -28,71 +28,43 @@ use tempo_primitives::TempoHeader;
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
-/// Tempo genesis info extracted from genesis extra_fields
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TempoGenesisInfo {
-    /// The epoch length used by consensus.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    epoch_length: Option<NonZeroU64>,
-    /// Optional override for the general (non-payment) gas limit.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    general_gas_limit: Option<u64>,
-    /// Activation timestamp for T0 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t0_time: Option<u64>,
-    /// Activation timestamp for T1 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t1_time: Option<u64>,
-    /// Activation timestamp for T1.A hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t1a_time: Option<u64>,
-    /// Activation timestamp for T1.B hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t1b_time: Option<u64>,
-    /// Activation timestamp for T1.C hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t1c_time: Option<u64>,
-    /// Activation timestamp for T2 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t2_time: Option<u64>,
-    /// Activation timestamp for T3 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t3_time: Option<u64>,
-    /// Activation timestamp for T4 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t4_time: Option<u64>,
-    /// Activation timestamp for T5 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t5_time: Option<u64>,
-    /// Activation timestamp for T6 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t6_time: Option<u64>,
-    /// Activation timestamp for T7 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t7_time: Option<u64>,
-    /// Activation timestamp for T8 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t8_time: Option<u64>,
-    /// Activation timestamp for T9 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t9_time: Option<u64>,
-    /// Activation timestamp for T10 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t10_time: Option<u64>,
-    /// Activation timestamp for T11 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t11_time: Option<u64>,
-    /// Activation timestamp for T12 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t12_time: Option<u64>,
-    /// Activation timestamp for T13 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t13_time: Option<u64>,
-    /// Activation timestamp for T14 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t14_time: Option<u64>,
+/// Generates [`TempoGenesisInfo`] with one `<fork>_time` field per post-Genesis hardfork.
+macro_rules! tempo_genesis_info {
+    ($($variant:ident),* $(,)?) => {
+        paste::paste! {
+            /// Tempo genesis info extracted from genesis extra_fields
+            #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            pub struct TempoGenesisInfo {
+                /// The epoch length used by consensus.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                epoch_length: Option<NonZeroU64>,
+                /// Optional override for the general (non-payment) gas limit.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                general_gas_limit: Option<u64>,
+                $(
+                    #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    [<$variant:lower _time>]: Option<u64>,
+                )*
+            }
+
+            impl TempoGenesisInfo {
+                /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
+                pub fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
+                    match fork {
+                        TempoHardfork::Genesis => Some(0),
+                        $(TempoHardfork::$variant => self.[<$variant:lower _time>],)*
+                        // Required because `TempoHardfork` is non-exhaustive across crates.
+                        _ => None,
+                    }
+                }
+            }
+        }
+    };
 }
+
+tempo_hardfork::tempo_post_genesis_hardforks!(tempo_genesis_info);
 
 impl TempoGenesisInfo {
     /// Extract Tempo genesis info from genesis extra_fields
@@ -110,25 +82,6 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
-    }
-
-    /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
-    pub fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
-        macro_rules! fork_time_match {
-            ($($variant:ident),* $(,)?) => {
-                paste::paste! {
-                    match fork {
-                        TempoHardfork::Genesis => Some(0),
-                        $(TempoHardfork::$variant => self.[<$variant:lower _time>],)*
-                        // Required because `TempoHardfork` is non-exhaustive across crates.
-                        // Missing `TempoGenesisInfo` fields fail via generated `self.<fork>_time`.
-                        _ => None,
-                    }
-                }
-            };
-        }
-
-        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
     }
 }
 
