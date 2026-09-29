@@ -24,6 +24,12 @@ fn rejects_malformed_and_noncanonical_extensions() {
     trailing.push(0x80);
     let mut unknown_tag = encode_config_commitment(B256::repeat_byte(7)).to_vec();
     unknown_tag[0] = 1;
+    assert_eq!(
+        decode_config_commitment(&[0; 32], true),
+        Err(alloy_rlp::Error::Custom(
+            "tagged account commitment must be 33 bytes"
+        ))
+    );
     for payload in [
         vec![7; 32],
         vec![0; 32],
