@@ -37,7 +37,9 @@ use reth_chainspec::ForkCondition;
 use reth_ethereum::tasks::TaskExecutor;
 use reth_evm::ConfigureEvm as _;
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::{CanonStateSubscriptions, ChainSpecProvider, StateProviderFactory};
+use reth_provider::{
+    CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
+};
 use reth_revm::{
     database::StateProviderDatabase,
     database_interface::bal::BalState,
@@ -292,7 +294,9 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .state_by_block_hash(block.parent_hash())
             .map_err(|e| format!("failed to open parent state {}: {e}", block.parent_hash()))?;
         let mut db = State::builder()
-            .with_database(StateProviderDatabase::new(&provider))
+            .with_database(StateProviderDatabase::new(
+                provider.into_evm_state_provider(),
+            ))
             .with_bundle_update()
             .build();
         let writes = Rc::new(RefCell::new(FeeWrites::default()));
@@ -373,7 +377,9 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
                 )
             })?;
         let mut db = State::builder()
-            .with_database(StateProviderDatabase::new(&provider))
+            .with_database(StateProviderDatabase::new(
+                provider.into_evm_state_provider(),
+            ))
             .with_bundle_update()
             .build();
         let writes = Rc::new(RefCell::new(FeeWrites::default()));
