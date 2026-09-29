@@ -8,7 +8,9 @@ fn commitment_roundtrip_and_t14_gate() {
     }
     let hash = B256::repeat_byte(7);
     let payload = encode_config_commitment(hash);
-    assert_eq!(payload.as_ref(), hash.as_slice());
+    assert_eq!(payload.len(), 33);
+    assert_eq!(payload[0], 0);
+    assert_eq!(&payload[1..], hash.as_slice());
     assert_eq!(decode_config_commitment(&payload, true), Ok(hash));
     assert_eq!(
         decode_config_commitment(&payload, false),
@@ -20,10 +22,15 @@ fn commitment_roundtrip_and_t14_gate() {
 fn rejects_malformed_and_noncanonical_extensions() {
     let mut trailing = encode_config_commitment(B256::repeat_byte(7)).to_vec();
     trailing.push(0x80);
+    let mut unknown_tag = encode_config_commitment(B256::repeat_byte(7)).to_vec();
+    unknown_tag[0] = 1;
     for payload in [
+        vec![7; 32],
         vec![0; 32],
         vec![7; 31],
         vec![7; 33],
+        vec![0; 33],
+        unknown_tag,
         vec![0xc0],
         vec![0xa0, 7],
         trailing,
