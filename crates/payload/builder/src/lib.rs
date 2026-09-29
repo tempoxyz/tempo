@@ -133,9 +133,9 @@ impl PayloadTransactions {
 
     fn set_remaining_general_gas(&mut self, remaining: u64) {
         match self {
+            Self::Sequential(_) => {}
             Self::Prewarming(txs) => txs.inner_mut().set_remaining_general_gas(remaining),
             Self::Parallel(txs) => txs.set_remaining_general_gas(remaining),
-            Self::Sequential(_) => {}
         }
     }
 }
