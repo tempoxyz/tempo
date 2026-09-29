@@ -1103,7 +1103,8 @@ where
 
         self.executor
             .spawn_blocking_named("builder-roots-task", move || {
-                let _span = debug_span!(parent: parent, "builder_roots").entered();
+                let _span = debug_span!(target: "payload_builder", parent: parent, "builder_roots")
+                    .entered();
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 
@@ -1151,7 +1152,8 @@ where
         let parent = Span::current();
         self.executor
             .spawn_blocking_named("builder-bal-task", move || {
-                let _span = debug_span!(parent: parent, "builder_bal").entered();
+                let _span =
+                    debug_span!(target: "payload_builder", parent: parent, "builder_bal").entered();
                 let mut bal_state =
                     reth_revm::database_interface::bal::BalState::new().with_bal_builder();
                 for msg in task_rx {
