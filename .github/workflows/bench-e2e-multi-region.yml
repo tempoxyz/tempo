@@ -397,6 +397,15 @@ jobs:
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
 
+      - name: Disable txgen pending backpressure
+        run: |
+          workload="$BENCH_REPO_DIR/scripts/txgen_workload.sh"
+          test "$(grep -c -- '--max-concurrent "$BENCH_MAX_CONCURRENT"' "$workload")" -eq 2
+          sed -i '/--max-concurrent "\$BENCH_MAX_CONCURRENT"/a\        --max-pending 0 \\' "$workload"
+          test "$(grep -c -- '--max-pending 0' "$workload")" -eq 2
+          bash -n "$workload"
+          git -C "$BENCH_REPO_DIR" diff -- scripts/txgen_workload.sh
+
       - name: Resolve baseline and feature refs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
