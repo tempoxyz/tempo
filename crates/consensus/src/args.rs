@@ -438,7 +438,9 @@ impl FromStr for PositiveDuration {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let duration = s.parse::<jiff::SignedDuration>()?;
-        let _: Duration = duration.try_into().wrap_err("duration must be positive")?;
+        if !duration.is_positive() {
+            return Err("duration must be greater than zero".into());
+        }
 
         Ok(Self(duration))
     }
@@ -613,7 +615,7 @@ mod tests {
     use clap::Parser as _;
     use commonware_codec::Encode as _;
 
-    use super::{Args, VerificationMode};
+    use super::{Args, PositiveDuration, VerificationMode};
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -687,6 +689,18 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
+    }
+
+    #[test]
+    fn positive_duration_rejects_zero_and_negative_values() {
+        assert_non_positive_duration_error("0ms");
+        assert_non_positive_duration_error("0s");
+        assert_non_positive_duration_error("-1ms");
+        assert_non_positive_duration_error("-1s");
+        assert_eq!(
+            "1ms".parse::<PositiveDuration>().unwrap().into_duration(),
+            Duration::from_millis(1)
+        );
     }
 
     #[test]
@@ -971,5 +985,13 @@ mod tests {
             .await
             .expect_err("loading with a wrong passphrase must fail");
         writer.join().unwrap();
+    }
+
+    #[track_caller]
+    fn assert_non_positive_duration_error(value: &str) {
+        assert_eq!(
+            value.parse::<PositiveDuration>().unwrap_err().to_string(),
+            "duration must be greater than zero"
+        );
     }
 }
