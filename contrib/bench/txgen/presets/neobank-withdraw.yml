@@ -5,6 +5,7 @@ append:
   setup:
     steps:
       - id: seed_neobank_withdrawals
+        depends_on: [wrapper]
         bindings:
           user:
             account:

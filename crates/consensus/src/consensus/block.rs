@@ -168,7 +168,10 @@ impl Block {
         )
     }
 
-    fn from_execution_block_unchecked_with_encoded_cache<T>(
+    /// Wraps a trusted execution block and its encoded bytes without validating body or BAL
+    /// commitments. Locally built payloads already contain the matching body, BAL, and header;
+    /// network and archive reads must use the validating constructor instead.
+    pub(crate) fn from_execution_block_unchecked_with_encoded_cache<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
         execution_block_encoded: EncodedBlock,
@@ -212,11 +215,6 @@ impl Block {
         )
     }
 
-    /// Returns the (eth) hash of the wrapped block.
-    pub(crate) fn block_hash(&self) -> B256 {
-        self.execution_block.hash()
-    }
-
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn digest(&self) -> Digest {
         Digest(self.execution_block.hash())
@@ -230,18 +228,6 @@ impl Block {
     /// Returns the wrapped block.
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         self.execution_block.sealed_block()
-    }
-
-    /// Returns the block access list of the wrapped block.
-    pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
-        #[cfg(feature = "bal")]
-        {
-            self.block_access_list.as_ref()
-        }
-        #[cfg(not(feature = "bal"))]
-        {
-            None
-        }
     }
 
     fn encoded_execution_block(&self) -> &Bytes {
@@ -513,7 +499,8 @@ mod tests {
 
         let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
         assert_eq!(decoded, expected);
-        assert!(decoded.block_access_list().is_none());
+        #[cfg(feature = "bal")]
+        assert!(decoded.block_access_list.is_none());
 
         let encoded = decoded.encode();
 
@@ -659,7 +646,10 @@ mod tests {
 
         assert_eq!(decoded, block);
         assert_eq!(
-            decoded.block_access_list().map(|bytes| bytes.as_ref()),
+            decoded
+                .block_access_list
+                .as_ref()
+                .map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
     }

@@ -27,6 +27,38 @@ const GOSSIP_FRAME_QUEUE: usize = 256;
 /// Capacity of the queue carrying outbound frames to the transport coordinator.
 const GOSSIP_ROUTE_QUEUE: usize = 256;
 
+/// When consensus waits for application verification of a block.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VerificationMode {
+    /// Complete application verification before voting to notarize.
+    #[default]
+    Immediate,
+    /// Defer completion of application verification until voting to finalize.
+    Deferred,
+}
+
+impl std::fmt::Display for VerificationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Immediate => "immediate",
+            Self::Deferred => "deferred",
+        })
+    }
+}
+
+impl clap::ValueEnum for VerificationMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Immediate, Self::Deferred]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(clap::builder::PossibleValue::new(match self {
+            Self::Immediate => "immediate",
+            Self::Deferred => "deferred",
+        }))
+    }
+}
+
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Args {
@@ -92,10 +124,18 @@ pub struct Args {
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
     pub worker_threads: usize,
 
-    /// The maximum number of messages that can be queued on the various consensus
-    /// channels before blocking.
-    #[arg(long = "consensus.message-backlog", default_value_t = 16_384)]
-    pub message_backlog: usize,
+    /// When to complete application verification of proposed blocks.
+    #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
+    pub verification_mode: VerificationMode,
+
+    /// Deprecated compatibility flag. P2P queue capacities are derived from
+    /// peer-set limits and channel quotas, so this value is ignored.
+    #[arg(
+        long = "consensus.message-backlog",
+        value_name = "COUNT",
+        help = "Deprecated: ignored; P2P queue capacities are derived from peer-set limits and channel quotas."
+    )]
+    pub message_backlog: Option<usize>,
 
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
@@ -119,7 +159,8 @@ pub struct Args {
     /// Target wall-clock time between blocks in healthy network conditions.
     ///
     /// Local proposal work is paced against this value minus
-    /// `--consensus.network-budget`.
+    /// `--consensus.network-budget`. Time spent fetching the parent in
+    /// commonware is not deducted from this budget.
     #[arg(long = "consensus.target-block-time", default_value = "550ms")]
     pub target_block_time: PositiveDuration,
 
@@ -138,14 +179,27 @@ pub struct Args {
     #[arg(long = "consensus.views-to-track", default_value_t = 256)]
     pub views_to_track: u64,
 
-    /// The number of views (voting rounds) a validator is allowed to be
-    /// inactive until it is immediately skipped should leader selection pick it
-    /// as a proposer. Also called a skip timeout.
+    /// Deprecated compatibility flag. Leader skipping is now driven by wall-clock
+    /// inactivity (see `--consensus.inactive-time-before-leader-skip`), so this value is ignored.
     #[arg(
         long = "consensus.inactive-views-until-leader-skip",
-        default_value_t = 32
+        value_name = "COUNT",
+        help = "Deprecated: ignored; use --consensus.inactive-time-before-leader-skip."
     )]
-    pub inactive_views_until_leader_skip: u64,
+    pub inactive_views_until_leader_skip: Option<u64>,
+
+    /// How long the selected leader must have been silent, while a quorum of
+    /// validators was active, before its view is skipped without waiting for
+    /// the proposal and notarization timeouts.
+    ///
+    /// Must exceed both `--consensus.wait-for-notarizations` and
+    /// `--consensus.wait-to-rebroadcast-nullify`. The default is the larger of
+    /// their defaults plus the default `--consensus.wait-for-proposal`.
+    #[arg(
+        long = "consensus.inactive-time-before-leader-skip",
+        default_value = "11200ms"
+    )]
+    pub inactive_time_before_leader_skip: PositiveDuration,
 
     /// Time reserved for proposal propagation before the target block boundary.
     ///
@@ -170,11 +224,6 @@ pub struct Args {
         help = "Deprecated: no longer has any effect and will be removed in the next release."
     )]
     pub minimum_time_before_propose: Option<PositiveDuration>,
-
-    /// The amount of time this node will use to construct a subblock before
-    /// sending it to the next proposer.
-    #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
-    pub time_to_build_subblock: PositiveDuration,
 
     /// Use defaults optimized for local network environments.
     /// Only enable in non-production network nodes.
@@ -264,6 +313,19 @@ pub struct Args {
     #[arg(long = "consensus.handshake-timeout", default_value = "5s")]
     pub handshake_timeout: PositiveDuration,
 
+    /// Timeout for resolving, connecting to, and handshaking with a peer.
+    #[arg(long = "consensus.dial-timeout", default_value = "15s")]
+    pub dial_timeout: PositiveDuration,
+
+    /// Maximum number of distinct peers, including the local identity, in a
+    /// single tracked validator set. Registering a larger set is fatal.
+    ///
+    /// Also sizes the P2P channel mailboxes: each holds one quota burst per
+    /// allowed peer. The default matches the capacity of the previous fixed
+    /// 16,384-message backlog on the 128/s channels.
+    #[arg(long = "consensus.max-peers-per-set", default_value = "128")]
+    pub max_peers_per_set: NonZeroUsize,
+
     /// Maximum number of concurrent handshake attempts allowed.
     #[arg(
         long = "consensus.max-concurrent-handshakes",
@@ -284,14 +346,6 @@ pub struct Args {
     #[arg(long = "consensus.backfill-frequency", default_value = "8")]
     pub backfill_frequency: std::num::NonZeroU32,
 
-    /// The interval at which to broadcast subblocks to the next proposer.
-    /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
-    /// We broadcast subblock every `subblock-broadcast-interval` to ensure the next
-    /// proposer is aware of the subblock even if they were slightly behind the chain
-    /// once we sent it in the first time.
-    #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
-    pub subblock_broadcast_interval: PositiveDuration,
-
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer. This is sent periodically even when there are no new
     /// blocks to ensure the execution layer stays in sync with the consensus
@@ -300,10 +354,10 @@ pub struct Args {
     pub fcu_heartbeat_interval: PositiveDuration,
 
     /// Offer the `tempo/1` subprotocol, which gossips finalization
-    /// certificates between nodes. Off by default.
+    /// certificates between nodes. On by default; set to `false` to disable.
     #[arg(
         long = "consensus.devp2p.finalizations",
-        default_value_t = false,
+        default_value_t = true,
         default_missing_value = "true",
         num_args = 0..=1,
         require_equals = true
@@ -340,9 +394,13 @@ pub struct Args {
     /// Number of recently finalized blocks the marshal actor keeps in its
     /// prunable archive. Anything older is served from reth's database
     /// through the hybrid finalized blocks store.
+    ///
+    /// Defaults to three mainnet/testnet epochs worth of blocks. Section
+    /// rounding can retain up to 64,800 + 4,096 - 1 = 68,895 blocks when
+    /// reth is caught up.
     #[arg(
         long = "consensus.finalized-blocks-retention",
-        default_value_t = crate::storage::DEFAULT_FINALIZED_BLOCKS_RETENTION,
+        default_value_t = crate::MINIMAL_PEER_SYNC_FINALIZED_BLOCKS,
     )]
     pub finalized_blocks_retention: u64,
 
@@ -387,6 +445,37 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
+    /// would panic on when the first epoch is entered, so a misconfiguration
+    /// fails at startup with a descriptive error instead.
+    pub fn validate_simplex_timing(&self) -> eyre::Result<()> {
+        let wait_for_proposal = self.wait_for_proposal.into_duration();
+        let wait_for_notarizations = self.wait_for_notarizations.into_duration();
+        eyre::ensure!(
+            wait_for_notarizations > wait_for_proposal,
+            "`--consensus.wait-for-notarizations` ({wait_for_notarizations:?}) must be greater \
+             than `--consensus.wait-for-proposal` ({wait_for_proposal:?})",
+        );
+        eyre::ensure!(
+            self.views_to_track > 0,
+            "`--consensus.views-to-track` must be greater than zero",
+        );
+        let inactive_time_before_leader_skip =
+            self.inactive_time_before_leader_skip.into_duration();
+        let wait_to_rebroadcast_nullify = self.wait_to_rebroadcast_nullify.into_duration();
+        eyre::ensure!(
+            inactive_time_before_leader_skip > wait_for_notarizations,
+            "`--consensus.inactive-time-before-leader-skip` ({inactive_time_before_leader_skip:?}) must be greater than \
+             `--consensus.wait-for-notarizations` ({wait_for_notarizations:?})",
+        );
+        eyre::ensure!(
+            inactive_time_before_leader_skip > wait_to_rebroadcast_nullify,
+            "`--consensus.inactive-time-before-leader-skip` ({inactive_time_before_leader_skip:?}) must be greater than \
+             `--consensus.wait-to-rebroadcast-nullify` ({wait_to_rebroadcast_nullify:?})",
+        );
+        Ok(())
+    }
+
     /// Transport settings for `tempo/1`.
     ///
     /// Ingest is enabled only for a certified follower because other modes have
@@ -524,7 +613,7 @@ mod tests {
     use clap::Parser as _;
     use commonware_codec::Encode as _;
 
-    use super::Args;
+    use super::{Args, VerificationMode};
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -563,6 +652,33 @@ mod tests {
     }
 
     #[test]
+    fn verification_mode_defaults_to_immediate() {
+        assert_eq!(
+            parse(&["--dev"]).consensus.verification_mode,
+            VerificationMode::Immediate,
+        );
+    }
+
+    #[test]
+    fn verification_mode_parses() {
+        for (value, expected) in [
+            ("immediate", VerificationMode::Immediate),
+            ("deferred", VerificationMode::Deferred),
+        ] {
+            assert_eq!(
+                parse(&["--dev", "--consensus.verification-mode", value])
+                    .consensus
+                    .verification_mode,
+                expected,
+            );
+        }
+        assert!(
+            TestCli::try_parse_from(["test", "--dev", "--consensus.verification-mode", "invalid",])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn deprecated_proposal_timing_flags_parse() {
         for flag in [
             "--consensus.time-to-prepare-proposal-transactions",
@@ -571,6 +687,123 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
+    }
+
+    #[test]
+    fn simplex_timing_defaults_validate() {
+        parse(&["--dev"])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap();
+    }
+
+    #[test]
+    fn simplex_timing_requires_notarization_wait_above_proposal_wait() {
+        // Equal values were accepted by Commonware 2026.7.1 and now panic at
+        // epoch entry; the default proposal wait is 1200ms.
+        for notarizations in ["1200ms", "1s"] {
+            let err = parse(&["--dev", "--consensus.wait-for-notarizations", notarizations])
+                .consensus
+                .validate_simplex_timing()
+                .unwrap_err();
+            assert!(err.to_string().contains("wait-for-notarizations"), "{err}");
+        }
+        parse(&[
+            "--dev",
+            "--consensus.wait-for-proposal",
+            "1999ms",
+            "--consensus.wait-for-notarizations",
+            "2s",
+        ])
+        .consensus
+        .validate_simplex_timing()
+        .unwrap();
+    }
+
+    #[test]
+    fn simplex_timing_rejects_zero_views_to_track() {
+        let err = parse(&["--dev", "--consensus.views-to-track", "0"])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap_err();
+        assert!(err.to_string().contains("views-to-track"), "{err}");
+    }
+
+    #[test]
+    fn inactive_time_before_leader_skip_default_is_floor_plus_one_proposal_wait() {
+        // max(2s notarizations, 10s nullify rebroadcast) + 1200ms proposal wait.
+        let args = parse(&["--dev"]).consensus;
+        assert_eq!(
+            args.inactive_time_before_leader_skip.into_duration(),
+            Duration::from_millis(11_200)
+        );
+        assert_eq!(args.inactive_views_until_leader_skip, None);
+    }
+
+    #[test]
+    fn inactive_time_before_leader_skip_must_exceed_notarization_and_rebroadcast_waits() {
+        // Commonware asserts strict inequality against both at epoch entry.
+        for (value, offending) in [
+            ("10s", "wait-to-rebroadcast-nullify"),
+            ("5s", "wait-to-rebroadcast-nullify"),
+            ("2s", "wait-for-notarizations"),
+        ] {
+            let err = parse(&[
+                "--dev",
+                "--consensus.inactive-time-before-leader-skip",
+                value,
+            ])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("inactive-time-before-leader-skip"), "{msg}");
+            assert!(msg.contains(offending), "{msg}");
+        }
+        let args = parse(&[
+            "--dev",
+            "--consensus.inactive-time-before-leader-skip",
+            "10001ms",
+        ])
+        .consensus;
+        assert_eq!(
+            args.inactive_time_before_leader_skip.into_duration(),
+            Duration::from_millis(10_001)
+        );
+        args.validate_simplex_timing().unwrap();
+    }
+
+    #[test]
+    fn deprecated_inactive_views_flag_still_parses() {
+        assert_eq!(
+            parse(&[
+                "--dev",
+                "--consensus.inactive-views-until-leader-skip",
+                "32"
+            ])
+            .consensus
+            .inactive_views_until_leader_skip,
+            Some(32),
+        );
+    }
+
+    #[test]
+    fn deprecated_message_backlog_is_only_set_when_supplied() {
+        assert_eq!(parse(&["--dev"]).consensus.message_backlog, None);
+        for value in ["0", "16384", "32768"] {
+            assert_eq!(
+                parse(&["--dev", "--consensus.message-backlog", value])
+                    .consensus
+                    .message_backlog,
+                Some(value.parse().unwrap()),
+            );
+        }
+        assert_eq!(
+            parse(&["--dev", "--consensus.message-backlog=16384"])
+                .consensus
+                .message_backlog,
+            Some(16384),
+        );
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
