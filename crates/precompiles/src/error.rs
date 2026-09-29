@@ -119,6 +119,10 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// State mutation attempted during static execution.
+    #[error("State change during static call")]
+    StaticCallNotAllowed,
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -182,7 +186,7 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::StaticCallNotAllowed | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -191,9 +195,11 @@ impl TempoPrecompileError {
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) | Self::StorageDeltaUnderflow(_) => {
-                true
-            }
+            Self::OutOfGas
+            | Self::StaticCallNotAllowed
+            | Self::Fatal(_)
+            | Self::Panic(_)
+            | Self::StorageDeltaUnderflow(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -277,6 +283,12 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
+            }
+            Self::StaticCallNotAllowed => {
+                return Ok(PrecompileOutput::halt(
+                    PrecompileHalt::other_static("state change during static call"),
+                    reservoir,
+                ));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -521,6 +533,20 @@ mod tests {
 
         let output = result.expect("business-logic revert should be Ok");
         assert!(output.status.is_revert());
+    }
+
+    #[test]
+    fn test_static_call_violation_becomes_exceptional_halt() {
+        let output = TempoPrecompileError::StaticCallNotAllowed
+            .into_precompile_result(0, 123)
+            .expect("static-call violation should be a frame-local halt");
+
+        assert!(matches!(
+            output.status,
+            revm::precompile::PrecompileStatus::Halt(PrecompileHalt::Other(_))
+        ));
+        assert!(output.bytes.is_empty());
+        assert_eq!(output.reservoir, 123);
     }
 
     #[test]

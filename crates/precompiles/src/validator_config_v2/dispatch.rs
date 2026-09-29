@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`ValidatorConfigV2`] precompile (T2+).
 
 use super::*;
-use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfigV2;
@@ -31,20 +31,20 @@ impl Precompile for ValidatorConfigV2 {
                     getNextNetworkIdentityRotationEpoch(call) => view(call, |_| self.get_next_network_identity_rotation_epoch()),
                     isInitialized(call) => view(call, |_| self.is_initialized()),
 
-                    addValidator(call) => mutate(call, msg_sender, |s, c| self.add_validator(s, c)),
-                    deactivateValidator(call) => mutate_void(call, msg_sender, |s, c| self.deactivate_validator(s, c)),
-                    rotateValidator(call) => mutate_void(call, msg_sender, |s, c| self.rotate_validator(s, c)),
-                    setFeeRecipient(call) => mutate_void(call, msg_sender, |s, c| self.set_fee_recipient(s, c)),
-                    setIpAddresses(call) => mutate_void(call, msg_sender, |s, c| self.set_ip_addresses(s, c)),
-                    transferValidatorOwnership(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.transfer_validator_ownership(s, c)
+                    addValidator(call) => mutate(call, msg_sender, |sender, c| self.add_validator(sender, c)),
+                    deactivateValidator(call) => mutate(call, msg_sender, |sender, c| self.deactivate_validator(sender, c)),
+                    rotateValidator(call) => mutate(call, msg_sender, |sender, c| self.rotate_validator(sender, c)),
+                    setFeeRecipient(call) => mutate(call, msg_sender, |sender, c| self.set_fee_recipient(sender, c)),
+                    setIpAddresses(call) => mutate(call, msg_sender, |sender, c| self.set_ip_addresses(sender, c)),
+                    transferValidatorOwnership(call) => mutate(call, msg_sender, |sender, c| {
+                        self.transfer_validator_ownership(sender, c)
                     }),
-                    transferOwnership(call) => mutate_void(call, msg_sender, |s, c| self.transfer_ownership(s, c)),
-                    setNetworkIdentityRotationEpoch(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.set_network_identity_rotation_epoch(s, c)
+                    transferOwnership(call) => mutate(call, msg_sender, |sender, c| self.transfer_ownership(sender, c)),
+                    setNetworkIdentityRotationEpoch(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_network_identity_rotation_epoch(sender, c)
                     }),
-                    migrateValidator(call) => mutate_void(call, msg_sender, |s, c| self.migrate_validator(s, c)),
-                    initializeIfMigrated(call) => mutate_void(call, msg_sender, |s, _| self.initialize_if_migrated(s))
+                    migrateValidator(call) => mutate(call, msg_sender, |sender, c| self.migrate_validator(sender, c)),
+                    initializeIfMigrated(call) => mutate(call, msg_sender, |sender, _| self.initialize_if_migrated(sender))
                 }
             }
         )
