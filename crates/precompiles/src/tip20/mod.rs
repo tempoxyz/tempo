@@ -396,6 +396,27 @@ impl TIP20Token {
 
     // ========== End TIP-1026 ==========
 
+    // ========== TIP-1071: Token Name Updates ==========
+
+    /// Sets the token name (TIP-1071).
+    ///
+    /// The EIP-712 domain separator is derived from the name, so any permit signed against the
+    /// previous name no longer verifies.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
+    pub fn set_name(&mut self, msg_sender: Address, call: ITIP20::setNameCall) -> Result<()> {
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+        self.name.write(call.newName.clone())?;
+
+        self.emit_event(TIP20Event::NameUpdated(ITIP20::NameUpdated {
+            updater: msg_sender,
+            newName: call.newName,
+        }))
+    }
+
+    // ========== End TIP-1071 ==========
+
     /// Pauses all token transfers.
     ///
     /// # Errors
@@ -4844,5 +4865,64 @@ pub(crate) mod tests {
             })?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_set_name_writes_and_emits() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("OpenUSD", "OUSD", admin)
+                .clear_events()
+                .apply()?;
+            let domain_separator = token.domain_separator()?;
+
+            token.set_name(
+                admin,
+                ITIP20::setNameCall {
+                    newName: "Open USD".to_string(),
+                },
+            )?;
+
+            assert_eq!(token.name()?, "Open USD");
+            assert_eq!(token.symbol()?, "OUSD");
+            assert_ne!(token.domain_separator()?, domain_separator);
+
+            token.assert_emitted_events(vec![TIP20Event::NameUpdated(ITIP20::NameUpdated {
+                updater: admin,
+                newName: "Open USD".to_string(),
+            })]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_name_non_admin_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let non_admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            let result = token.set_name(
+                non_admin,
+                ITIP20::setNameCall {
+                    newName: "Renamed".to_string(),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::RolesAuthError(
+                    RolesAuthError::Unauthorized(_)
+                ))
+            ));
+            assert_eq!(token.name()?, "Test");
+
+            Ok(())
+        })
     }
 }

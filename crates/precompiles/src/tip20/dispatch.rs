@@ -62,6 +62,8 @@ impl Precompile for TIP20Token {
                     setSupplyCap(call) => mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c)),
                     #[schedule(since = T5)]
                     setLogoURI(call) => mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c)),
+                    #[schedule(since = T12)]
+                    setName(call) => mutate_void(call, msg_sender, |s, c| self.set_name(s, c)),
                     pause(call) => mutate_void(call, msg_sender, |s, c| self.pause(s, c)),
                     unpause(call) => mutate_void(call, msg_sender, |s, c| self.unpause(s, c)),
                     setNextQuoteToken(call) => mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c)),
@@ -644,8 +646,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T5 hardfork so all selectors are active.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        // Use T12 hardfork so all selectors are active.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -763,6 +765,40 @@ mod tests {
             let result = token.call(&ds_calldata, admin)?;
             assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_name_selector_gated_behind_t12() -> eyre::Result<()> {
+        let admin = Address::random();
+        let calldata = ITIP20::setNameCall {
+            newName: "Renamed".to_string(),
+        }
+        .abi_encode();
+
+        // Pre-T12: setName should return unknown selector.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            let result = token.call(&calldata, admin)?;
+            assert!(result.is_revert());
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+            assert_eq!(token.name()?, "Test");
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        // T12: setName updates the name.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            let result = token.call(&calldata, admin)?;
+            assert!(!result.is_revert(), "setName must succeed at T12");
+            assert_eq!(token.name()?, "Renamed");
 
             Ok(())
         })

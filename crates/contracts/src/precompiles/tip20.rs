@@ -87,6 +87,7 @@ crate::sol! {
         function transferPolicyId() external view returns (uint64);
         function logoURI() external view returns (string memory);
         function setLogoURI(string calldata newLogoURI) external;
+        function setName(string calldata newName) external;
         function burnBlocked(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
@@ -152,6 +153,7 @@ crate::sol! {
         event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
         event LogoURIUpdated(address indexed updater, string newLogoURI);
+        event NameUpdated(address indexed updater, string newName);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
