@@ -5,7 +5,9 @@ use alloy::{
     signers::local::MnemonicBuilder,
 };
 use alloy_eips::BlockNumberOrTag;
+use eyre::WrapErr;
 use futures::{StreamExt, future::join_all, stream};
+use reth_e2e_test_utils::receipt::PendingTransactionExt;
 use std::{env, time::Duration};
 use tempo_chainspec::constants::gas::{
     TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR, tempo_t7_next_block_base_fee,
@@ -191,10 +193,10 @@ async fn test_t7_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
-        .await?;
+        .successful_receipt()
+        .await
+        .wrap_err("floor-priced transaction should succeed")?;
 
-    assert!(receipt.status(), "floor-priced transaction should succeed");
     assert_eq!(
         receipt.effective_gas_price(),
         u128::from(TEMPO_T7_BASE_FEE_FLOOR),

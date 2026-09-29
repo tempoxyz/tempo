@@ -13,6 +13,8 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
+use eyre::WrapErr;
+use reth_e2e_test_utils::receipt::PendingTransactionExt;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
@@ -134,7 +136,7 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
             allowedCalls: vec![],
         },
     };
-    let authorize_receipt = provider
+    provider
         .send_transaction(
             TransactionRequest::default()
                 .to(ACCOUNT_KEYCHAIN_ADDRESS)
@@ -142,12 +144,10 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
                 .gas_limit(2_000_000),
         )
         .await?
-        .get_tempo_receipt()
-        .await?;
-    assert!(
-        authorize_receipt.status(),
-        "access-key authorization must succeed"
-    );
+        .into_tempo()
+        .successful_receipt()
+        .await
+        .wrap_err("access-key authorization must succeed")?;
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
@@ -247,57 +247,42 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
     let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &root_provider);
 
     let liquidity = U256::from(1_000_000_000_000_000_000u128);
-    assert!(
-        fee_token
-            .mint(root_addr, liquidity)
-            .send()
-            .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
+    fee_token
+        .mint(root_addr, liquidity)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
 
     // Seed the rebalance recipient's `T` balance so the FeeManager -> attacker transfer does not
     // create a new token balance slot that could consume the credit minted by clearing custody.
-    assert!(
-        fee_token
-            .mint(attacker_addr, U256::ONE)
-            .send()
-            .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
+    fee_token
+        .mint(attacker_addr, U256::ONE)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
 
     // The attacker pays the rebalance tx fees and validator-token input in PATH_USD, not `T`.
-    assert!(
-        validator_token
-            .transfer(attacker_addr, liquidity)
-            .send()
-            .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
+    validator_token
+        .transfer(attacker_addr, liquidity)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
 
-    assert!(
-        fee_amm
-            .mint(fee_token_addr, PATH_USD_ADDRESS, liquidity, root_addr)
-            .send()
-            .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
-    assert!(
-        fee_manager
-            .setUserToken(fee_token_addr)
-            .send()
-            .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
+    fee_amm
+        .mint(fee_token_addr, PATH_USD_ADDRESS, liquidity, root_addr)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+    fee_manager
+        .setUserToken(fee_token_addr)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
 
     let custody_before_fee = fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     let pool_before_fee = fee_amm
@@ -337,12 +322,12 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
             sig,
         )))
         .into();
-    let fee_tx_receipt = root_provider
+    root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(fee_tx_receipt.status());
 
     let custody_balance = fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert!(custody_balance > custody_before_fee);
@@ -362,7 +347,7 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
     );
 
     let attacker_fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, attacker_provider.clone());
-    let rebalance_receipt = attacker_fee_amm
+    attacker_fee_amm
         .rebalanceSwap(
             fee_token_addr,
             PATH_USD_ADDRESS,
@@ -372,9 +357,8 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(rebalance_receipt.status());
 
     assert_eq!(
         fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?,
@@ -411,12 +395,12 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
             sig,
         )))
         .into();
-    let recreate_receipt = root_provider
+    root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(recreate_receipt.status());
     assert!(
         fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await? > U256::ZERO,
         "later disabled fee collection should recreate FeeManager custody"
@@ -428,16 +412,13 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
     );
 
     let fresh_recipient = Address::repeat_byte(0xf7);
-    assert!(
-        fee_token
-            .mint(fresh_recipient, U256::ONE)
-            .nonce(root_provider.get_transaction_count(root_addr).await?)
-            .send()
-            .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
+    fee_token
+        .mint(fresh_recipient, U256::ONE)
+        .nonce(root_provider.get_transaction_count(root_addr).await?)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
     assert_eq!(
         credits.balanceOf(fee_token_addr).call().await?,
         credit_before,
@@ -499,13 +480,12 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
 
     let path_usd = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
     for recipient in [attacker_addr, validator_addr, user_addr, credit_source_addr] {
-        let receipt = path_usd
+        path_usd
             .transfer(recipient, U256::from(10_000_000_000u64))
             .send()
             .await?
-            .get_receipt()
+            .successful_receipt()
             .await?;
-        assert!(receipt.status());
     }
 
     for (recipient, amount) in [
@@ -513,13 +493,12 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         (user_addr, U256::from(10_000_000_000u64)),
         (credit_source_addr, credit_seed_amount),
     ] {
-        let receipt = fee_token
+        fee_token
             .mint(recipient, amount)
             .send()
             .await?
-            .get_receipt()
+            .successful_receipt()
             .await?;
-        assert!(receipt.status());
     }
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
     let seed_credit_receipt = send_tempo_tx(
@@ -553,13 +532,12 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         "setup must seed one reusable token storage credit"
     );
 
-    let set_validator_receipt = validator_fee_manager
+    validator_fee_manager
         .setValidatorToken(fee_token_addr)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_validator_receipt.status());
 
     *dynamic_validator.lock().unwrap() = validator_addr;
     wait_for_latest_beneficiary(&provider, validator_addr).await?;
@@ -585,12 +563,12 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             collect_fees_signature,
         )))
         .into();
-    let collect_fees_receipt = provider
+    provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(collect_fees_receipt.status());
     assert!(
         !root_fee_manager
             .collectedFees(validator_addr, *fee_token.address())
@@ -615,14 +593,13 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     );
     let fee_manager_credit_before_distribute =
         credits.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    let distribute_receipt = attacker_fee_manager
+    attacker_fee_manager
         .distributeFees(validator_addr, fee_token_addr)
         .gas(2_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(distribute_receipt.status());
     assert_eq!(
         root_fee_manager
             .collectedFees(validator_addr, *fee_token.address())
@@ -643,14 +620,13 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         token_credit_before_distribute - 1,
         "the FeeManager -> validator payout balance creation must consume a token storage credit"
     );
-    let validator_drain_receipt = validator_fee_token
+    validator_fee_token
         .transfer(user_addr, validator_payout)
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(validator_drain_receipt.status());
     assert_eq!(
         fee_token.balanceOf(validator_addr).call().await?,
         U256::ZERO,
@@ -686,12 +662,12 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             recreate_signature,
         )))
         .into();
-    let recreate_receipt = provider
+    provider
         .send_raw_transaction(&recreate_envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(recreate_receipt.status());
     assert!(
         !root_fee_manager
             .collectedFees(validator_addr, *fee_token.address())
@@ -776,52 +752,46 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         dummy_receiver_addr,
         credit_source_addr,
     ] {
-        let receipt = path_usd
+        path_usd
             .transfer(recipient, U256::from(10_000_000_000u64))
             .send()
             .await?
-            .get_receipt()
+            .successful_receipt()
             .await?;
-        assert!(receipt.status());
     }
 
-    let root_mint_receipt = fee_token
+    fee_token
         .mint(root_addr, U256::from(10_000_000_000u64))
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(root_mint_receipt.status());
-    let user_mint_receipt = fee_token
+    fee_token
         .mint(user_addr, U256::ONE)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(user_mint_receipt.status());
-    let validator_seed_receipt = fee_token
+    fee_token
         .mint(validator_addr, U256::ONE)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(validator_seed_receipt.status());
 
-    let set_validator_receipt = validator_fee_manager
+    validator_fee_manager
         .setValidatorToken(fee_token_addr)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_validator_receipt.status());
-    let validator_policy_receipt = validator_registry
+    validator_registry
         .setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, validator_addr)
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(validator_policy_receipt.status());
 
     *dynamic_validator.lock().unwrap() = validator_addr;
     wait_for_latest_beneficiary(&provider, validator_addr).await?;
@@ -847,12 +817,12 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
             collect_fees_signature,
         )))
         .into();
-    let collect_fees_receipt = provider
+    provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(collect_fees_receipt.status());
     let payout_amount = root_fee_manager
         .collectedFees(validator_addr, fee_token_addr)
         .call()
@@ -866,14 +836,13 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
     wait_for_latest_beneficiary(&provider, initial_validator).await?;
 
     let credit_seed_amount = U256::from(4321u64);
-    let source_mint_receipt = fee_token
+    fee_token
         .mint(credit_source_addr, credit_seed_amount)
         .nonce(provider.get_transaction_count(root_addr).await?)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(source_mint_receipt.status());
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
     let seed_token_credit_receipt = send_tempo_tx(
         &provider,
@@ -906,7 +875,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         "setup must seed one reusable fee-token storage credit"
     );
 
-    let dummy_policy_receipt = dummy_registry
+    dummy_registry
         .setReceivePolicy(
             REJECT_ALL_POLICY_ID,
             ALLOW_ALL_POLICY_ID,
@@ -915,27 +884,24 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(dummy_policy_receipt.status());
     let blocked_seed_receipt = path_usd
         .transfer(dummy_receiver_addr, U256::ONE)
         .nonce(provider.get_transaction_count(root_addr).await?)
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(blocked_seed_receipt.status());
     let blocked_seed = transfer_blocked(&blocked_seed_receipt)?;
-    let claim_seed_receipt = dummy_guard
+    dummy_guard
         .claim(dummy_receiver_addr, blocked_seed.receipt.clone())
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(claim_seed_receipt.status());
     assert_eq!(
         root_guard
             .balanceOf(blocked_seed.receipt.clone())
@@ -973,9 +939,8 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         .gas(2_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(distribute_receipt.status());
     let blocked_distribution = transfer_blocked(&distribute_receipt)?;
     assert_eq!(blocked_distribution.token, fee_token_addr);
     assert_eq!(blocked_distribution.receiver, validator_addr);
@@ -1018,14 +983,13 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         "guard receipt creation must consume a ReceivePolicyGuard storage credit"
     );
 
-    let claim_distribution_receipt = validator_guard
+    validator_guard
         .claim(validator_addr, blocked_distribution.receipt.clone())
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(claim_distribution_receipt.status());
     assert_eq!(
         fee_token
             .balanceOf(RECEIVE_POLICY_GUARD_ADDRESS)
@@ -1105,7 +1069,7 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
             allowedCalls: vec![],
         },
     };
-    let authorize_receipt = provider
+    provider
         .send_transaction(
             TransactionRequest::default()
                 .to(ACCOUNT_KEYCHAIN_ADDRESS)
@@ -1113,9 +1077,9 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
                 .gas_limit(2_000_000),
         )
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(authorize_receipt.status());
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
@@ -1157,12 +1121,12 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
         )))
         .into();
 
-    let receipt = provider
+    provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     let remaining_after = keychain
         .getRemainingLimitWithPeriod(root_addr, access_key.address(), DEFAULT_FEE_TOKEN)
@@ -1212,20 +1176,18 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
     let recipient = Address::repeat_byte(0xdd);
 
     let fee_token = ITIP20::new(DEFAULT_FEE_TOKEN, root_provider.clone());
-    let recipient_seed_receipt = fee_token
+    fee_token
         .transfer(recipient, U256::ONE)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(recipient_seed_receipt.status());
-    let fee_payer_seed_receipt = fee_token
+    fee_token
         .transfer(fee_payer_addr, initial_fee_payer_balance)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(fee_payer_seed_receipt.status());
     assert_eq!(
         fee_token.balanceOf(fee_payer_addr).call().await?,
         initial_fee_payer_balance
@@ -1265,9 +1227,9 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
     let receipt = fee_payer_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
     assert_eq!(receipt.fee_token, Some(DEFAULT_FEE_TOKEN));
 
     let spent_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
@@ -1310,20 +1272,18 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
 
     // Seed recipient with non-zero balance so the transfer clears the sender's balance slot.
     // Does not create a new recipient balance slot that could consume the credit.
-    let recipient_seed_receipt = token
+    token
         .mint(recipient, U256::ONE)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(recipient_seed_receipt.status());
-    let sender_seed_receipt = token
+    token
         .mint(root_addr, amount)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(sender_seed_receipt.status());
 
     let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
     let credit_before = credits.balanceOf(*token.address()).call().await?;
@@ -1354,12 +1314,12 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
             sig,
         )))
         .into();
-    let receipt = provider
+    provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(root_addr).call().await?, U256::ZERO);
     assert_eq!(token.balanceOf(recipient).call().await?, amount + U256::ONE);
@@ -1381,14 +1341,13 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
     );
 
     let fresh_recipient = Address::repeat_byte(0xdd);
-    let mint_receipt = token
+    token
         .mint(fresh_recipient, U256::ONE)
         .nonce(provider.get_transaction_count(root_addr).await?)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(mint_receipt.status());
 
     assert_eq!(token.balanceOf(fresh_recipient).call().await?, U256::ONE);
     assert_eq!(
@@ -1431,13 +1390,12 @@ async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result
 
     let path_usd = ITIP20::new(PATH_USD_ADDRESS, &provider);
     for funded in [payer.address(), other_payer.address()] {
-        let receipt = path_usd
+        path_usd
             .transfer(funded, U256::from(5_000_000u64))
             .send()
             .await?
-            .get_receipt()
+            .successful_receipt()
             .await?;
-        assert!(receipt.status());
     }
 
     let payer_reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, &payer_provider);
@@ -1457,9 +1415,8 @@ async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result
         )
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(open_receipt.status());
 
     let opened = open_receipt
         .logs()
@@ -1476,13 +1433,12 @@ async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result
         expiringNonceHash: opened.expiringNonceHash,
     };
 
-    let close_receipt = payee_reserve
+    payee_reserve
         .close(descriptor, U96::ZERO, U96::ZERO, Bytes::new())
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(close_receipt.status());
 
     assert_eq!(
         payer_reserve.storageCredits(payer.address()).call().await?,
@@ -1504,7 +1460,7 @@ async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result
         "the TIP-1060 token backing the first channel credit is held by the payer counter slot"
     );
 
-    let other_open_receipt = other_payer_reserve
+    other_payer_reserve
         .open(
             payee.address(),
             Address::ZERO,
@@ -1515,16 +1471,15 @@ async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result
         )
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(other_open_receipt.status());
     assert_eq!(
         payer_reserve.storageCredits(payer.address()).call().await?,
         1,
         "a different payer must not consume the original payer's channel credit"
     );
 
-    let payer_reopen_receipt = payer_reserve
+    payer_reserve
         .open(
             payee.address(),
             Address::ZERO,
@@ -1535,9 +1490,8 @@ async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result
         )
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(payer_reopen_receipt.status());
     assert_eq!(
         payer_reserve.storageCredits(payer.address()).call().await?,
         0,
