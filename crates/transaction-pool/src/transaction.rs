@@ -47,9 +47,9 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached T5-T11 payment classification for efficient block building.
+    /// Cached T5-T12 payment classification for efficient block building.
     is_payment_v2: bool,
-    /// Cached T12+ payment classification for efficient block building.
+    /// Cached T13+ payment classification for efficient block building.
     is_payment_v3: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
@@ -185,12 +185,12 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the T5-T11 builder criteria.
+    /// Returns whether this is a payment transaction according to the T5-T12 builder criteria.
     pub fn is_payment_v2(&self) -> bool {
         self.is_payment_v2
     }
 
-    /// Returns whether this is a payment transaction according to the T12+ builder criteria.
+    /// Returns whether this is a payment transaction according to the T13+ builder criteria.
     pub fn is_payment_v3(&self) -> bool {
         self.is_payment_v3
     }

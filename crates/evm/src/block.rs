@@ -439,7 +439,7 @@ where
 
     /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
     ///
-    /// T12+: TIP-1045 classification with bounded trailing calldata ([`is_payment_v3`]).
+    /// T13+: TIP-1045 classification with bounded trailing calldata ([`is_payment_v3`]).
     /// T5+: TIP-1045 classification ([`is_payment_v2`]).
     /// Pre-T5: legacy TIP-20 prefix-only check ([`is_payment_v1`]).
     ///
@@ -448,7 +448,7 @@ where
     /// [`is_payment_v3`]: TempoTxEnvelope::is_payment_v3
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
         let spec = self.evm().cfg.spec;
-        if spec.is_t12() {
+        if spec.is_t13() {
             tx.is_payment_v3()
         } else if spec.is_t5() {
             tx.is_payment_v2()
@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_payment_uses_v3_from_t12() {
+    fn test_is_payment_uses_v3_from_t13() {
         let mut input = ITIP20::transferCall {
             to: Address::random(),
             amount: U256::ONE,
@@ -1052,15 +1052,15 @@ mod tests {
         assert!(!tx.is_payment_v2(), "T5 classifier rejects trailing bytes");
         assert!(
             tx.is_payment_v3(),
-            "T12 classifier accepts bounded trailing bytes"
+            "T13 classifier accepts bounded trailing bytes"
         );
 
         let chainspec = DEV.clone();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        executor.inner.evm.cfg.spec = TempoHardfork::T11;
-        assert!(!executor.is_payment(&tx));
         executor.inner.evm.cfg.spec = TempoHardfork::T12;
+        assert!(!executor.is_payment(&tx));
+        executor.inner.evm.cfg.spec = TempoHardfork::T13;
         assert!(executor.is_payment(&tx));
     }
 

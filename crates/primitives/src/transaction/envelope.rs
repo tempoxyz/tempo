@@ -283,7 +283,7 @@ impl TempoTxEnvelope {
         self.is_tip1045_payment(0)
     }
 
-    /// T12+ [TIP-20 payment] (TIP-1045) classification.
+    /// T13+ [TIP-20 payment] (TIP-1045) classification.
     ///
     /// Like [`is_payment_v2`](Self::is_payment_v2), but static-only payment calls may carry up to
     /// [`MAX_PAYMENT_TRAILING_BYTES`] bytes after their ABI-encoded arguments, e.g. an attribution
