@@ -3,12 +3,17 @@
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Error;
 
+const COMMITMENT_FORMAT_TAG: u8 = 0;
+
 /// Returns the raw fifth-field payload; the trie adds RLP framing. Zero omits the field.
 pub fn encode_config_commitment(hash: B256) -> Bytes {
     if hash.is_zero() {
         Bytes::new()
     } else {
-        Bytes::copy_from_slice(hash.as_slice())
+        let mut payload = Vec::with_capacity(1 + B256::len_bytes());
+        payload.push(COMMITMENT_FORMAT_TAG);
+        payload.extend_from_slice(hash.as_slice());
+        payload.into()
     }
 }
 
@@ -20,7 +25,10 @@ pub fn decode_config_commitment(payload: &[u8], t14_active: bool) -> alloy_rlp::
     if !t14_active {
         return Err(Error::Custom("account commitment before T14"));
     }
-    let hash = B256::try_from(payload)
+    if payload[0] != COMMITMENT_FORMAT_TAG {
+        return Err(Error::Custom("unsupported account commitment format"));
+    }
+    let hash = B256::try_from(&payload[1..])
         .map_err(|_| Error::Custom("account commitment must be 32 bytes"))?;
     if hash.is_zero() {
         return Err(Error::Custom("explicit zero account commitment"));

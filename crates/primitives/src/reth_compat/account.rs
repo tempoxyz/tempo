@@ -29,7 +29,11 @@ fn commitment_survives_account_representations() {
     for _ in 0..4 {
         alloy_rlp::Header::decode_bytes(&mut fields, false).unwrap();
     }
-    assert_eq!(fields, alloy_rlp::encode(commitment));
+    let payload = alloy_rlp::Header::decode_bytes(&mut fields, false).unwrap();
+    assert!(fields.is_empty());
+    assert_eq!(payload.len(), 33);
+    assert_eq!(payload[0], 0);
+    assert_eq!(&payload[1..], commitment.as_slice());
     let mut legacy = trie.clone();
     legacy.extension = Default::default();
     let legacy = alloy_rlp::encode(&legacy);
