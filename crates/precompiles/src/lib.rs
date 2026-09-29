@@ -60,6 +60,8 @@ use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
+#[cfg(test)]
+use evm2::precompiles::PrecompileHalt;
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::precompile::PrecompileProvider,
@@ -147,7 +149,7 @@ pub trait Precompile {
     ///
     /// Implementations should deduct calldata gas upfront via [`input_cost`], then decode the
     /// 4-byte function selector from `calldata` and route to the matching method using
-    /// `dispatch_call` combined with the `view`, `mutate`, or `mutate_void` helpers.
+    /// `dispatch_call` combined with the `view` or `mutate` helpers.
     ///
     /// Business-logic errors are returned as EVM reverts with ABI-encoded error data, while
     /// fatal failures (e.g. out-of-gas) are returned as [`PrecompileError`]s.
@@ -445,56 +447,58 @@ mod tests {
     }
 
     #[test]
-    fn test_precompile_static_call() {
-        let call_static = |calldata: Bytes| {
-            call_tempo(
-                TempoHardfork::T3,
-                calldata,
-                MessageKind::StaticCall,
-                PATH_USD_ADDRESS,
-                PATH_USD_ADDRESS,
-                true,
-            )
-            .0
-        };
+    fn test_precompile_static_calls() {
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let call_static = |calldata: Bytes| {
+                call_tempo(
+                    spec,
+                    calldata,
+                    MessageKind::StaticCall,
+                    PATH_USD_ADDRESS,
+                    PATH_USD_ADDRESS,
+                    true,
+                )
+                .0
+            };
 
-        // Static calls into mutating functions should fail
-        let result = call_static(Bytes::from(
-            ITIP20::transferCall {
-                to: Address::random(),
-                amount: U256::from(100),
+            for calldata in [
+                ITIP20::transferCall {
+                    to: Address::random(),
+                    amount: U256::from(100),
+                }
+                .abi_encode(),
+                ITIP20::approveCall {
+                    spender: Address::random(),
+                    amount: U256::from(100),
+                }
+                .abi_encode(),
+            ] {
+                let result = call_static(calldata.into());
+                if spec.is_t12() {
+                    assert!(matches!(
+                        result,
+                        Err(PrecompileError::Halt(PrecompileHalt::Other(_)))
+                    ));
+                } else {
+                    let Err(PrecompileError::Revert(output)) = result else {
+                        panic!("expected reverted output");
+                    };
+                    assert!(StaticCallNotAllowed::abi_decode(&output).is_ok());
+                }
             }
-            .abi_encode(),
-        ));
-        let Err(PrecompileError::Revert(output)) = result else {
-            panic!("expected reverted output");
-        };
-        assert!(StaticCallNotAllowed::abi_decode(&output).is_ok());
 
-        // Static calls into mutate void functions should fail
-        let result = call_static(Bytes::from(
-            ITIP20::approveCall {
-                spender: Address::random(),
-                amount: U256::from(100),
-            }
-            .abi_encode(),
-        ));
-        let Err(PrecompileError::Revert(output)) = result else {
-            panic!("expected reverted output");
-        };
-        assert!(StaticCallNotAllowed::abi_decode(&output).is_ok());
-
-        // Static calls into view functions should succeed
-        let result = call_static(Bytes::from(
-            ITIP20::balanceOfCall {
-                account: Address::random(),
-            }
-            .abi_encode(),
-        ));
-        assert!(
-            result.is_ok(),
-            "view function should not revert in static context"
-        );
+            let result = call_static(
+                ITIP20::balanceOfCall {
+                    account: Address::random(),
+                }
+                .abi_encode()
+                .into(),
+            );
+            assert!(
+                result.is_ok(),
+                "view function should succeed in static context"
+            );
+        }
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly

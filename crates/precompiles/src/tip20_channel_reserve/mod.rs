@@ -231,6 +231,9 @@ impl TIP20ChannelReserve {
     ///
     /// The payee can call directly. If an operator was set when the channel was opened, that
     /// operator can submit the payee's voucher and route the payment to the descriptor payee.
+    ///
+    /// Settlement does not cancel or extend a pending close request. Payees should settle before
+    /// its deadline.
     pub fn settle(
         &mut self,
         msg_sender: Address,
@@ -390,6 +393,9 @@ impl TIP20ChannelReserve {
     /// Starts the payer's unilateral close timer.
     ///
     /// Repeated calls are idempotent while the timer is active.
+    ///
+    /// Payees should stop accepting vouchers and settle outstanding payments before the grace
+    /// period expires. Repeated requests retain the original deadline.
     pub fn request_close(
         &mut self,
         msg_sender: Address,
@@ -528,6 +534,9 @@ impl TIP20ChannelReserve {
     }
 
     /// Withdraws the payer's remaining deposit after the close grace period has elapsed.
+    ///
+    /// At the deadline, withdrawal may execute before settlement, making outstanding vouchers
+    /// unredeemable.
     pub fn withdraw(
         &mut self,
         msg_sender: Address,

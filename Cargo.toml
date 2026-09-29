@@ -200,10 +200,15 @@ reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
+reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47", features = [
+  "std",
+  "optional-checks",
+] }
 reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
+reth-storage-overlay = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "a4d3c47" }
@@ -220,7 +225,7 @@ alloy-sol-types = { version = "1.7.3", default-features = false }
 alloy = { version = "2.5.0", default-features = false }
 alloy-consensus = { version = "2.5.0", default-features = false }
 alloy-contract = { version = "2.5.0", default-features = false }
-alloy-eip7928 = { version = "0.4.9", default-features = false }
+alloy-eip7928 = { version = "0.4.10", default-features = false }
 alloy-eips = { version = "2.5.0", default-features = false }
 evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "a204db902137a4e03412d23f5cd4ea96b767852c", default-features = false }
 evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "a204db902137a4e03412d23f5cd4ea96b767852c" }

@@ -41,7 +41,7 @@ fn signature_verification(c: &mut Criterion) {
     c.bench_function("p256_verify", |b| {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
-            let mut verifier = SignatureVerifier::new();
+            let verifier = SignatureVerifier::new();
             b.iter(|| {
                 black_box(
                     verifier

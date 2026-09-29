@@ -125,6 +125,14 @@ where
     }
 
     #[inline]
+    fn ensure_not_static(&self) -> Result<(), TempoPrecompileError> {
+        match self.is_static {
+            false => Ok(()),
+            true => Err(TempoPrecompileError::StaticCallNotAllowed),
+        }
+    }
+
+    #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         self.gas_tracker.deduct_state_gas(gas)
     }
@@ -160,6 +168,7 @@ where
         value: U256,
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
+        self.ensure_not_static()?;
         self.evm.state_mut().account(&address)?.warm();
         let mut slot = self
             .evm
@@ -230,6 +239,13 @@ where
         value: U256,
         action: impl FnOnce(&SStore) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
+        // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
+        if self.spec.is_t12()
+            && self.gas_tracker.remaining() <= u64::from(self.gas_params().get(GasId::CallStipend))
+        {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
             self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
@@ -363,8 +379,10 @@ where
     }
 
     #[inline]
-    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
+        self.ensure_not_static()?;
         self.evm.state_mut().tstore(&address, &key, &value);
+        Ok(())
     }
 
     #[inline]
@@ -394,6 +412,7 @@ where
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytes) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
         self.deduct_gas(
@@ -450,6 +469,8 @@ where
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.sstore_inner(address, key, value, |result| {
             StorageAction::Sstore(address, key, result.present_value, value)
         })
@@ -462,6 +483,8 @@ where
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_add(delta)
@@ -487,6 +510,8 @@ where
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_sub(delta)
@@ -512,6 +537,8 @@ where
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(u64::from(
             self.version.gas_params.get(GasId::WarmStorageReadCost),
         ))?;
@@ -521,6 +548,8 @@ where
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(
             u64::from(gas::LOG).saturating_add(
                 self.version
@@ -925,6 +954,17 @@ mod tests {
             )
         }
 
+        fn static_provider(&mut self) -> EvmPrecompileStorageProvider<'_, '_, 'static, TestTypes> {
+            EvmPrecompileStorageProvider::with_gas_tracker(
+                &mut self.evm,
+                self.version,
+                TempoBlockEnv::default(),
+                GasTrackerStorage::Owned(GasTracker::new(u64::MAX)),
+                self.spec,
+                true,
+            )
+        }
+
         fn gas_params(&self) -> GasParams {
             self.version.gas_params
         }
@@ -946,6 +986,32 @@ mod tests {
         fn default() -> Self {
             Self::new(TempoHardfork::default())
         }
+    }
+
+    #[test]
+    fn test_static_provider_mutation_guards() {
+        use crate::storage_credits::StorageCreditsBackend;
+
+        let mut evm = TestEvm::default();
+        let mut provider = evm.static_provider();
+
+        let (address, key, value) = (Address::ZERO, U256::ZERO, U256::ZERO);
+        let results = [
+            provider.set_code(address, Bytes::new()),
+            PrecompileStorageProvider::sstore(&mut provider, address, key, value),
+            PrecompileStorageProvider::tstore(&mut provider, address, key, value),
+            StorageCreditsBackend::sstore(&mut provider, address, key, value, false).map(|_| ()),
+            StorageCreditsBackend::tstore(&mut provider, address, key, value),
+            provider.sinc(address, key, value),
+            provider.sdec(address, key, value),
+            provider.emit_event(address, LogData::new_unchecked(vec![], bytes!())),
+        ];
+
+        assert!(
+            results
+                .into_iter()
+                .all(|result| { result == Err(TempoPrecompileError::StaticCallNotAllowed) })
+        );
     }
 
     #[test]
@@ -1102,6 +1168,38 @@ mod tests {
             let expected_value = U256::from(i * 100);
             let loaded_value = provider.sload(address, key)?;
             assert_eq!(loaded_value, expected_value);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_reentrancy_sentry_blocks_dirty_write() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let mut evm = TestEvm::new(spec);
+            let gas_params = evm.version.gas_params.clone();
+            let address = Address::random();
+            let key = U256::from(42);
+
+            evm.provider_max_gas().sstore(address, key, U256::ONE)?;
+
+            let result = evm
+                .provider_with_gas_limit(u64::from(gas_params.get(GasId::CallStipend)), 0)
+                .sstore(address, key, U256::from(2));
+
+            let expected = if spec.is_t12() {
+                assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+                U256::ONE
+            } else {
+                result.expect("pre-T12 SSTORE at stipend should preserve historical behavior");
+                U256::from(2)
+            };
+
+            assert_eq!(
+                evm.provider_max_gas().sload(address, key)?,
+                expected,
+                "failed SSTORE must not mutate storage"
+            );
         }
 
         Ok(())

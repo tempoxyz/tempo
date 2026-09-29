@@ -82,6 +82,8 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 pub struct TempoTxResult {
     /// Inner transaction execution result.
     inner: EthTransactionResultWithState<TempoEvmTypes, TempoTxType>,
+    /// Transaction type retained separately because Reth's detached result metadata is private.
+    tx_type: TempoTxType,
     /// Execution provenance used to exempt RPC simulations from block gas validation.
     execution_context: ExecutionContext,
     /// Next section of the block.
@@ -95,6 +97,20 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
+}
+
+impl Clone for TempoTxResult {
+    fn clone(&self) -> Self {
+        Self {
+            inner: EthTransactionResultWithState::new(self.inner.result().clone(), self.tx_type, 0),
+            tx_type: self.tx_type,
+            execution_context: self.execution_context,
+            next_section: self.next_section,
+            is_payment: self.is_payment,
+            block_gas_used: self.block_gas_used,
+            validator_fee: self.validator_fee,
+        }
+    }
 }
 
 impl TempoTxResult {
@@ -123,6 +139,7 @@ impl TempoTxResult {
                 tx.tx_type(),
                 0,
             ),
+            tx_type: tx.tx_type(),
             execution_context,
             next_section,
             is_payment,
@@ -592,6 +609,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let validator_fee = inner.result().result.ext.validator_fee;
         Ok(TempoTxResult {
             inner,
+            tx_type: original.tx_type(),
             execution_context,
             next_section,
             is_payment: self.is_payment(&original),
@@ -606,6 +624,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     ) -> Result<GasOutput, BlockExecutionError> {
         let TempoTxResult {
             inner,
+            tx_type: _,
             execution_context,
             next_section,
             is_payment,
@@ -1139,6 +1158,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            tx_type: TempoTxType::Legacy,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1277,6 +1297,7 @@ mod tests {
                 for &simulation in &simulations {
                     executor
                         .commit_transaction(TempoTxResult {
+                            tx_type: TempoTxType::Legacy,
                             execution_context: if simulation {
                                 ExecutionContext::Simulation
                             } else {
@@ -1328,6 +1349,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            tx_type: TempoTxType::Legacy,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1369,6 +1391,7 @@ mod tests {
         // Commit first transaction (21000 gas)
         let tx1 = create_legacy_tx();
         let output1 = TempoTxResult {
+            tx_type: TempoTxType::Legacy,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1394,6 +1417,7 @@ mod tests {
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
         let output2 = TempoTxResult {
+            tx_type: TempoTxType::Legacy,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1437,6 +1461,7 @@ mod tests {
         // Manually set state to simulate a committed transaction (no state gas)
         executor
             .commit_transaction(TempoTxResult {
+                tx_type: TempoTxType::Legacy,
                 execution_context: ExecutionContext::Transaction {
                     tx_hash: B256::ZERO,
                 },
@@ -1479,6 +1504,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            tx_type: TempoTxType::Legacy,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1526,6 +1552,7 @@ mod tests {
         // tx_gas_used = max(300k - 0_refund, 0) = 300k
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            tx_type: TempoTxType::Legacy,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1577,6 +1604,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            tx_type: TempoTxType::Legacy,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -2008,6 +2036,7 @@ mod tests {
 
         executor
             .commit_transaction(TempoTxResult {
+                tx_type: TempoTxType::Legacy,
                 execution_context: ExecutionContext::Transaction {
                     tx_hash: B256::ZERO,
                 },
@@ -2058,6 +2087,7 @@ mod tests {
         executor.apply_pre_execution_changes().unwrap();
         executor
             .commit_transaction(TempoTxResult {
+                tx_type: TempoTxType::Legacy,
                 execution_context: ExecutionContext::Transaction {
                     tx_hash: B256::ZERO,
                 },
@@ -2108,6 +2138,7 @@ mod tests {
 
         executor
             .commit_transaction(TempoTxResult {
+                tx_type: TempoTxType::Legacy,
                 execution_context: ExecutionContext::Transaction {
                     tx_hash: B256::ZERO,
                 },

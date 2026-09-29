@@ -71,8 +71,9 @@ impl StorageCreditsBackend for StorageCreditsContext<'_, '_, '_> {
         self.state.host().tload(&address, &key)
     }
 
-    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
         self.state.host().tstore(&address, &key, &value);
+        Ok(())
     }
 }
 

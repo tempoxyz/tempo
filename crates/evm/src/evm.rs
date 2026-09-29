@@ -83,7 +83,9 @@ mod runtime_tests {
     use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
-    use alloy_sol_types::{SolCall, SolError, SolValue};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::{SolCall, SolError, SolEvent, SolValue};
     use evm2::{
         bytecode::Bytecode,
         evm::{
@@ -96,15 +98,17 @@ mod runtime_tests {
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
+        MULTICALL3_ADDRESS, Multicall3,
         precompiles::{
-            IZoneFactory, IZoneVerifier, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-            ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+            IAccountKeychain, IZoneFactory, IZoneVerifier, ZONE_FACTORY_ADDRESS,
+            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         },
         zones::{T13_ZONE_VERIFIER_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
     use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        account_keychain::AccountKeychain,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
@@ -115,15 +119,15 @@ mod runtime_tests {
             slots as fee_manager_slots,
         },
         tip20::{
-            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
-            slots as tip20_slots,
+            BURN_AT_ROLE, ITIP20, TIP20Token,
+            rewards::__packing_user_reward_info as user_reward_info_slots, slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
         zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{
         AASigned, TempoAddressExt, TempoTransaction, TempoTxEnvelope,
-        transaction::{Call, PrimitiveSignature, TempoSignature},
+        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature},
     };
 
     alloy_sol_types::sol! {
@@ -1526,5 +1530,295 @@ mod runtime_tests {
             1_000,
             "T1 code deposit cost should be 1,000 per byte"
         );
+    }
+
+    struct BurnAtFixture {
+        evm: TempoEvm<'static>,
+        holder: Address,
+        key: PrivateKeySigner,
+        token: Address,
+        nonce: u64,
+    }
+
+    impl BurnAtFixture {
+        fn new(balance: u64) -> eyre::Result<Self> {
+            let holder = Address::repeat_byte(0x11);
+            let key = PrivateKeySigner::random();
+            let mut evm = configured_evm(TempoHardfork::T12, 0, false, InMemoryDB::default());
+            let token =
+                StorageCtx::enter_evm(&mut evm, || -> tempo_precompiles::error::Result<_> {
+                    TIP20Setup::path_usd(holder).with_issuer(holder).apply()?;
+                    let token = TIP20Setup::create("Token", "TKN", holder)
+                        .with_issuer(holder)
+                        .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
+                        .with_mint(holder, U256::from(balance))
+                        .apply()?;
+                    let mut keychain = AccountKeychain::new();
+                    keychain.initialize()?;
+                    keychain.set_tx_origin(holder)?;
+                    keychain.authorize_key(
+                        holder,
+                        key.address(),
+                        IAccountKeychain::SignatureType::Secp256k1,
+                        IAccountKeychain::KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: true,
+                            limits: vec![IAccountKeychain::TokenLimit {
+                                token: token.address(),
+                                amount: U256::from(100),
+                                period: 0,
+                            }],
+                            allowAnyCalls: true,
+                            allowedCalls: vec![],
+                        },
+                        None,
+                    )?;
+                    keychain.set_transaction_key(key.address())?;
+                    Ok(token.address())
+                })?;
+            evm.state_mut().commit_transaction();
+            evm.state_mut().clear_transaction_state();
+            evm.overlay_db_mut().insert_account_info(
+                &MULTICALL3_ADDRESS,
+                AccountInfo::default()
+                    .with_code(Bytecode::new_raw(Multicall3::DEPLOYED_BYTECODE.clone())),
+            );
+            Ok(Self {
+                evm,
+                holder,
+                key,
+                token,
+                nonce: 0,
+            })
+        }
+
+        fn burn_call(&self, amount: U256) -> Multicall3::Call3 {
+            Multicall3::Call3 {
+                target: self.token,
+                allowFailure: false,
+                callData: ITIP20::burnAtCall {
+                    from: self.holder,
+                    amount,
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn transact(
+            &mut self,
+            calls: Vec<Multicall3::Call3>,
+        ) -> eyre::Result<evm2::TxResult<TempoEvmTypes>> {
+            let data: Bytes = Multicall3::aggregate3Call { calls }.abi_encode().into();
+            let transaction = TempoTransaction {
+                chain_id: 1,
+                fee_token: Some(PATH_USD_ADDRESS),
+                gas_limit: 1_000_000,
+                nonce: self.nonce,
+                calls: vec![Call {
+                    to: TxKind::Call(MULTICALL3_ADDRESS),
+                    value: U256::ZERO,
+                    input: data,
+                }],
+                ..Default::default()
+            };
+            let signature = self.key.sign_hash_sync(&KeychainSignature::signing_hash(
+                transaction.signature_hash(),
+                self.holder,
+            ))?;
+            let tx: TempoTxEnv = Recovered::new_unchecked(
+                TempoTxEnvelope::AA(AASigned::new_unhashed(
+                    transaction,
+                    TempoSignature::Keychain(KeychainSignature::new(
+                        self.holder,
+                        PrimitiveSignature::Secp256k1(signature),
+                    )),
+                )),
+                self.holder,
+            )
+            .into();
+            let result = self.evm.transact_detach(tx)?;
+            self.evm
+                .overlay_db_mut()
+                .commit_pending(&result.pending_state);
+            self.nonce += 1;
+            Ok(result.result)
+        }
+
+        fn assert_state(&mut self, balance: u64, remaining_limit: u64) -> eyre::Result<()> {
+            StorageCtx::enter_evm(&mut self.evm, || -> tempo_precompiles::error::Result<()> {
+                let token = TIP20Token::from_address(self.token)?;
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall {
+                        account: self.holder
+                    })?,
+                    U256::from(balance)
+                );
+                assert_eq!(token.total_supply()?, U256::from(balance));
+                assert_eq!(
+                    AccountKeychain::new().get_remaining_limit(
+                        IAccountKeychain::getRemainingLimitCall {
+                            account: self.holder,
+                            keyId: self.key.address(),
+                            token: self.token,
+                        },
+                    )?,
+                    U256::from(remaining_limit),
+                );
+                Ok(())
+            })?;
+            self.evm.state_mut().clear_transaction_state();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn burn_at_bridge_success_charges_access_key_and_emits_events() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let amount = U256::from(20);
+        let result = fixture.transact(vec![fixture.burn_call(amount)])?;
+        assert!(result.status, "{result:?}");
+        let logs: Vec<_> = result
+            .logs
+            .iter()
+            .filter(|log| log.address == fixture.token)
+            .collect();
+        assert_eq!(logs.len(), 2);
+        let transfer = ITIP20::Transfer::decode_log(logs[0])?;
+        assert_eq!(transfer.data.from, fixture.holder);
+        assert_eq!(transfer.data.to, Address::ZERO);
+        assert_eq!(transfer.data.amount, amount);
+        assert_eq!(
+            logs[1].topics(),
+            &[
+                ITIP20::BurnAt::SIGNATURE_HASH,
+                MULTICALL3_ADDRESS.into_word(),
+                fixture.holder.into_word(),
+                B256::from(amount.to_be_bytes::<32>()),
+            ],
+        );
+        assert!(logs[1].data.data.is_empty());
+        let spends: Vec<_> = result
+            .logs
+            .iter()
+            .filter(|log| log.address == ACCOUNT_KEYCHAIN_ADDRESS)
+            .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+            .filter(|log| log.data.token == fixture.token)
+            .collect();
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].data.amount, amount);
+        fixture.assert_state(20, 80)
+    }
+
+    #[test]
+    fn burn_at_bridge_insufficient_balance_reverts_transaction() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![fixture.burn_call(U256::from(50))])?;
+        assert!(result.stop.is_revert(), "{result:?}");
+        assert!(result.logs.is_empty());
+        fixture.assert_state(40, 100)
+    }
+
+    #[test]
+    fn burn_at_bridge_caught_failure_restores_access_key_limit() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![Multicall3::Call3 {
+            allowFailure: true,
+            ..fixture.burn_call(U256::from(50))
+        }])?;
+        assert!(result.status, "{result:?}");
+        let calls = Multicall3::aggregate3Call::abi_decode_returns(&result.output)?;
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].success);
+        assert_eq!(
+            calls[0].returnData.as_ref(),
+            ITIP20::InsufficientBalance {
+                available: U256::from(40),
+                required: U256::from(50),
+                token: fixture.token,
+            }
+            .abi_encode(),
+        );
+        assert!(result.logs.iter().all(|log| log.address != fixture.token));
+        assert!(
+            result
+                .logs
+                .iter()
+                .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+                .all(|log| log.data.token != fixture.token)
+        );
+        fixture.assert_state(40, 100)
+    }
+
+    #[test]
+    fn burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![
+            fixture.burn_call(U256::from(20)),
+            fixture.burn_call(U256::MAX),
+        ])?;
+        assert!(result.stop.is_revert(), "{result:?}");
+        assert!(result.logs.is_empty());
+        fixture.assert_state(40, 100)
+    }
+
+    #[test]
+    fn burn_at_bridge_rejects_spending_limit_with_sufficient_balance() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(200)?;
+        let setup = fixture.transact(vec![fixture.burn_call(U256::from(20))])?;
+        assert!(setup.status, "{setup:?}");
+        fixture.assert_state(180, 80)?;
+        let result = fixture.transact(vec![Multicall3::Call3 {
+            allowFailure: true,
+            ..fixture.burn_call(U256::from(81))
+        }])?;
+        assert!(result.status, "{result:?}");
+        let calls = Multicall3::aggregate3Call::abi_decode_returns(&result.output)?;
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].success);
+        assert_eq!(
+            calls[0].returnData.as_ref(),
+            IAccountKeychain::SpendingLimitExceeded::SELECTOR
+        );
+        assert!(result.logs.iter().all(|log| log.address != fixture.token));
+        assert!(
+            result
+                .logs
+                .iter()
+                .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+                .all(|log| log.data.token != fixture.token)
+        );
+        fixture.assert_state(180, 80)
+    }
+
+    #[test]
+    fn burn_at_bridge_zero_amount_emits_events_without_charging_limit() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![fixture.burn_call(U256::ZERO)])?;
+        assert!(result.status, "{result:?}");
+        let logs: Vec<_> = result
+            .logs
+            .iter()
+            .filter(|log| log.address == fixture.token)
+            .collect();
+        assert_eq!(logs.len(), 2);
+        let transfer = ITIP20::Transfer::decode_log(logs[0])?;
+        assert_eq!(transfer.data.from, fixture.holder);
+        assert_eq!(transfer.data.to, Address::ZERO);
+        assert_eq!(transfer.data.amount, U256::ZERO);
+        let burn = ITIP20::BurnAt::decode_log(logs[1])?;
+        assert_eq!(burn.data.burner, MULTICALL3_ADDRESS);
+        assert_eq!(burn.data.from, fixture.holder);
+        assert_eq!(burn.data.amount, U256::ZERO);
+        let spends: Vec<_> = result
+            .logs
+            .iter()
+            .filter(|log| log.address == ACCOUNT_KEYCHAIN_ADDRESS)
+            .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+            .filter(|log| log.data.token == fixture.token)
+            .collect();
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].data.amount, U256::ZERO);
+        fixture.assert_state(40, 100)
     }
 }

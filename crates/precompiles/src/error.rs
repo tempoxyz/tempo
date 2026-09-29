@@ -124,6 +124,10 @@ pub enum TempoPrecompileError {
     #[error(transparent)]
     Database(DatabaseError),
 
+    /// State mutation attempted during static execution.
+    #[error("State change during static call")]
+    StaticCallNotAllowed,
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -169,6 +173,7 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
             | TempoPrecompileError::OutOfGas
+            | TempoPrecompileError::StaticCallNotAllowed
             | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
         }
     }
@@ -201,7 +206,9 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Database(_) | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::Database(_) | Self::StaticCallNotAllowed | Self::Fatal(_) => {
+                [0, 0, 0, 0]
+            }
         }
         .into()
     }
@@ -212,6 +219,7 @@ impl TempoPrecompileError {
         match self {
             Self::OutOfGas
             | Self::Database(_)
+            | Self::StaticCallNotAllowed
             | Self::Fatal(_)
             | Self::Panic(_)
             | Self::StorageDeltaUnderflow(_) => true,
@@ -297,6 +305,9 @@ impl TempoPrecompileError {
             }
             Self::Database(error) => {
                 return Err(PrecompileError::Database(error));
+            }
+            Self::StaticCallNotAllowed => {
+                return Err(PrecompileHalt::Other("state change during static call".into()).into());
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -548,6 +559,14 @@ mod tests {
         let error = TempoPrecompileError::StablecoinDEX(StablecoinDEXError::order_does_not_exist());
         let result = error.into_precompile_result();
         assert!(matches!(result, Err(PrecompileError::Revert(_))));
+    }
+
+    #[test]
+    fn test_static_call_violation_becomes_exceptional_halt() {
+        assert!(matches!(
+            TempoPrecompileError::StaticCallNotAllowed.into_precompile_result(),
+            Err(PrecompileError::Halt(PrecompileHalt::Other(_)))
+        ));
     }
 
     #[test]

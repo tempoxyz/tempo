@@ -88,6 +88,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T13 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t13_time: Option<u64>,
+    /// Activation timestamp for T14 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t14_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -931,6 +934,7 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1789048800), TempoHardfork::T11);
             assert!(!cs.is_t12_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
         }
 
@@ -1042,6 +1046,7 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1788962400), TempoHardfork::T11);
             assert!(!cs.is_t12_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
         }
 
