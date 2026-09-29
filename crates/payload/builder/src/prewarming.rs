@@ -45,7 +45,7 @@ struct GeneralLaneFilter {
 
 enum GeneralSkip {
     No,
-    Blocked,
+    Skip,
     NonFitting,
 }
 
@@ -75,7 +75,7 @@ impl GeneralLaneFilter {
                 .get(key)
                 .is_some_and(|&nonce| transaction.nonce() >= nonce)
             {
-                return GeneralSkip::Blocked;
+                return GeneralSkip::Skip;
             }
         }
 
@@ -88,12 +88,13 @@ impl GeneralLaneFilter {
             return GeneralSkip::No;
         }
 
-        if let Some(key) = key {
-            self.blocked
-                .entry(key)
-                .and_modify(|nonce| *nonce = (*nonce).min(transaction.nonce()))
-                .or_insert(transaction.nonce());
-        }
+        let Some(key) = key else {
+            return GeneralSkip::Skip;
+        };
+        self.blocked
+            .entry(key)
+            .and_modify(|nonce| *nonce = (*nonce).min(transaction.nonce()))
+            .or_insert(transaction.nonce());
         GeneralSkip::NonFitting
     }
 }
@@ -176,8 +177,7 @@ impl BestTransactionsPrewarming {
                     };
                     match ctx.general_lane.lock().unwrap().skip(&tx) {
                         GeneralSkip::No => break tx,
-                        GeneralSkip::Blocked => {}
-                        GeneralSkip::NonFitting if tx.transaction.is_expiring_nonce() => {}
+                        GeneralSkip::Skip => {}
                         GeneralSkip::NonFitting => ctx.best_txs.mark_invalid(
                             &tx,
                             InvalidPoolTransactionError::Other(Box::new(
@@ -377,8 +377,7 @@ impl Iterator for BestTransactionsPrewarming {
             };
             match self.general_lane.lock().unwrap().skip(&tx.tx) {
                 GeneralSkip::No => return Some(tx),
-                GeneralSkip::Blocked => {}
-                GeneralSkip::NonFitting if tx.tx.transaction.is_expiring_nonce() => {}
+                GeneralSkip::Skip => {}
                 GeneralSkip::NonFitting => {
                     let _ = self.commands_tx.send(BestTransactionsCommand::InvalidWithoutDrain(
                         InvalidTransaction {
