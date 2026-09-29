@@ -12,10 +12,12 @@ pub mod types;
 mod tests;
 
 use jsonrpsee::{
+    Extensions,
     core::RpcResult,
     proc_macros::rpc,
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
+use reth_rpc_server_types::subscriptions::track_subscription;
 
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
 
@@ -72,7 +74,12 @@ pub trait TempoConsensusApi {
     async fn get_latest(&self) -> RpcResult<ConsensusState>;
 
     /// Subscribe to finalized block events.
-    #[subscription(name = "subscribe" => "event", unsubscribe = "unsubscribe", item = Event)]
+    #[subscription(
+        name = "subscribe" => "event",
+        unsubscribe = "unsubscribe",
+        item = Event,
+        with_extensions
+    )]
     async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
 }
 
@@ -102,13 +109,14 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     async fn subscribe_events(
         &self,
         pending: jsonrpsee::PendingSubscriptionSink,
+        ext: &Extensions,
     ) -> jsonrpsee::core::SubscriptionResult {
         let sink = pending.accept().await?;
         let mut rx = self.consensus_feed.subscribe().await.ok_or_else(|| {
             ErrorObject::owned(INTERNAL_ERROR_CODE, "Failed to subscribe", None::<()>)
         })?;
 
-        tokio::spawn(async move {
+        tokio::spawn(track_subscription(ext, "", async move {
             loop {
                 // Events only arrive on finalization, so a failed `send` alone would not detect
                 // a disconnect or unsubscribe while finalization is stalled. Race against
@@ -133,7 +141,7 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 }
             }
-        });
+        }));
 
         Ok(())
     }

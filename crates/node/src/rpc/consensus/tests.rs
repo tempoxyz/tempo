@@ -4,6 +4,7 @@ use jsonrpsee::{
     server::{Server, ServerConfig},
     ws_client::WsClientBuilder,
 };
+use reth_rpc_server_types::subscriptions::SubscriptionTracker;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
@@ -62,6 +63,40 @@ async fn subscription_task_exits_on_disconnect_without_events() {
 
     drop(subscription);
     wait_for_live_subscriptions(&events_tx, 0).await;
+}
+
+/// The subscription counts as active for exactly as long as its task holds the sink.
+#[tokio::test]
+async fn subscription_is_tracked_until_task_exits() {
+    let (events_tx, _) = broadcast::channel(1);
+    let mut module = TempoConsensusRpc::new(IdleFeed {
+        events_tx: events_tx.clone(),
+    })
+    .into_rpc();
+
+    // Stand in for the RPC metrics middleware, which inserts this context per connection.
+    let tracker = SubscriptionTracker::new("ws");
+    let connection = tracker.connection();
+    module
+        .extensions_mut()
+        .insert(connection.context("consensus_subscribe"));
+
+    let subscription = module
+        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+        .await
+        .unwrap();
+    assert_eq!(tracker.active(), 1);
+    assert_eq!(tracker.max_per_connection(), 1);
+
+    drop(subscription);
+    wait_for_live_subscriptions(&events_tx, 0).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while tracker.active() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("subscription still counted as active after its task exited");
 }
 
 #[tokio::test]
