@@ -354,10 +354,10 @@ pub struct Args {
     pub fcu_heartbeat_interval: PositiveDuration,
 
     /// Offer the `tempo/1` subprotocol, which gossips finalization
-    /// certificates between nodes. Off by default.
+    /// certificates between nodes. On by default; set to `false` to disable.
     #[arg(
         long = "consensus.devp2p.finalizations",
-        default_value_t = false,
+        default_value_t = true,
         default_missing_value = "true",
         num_args = 0..=1,
         require_equals = true

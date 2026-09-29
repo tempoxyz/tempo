@@ -285,7 +285,11 @@ async fn create_blocked_transfer(
     Ok(blocked)
 }
 
-async fn create_token<P>(provider: P, admin: Address, salt: B256) -> eyre::Result<Address>
+pub(super) async fn create_token<P>(
+    provider: P,
+    admin: Address,
+    salt: B256,
+) -> eyre::Result<Address>
 where
     P: Provider + Clone,
 {
@@ -345,7 +349,7 @@ fn transfer_blocked(
         .ok_or_eyre("TransferBlocked event missing")
 }
 
-fn wallet(index: u32) -> eyre::Result<PrivateKeySigner> {
+pub(super) fn wallet(index: u32) -> eyre::Result<PrivateKeySigner> {
     Ok(MnemonicBuilder::from_phrase(TEST_MNEMONIC)
         .index(index)?
         .build()?)
