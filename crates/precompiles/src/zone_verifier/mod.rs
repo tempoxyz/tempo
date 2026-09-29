@@ -7,24 +7,52 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolStruct,
 };
-use tempo_contracts::precompiles::{IZoneVerifier, NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
+use tempo_chainspec::hardfork::TempoHardfork;
+pub use tempo_contracts::precompiles::IZoneVerifier;
+use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
+use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::contract;
 
-use self::attestation::{AWS_NITRO_ROOT_DER, verify_attestation_with_root};
+use self::attestation::verify_attestation_with_root;
 use crate::{error::Result, zone_factory::portal_address};
 
-const CONFIG_V1: &[u8] = &[1];
+const MODE_NITRO_V1: &[u8] = &[1];
+const MODE_NO_PROOF: &[u8] = &[2];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// Production measurements remain deliberately unset until the reproducible T13 EIF is finalized.
-const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
+/// PCR0/1/2 policy changes, ordered from oldest to newest hardfork. Each entry takes effect at
+/// its hardfork and remains in effect until a newer entry replaces them.
+const APPROVED_PCRS: &[(TempoHardfork, [[u8; 48]; 3])] = &[];
 
+/// Return the measurements accepted by the native verifier at this hardfork.
+pub fn approved_pcrs(hardfork: TempoHardfork) -> Option<[[u8; 48]; 3]> {
+    APPROVED_PCRS
+        .iter()
+        .filter(|(fork, _)| hardfork >= *fork)
+        .max_by_key(|(fork, _)| fork.variant_index())
+        .map(|(_, pcrs)| *pcrs)
+}
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS)
+        let pcrs = approved_pcrs(self.storage.spec());
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, pcrs)
+    }
+
+    /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
+    ///
+    /// This Rust-only observer entry point uses the AWS root and requires a `StorageCtx`
+    /// supplying the trusted parent-chain ID, current timestamp and gas budget. It does not
+    /// activate T13 or change the measurements used by the on-chain entry point.
+    pub fn verify_with_pcrs(
+        &self,
+        portal: Address,
+        call: IZoneVerifier::verifyCall,
+        approved_pcrs: [[u8; 48]; 3],
+    ) -> Result<bool> {
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, Some(approved_pcrs))
     }
 
     fn verify_with_policy(
@@ -35,11 +63,14 @@ impl ZoneVerifier {
         approved_pcrs: Option<[[u8; 48]; 3]>,
     ) -> Result<bool> {
         // The zone ID binds the portal domain only when the caller is its canonical portal.
-        if portal != portal_address(call.zoneId)
-            || call.verifierConfig.as_ref() != CONFIG_V1
-            || call.proof.is_empty()
-        {
+        if portal != portal_address(call.zoneId) {
             return Ok(false);
+        }
+
+        match call.verifierConfig.as_ref() {
+            MODE_NITRO_V1 if !call.proof.is_empty() => {}
+            // Allow temporary rollout fallback. A later hardfork will remove `NoProof` mode.
+            mode => return Ok(matches!(mode, MODE_NO_PROOF) && call.proof.is_empty()),
         }
 
         let block_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -103,7 +134,6 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{primitives::Bytes, sol_types::SolCall};
-    use tempo_chainspec::hardfork::TempoHardfork;
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -130,7 +160,7 @@ mod tests {
                 nextProcessedTokenCount: 8,
             },
             withdrawalQueueHash: B256::with_last_byte(9),
-            verifierConfig: Bytes::from_static(CONFIG_V1),
+            verifierConfig: Bytes::from_static(MODE_NITRO_V1),
             proof: Bytes::new(),
         }
     }
@@ -261,6 +291,26 @@ mod tests {
     }
 
     #[test]
+    fn no_proof_requires_canonical_portal_and_empty_proof() {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = ZoneVerifier::new();
+            let mut candidate = call();
+            candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
+            let portal = portal_address(candidate.zoneId);
+            assert!(verifier.verify(portal, candidate.clone()).unwrap());
+            assert!(!verifier.verify(Address::ZERO, candidate.clone()).unwrap());
+            candidate.proof = Bytes::from_static(&[1]);
+            assert!(!verifier.verify(portal, candidate.clone()).unwrap());
+            candidate.proof = Bytes::new();
+            for config in [&[][..], &[0], &[1, 2], &[3]] {
+                candidate.verifierConfig = Bytes::copy_from_slice(config);
+                assert!(!verifier.verify(portal, candidate.clone()).unwrap());
+            }
+        });
+    }
+
+    #[test]
     fn future_skew_boundary_is_inclusive() {
         let call = call();
         let portal = portal_address(call.zoneId);
@@ -285,6 +335,41 @@ mod tests {
                     expected
                 );
             }
+        });
+    }
+
+    #[test]
+    fn observer_policy_works_before_t13_without_changing_consensus() {
+        let mut call = call();
+        let portal = portal_address(call.zoneId);
+        let (proof, root, pcrs) = attestation::tests::fixture(batch_commitment(1, &call).as_ref());
+        call.proof = proof.into();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
+        StorageCtx::enter(&mut storage, || {
+            let verifier = ZoneVerifier::new();
+            assert!(
+                verifier
+                    .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
+                    .unwrap()
+            );
+            assert!(
+                !verifier
+                    .verify_with_policy(
+                        portal,
+                        call.clone(),
+                        &root,
+                        approved_pcrs(TempoHardfork::T12)
+                    )
+                    .unwrap()
+            );
+            // The public observer API must still reject a synthetic, non-AWS trust root.
+            assert!(
+                !verifier
+                    .verify_with_pcrs(portal, call.clone(), pcrs)
+                    .unwrap()
+            );
+            assert!(!verifier.verify(portal, call).unwrap());
         });
     }
 }

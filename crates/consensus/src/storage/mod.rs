@@ -23,7 +23,7 @@ use commonware_storage::{
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use reth_provider::{BlockIdReader, BlockReader};
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use crate::{
     config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -52,27 +52,6 @@ pub(crate) const PRUNABLE_ITEMS_PER_SECTION: std::num::NonZeroU64 = NZU64!(4_096
 pub(crate) const MAX_REPAIR: std::num::NonZeroUsize = NZUsize!(20);
 pub(crate) const BUFFER_POOL_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096); // 4KB
 pub(crate) const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192); // 32MB (8k page slots)
-
-/// Default number of finalized blocks (relative to reth's finalized
-/// watermark) to keep cached in the prunable archive.
-///
-/// Beyond this depth, [`Hybrid`] falls back to looking up blocks from the
-/// execution layer.
-///
-/// The prunable archive evicts in `PRUNABLE_ITEMS_PER_SECTION`-sized
-/// batches (see [`hybrid`]'s "Section-rounding" docs). When reth is
-/// caught up to the marshal's tip the cache holds between `RETENTION`
-/// and `RETENTION + PRUNABLE_ITEMS_PER_SECTION − 1` items; if reth is
-/// lagging the marshal, the cache can hold more (it never drops blocks
-/// reth doesn't yet have). The assertion below keeps the section
-/// overshoot small relative to `RETENTION` (current ratio: 4×).
-pub(crate) const DEFAULT_FINALIZED_BLOCKS_RETENTION: u64 = 16_384;
-
-const _: () = assert!(
-    DEFAULT_FINALIZED_BLOCKS_RETENTION >= 2 * PRUNABLE_ITEMS_PER_SECTION.get(),
-    "DEFAULT_FINALIZED_BLOCKS_RETENTION must be at least 2 * PRUNABLE_ITEMS_PER_SECTION; \
-     otherwise the section-rounding overshoot dominates the working set",
-);
 
 /// Open the finalization archive and ensure its tip certificate's epoch matches its stored height.
 pub(crate) async fn init_finalizations_archive<TContext>(
@@ -161,6 +140,15 @@ where
         retention_blocks > 0,
         "finalized blocks retention must be greater than zero",
     );
+    if retention_blocks < 2 * PRUNABLE_ITEMS_PER_SECTION.get() {
+        warn!(
+            retention_blocks,
+            items_per_section = PRUNABLE_ITEMS_PER_SECTION.get(),
+            "finalized blocks retention is below two prunable archive sections; the cache \
+             evicts whole sections and can hold up to `items_per_section - 1` more blocks \
+             than requested",
+        );
+    }
 
     let prunable =
         init_prunable_finalized_blocks_archive(context, partition_prefix, page_cache.clone())

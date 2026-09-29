@@ -489,7 +489,7 @@ mod tests {
     use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
     use reth_node_builder::ConfigureEvm as _;
     use reth_provider::{
-        StateProviderBox,
+        EvmStateProviderBox, StateProvider as _,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
     use tempo_node::evm::{TempoEvmConfig, evm::TempoEvm};
@@ -518,16 +518,16 @@ mod tests {
             Ok(self.headers[&self.height].clone())
         }
 
-        fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox> {
+        fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<EvmStateProviderBox> {
             assert_eq!(block_hash, self.hash);
-            Ok(Box::new(self.provider.clone()))
+            Ok(Box::new(self.provider.clone().into_evm_state_provider()))
         }
 
         fn evm_for_block(
             &self,
-            db: State<StateProviderDatabase<StateProviderBox>>,
+            db: State<StateProviderDatabase<EvmStateProviderBox>>,
             header: &TempoHeader,
-        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
             TempoEvmConfig::moderato()
                 .evm_for_block(db, header)
                 .map_err(eyre::Report::new)
@@ -642,8 +642,7 @@ mod tests {
             let signature = self
                 .private_key
                 .sign(VALIDATOR_NS_ADD, message.as_slice())
-                .encode()
-                .to_vec();
+                .encode();
 
             IValidatorConfigV2::addValidatorCall {
                 validatorAddress: self.validator_address,
@@ -738,7 +737,7 @@ mod tests {
             dkg_outcome([peer(primary).public_key], [peer(primary).public_key]).unwrap();
         outcome.epoch = (boundary + 1) / 10;
         let mut boundary_header = execution_header(boundary);
-        boundary_header.inner.extra_data = outcome.encode().to_vec().into();
+        boundary_header.inner.extra_data = outcome.encode().into();
         let tip_header = if boundary == height {
             boundary_header.clone()
         } else {
