@@ -1748,7 +1748,15 @@ mod tests {
         let make_evm = |spec| {
             let mut env = evm_env_with_spec(spec);
             env.block_env.basefee = 0;
-            let mut evm = TempoEvm::new(CacheDB::new(EmptyDB::default()), env);
+            let mut db = CacheDB::new(EmptyDB::default());
+            db.insert_account_info(
+                sender,
+                AccountInfo {
+                    nonce: 1,
+                    ..Default::default()
+                },
+            );
+            let mut evm = TempoEvm::new(db, env);
             StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                 TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
@@ -1763,6 +1771,7 @@ mod tests {
         let tx = |gas_limit| TempoTxEnv {
             inner: TxEnv {
                 caller: sender,
+                nonce: 1,
                 gas_price: 0,
                 gas_limit,
                 kind: TxKind::Call(PATH_USD_ADDRESS),
