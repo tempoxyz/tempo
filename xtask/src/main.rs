@@ -13,7 +13,7 @@ use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
-use tempo_xtask::GenerateStateBloat;
+use tempo_state_bloat::GenerateStateBloat;
 
 mod bootstrap_shadowfork;
 mod check_abi;
