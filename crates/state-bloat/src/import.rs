@@ -6,13 +6,14 @@
 use std::{
     collections::HashSet,
     fs::File,
-    io::{BufReader, Read},
+    io::BufReader,
     path::PathBuf,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
+use crate::format::{read_entry, read_header};
 use alloy_primitives::{
     B256, U256, keccak256,
     map::{AddressMap, Entry},
@@ -40,12 +41,6 @@ use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
-
-/// Magic bytes for the state bloat binary format (8 bytes)
-const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
-
-/// Expected format version
-const VERSION: u16 = 1;
 
 /// ETL collector file size (200 MiB per temp file before spilling a new one).
 const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
@@ -162,38 +157,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             });
 
         // Process blocks from binary file
-        loop {
-            // Read next block header; EOF means no more blocks.
-            let mut header_buf = [0u8; 40];
-            match reader.read_exact(&mut header_buf) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e).wrap_err("failed to read block header"),
-            }
-
-            // Validate magic
-            ensure!(
-                &header_buf[..8] == MAGIC,
-                "invalid magic bytes in block header"
-            );
-
-            // Validate version
-            let version = u16::from_be_bytes([header_buf[8], header_buf[9]]);
-            ensure!(
-                version == VERSION,
-                "unsupported binary format version {version}, expected {VERSION}"
-            );
-
-            // Skip flags (2 bytes at offset 10)
-
-            // Read address (20 bytes at offset 12)
-            let mut address_bytes = [0u8; 20];
-            address_bytes.copy_from_slice(&header_buf[12..32]);
-            let address = alloy_primitives::Address::from(address_bytes);
-
-            // Read pair count (8 bytes at offset 32)
-            let pair_count = u64::from_be_bytes(header_buf[32..40].try_into().unwrap());
-
+        while let Some((address, pair_count)) = read_header(&mut reader)? {
             info!(
                 target: "tempo::cli",
                 %address,
@@ -225,17 +189,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             }
 
             // Read entries into the hashed ETL collector.
-            let mut entry_buf = [0u8; 64];
             let start = Instant::now();
             let mut last_log = start;
 
             for i in 0..pair_count {
-                reader
-                    .read_exact(&mut entry_buf)
-                    .wrap_err("failed to read storage entry")?;
-
-                let slot = B256::from_slice(&entry_buf[..32]);
-                let value = U256::from_be_bytes::<32>(entry_buf[32..64].try_into().unwrap());
+                let (slot, value) = read_entry(&mut reader)?;
 
                 // Skip zero values (they represent deletion)
                 if value.is_zero() {
