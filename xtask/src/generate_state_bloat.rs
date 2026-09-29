@@ -37,7 +37,7 @@ const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
 
 /// Generate state bloat file
 #[derive(Debug, clap::Args)]
-pub(crate) struct GenerateStateBloat {
+pub struct GenerateStateBloat {
     /// Mnemonic to use for account generation
     #[arg(
         short,
@@ -74,7 +74,8 @@ pub(crate) struct GenerateStateBloat {
 }
 
 impl GenerateStateBloat {
-    pub(crate) async fn run(self) -> eyre::Result<()> {
+    /// Generate the TIP20 binary storage dump described by these CLI arguments.
+    pub async fn run(self) -> eyre::Result<()> {
         let Self {
             mnemonic,
             size,
