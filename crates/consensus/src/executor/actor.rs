@@ -2407,26 +2407,23 @@ async fn execute_build(
 }
 
 /// Delivers a finalized block through a bare new-payload request.
+///
+/// The proposal fields describe the block's original context, even if it was
+/// re-proposed in a later round.
 #[instrument(
     skip_all,
     parent = &request.cause,
     fields(
         block.digest = %request.block.digest(),
         block.height = %request.block.height(),
-        proposal.epoch = tracing::field::Empty,
-        proposal.view = tracing::field::Empty,
+        proposal.epoch = request.block.context().round.epoch().get(),
+        proposal.view = request.block.context().round.view().get(),
     ),
 )]
 async fn execute_finalization(
     execution_node: impl ExecutionLayer,
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskOutcome {
-    // The block may have been re-proposed in a later round. These fields describe
-    // its original header, not the view currently processing its finalization.
-    if let Some(context) = request.block.header().consensus_context {
-        Span::current().record("proposal.epoch", context.epoch);
-        Span::current().record("proposal.view", context.view);
-    }
     let status = deliver_block(&execution_node, request.block.clone()).await;
     ExecutionTaskOutcome::FinalizedDelivered { request, status }
 }
