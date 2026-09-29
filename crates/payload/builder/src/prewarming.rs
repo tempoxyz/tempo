@@ -1,10 +1,11 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::B256;
+use alloy_consensus::Transaction;
+use alloy_primitives::{Address, B256, U256};
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -27,6 +28,71 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    general_lane: Arc<Mutex<GeneralLaneFilter>>,
+}
+
+/// Tracks candidates excluded by the remaining general gas budget, including
+/// payments whose ordinary nonce predecessor was excluded.
+struct GeneralLaneFilter {
+    remaining_gas: u64,
+    tx_gas_limit_cap: u64,
+    t5: bool,
+    blocked: std::collections::HashMap<(Address, Option<U256>), u64>,
+}
+
+enum GeneralSkip {
+    No,
+    Blocked,
+    NonFitting,
+}
+
+impl GeneralLaneFilter {
+    fn new(remaining_gas: u64, tx_gas_limit_cap: u64, t5: bool) -> Self {
+        Self {
+            remaining_gas,
+            tx_gas_limit_cap,
+            t5,
+            blocked: Default::default(),
+        }
+    }
+
+    fn skip(&mut self, tx: &BestTransaction) -> GeneralSkip {
+        let transaction = &tx.transaction;
+        let key = (!transaction.is_expiring_nonce()).then(|| {
+            (
+                transaction.sender(),
+                transaction
+                    .is_aa_2d()
+                    .then(|| *transaction.nonce_key_ref().expect("2D nonce key")),
+            )
+        });
+        if let Some(key) = &key {
+            if self
+                .blocked
+                .get(key)
+                .is_some_and(|&nonce| transaction.nonce() >= nonce)
+            {
+                return GeneralSkip::Blocked;
+            }
+        }
+
+        let is_payment = if self.t5 {
+            transaction.is_payment()
+        } else {
+            transaction.inner().is_payment_v1()
+        };
+        if is_payment || transaction.gas_limit().min(self.tx_gas_limit_cap) <= self.remaining_gas {
+            return GeneralSkip::No;
+        }
+
+        if let Some(key) = key {
+            self.blocked
+                .entry(key)
+                .and_modify(|nonce| *nonce = (*nonce).min(transaction.nonce()))
+                .or_insert(transaction.nonce());
+        }
+        GeneralSkip::NonFitting
+    }
 }
 
 impl BestTransactionsPrewarming {
@@ -34,6 +100,9 @@ impl BestTransactionsPrewarming {
     pub(crate) fn new<Txs, Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         best_txs: Txs,
+        general_gas_limit: u64,
+        tx_gas_limit_cap: u64,
+        t5: bool,
     ) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
@@ -41,10 +110,16 @@ impl BestTransactionsPrewarming {
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
+        let general_lane = Arc::new(Mutex::new(GeneralLaneFilter::new(
+            general_gas_limit,
+            tx_gas_limit_cap,
+            t5,
+        )));
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            general_lane: general_lane.clone(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -60,11 +135,16 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        general_lane,
                     },
                 );
             });
 
         this
+    }
+
+    pub(crate) fn set_remaining_general_gas(&mut self, remaining: u64) {
+        self.general_lane.lock().unwrap().remaining_gas = remaining;
     }
 
     /// Runs the coordinator side of prewarming for a payload build.
@@ -86,9 +166,22 @@ impl BestTransactionsPrewarming {
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
-                let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
-                    return;
+                let tx = loop {
+                    let Some(tx) = ctx.best_txs.next() else {
+                        let _ = ctx.transactions_tx.send(None);
+                        return;
+                    };
+                    match ctx.general_lane.lock().unwrap().skip(&tx) {
+                        GeneralSkip::No => break tx,
+                        GeneralSkip::Blocked => {}
+                        GeneralSkip::NonFitting if tx.transaction.is_expiring_nonce() => {}
+                        GeneralSkip::NonFitting => ctx.best_txs.mark_invalid(
+                            &tx,
+                            InvalidPoolTransactionError::Other(Box::new(
+                                tempo_transaction_pool::transaction::TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                            )),
+                        ),
+                    }
                 };
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
@@ -145,6 +238,9 @@ impl BestTransactionsPrewarming {
                                 let _ = ctx.transactions_tx.send(Some(tx));
                             }
                         }
+                    }
+                    BestTransactionsCommand::InvalidWithoutDrain(invalid) => {
+                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                     }
                     BestTransactionsCommand::NoUpdates => {
                         ctx.best_txs.no_updates();
@@ -262,21 +358,36 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Empty replies describe earlier source polls. Drain them before deciding
-        // whether a ready transaction exists, preserving the order of actual txs.
-        if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
-            return Some(tx);
+        // A candidate may have been queued before the builder updated the gas
+        // budget. Check it here, and leave the channel intact when dropping it.
+        loop {
+            let tx = if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
+                tx
+            } else {
+                self.commands_tx
+                    .send(BestTransactionsCommand::Advance)
+                    .ok()?;
+                self.transactions_rx
+                    .recv()
+                    .ok()?
+                    .or_else(|| self.transactions_rx.try_iter().flatten().next())?
+            };
+            match self.general_lane.lock().unwrap().skip(&tx.tx) {
+                GeneralSkip::No => return Some(tx),
+                GeneralSkip::Blocked => {}
+                GeneralSkip::NonFitting if tx.tx.transaction.is_expiring_nonce() => {}
+                GeneralSkip::NonFitting => {
+                    let _ = self.commands_tx.send(BestTransactionsCommand::InvalidWithoutDrain(
+                        InvalidTransaction {
+                            tx: tx.tx,
+                            kind: InvalidPoolTransactionError::Other(Box::new(
+                                tempo_transaction_pool::transaction::TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                            )),
+                        },
+                    ));
+                }
+            }
         }
-        self.commands_tx
-            .send(BestTransactionsCommand::Advance)
-            .ok()?;
-        // An eager advance can also reply empty while this receive is waiting.
-        // Check for buffered transactions before reporting empty to the builder,
-        // but do not wait for more replies: it must still check its build budget.
-        self.transactions_rx
-            .recv()
-            .ok()?
-            .or_else(|| self.transactions_rx.try_iter().flatten().next())
     }
 }
 
@@ -313,6 +424,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    general_lane: Arc<Mutex<GeneralLaneFilter>>,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -430,6 +542,7 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    InvalidWithoutDrain(InvalidTransaction),
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -597,7 +710,7 @@ mod tests {
         })
     }
 
-    fn test_payment_tx(sender: Address, gas_limit: u64) -> BestTransaction {
+    fn test_aa_tx(sender: Address, nonce: u64, gas_limit: u64, payment: bool) -> BestTransaction {
         let mut token = [0u8; 20];
         token[..2].copy_from_slice(&[0x20, 0xc0]);
         let token = Address::from(token);
@@ -609,10 +722,11 @@ mod tests {
             chain_id: 42431,
             fee_token: Some(token),
             gas_limit,
+            nonce,
             calls: vec![Call {
-                to: TxKind::Call(token),
+                to: TxKind::Call(if payment { token } else { Address::random() }),
                 value: U256::ZERO,
-                input: input.into(),
+                input: if payment { input.into() } else { Bytes::new() },
             }],
             nonce_key: U256::ONE,
             ..Default::default()
@@ -620,13 +734,17 @@ mod tests {
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
         let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
         Arc::new(ValidPoolTransaction {
-            transaction_id: TransactionId::new(0u64.into(), 0),
+            transaction_id: TransactionId::new(0u64.into(), nonce),
             transaction: pooled,
             propagate: true,
             timestamp: Instant::now(),
             origin: TransactionOrigin::External,
             authority_ids: None,
         })
+    }
+
+    fn test_payment_tx(sender: Address, gas_limit: u64) -> BestTransaction {
+        test_aa_tx(sender, 0, gas_limit, true)
     }
 
     struct TestPrewarming {
@@ -662,14 +780,23 @@ mod tests {
         prewarming_with_executor(executor, txs, log)
     }
 
+    fn unrestricted_general_lane() -> Arc<Mutex<GeneralLaneFilter>> {
+        Arc::new(Mutex::new(GeneralLaneFilter::new(u64::MAX, u64::MAX, true)))
+    }
+
     fn prewarming_with_executor(
         executor: TaskExecutor,
         txs: Vec<BestTransaction>,
         log: Arc<Mutex<TestLog>>,
     ) -> TestPrewarming {
         let context = prewarming_context(executor.clone(), false);
-        let prewarming =
-            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
+        let prewarming = BestTransactionsPrewarming::new(
+            context,
+            TestBestTransactions::new(txs, log),
+            u64::MAX,
+            u64::MAX,
+            true,
+        );
         TestPrewarming {
             prewarming: Some(prewarming),
             executor,
@@ -807,6 +934,7 @@ mod tests {
                 transactions_rx,
                 commands_tx,
                 stop: Arc::default(),
+                general_lane: unrestricted_general_lane(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
@@ -840,6 +968,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            general_lane: unrestricted_general_lane(),
         };
 
         let next = prewarming.next();
@@ -866,6 +995,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            general_lane: unrestricted_general_lane(),
         };
 
         assert!(prewarming.next().is_none());
@@ -893,6 +1023,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            general_lane: unrestricted_general_lane(),
         };
 
         assert_eq!(
@@ -929,6 +1060,62 @@ mod tests {
         let next = prewarming.next().expect("non-invalidated transaction");
         assert_eq!(next.tx.hash(), tx3.hash());
         assert_ne!(next.tx.hash(), tx2.hash());
+        wait_until(|| log.lock().unwrap().invalid == 1);
+    }
+
+    #[test]
+    fn general_gas_feedback_skips_buffered_descendants_without_rebuilding() {
+        let sender = Address::random();
+        let general = test_aa_tx(sender, 0, 500_000, false);
+        let dependent_payment = test_aa_tx(sender, 1, 21_000, true);
+        let independent_payment = test_payment_tx(Address::random(), 21_000);
+        let smaller_general = test_tx_with_gas_limit(Address::random(), 0, 90_000);
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming(
+            vec![
+                general,
+                dependent_payment,
+                independent_payment.clone(),
+                smaller_general.clone(),
+            ],
+            log.clone(),
+        );
+
+        wait_until(|| log.lock().unwrap().yielded == 4);
+        prewarming.set_remaining_general_gas(100_000);
+
+        assert_eq!(
+            prewarming.next().unwrap().tx.hash(),
+            independent_payment.hash()
+        );
+        assert_eq!(prewarming.next().unwrap().tx.hash(), smaller_general.hash());
+        wait_until(|| log.lock().unwrap().invalid == 1);
+    }
+
+    #[test]
+    fn general_gas_feedback_skips_before_prewarming() {
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let payment = test_payment_tx(Address::random(), 21_000);
+        let executor = TaskExecutor::test();
+        let prewarming = BestTransactionsPrewarming::new(
+            prewarming_context(executor.clone(), false),
+            TestBestTransactions::new(
+                vec![
+                    test_tx_with_gas_limit(Address::random(), 0, 500_000),
+                    payment.clone(),
+                ],
+                log.clone(),
+            ),
+            100_000,
+            u64::MAX,
+            true,
+        );
+        let mut prewarming = TestPrewarming {
+            prewarming: Some(prewarming),
+            executor,
+        };
+
+        assert_eq!(prewarming.next().unwrap().tx.hash(), payment.hash());
         wait_until(|| log.lock().unwrap().invalid == 1);
     }
 

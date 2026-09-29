@@ -130,6 +130,14 @@ impl PayloadTransactions {
             }
         }
     }
+
+    fn set_remaining_general_gas(&mut self, remaining: u64) {
+        match self {
+            Self::Prewarming(txs) => txs.inner_mut().set_remaining_general_gas(remaining),
+            Self::Parallel(txs) => txs.set_remaining_general_gas(remaining),
+            Self::Sequential(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -486,15 +494,25 @@ where
             executor.evm().evm_env(),
             self.config.enable_parallel,
         );
+        let tx_gas_limit_cap = executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX);
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
                     raw_best_txs,
+                    general_gas_limit,
+                    tx_gas_limit_cap,
+                    hardfork.is_t5(),
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    BestTransactionsPrewarming::new(
+                        prewarm_ctx,
+                        raw_best_txs,
+                        general_gas_limit,
+                        tx_gas_limit_cap,
+                        hardfork.is_t5(),
+                    ),
                 ))
             }
         } else {
@@ -641,6 +659,7 @@ where
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
                     non_payment_gas_used += result.block_gas_used();
+                    best_txs.set_remaining_general_gas(general_gas_limit - non_payment_gas_used);
                 }
 
                 // Score payload value by the validator-credited fee amount that the
