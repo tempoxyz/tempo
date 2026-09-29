@@ -99,6 +99,21 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    /// Returns best transactions with Tempo-specific lane controls.
+    pub fn best_transactions_with_attributes(
+        &self,
+        attributes: BestTransactionsAttributes,
+    ) -> MergeBestTransactions {
+        let left = self
+            .protocol_pool
+            .best_transactions_with_attributes(attributes);
+        let right = self
+            .aa_2d_pool
+            .read()
+            .best_transactions_with_base_fee(attributes.basefee);
+        MergeBestTransactions::new(left, right, attributes.basefee)
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     ///
     /// Returns mined AA transactions.
@@ -906,14 +921,7 @@ where
         &self,
         attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let left = self
-            .protocol_pool
-            .best_transactions_with_attributes(attributes);
-        let right = self
-            .aa_2d_pool
-            .read()
-            .best_transactions_with_base_fee(attributes.basefee);
-        Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
+        Box::new(Self::best_transactions_with_attributes(self, attributes))
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
