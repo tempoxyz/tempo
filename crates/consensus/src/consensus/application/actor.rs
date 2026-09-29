@@ -905,10 +905,7 @@ async fn verify_header(
         .containing(block.height())
         .expect("epoch strategy is for all heights");
 
-    let ctx = block
-        .header()
-        .consensus_context
-        .ok_or_eyre("missing consensus context")?;
+    let ctx = block.header().consensus_context;
 
     let expected_ctx = TempoConsensusContext {
         epoch: round.epoch().get(),

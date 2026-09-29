@@ -312,7 +312,7 @@ mod tests {
                         base_fee_per_gas,
                         ..Default::default()
                     },
-                    consensus_context: None,
+                    consensus_context: Default::default(),
                 },
             )
     }

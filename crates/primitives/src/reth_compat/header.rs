@@ -20,7 +20,7 @@ impl reth_primitives_traits::InMemorySize for TempoHeader {
             + general_gas_limit.size()
             + timestamp_millis_part.size()
             + shared_gas_limit.size()
-            + consensus_context.as_ref().map_or(0, |f| f.size())
+            + consensus_context.size()
     }
 }
 
@@ -65,6 +65,7 @@ impl reth_primitives_traits::header::HeaderMut for TempoHeader {
 mod codec {
     use crate::{TempoConsensusContext, TempoHeader};
     use alloy_consensus::Header;
+    use reth_codecs::Compact;
 
     /// Trailing fields grouped into a dedicated struct to maximize the use of bits
     /// in a type's bitfields. We add to this prior to occupying another slot in
@@ -99,11 +100,10 @@ mod codec {
         where
             B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
         {
-            let trailing = self
-                .consensus_context
-                .map(|ctx| TempoHeaderTrailingCompact {
-                    consensus_context: Some(ctx),
-                });
+            // Retain the existing presence bits for context-bearing database records.
+            let trailing = Some(TempoHeaderTrailingCompact {
+                consensus_context: Some(self.consensus_context),
+            });
 
             let header = TempoHeaderCompact {
                 general_gas_limit: self.general_gas_limit,
@@ -118,14 +118,9 @@ mod codec {
 
         fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
             let (header_compat, buf) = TempoHeaderCompact::from_compact(buf, len);
-            let header = Self {
-                general_gas_limit: header_compat.general_gas_limit,
-                shared_gas_limit: header_compat.shared_gas_limit,
-                timestamp_millis_part: header_compat.timestamp_millis_part,
-                consensus_context: header_compat.trailing.and_then(|f| f.consensus_context),
-                inner: header_compat.inner,
-            };
-
+            let header = header_compat
+                .try_into()
+                .expect("missing consensus context in compact header");
             (header, buf)
         }
     }
@@ -140,17 +135,40 @@ mod codec {
 
     impl reth_db_api::table::Decompress for TempoHeader {
         fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
-            let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
-            Ok(obj)
+            let (header, _) = TempoHeaderCompact::from_compact(value, value.len());
+            header.try_into()
+        }
+    }
+
+    impl TryFrom<TempoHeaderCompact> for TempoHeader {
+        type Error = reth_codecs::DecompressError;
+
+        fn try_from(header: TempoHeaderCompact) -> Result<Self, Self::Error> {
+            let consensus_context = header
+                .trailing
+                .and_then(|fields| fields.consensus_context)
+                .ok_or_else(|| {
+                    reth_codecs::DecompressError::new(alloy_rlp::Error::Custom(
+                        "missing consensus context in compact header",
+                    ))
+                })?;
+            Ok(Self {
+                general_gas_limit: header.general_gas_limit,
+                shared_gas_limit: header.shared_gas_limit,
+                timestamp_millis_part: header.timestamp_millis_part,
+                consensus_context,
+                inner: header.inner,
+            })
         }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use alloy_consensus::Sealable;
         use alloy_primitives::{Address, B256, Bloom, U256, address, b256, bytes, hex};
         use alloy_rlp::Decodable;
-        use reth_codecs::Compact;
+        use reth_codecs::{Compact, Decompress};
 
         /// Ensures backwards compatibility of the compact bitflag.
         ///
@@ -183,7 +201,7 @@ mod codec {
                 general_gas_limit: 30_000_000,
                 shared_gas_limit: 10_000_000,
                 timestamp_millis_part: 500,
-                consensus_context: None,
+                consensus_context: Default::default(),
                 inner: Header {
                     parent_hash: b256!(
                         "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -235,23 +253,19 @@ mod codec {
 
             let mut buf = vec![];
             let len = header.to_compact(&mut buf);
-            assert_eq!(
-                buf, expected,
-                "compact encoding changed — this breaks backwards compatibility"
-            );
-            assert_eq!(len, expected.len());
-
-            let (decoded, _) = TempoHeader::from_compact(&expected, expected.len());
+            assert_ne!(buf, expected);
+            assert!(TempoHeader::decompress(&expected).is_err());
+            let (decoded, _) = TempoHeader::from_compact(&buf, len);
             assert_eq!(decoded, header);
         }
 
-        /// Presto block 1 — a real mainnet header without consensus context (T4 not active).
+        /// Presto block 1's fields, with the newly required zero consensus context.
         fn presto_block_1() -> TempoHeader {
             TempoHeader {
                 general_gas_limit: 0xd693a40,
                 shared_gas_limit: 0x2faf080,
                 timestamp_millis_part: 0x2c5,
-                consensus_context: None,
+                consensus_context: Default::default(),
                 inner: Header {
                     parent_hash: b256!(
                         "49d7ec7085e77bf5a403d0fcb4cfc42a4084a89dfff60477579c5e09c9e03c54"
@@ -289,15 +303,13 @@ mod codec {
         }
 
         #[test]
-        fn presto_block_1_hash_backwards_compat() {
-            use alloy_consensus::Sealable;
-
+        fn adding_context_changes_pre_activation_header_hash() {
             let header = presto_block_1();
             let hash = header.hash_slow();
 
-            // Presto block 1 on-chain hash. If this changes, RLP encoding has broken.
+            // Adding context to a historical header changes its on-chain hash.
             let expected = "0x76e86f9739fbe17669b01b24e976ac214742c4b1bbc6ae0c083a87e43a5e9b0f";
-            assert_eq!(format!("{hash:#x}"), expected);
+            assert_ne!(format!("{hash:#x}"), expected);
         }
 
         #[test]
@@ -308,7 +320,7 @@ mod codec {
             assert_eq!(header, decoded);
         }
 
-        #[derive(reth_codecs::Compact)]
+        #[derive(reth_codecs::Compact, alloy_rlp::RlpEncodable)]
         struct TestPreT4TempoHeader {
             pub general_gas_limit: u64,
             pub shared_gas_limit: u64,
@@ -317,7 +329,7 @@ mod codec {
         }
 
         #[test]
-        fn presto_block_1_compact_roundtrip() {
+        fn pre_activation_headers_without_context_are_rejected() {
             let header = presto_block_1();
             let pre_t4_header = TestPreT4TempoHeader {
                 general_gas_limit: header.general_gas_limit,
@@ -332,11 +344,45 @@ mod codec {
             let header_len = header.to_compact(&mut header_buf);
             let pre_t4_len = pre_t4_header.to_compact(&mut pre_t4_header_buf);
 
-            assert_eq!(header_len, pre_t4_len);
-            assert_eq!(header_buf, pre_t4_header_buf);
+            assert_ne!(header_len, pre_t4_len);
+            assert_ne!(header_buf, pre_t4_header_buf);
+            assert!(TempoHeader::decompress(&pre_t4_header_buf).is_err());
+            let encoded = alloy_rlp::encode(pre_t4_header);
+            assert!(TempoHeader::decode(&mut encoded.as_slice()).is_err());
+        }
 
-            let (legacy_header, _) = TempoHeader::from_compact(&pre_t4_header_buf, pre_t4_len);
-            assert_eq!(legacy_header, header);
+        #[test]
+        fn context_bearing_compact_encoding_is_unchanged() {
+            let header = TempoHeader {
+                consensus_context: TempoConsensusContext {
+                    epoch: 1,
+                    view: 5,
+                    parent_view: 4,
+                    proposer: crate::ed25519::PublicKey::from_seed(42),
+                },
+                ..presto_block_1()
+            };
+            let legacy = TempoHeaderCompact {
+                general_gas_limit: header.general_gas_limit,
+                shared_gas_limit: header.shared_gas_limit,
+                timestamp_millis_part: header.timestamp_millis_part,
+                trailing: Some(TempoHeaderTrailingCompact {
+                    consensus_context: Some(header.consensus_context),
+                }),
+                inner: header.inner.clone(),
+            };
+            let mut expected = Vec::new();
+            legacy.to_compact(&mut expected);
+            let mut actual = Vec::new();
+            header.to_compact(&mut actual);
+            assert_eq!(actual, expected);
+            assert_eq!(TempoHeader::decompress(&expected).unwrap(), header);
+
+            let mut missing_context = legacy;
+            missing_context.trailing.as_mut().unwrap().consensus_context = None;
+            let mut encoded = Vec::new();
+            missing_context.to_compact(&mut encoded);
+            assert!(TempoHeader::decompress(&encoded).is_err());
         }
     }
 }

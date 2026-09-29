@@ -1691,7 +1691,7 @@ async fn forward_finalized(
     .await?;
 
     if let Some(public_key) = public_key.as_ref()
-        && consensus_context.is_some_and(|context| context.proposer.to_inner() == *public_key)
+        && consensus_context.proposer.to_inner() == *public_key
     {
         metrics.finalized_blocks_proposed_by_self.inc();
     }

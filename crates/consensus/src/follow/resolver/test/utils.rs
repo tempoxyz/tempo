@@ -32,7 +32,6 @@ use crate::consensus::{Block, Digest};
 
 pub(super) fn make_block(height: u64) -> Block {
     let header = TempoHeader {
-        consensus_context: (height != 0).then(Default::default),
         inner: Header {
             number: height,
             ..Default::default()

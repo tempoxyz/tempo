@@ -504,10 +504,10 @@ fn execution_tip_round_orders_finalizations_after_restart() {
 }
 
 #[test_traced]
-fn tip_supersedes_roundless_prefork_execution_tip() {
+fn tip_supersedes_zero_context_execution_tip() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
-        provider.set_prefork_finalized(100, digest(100).0);
+        provider.set_zero_context_finalized(100, digest(100).0);
 
         let (actor, mut mailbox) = init(
             context.child("follower_executor"),

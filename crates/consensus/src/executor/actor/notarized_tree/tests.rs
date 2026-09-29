@@ -46,12 +46,12 @@ fn block(view: u64, height: u64, parent: Digest) -> Block {
                     parent_hash: parent.0,
                     ..Default::default()
                 },
-                consensus_context: Some(TempoConsensusContext {
+                consensus_context: TempoConsensusContext {
                     epoch: 0,
                     view,
                     parent_view: view - 1,
                     proposer: tempo_primitives::ed25519::PublicKey::from_seed(42),
-                }),
+                },
                 ..Default::default()
             },
             body: Default::default(),

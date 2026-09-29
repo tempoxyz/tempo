@@ -80,7 +80,7 @@ impl TempoBlockAssembler {
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
-            consensus_context,
+            consensus_context: consensus_context.unwrap_or_default(),
         }))
     }
 }
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(block.body.transactions.len(), 1);
 
         // Verify consensus context is None when not provided
-        assert!(block.header.consensus_context.is_none());
+        assert_eq!(block.header.consensus_context, Default::default());
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
         let block =
             BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
 
-        assert_eq!(block.header.consensus_context, Some(ctx));
+        assert_eq!(block.header.consensus_context, ctx);
     }
 
     #[test]
