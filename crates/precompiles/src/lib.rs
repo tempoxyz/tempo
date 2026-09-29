@@ -64,7 +64,7 @@ use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{MovePrecompileError, PrecompileError, PrecompileResult},
+    precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -252,6 +252,10 @@ where
 
     fn addresses(&self) -> Vec<Address> {
         self.base.addresses()
+    }
+
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+        self.base.precompile_ids()
     }
 
     fn contains(&self, address: &Address) -> bool {
@@ -1039,6 +1043,19 @@ mod tests {
                 has_p256(spec),
                 "P256VERIFY should be available at {spec:?} (T1C+)"
             );
+        }
+    }
+
+    #[test]
+    fn standard_precompile_ids_match_base() {
+        for spec in TempoHardfork::VARIANTS {
+            let precompiles = test_tempo_precompiles(*spec);
+            let mut expected = precompiles.base.precompile_ids();
+            assert!(!expected.is_empty());
+            let mut actual = precompiles.precompile_ids();
+            expected.sort_unstable_by_key(|(address, _)| *address);
+            actual.sort_unstable_by_key(|(address, _)| *address);
+            assert_eq!(actual, expected, "{spec:?}");
         }
     }
 }
