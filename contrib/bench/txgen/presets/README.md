@@ -16,7 +16,8 @@ regenerate the bloat file for the requested size.
 For the previous transfer-only default, explicitly select
 `tip20:recipient=existing,fee-token=any_tip20` (local) or
 `tip20_existing_recipients` (both runners). `public`/`tip20` and `mix` remain
-separate, opt-in workloads. Scheduled runs use only `default`.
+separate, opt-in workloads. Scheduled runs use `default`; the e2e nightly
+also keeps the transfer-only series under its existing state key.
 
 Reports resolve aliases to the concrete scenario and record the selected preset.
 The original alias is retained separately as `requested_preset`; workload category
