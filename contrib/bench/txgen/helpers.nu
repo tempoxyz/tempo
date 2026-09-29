@@ -467,7 +467,7 @@ def txgen-spec-effective-text [spec_path: string] {
     # Nushell's YAML parser panics on integers above i64::MAX (e.g. nonce bounds).
     # Use the same pinned Python yq as workload metadata and only pass include
     # paths back to Nushell. Keep the original spec text and numeric values intact.
-    let result = (^uv run --no-project --with yq==3.4.3 yq -c '
+    let result = (^yq -c '
         if type == "object" then (.include // .includes // []) else [] end
     ' $path | complete)
     if $result.exit_code != 0 {
@@ -690,7 +690,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
 
     # Read only the prepared file's mix, not its included setup/template specs.
     # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
-    let result = (^uv run --no-project --with yq==3.4.3 yq -ceS '
+    let result = (^yq -ceS '
         .mix | if length > 0 then . else error("public-mix requires a mix") end
         | map({key: ((.template // .sequence)
             | sub("^(?<category>(zone|vault)_(deposit|withdraw))_[0-9]+$"; "\(.category)")), value: .weight})
@@ -710,7 +710,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
 def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, --out-dir: string = ""] {
     # Keep u64 nonce bounds out of Nushell's YAML parser; only the mix and setup
     # presence are needed to compose the workload.
-    let result = (^uv run --no-project --with yq==3.4.3 yq -c '
+    let result = (^yq -c '
         {has_setup: ((.setup.steps // []) | length > 0), mix: .mix}
     ' $spec_path | complete)
     if $result.exit_code != 0 {
