@@ -2407,9 +2407,6 @@ async fn execute_build(
 }
 
 /// Delivers a finalized block through a bare new-payload request.
-///
-/// The proposal fields describe the block's original context, even if it was
-/// re-proposed in a later round.
 #[instrument(
     skip_all,
     parent = &request.cause,
