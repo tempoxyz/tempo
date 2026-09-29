@@ -57,7 +57,7 @@ impl NetworkIdentity {
             OnchainDkgOutcome::read(&mut extra_data).wrap_err("unable to parse dkg outcome")?;
 
         Ok(Self {
-            from_epoch: outcome.epoch.get(),
+            from_epoch: outcome.epoch,
             identity: *outcome.network_identity(),
         })
     }

@@ -13,7 +13,7 @@ use futures::{
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{
     TempoFullNode,
-    rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Event, Query},
+    rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Event, Query, SharedEvent},
 };
 use tokio::{
     select,
@@ -42,7 +42,7 @@ pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Ma
     let actor = Actor {
         context: ContextCell::new(context),
         config,
-        event_stream: stream::empty::<Result<Event, BroadcastStreamRecvError>>()
+        event_stream: stream::empty::<Result<Arc<SharedEvent>, BroadcastStreamRecvError>>()
             .boxed()
             .fuse(),
         mailbox: rx,
@@ -54,7 +54,7 @@ pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Ma
 pub struct Actor<TContext> {
     context: ContextCell<TContext>,
     config: Config,
-    event_stream: Fuse<BoxStream<'static, Result<Event, BroadcastStreamRecvError>>>,
+    event_stream: Fuse<BoxStream<'static, Result<Arc<SharedEvent>, BroadcastStreamRecvError>>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     waiters: Vec<Message>,
 }
@@ -103,7 +103,7 @@ where
                     ));
                     match event {
                         Ok(event) => {
-                            let _ = reporter.report(event);
+                            let _ = reporter.report(event.event().clone());
                         }
                         Err(BroadcastStreamRecvError::Lagged(events_skipped)) => {
                             debug_span!("subscription").in_scope(|| debug!(

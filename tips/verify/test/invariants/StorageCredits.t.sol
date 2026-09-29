@@ -7,7 +7,6 @@ import { StdPrecompiles as PC } from "tempo-std/StdPrecompiles.sol";
 import { IStorageCredits } from "tempo-std/interfaces/IStorageCredits.sol";
 
 error DelegateCallNotAllowed();
-error StaticCallNotAllowed();
 error UnknownFunctionSelector(bytes4 selector);
 
 /// @dev Owns the storage exercised by the invariant. Storage credits belong to this contract,
@@ -122,24 +121,27 @@ contract StorageCreditsHarness {
         values[slot] = 0;
     }
 
-    /// @dev Asserts every externally reachable Storage Credits revert/halt path. `OnlyDirectCall`
-    ///      exists in the current SDK ABI but is not emitted by the implementation; the shared
-    ///      precompile wrapper emits `DelegateCallNotAllowed` before dispatch instead.
+    /// @dev Asserts every externally reachable Storage Credits revert/halt path. `InvalidMode`
+    ///      is unreachable after strict ABI decoding starts at T11. `OnlyDirectCall` exists in
+    ///      the current SDK ABI but is not emitted by the implementation; the shared precompile
+    ///      wrapper emits `DelegateCallNotAllowed` before dispatch instead.
     function assertKnownReverts() external {
         bytes memory result;
         bool success;
 
         (success, result) = address(CREDITS)
             .call(abi.encodeWithSelector(IStorageCredits.setMode.selector, uint256(3)));
-        _assertRevert(success, result, abi.encodeWithSelector(IStorageCredits.InvalidMode.selector));
+        _assertRevert(success, result, bytes(""));
 
         (success, result) = address(CREDITS)
             .delegatecall(abi.encodeCall(IStorageCredits.balanceOf, (address(this))));
         _assertRevert(success, result, abi.encodeWithSelector(DelegateCallNotAllowed.selector));
 
-        (success, result) =
-            address(CREDITS).staticcall(abi.encodeCall(IStorageCredits.setBudget, (uint64(1))));
-        _assertRevert(success, result, abi.encodeWithSelector(StaticCallNotAllowed.selector));
+        // T12+ halts with empty data and consumes the forwarded gas; reserve gas for later checks.
+        (success, result) = address(CREDITS).staticcall{ gas: 100_000 }(
+            abi.encodeCall(IStorageCredits.setBudget, (uint64(1)))
+        );
+        _assertRevert(success, result, bytes(""));
 
         bytes4 unknownSelector = 0xdeadbeef;
         (success, result) = address(CREDITS).call(abi.encodePacked(unknownSelector));
