@@ -56,6 +56,11 @@ impl TempoHardforkArgs {
         })
     }
 
+    /// Returns `true` if `fork` activates at genesis.
+    pub fn active_at_genesis(&self, fork: TempoHardfork) -> bool {
+        self.fork_time(fork) == Some(0)
+    }
+
     /// Writes every post-Genesis hardfork activation into `config`, using `null` for disabled
     /// forks so they cannot be inherited from a parent chain. Other fields are left untouched.
     pub fn write_to(&self, config: &mut ChainConfig) {
@@ -116,6 +121,7 @@ mod tests {
         let args = parse(&["--hardfork", "t13"]).unwrap();
         for (fork, time) in times(&args) {
             assert_eq!(time, (fork <= T13).then_some(0), "{fork}");
+            assert_eq!(args.active_at_genesis(fork), fork <= T13, "{fork}");
         }
     }
 

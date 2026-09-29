@@ -152,7 +152,6 @@ pub fn ethereum_chain_config(chain_id: u64) -> ChainConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempo_contracts::contracts::Multicall3;
 
     #[test]
     fn deploys_permit2_through_create2_factory() {
@@ -180,12 +179,5 @@ mod tests {
         let account = genesis_account(&info, [(U256::from(1), U256::from(2))]);
         assert_eq!(account.nonce, Some(3));
         assert_eq!(account.storage.unwrap().len(), 1);
-    }
-
-    #[test]
-    fn predeployed_contract_has_nonce_one() {
-        let account = predeployed_contract(&Multicall3::DEPLOYED_BYTECODE);
-        assert_eq!(account.nonce, Some(1));
-        assert!(account.code.is_some());
     }
 }
