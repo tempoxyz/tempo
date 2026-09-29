@@ -47,9 +47,6 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         .wallet(eth_wallet.clone())
         .connect_http(http_url1);
 
-    // Wait for nodes to be ready
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
     // Get the chain ID from the provider
     let chain_id = provider1.get_chain_id().await?;
 
