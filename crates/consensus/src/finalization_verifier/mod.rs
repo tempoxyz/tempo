@@ -13,6 +13,7 @@ use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
+use parking_lot::RwLock;
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
 use tempo_chainspec::NetworkIdentity;
@@ -34,21 +35,26 @@ mod test;
 pub(crate) struct FinalizationVerifier {
     scheme_provider: SchemeProvider,
     network_identity: NetworkIdentity,
-    network_scheme: Arc<Scheme<PublicKey, MinSig>>,
+    /// Identity for epochs without a registered scheme. Starts as `network_identity` and moves
+    /// to newer identities from finalized boundaries, so a retired identity stops verifying.
+    fallback: Arc<RwLock<FallbackIdentity>>,
     epoch_strategy: FixedEpocher,
 }
 
 impl FinalizationVerifier {
     /// Create a verifier anchored at the supplied network identity.
     pub(crate) fn new(network_identity: NetworkIdentity, epoch_strategy: FixedEpocher) -> Self {
-        let network_scheme = Arc::new(Scheme::certificate_verifier(
-            NAMESPACE,
-            network_identity.identity,
-        ));
+        let fallback = FallbackIdentity {
+            scheme: Arc::new(Scheme::certificate_verifier(
+                NAMESPACE,
+                network_identity.identity,
+            )),
+            identity: network_identity.clone(),
+        };
         Self {
             scheme_provider: SchemeProvider::new(),
             network_identity,
-            network_scheme,
+            fallback: Arc::new(RwLock::new(fallback)),
             epoch_strategy,
         }
     }
@@ -74,10 +80,25 @@ impl FinalizationVerifier {
         mut extra_data: &[u8],
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
         let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
-        self.scheme_provider.register(
-            outcome.epoch(),
-            Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
-        );
+        let scheme = Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity());
+
+        // After a full DKG the previous identity is retired, and its old shares could still
+        // sign certificates for epochs that aren't registered yet.
+        let mut fallback = self.fallback.write();
+        if outcome.epoch().get() > fallback.identity.from_epoch
+            && fallback.identity.identity != *outcome.network_identity()
+        {
+            *fallback = FallbackIdentity {
+                identity: NetworkIdentity {
+                    from_epoch: outcome.epoch().get(),
+                    identity: *outcome.network_identity(),
+                },
+                scheme: Arc::new(scheme.clone()),
+            };
+        }
+        drop(fallback);
+
+        self.scheme_provider.register(outcome.epoch(), scheme);
         Ok(outcome)
     }
 
@@ -130,14 +151,15 @@ impl FinalizationVerifier {
         let epoch = finalization.epoch();
         let (scheme, used_network_identity) = match self.scheme_provider.scheme(epoch) {
             Some(scheme) => (scheme, false),
-            None if epoch.get() >= self.network_identity.from_epoch => {
-                (self.network_scheme.clone(), true)
-            }
             None => {
-                return Err(CertificateVerificationError::IdentityUnavailable {
-                    epoch: epoch.get(),
-                    identity_from_epoch: self.network_identity.from_epoch,
-                });
+                let fallback = self.fallback.read();
+                if epoch.get() < fallback.identity.from_epoch {
+                    return Err(CertificateVerificationError::IdentityUnavailable {
+                        epoch: epoch.get(),
+                        identity_from_epoch: fallback.identity.from_epoch,
+                    });
+                }
+                (fallback.scheme.clone(), true)
             }
         };
 
@@ -157,6 +179,12 @@ impl FinalizationVerifier {
 
         Ok(())
     }
+}
+
+/// The identity used for epochs without a registered scheme, with its verifier.
+struct FallbackIdentity {
+    identity: NetworkIdentity,
+    scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
 
 /// Why an already decoded certificate could not be verified.
