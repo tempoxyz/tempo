@@ -223,6 +223,9 @@ const T12_TIP20_CHANNEL: Expectation = Expectation {
 // LiFiDiamond swaps can call the DEX internally.
 const LIFI_DIAMOND: Address = address!("2cacae8e22418e65dcf7651c67aebe6288eb8243");
 
+// Uniswap Universal Router swaps can reach the DEX through a v4 hook.
+const UNISWAP_UNIVERSAL_ROUTER: Address = address!("182a927119d56008d921126764bf884221b10f59");
+
 const T12_STABLECOIN_DEX: Expectation = Expectation {
     id: "t12.stablecoin-dex",
     check: |ctx, field| {
@@ -231,8 +234,12 @@ const T12_STABLECOIN_DEX: Expectation = Expectation {
         }
 
         let is_related = ctx.call().any(|(kind, _)| {
-            kind.to()
-                .is_some_and(|to| matches!(to, &STABLECOIN_DEX_ADDRESS | &LIFI_DIAMOND))
+            kind.to().is_some_and(|to| {
+                matches!(
+                    to,
+                    &STABLECOIN_DEX_ADDRESS | &LIFI_DIAMOND | &UNISWAP_UNIVERSAL_ROUTER
+                )
+            })
         });
 
         is_related.then_some(())?;
