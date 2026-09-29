@@ -1,6 +1,7 @@
 # Forward-looking public workload, weighted by submitted transactions (not gas).
-# Relative weights: plain transfer 25, memo transfer 40, mint 1, MPP 15,
-# vault deposit 6, vault withdrawal 4 (total 91; shares normalize by this total).
+# Vault traffic is 20%: deposits 12%, withdrawals 8%.
+# The remaining 80% preserves plain transfer/memo transfer/mint/MPP ratios of
+# 25/40/1/15. Integer weights total 2025 to represent these shares exactly.
 # These are benchmark assumptions, not a replay of mainnet activity.
 # Uses native MPP and explicit setup dependencies (tempoxyz/txgen#214).
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
@@ -76,14 +77,14 @@ templates:
 # Each selection emits one transaction, including MPP.
 mix:
   - template: public_transfer
-    weight: 25
+    weight: 500
   - template: public_transfer_memo
-    weight: 40
+    weight: 800
   - template: public_mint
-    weight: 1
+    weight: 20
   - sequence: mpp_open_only
-    weight: 15
+    weight: 300
   - template: vault_deposit
-    weight: 6
+    weight: 243
   - template: vault_withdraw
-    weight: 4
+    weight: 162
