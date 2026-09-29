@@ -305,8 +305,4 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
     pub(crate) public_key: Option<PublicKey>,
-
-    /// Inclusive upper height of contiguous local backfill coverage starting at
-    /// execution finality, captured before marshal takes ownership of the store.
-    pub(crate) backfill_available_through: Height,
 }

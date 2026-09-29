@@ -324,23 +324,15 @@ where
             marshal,
             fcu_heartbeat_interval,
             public_key,
-            backfill_available_through,
         } = config;
         ensure!(
             finalized_tip.1 >= finalized_floor,
             "finalized tip height `{}` is below the finalized floor `{finalized_floor}`",
             finalized_tip.1,
         );
-        let execution_finalized_num_hash = execution_node.finalized_num_hash();
-        // If execution is below the floor, local backfill must cover the entire gap.
-        ensure!(
-            execution_finalized_num_hash.number >= finalized_floor.get()
-                || backfill_available_through >= finalized_floor,
-            "execution layer finalized height `{}` cannot reach finalization \
-             archive floor `{finalized_floor}`. Run as a follower to sync to tip or restore a fresher snapshot",
-            execution_finalized_num_hash.number,
-        );
         let metrics = Metrics::init(&context);
+
+        let execution_finalized_num_hash = execution_node.finalized_num_hash();
 
         // The finalized point the executor starts from. Normally this is the
         // execution layer's own finalized tip, from which the startup
@@ -1108,7 +1100,12 @@ where
                 Height::new(height),
             )
             .await
-            .wrap_err_with(|| format!("failed backfilling block for height `{height}`"))?;
+            .wrap_err_with(|| {
+                format!(
+                    "failed backfilling block for height `{height}`: execution state is likely stale. \
+                     Run as a follower to sync to tip or restore a fresher snapshot"
+                )
+            })?;
 
             let (ack, _wait) = Exact::handle();
             let request = FinalizedBlockRequest {

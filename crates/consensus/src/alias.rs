@@ -8,7 +8,7 @@ pub(crate) mod marshal {
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard, store::Blocks as _},
+        marshal::{self, core, standard::Standard},
         simplex::scheme::bls12381_threshold::vrf::Scheme,
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
@@ -103,10 +103,6 @@ pub(crate) mod marshal {
         /// The archive certificate to authenticate during initialization.
         /// `None` only at genesis.
         pub finalized_tip_certificate: Option<Certificate>,
-
-        /// Inclusive upper height of contiguous local backfill coverage starting
-        /// at execution finality. Equals execution finality if no backfill is available.
-        pub backfill_available_through: Height,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -161,11 +157,6 @@ pub(crate) mod marshal {
             &execution_node,
         )
         .await?;
-        let execution_finalized = execution_finalized_point(&execution_node).0;
-        let backfill_available_through = finalized_blocks
-            .next_gap(execution_finalized)
-            .0
-            .unwrap_or(execution_finalized);
         let (tip_round, tip_height, tip_digest) = match &finalized_tip {
             Some((height, certificate)) => (
                 certificate.proposal.round,
@@ -252,7 +243,6 @@ pub(crate) mod marshal {
             finalized_floor: last_finalized_height,
             finalized_tip: (tip_round, tip_height, tip_digest),
             finalized_tip_certificate: finalized_tip.map(|(_, certificate)| certificate),
-            backfill_available_through,
         })
     }
 

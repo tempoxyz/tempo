@@ -22,7 +22,6 @@ mod finalization;
 mod forkchoice;
 mod metrics;
 mod scheduling;
-mod startup;
 mod verify;
 mod walk;
 
@@ -66,7 +65,6 @@ fn delivered_finalized_tip_tracks_its_own_round() {
                 execution_node: execution,
                 marshal: FakeMarshal::new(),
                 finalized_floor: Height::new(1),
-                backfill_available_through: Height::new(1),
                 finalized_tip: network_finalized_tip,
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
@@ -110,7 +108,6 @@ fn delivery_count_resets_only_after_a_successful_forkchoice_response() {
                 execution_node: execution.clone(),
                 marshal: FakeMarshal::new(),
                 finalized_floor: Height::zero(),
-                backfill_available_through: Height::zero(),
                 finalized_tip: (round(1), Height::new(1), digest),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
@@ -215,7 +212,6 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
                 execution_node: FakeExecution::new(),
                 marshal: FakeMarshal::new(),
                 finalized_floor: Height::new(0),
-                backfill_available_through: Height::zero(),
                 finalized_tip: (round(0), Height::new(0), GENESIS),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
@@ -264,7 +260,6 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
                 execution_node: FakeExecution::new(),
                 marshal: marshal.clone(),
                 finalized_floor: Height::zero(),
-                backfill_available_through: Height::zero(),
                 finalized_tip: (round(0), Height::zero(), GENESIS),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
