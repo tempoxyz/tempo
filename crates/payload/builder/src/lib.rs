@@ -610,8 +610,7 @@ where
                 .map(|gasprice| gasprice as u64),
         ));
         let minimum_transaction_gas = executor.evm().cfg.gas_params.tx_base_stipend();
-        let mut skip_non_payment = hardfork.is_t5()
-            && general_gas_limit.saturating_sub(non_payment_gas_used) < minimum_transaction_gas;
+        let mut skip_non_payment = hardfork.is_t5() && general_gas_limit < minimum_transaction_gas;
         if skip_non_payment {
             raw_best_txs.skip_non_payment();
         }
