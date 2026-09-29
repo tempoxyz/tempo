@@ -216,13 +216,19 @@ pub struct Args {
     /// percentile of the rest (`--consensus.network-reserve-percentile`):
     /// never less than `--consensus.network-budget`, never more than this.
     /// Set it equal to `--consensus.network-budget` for a fixed reservation.
+    /// It must stay below `--consensus.target-block-time`.
     ///
-    /// The 300ms default covers the far-away proposers of a 10 validator,
-    /// four region network, whose p75 network time was about 265-290ms; a
-    /// 250ms cap clamped them and cost p90 block time. It must stay below
-    /// `--consensus.target-block-time`.
-    #[arg(long = "consensus.network-budget-max", default_value = "300ms")]
-    pub network_budget_max: PositiveDuration,
+    /// Defaults to `network-budget + (target-block-time - network-budget) / 2`,
+    /// at most 300ms and never below `--consensus.network-budget`: 300ms with
+    /// the default 550ms target and 50ms network budget. The learned
+    /// reservation can then at most halve the initial proposal window
+    /// (`target-block-time - network-budget`), so a shorter target block time
+    /// or a larger network budget still gets a valid default. The 300ms
+    /// ceiling covers the far-away proposers of a 10 validator, four region
+    /// network, whose p75 network time was about 265-290ms; a 250ms cap
+    /// clamped them and cost p90 block time.
+    #[arg(long = "consensus.network-budget-max")]
+    pub network_budget_max: Option<PositiveDuration>,
 
     /// Percentile of recent own-proposal network times the proposal budget
     /// estimator reserves, from 50 to 100.
@@ -498,6 +504,29 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// The largest network reservation the proposal budget estimator may
+    /// learn: `--consensus.network-budget-max` if given, otherwise derived
+    /// from the target block time and the network budget.
+    ///
+    /// A fixed default would reject otherwise valid configurations, such as
+    /// a target block time at or below it or a network budget above it. The
+    /// derived cap is the midpoint between the network budget and the target
+    /// block time, so the learned reservation can at most halve the initial
+    /// proposal window. It is limited to
+    /// [`tempo_payload_types::DEFAULT_NETWORK_BUDGET_MAX`] and never below
+    /// the network budget; a cap equal to the network budget pins a fixed
+    /// reservation. The midpoint is rounded down, so the cap stays below the
+    /// target block time whenever the network budget does.
+    pub fn network_budget_max(&self) -> Duration {
+        if let Some(network_budget_max) = self.network_budget_max {
+            return network_budget_max.into_duration();
+        }
+        tempo_payload_types::EstimatorConfig::default_network_budget_max(
+            self.target_block_time.into_duration(),
+            self.network_budget.into_duration(),
+        )
+    }
+
     /// Builds the shared proposal budget estimator configuration from the
     /// consensus timing flags and the payload builder's initial multiplier.
     pub fn estimator_config(
@@ -507,7 +536,7 @@ impl Args {
         tempo_payload_types::EstimatorConfig {
             target_block_time: self.target_block_time.into_duration(),
             network_budget: self.network_budget.into_duration(),
-            network_budget_max: self.network_budget_max.into_duration(),
+            network_budget_max: self.network_budget_max(),
             network_reserve_percentile: self.network_reserve_percentile,
             network_reserve_fast_rise: self.network_reserve_fast_rise,
             build_time_multiplier,
@@ -795,7 +824,10 @@ mod tests {
     #[test]
     fn network_reserve_flags_reach_the_estimator_config() {
         let multiplier = tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
-        let config = parse(&["--dev"]).consensus.estimator_config(multiplier);
+        let args = parse(&["--dev"]).consensus;
+        assert!(args.network_budget_max.is_none());
+        let config = args.estimator_config(multiplier);
+        // The derived cap for the default 550ms target and 50ms floor.
         assert_eq!(config.network_budget_max, Duration::from_millis(300));
         assert_eq!(
             config.network_budget_max,
@@ -803,6 +835,14 @@ mod tests {
         );
         assert_eq!(config.network_reserve_percentile, 75);
         assert!(config.network_reserve_fast_rise);
+
+        // An explicit cap is used as given.
+        let args = parse(&["--dev", "--consensus.network-budget-max", "320ms"]).consensus;
+        args.validate_simplex_timing().unwrap();
+        assert_eq!(
+            args.estimator_config(multiplier).network_budget_max,
+            Duration::from_millis(320)
+        );
 
         // A bare fast rise flag enables it, whether another flag follows or not.
         let args = parse(&[
@@ -841,6 +881,45 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn network_budget_max_default_keeps_short_targets_and_large_floors_valid() {
+        let multiplier = tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
+        for (flags, cap) in [
+            // The 300ms ceiling would exceed the 250ms target; the cap sits
+            // halfway through the 200ms window above the 50ms floor instead.
+            (["--consensus.target-block-time", "250ms"], 150),
+            // A floor above the ceiling pins the reservation to the floor.
+            (["--consensus.network-budget", "350ms"], 350),
+        ] {
+            let args = parse(&[&["--dev"][..], &flags[..]].concat()).consensus;
+            args.validate_simplex_timing()
+                .unwrap_or_else(|err| panic!("{flags:?}: {err}"));
+            assert_eq!(
+                args.network_budget_max(),
+                Duration::from_millis(cap),
+                "{flags:?}"
+            );
+            assert_eq!(
+                args.estimator_config(multiplier).network_budget_max,
+                Duration::from_millis(cap),
+                "{flags:?}"
+            );
+        }
+
+        // An explicit cap is not adjusted: one that leaves no proposal
+        // window still fails validation with the reason.
+        let err = parse(&["--dev", "--consensus.network-budget-max", "600ms"])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "maximum network budget (600ms) must be smaller than the target block time"
+            ),
+            "{err}"
+        );
     }
 
     #[test]

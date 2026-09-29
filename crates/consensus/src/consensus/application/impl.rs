@@ -181,20 +181,6 @@ impl Inner {
 
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
-        // If this node also proposed the parent, this build start is what the
-        // chain waited for, and its timestamp completes that proposal's
-        // network sample. Children built by other leaders reach the estimator
-        // through `verify()`, but consensus does not run `verify()` for a
-        // node's own proposal, so without this call the sample would never
-        // complete. The hook therefore only fires for consecutive own
-        // proposals; the estimator ignores parents this node did not propose.
-        self.estimator.on_child_block_built(
-            Instant::now(),
-            (round.epoch().get(), parent_view.get()),
-            round.view().get(),
-            epoch_millis,
-        );
-
         let consensus_context = Some(TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
@@ -206,7 +192,7 @@ impl Inner {
         // The proposal window is the target block time minus the learned
         // network reservation. Give the builder only what remains of it when
         // payload construction is requested.
-        let proposal_budget = self.estimator.proposal_budget();
+        let proposal_budget = self.estimator.proposal_budget(Instant::now());
         let build_budget = proposal_budget
             .return_budget
             .saturating_sub(propose_start.elapsed());
@@ -242,6 +228,22 @@ impl Inner {
                 "executor dropped the payload channel: the build failed (the \
                 executor logs the cause) or the executor shut down",
             )?;
+
+        // If this node also proposed the parent, the start of this build
+        // (`epoch_millis`, the header timestamp) is what the chain waited for
+        // and completes that proposal's network sample. Children built by
+        // other leaders reach the estimator through `verify()`, but consensus
+        // does not run `verify()` for a node's own proposal, so without this
+        // call the sample would never complete. It therefore only takes a
+        // sample for consecutive own proposals; the estimator ignores parents
+        // this node did not propose. It runs only once the payload is built,
+        // so a failed build never becomes a sample.
+        self.estimator.on_child_block_built(
+            Instant::now(),
+            (round.epoch().get(), parent_view.get()),
+            round.view().get(),
+            epoch_millis,
+        );
 
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
@@ -290,15 +292,17 @@ impl Inner {
         // The proposal leaves this node now; the header timestamp of the block
         // built on top of it completes the network sample, so record the
         // return on the same clock.
+        let returned_at = Instant::now();
         self.estimator.on_proposal_returned(
-            Instant::now(),
+            returned_at,
             runtime.current().epoch_millis(),
             (round.epoch().get(), round.view().get()),
             ProposalExpectation {
                 validator_work: expected_validator_work,
             },
         );
-        self.metrics.observe_estimator(&self.estimator.snapshot());
+        self.metrics
+            .observe_estimator(&self.estimator.snapshot(returned_at));
 
         Ok(proposal)
     }
@@ -577,21 +581,9 @@ where
             }
         };
 
-        // If this node proposed the parent, the child's timestamp is when the
-        // next leader could build on it: the network sample for that proposal.
-        // This runs after the header check, so the parent view the child
-        // claims is the one consensus handed us for this round.
-        if let Some(ctx) = block.header().consensus_context {
-            self.estimator.on_child_block_built(
-                Instant::now(),
-                (ctx.epoch, ctx.parent_view),
-                ctx.view,
-                block.timestamp_millis(),
-            );
-        }
-
         match self.executor.verify_block(context, (*block).clone()).await {
             Ok(Some(duration)) => {
+                let verified_at = Instant::now();
                 self.estimator.on_block_verified(
                     block.height().get(),
                     ValidationLatencyWorkload::new(
@@ -600,7 +592,22 @@ where
                     ),
                     duration,
                 );
-                self.metrics.observe_estimator(&self.estimator.snapshot());
+                // If this node proposed the parent, the child's timestamp is
+                // when the next leader could build on it: the network sample
+                // for that proposal. Only a child the execution layer accepted
+                // completes it, and the header check above ensured that the
+                // parent view it claims is the one consensus handed us for
+                // this round.
+                if let Some(ctx) = block.header().consensus_context {
+                    self.estimator.on_child_block_built(
+                        verified_at,
+                        (ctx.epoch, ctx.parent_view),
+                        ctx.view,
+                        block.timestamp_millis(),
+                    );
+                }
+                self.metrics
+                    .observe_estimator(&self.estimator.snapshot(verified_at));
                 // The EL has checked timestamp encoding and parent ordering.
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
@@ -654,7 +661,8 @@ struct Metrics {
     parent_ahead_of_local_time: Counter,
     /// Network reservation currently subtracted from the target block time.
     estimator_network_reserve_ms: Gauge,
-    /// Learned network time before clamping, zero until a proposal completed.
+    /// Learned network time before clamping, zero while the window holds no
+    /// completed proposal.
     estimator_network_observed_ms: Gauge,
     /// Proposal return budget handed to the next proposal.
     estimator_proposal_return_budget_ms: Gauge,

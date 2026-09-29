@@ -513,7 +513,7 @@ where
         // prefer that when present.
         let build_plan = payload_build_budget.map(|build_budget| {
             self.estimator
-                .build_plan(build_budget)
+                .build_plan(Instant::now(), build_budget)
                 .with_validation_latency(attributes.validation_latency_estimate())
         });
         let validation_latency = build_plan.map_or_else(
@@ -996,8 +996,9 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
+            let finished_at = Instant::now();
             self.estimator.on_build_finished(
-                Instant::now(),
+                finished_at,
                 FinishedBuild {
                     work_at_tx_cutoff: validation_work_at_tx_cutoff,
                     total_work: validation_work_duration,
@@ -1005,7 +1006,7 @@ where
             );
             self.metrics
                 .build_time_multiplier_last
-                .set(self.estimator.build_time_multiplier());
+                .set(self.estimator.build_time_multiplier(finished_at));
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {

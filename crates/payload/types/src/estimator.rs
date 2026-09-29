@@ -18,20 +18,43 @@
 //! driven by a simulated block sequence in tests.
 //!
 //! The estimator is pure bookkeeping: callers feed observations through the
-//! `on_*` hooks, passing the clock explicitly, and read decisions through
-//! [`Estimator::proposal_budget`] and [`Estimator::build_plan`]. Nothing in
-//! here touches wall-clock time on its own.
+//! `on_*` hooks and read decisions through [`Estimator::proposal_budget`] and
+//! [`Estimator::build_plan`], passing the clock explicitly to both. Nothing
+//! in here touches wall-clock time on its own.
+//!
+//! # Clocks
+//!
+//! The `now: Instant` arguments are a monotonic clock that is only used to
+//! age state: it decides when a window sample, or an own proposal still
+//! waiting for the block built on top of it, is too old to count. The reads
+//! that depend on an age-limited window take it as well and drop expired
+//! samples before they compute anything, so a window that stops receiving
+//! samples does not keep serving old ones.
+//!
+//! The value of a network sample comes from a different clock: the wall-clock
+//! unix milliseconds at which this node returned the proposal
+//! (`returned_unix_ms`) and the header timestamp of the block built on top of
+//! it (`child_timestamp_ms`), which the next leader sets. Both must be read
+//! from the one clock that block header timestamps use, so a sample is only
+//! as accurate as the validators' clock synchronisation; a monotonic
+//! `Instant` cannot be compared across nodes.
 //!
 //! # Robustness
 //!
 //! Every learned quantity is a percentile over a bounded window of recent
-//! samples that also expire by age. A single slow observation (a finish that
-//! waited on a persistence commit, one proposal that was slow to reach the
-//! next leader) therefore moves the estimate by at most one window slot
-//! instead of resetting it to the outlier, while a sustained change still
-//! takes over within a fraction of the window. The network reservation skips
-//! that damping on the way up by default, see
-//! [`EstimatorConfig::network_reserve_fast_rise`].
+//! samples. A single slow observation (a finish that waited on a persistence
+//! commit, one proposal that was slow to reach the next leader) therefore
+//! moves the estimate by at most one window slot instead of resetting it to
+//! the outlier, while a sustained change still takes over within a fraction
+//! of the window. The network reservation skips that damping on the way up
+//! by default, see [`EstimatorConfig::network_reserve_fast_rise`].
+//!
+//! The build time and network windows learn from this node's own proposals
+//! only, which can be far apart, so they are bounded by both count and age:
+//! 16 samples each, dropped after one minute for builds and after two
+//! minutes for the network. The validation latency feedback learns from
+//! every block this node verifies and is bounded by count alone: the last 64
+//! blocks, with no ttl, which turn over as long as the chain makes progress.
 
 use std::{
     collections::VecDeque,
@@ -110,7 +133,9 @@ const MAX_PENDING_PROPOSALS: usize = 8;
 /// see [`EstimatorConfig::network_reserve_percentile`].
 const RESERVE_PERCENTILE: (usize, usize) = (3, 4);
 
-/// Identifies a proposal across epochs: `(epoch, view)`.
+/// Identifies a proposal by its own round as `(epoch, view)`: the epoch and
+/// the view in which the proposal itself was made, not those of its parent
+/// or of the block built on top of it.
 pub type ProposalKey = (u64, u64);
 
 /// Network samples longer than this are discarded as clock skew or a stall
@@ -179,7 +204,28 @@ impl EstimatorConfig {
             network_budget,
             ..Self::default()
         }
-        .with_network_budget_max(DEFAULT_NETWORK_BUDGET_MAX.max(network_budget))
+        .with_network_budget_max(Self::default_network_budget_max(
+            target_block_time,
+            network_budget,
+        ))
+    }
+
+    /// The network reservation cap used when none is configured.
+    ///
+    /// The learned reservation may take at most half of the initial proposal
+    /// window `target_block_time - network_budget`, never more than
+    /// [`DEFAULT_NETWORK_BUDGET_MAX`], and never less than the floor: a cap
+    /// equal to the floor is a fixed reservation. Rounding the half window
+    /// down keeps the cap below the target whenever the floor is.
+    pub fn default_network_budget_max(
+        target_block_time: Duration,
+        network_budget: Duration,
+    ) -> Duration {
+        let initial_window = target_block_time.saturating_sub(network_budget);
+        network_budget
+            .saturating_add(initial_window / 2)
+            .min(DEFAULT_NETWORK_BUDGET_MAX)
+            .max(network_budget)
     }
 
     /// Creates a configuration that reproduces a fixed proposal return budget.
@@ -319,6 +365,17 @@ impl Estimator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Locks the state for a read at `now`.
+    ///
+    /// The windows otherwise only drop expired samples when a hook runs, so
+    /// a read after a quiet period would still see samples older than their
+    /// ttl. Pruning first makes every read reflect `now`.
+    fn state_at(&self, now: Instant) -> std::sync::MutexGuard<'_, State> {
+        let mut state = self.state();
+        state.prune(now);
+        state
+    }
+
     // --- observations -----------------------------------------------------
 
     /// Records local execution-layer validation time for a block.
@@ -380,10 +437,13 @@ impl Estimator {
     /// completing the network sample that [`Self::on_proposal_returned`]
     /// opened for it.
     ///
-    /// The child reaches the estimator through the consensus application's
-    /// `verify()` when another validator is the next leader, and through its
-    /// `build()` when this node is the next leader itself. Consensus does not
-    /// run `verify()` for a node's own proposal, so without the `build()`
+    /// `parent` is the child's `(epoch, parent_view)` from its consensus
+    /// context. The child reaches the estimator through the consensus
+    /// application's `verify()` when another validator is the next leader,
+    /// once the execution layer accepted it, and through its `build()` when
+    /// this node is the next leader itself, once the payload is built, so an
+    /// invalid child or a failed build never becomes a sample. Consensus does
+    /// not run `verify()` for a node's own proposal, so without the `build()`
     /// call the samples of consecutive own proposals would never complete.
     ///
     /// Only proposals this node returned itself produce a sample; other
@@ -391,6 +451,14 @@ impl Estimator {
     /// or builds. A child whose view does not directly follow `parent`'s
     /// takes no sample either: the chain waited on a leader timeout, not on
     /// propagation.
+    ///
+    /// Nor does a proposal at an epoch boundary, which is intended. The
+    /// first block of an epoch refers to the re-proposed boundary block by
+    /// its view in the new epoch, so its `(epoch, parent_view)` never matches
+    /// the key the boundary block was proposed under, and that proposal ages
+    /// out of the pending list like one whose child never arrives. The gap to
+    /// that child spans the epoch transition, not only propagation, so it
+    /// would not be a network sample anyway.
     pub fn on_child_block_built(
         &self,
         now: Instant,
@@ -427,9 +495,13 @@ impl Estimator {
 
     // --- reads ------------------------------------------------------------
 
-    /// The proposal window for the next proposal.
-    pub fn proposal_budget(&self) -> ProposalBudget {
-        let network_reserve = self.state().network.reserve();
+    /// The proposal window for a proposal made at `now`.
+    ///
+    /// Network samples older than the window's ttl no longer count, also
+    /// when no newer sample arrived since: a node that has not completed a
+    /// proposal for that long reserves the configured network budget again.
+    pub fn proposal_budget(&self, now: Instant) -> ProposalBudget {
+        let network_reserve = self.state_at(now).network.reserve();
         let target_block_time = self.inner.config.target_block_time;
         ProposalBudget {
             target_block_time,
@@ -443,14 +515,18 @@ impl Estimator {
         self.state().validation.estimate()
     }
 
-    /// The current build time multiplier.
-    pub fn build_time_multiplier(&self) -> f64 {
-        self.state().build_time.scaled() as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64
+    /// The build time multiplier in use at `now`.
+    ///
+    /// Once every finished build is older than the window's ttl, for example
+    /// after a quiet period without own proposals, this is the configured
+    /// initial multiplier again.
+    pub fn build_time_multiplier(&self, now: Instant) -> f64 {
+        self.state_at(now).build_time.scaled() as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64
     }
 
-    /// Snapshots the inputs for one payload build.
-    pub fn build_plan(&self, build_budget: Duration) -> BuildPlan {
-        let state = self.state();
+    /// Snapshots the inputs for one payload build that starts at `now`.
+    pub fn build_plan(&self, now: Instant, build_budget: Duration) -> BuildPlan {
+        let state = self.state_at(now);
         BuildPlan {
             build_budget,
             multiplier_scaled: state.build_time.scaled(),
@@ -458,9 +534,10 @@ impl Estimator {
         }
     }
 
-    /// Everything the estimator currently believes.
-    pub fn snapshot(&self) -> EstimatorSnapshot {
-        let state = self.state();
+    /// Everything the estimator believes at `now`, after dropping samples
+    /// older than their window's ttl.
+    pub fn snapshot(&self, now: Instant) -> EstimatorSnapshot {
+        let state = self.state_at(now);
         let network_reserve = state.network.reserve();
         EstimatorSnapshot {
             validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
@@ -636,7 +713,8 @@ pub struct EstimatorSnapshot {
     pub build_time_multiplier: f64,
     /// Number of finished builds in the window.
     pub build_time_samples: usize,
-    /// Learned network time before clamping, if any proposal completed.
+    /// Learned network time before clamping, if the window holds a completed
+    /// proposal.
     pub network_observed: Option<Duration>,
     /// Most recent network sample, until it is older than the sample ttl.
     ///
@@ -709,19 +787,50 @@ impl<T: Copy + Ord> SampleWindow<T> {
 #[derive(Clone, Debug)]
 struct BuildTimeTracker {
     samples: SampleWindow<u64>,
+    /// Configured initial multiplier in fixed point, in use while the window
+    /// is empty.
+    initial: u64,
     /// Current multiplier in fixed point.
+    ///
+    /// It never exceeds the window's percentile: it rises toward it by at
+    /// most one capped step per finished build and follows it down at once.
     current: u64,
 }
 
 impl BuildTimeTracker {
     fn new(initial: f64) -> Self {
+        let initial = scaled_build_time_multiplier(initial).clamp(
+            MIN_BUILD_TIME_MULTIPLIER_SCALED,
+            MAX_BUILD_TIME_MULTIPLIER_SCALED,
+        );
         Self {
             samples: SampleWindow::new(BUILD_TIME_SAMPLE_WINDOW, BUILD_TIME_SAMPLE_TTL),
-            current: scaled_build_time_multiplier(initial).clamp(
-                MIN_BUILD_TIME_MULTIPLIER_SCALED,
-                MAX_BUILD_TIME_MULTIPLIER_SCALED,
-            ),
+            initial,
+            current: initial,
         }
+    }
+
+    /// Drops finished builds older than the window's ttl.
+    ///
+    /// Expired builds stop holding the multiplier up at once, as they would
+    /// if a newer build pushed them out: it drops to the percentile of the
+    /// builds that are left when that is lower, and only rises when a build
+    /// finishes. Once no build is left, for example after a quiet period
+    /// without own proposals, it is back at the configured initial value, so
+    /// the first build afterwards starts from the same estimate as the first
+    /// build after startup rather than from a stale one.
+    fn prune(&mut self, now: Instant) {
+        self.samples.prune(now);
+        self.current = match self.target() {
+            Some(target) => self.current.min(target),
+            None => self.initial,
+        };
+    }
+
+    /// The reserved percentile of the window, if it holds any build.
+    fn target(&self) -> Option<u64> {
+        self.samples
+            .percentile(RESERVE_PERCENTILE.0, RESERVE_PERCENTILE.1)
     }
 
     /// Records a finished build. Returns the observed multiplier, if usable.
@@ -731,6 +840,7 @@ impl BuildTimeTracker {
         work_at_tx_cutoff: Duration,
         total_work: Duration,
     ) -> Option<u64> {
+        self.prune(now);
         if work_at_tx_cutoff == Duration::ZERO {
             return None;
         }
@@ -742,10 +852,7 @@ impl BuildTimeTracker {
         let observed = observed.max(MIN_BUILD_TIME_MULTIPLIER_SCALED);
         self.samples.push(now, observed);
 
-        let target = self
-            .samples
-            .percentile(RESERVE_PERCENTILE.0, RESERVE_PERCENTILE.1)
-            .unwrap_or(observed);
+        let target = self.target().unwrap_or(observed);
         self.current = if target > self.current {
             target.min(
                 self.current
@@ -795,14 +902,21 @@ impl BuildTimeTracker {
 /// of the pending list: the first proposal recorded more than
 /// [`PENDING_PROPOSAL_TTL`] after it drops it, and [`MAX_PENDING_PROPOSALS`]
 /// newer ones push it out earlier.
+///
+/// A proposal at an epoch boundary ages out the same way, which is intended.
+/// Pending proposals are keyed by their own [`ProposalKey`], and children
+/// are matched by their `(epoch, parent_view)`. The first block of an epoch
+/// refers to the re-proposed boundary block by its view in the new epoch, so
+/// it never matches the key the boundary block was proposed under. The gap
+/// to that child spans the epoch transition rather than propagation alone,
+/// so it would not be a usable sample anyway.
 #[derive(Clone, Debug)]
 struct NetworkTracker {
     samples: SampleWindow<u64>,
-    /// The most recent sample and when it was taken.
+    /// The most recent sample and when it was taken, for fast rise.
     ///
-    /// The window only prunes when a sample is pushed, so every hook that
-    /// carries the clock drops this one once it is older than the window's
-    /// ttl.
+    /// [`Self::prune`] drops it together with the window's expired samples
+    /// once it is older than the window's ttl.
     last: Option<(Instant, u64)>,
     pending: VecDeque<PendingProposal>,
     floor: Duration,
@@ -830,6 +944,16 @@ impl NetworkTracker {
         }
     }
 
+    /// Drops samples older than the window's ttl, the most recent one
+    /// included, so that reads between samples never serve expired ones.
+    fn prune(&mut self, now: Instant) {
+        self.samples.prune(now);
+        self.expire_last(now);
+        self.pending.retain(|pending| {
+            now.saturating_duration_since(pending.returned_at) <= PENDING_PROPOSAL_TTL
+        });
+    }
+
     /// Forgets the most recent sample once it is older than the window's ttl.
     fn expire_last(&mut self, now: Instant) {
         if self
@@ -847,7 +971,7 @@ impl NetworkTracker {
         key: ProposalKey,
         expectation: ProposalExpectation,
     ) {
-        self.expire_last(now);
+        self.prune(now);
         self.pending.retain(|pending| {
             pending.key != key
                 && now.saturating_duration_since(pending.returned_at) <= PENDING_PROPOSAL_TTL
@@ -876,7 +1000,7 @@ impl NetworkTracker {
         child_view: u64,
         child_timestamp_ms: u64,
     ) -> Option<Duration> {
-        self.expire_last(now);
+        self.prune(now);
         let index = self
             .pending
             .iter()
@@ -897,10 +1021,12 @@ impl NetworkTracker {
         Some(network)
     }
 
-    /// Unclamped learned network time, if any proposal has completed.
+    /// Unclamped learned network time, if the window holds a completed
+    /// proposal.
     ///
     /// This is the configured percentile of the window, or with fast rise
-    /// the most recent sample when that is higher.
+    /// the most recent sample when that is higher. Callers prune first, see
+    /// [`Self::prune`], so that expired samples no longer count.
     fn observed(&self) -> Option<Duration> {
         let window = self.samples.percentile(usize::from(self.percentile), 100);
         let last = self
@@ -940,6 +1066,16 @@ struct State {
     network: NetworkTracker,
 }
 
+impl State {
+    /// Drops expired samples from every window that has a ttl. The
+    /// validation latency feedback is bounded by count alone and has nothing
+    /// to expire.
+    fn prune(&mut self, now: Instant) {
+        self.build_time.prune(now);
+        self.network.prune(now);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,9 +1091,15 @@ mod tests {
     }
 
     /// Plays one own proposal in `view`, returned `view` seconds after
-    /// `start`, whose child is built `network` later. Without expected
-    /// validator work the whole gap is the network sample.
-    fn own_proposal(estimator: &Estimator, start: Instant, view: u64, network: Duration) {
+    /// `start`, whose child is built `network` later, and returns when the
+    /// child was built. Without expected validator work the whole gap is the
+    /// network sample.
+    fn own_proposal(
+        estimator: &Estimator,
+        start: Instant,
+        view: u64,
+        network: Duration,
+    ) -> Instant {
         let returned = start + Duration::from_secs(view);
         let returned_ms = 1_800_000_000_000 + view * 1000;
         estimator.on_proposal_returned(
@@ -966,12 +1108,14 @@ mod tests {
             (0, view),
             ProposalExpectation::default(),
         );
+        let built = returned + network;
         estimator.on_child_block_built(
-            returned + network,
+            built,
             (0, view),
             view + 1,
             returned_ms + network.as_millis() as u64,
         );
+        built
     }
 
     fn validation_latency_estimate(
@@ -1030,11 +1174,12 @@ mod tests {
     fn fixed_config_pins_the_return_budget() {
         let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50)));
         let now = Instant::now();
+        let built = now + ms(400);
         estimator.on_proposal_returned(now, 1_000_000, (0, 1), ProposalExpectation::default());
-        estimator.on_child_block_built(now + ms(400), (0, 1), 2, 1_000_400);
-        assert_eq!(estimator.snapshot().network_samples, 1);
-        assert_eq!(estimator.proposal_budget().return_budget, ms(300));
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
+        estimator.on_child_block_built(built, (0, 1), 2, 1_000_400);
+        assert_eq!(estimator.snapshot(built).network_samples, 1);
+        assert_eq!(estimator.proposal_budget(built).return_budget, ms(300));
+        assert_eq!(estimator.proposal_budget(built).network_reserve, ms(50));
     }
 
     #[test]
@@ -1063,7 +1208,9 @@ mod tests {
     fn build_time_multiplier_rises_in_capped_steps_and_follows_the_window_down() {
         let estimator = Estimator::new(config());
         let now = Instant::now();
-        assert!((estimator.build_time_multiplier() - DEFAULT_BUILD_TIME_MULTIPLIER).abs() < 1e-9);
+        assert!(
+            (estimator.build_time_multiplier(now) - DEFAULT_BUILD_TIME_MULTIPLIER).abs() < 1e-9
+        );
 
         // Steady builds: finish work is 5% of fill work.
         for i in 0..8u64 {
@@ -1075,7 +1222,7 @@ mod tests {
                 },
             );
         }
-        assert!((estimator.build_time_multiplier() - 1.05).abs() < 1e-6);
+        assert!((estimator.build_time_multiplier(now + ms(7)) - 1.05).abs() < 1e-6);
 
         // One finish waits 150 ms on a persistence commit: ratio 1.75, capped at 1.7.
         estimator.on_build_finished(
@@ -1085,7 +1232,7 @@ mod tests {
                 total_work: ms(350),
             },
         );
-        let after_outlier = estimator.build_time_multiplier();
+        let after_outlier = estimator.build_time_multiplier(now + ms(10));
         assert!(
             (after_outlier - 1.05).abs() < 1e-6,
             "p75 of the window ignores one outlier, got {after_outlier}"
@@ -1103,7 +1250,7 @@ mod tests {
                 },
             );
         }
-        let sustained = estimator.build_time_multiplier();
+        let sustained = estimator.build_time_multiplier(now + ms(22));
         assert!(
             (sustained - 1.35).abs() < 1e-6,
             "expected two capped 0.15 steps from 1.05, got {sustained}"
@@ -1119,29 +1266,74 @@ mod tests {
                 },
             );
         }
-        assert!((estimator.build_time_multiplier() - 1.02).abs() < 1e-6);
+        assert!((estimator.build_time_multiplier(now + ms(55)) - 1.02).abs() < 1e-6);
     }
 
     #[test]
     fn build_time_multiplier_never_drops_below_one() {
         let estimator = Estimator::new(config());
+        let now = Instant::now();
         estimator.on_build_finished(
-            Instant::now(),
+            now,
             FinishedBuild {
                 work_at_tx_cutoff: ms(200),
                 total_work: ms(100),
             },
         );
-        assert!((estimator.build_time_multiplier() - 1.0).abs() < 1e-9);
+        assert!((estimator.build_time_multiplier(now) - 1.0).abs() < 1e-9);
         // Zero cutoff work carries no information.
         estimator.on_build_finished(
-            Instant::now(),
+            now,
             FinishedBuild {
                 work_at_tx_cutoff: Duration::ZERO,
                 total_work: ms(100),
             },
         );
-        assert_eq!(estimator.snapshot().build_time_samples, 1);
+        assert_eq!(estimator.snapshot(now).build_time_samples, 1);
+    }
+
+    #[test]
+    fn build_time_multiplier_returns_to_the_initial_value_without_builds() {
+        let initial = 1.25;
+        let estimator = Estimator::new(config().with_build_time_multiplier(initial));
+        let now = Instant::now();
+        let finish = |at: Instant, total_work: Duration| {
+            estimator.on_build_finished(
+                at,
+                FinishedBuild {
+                    work_at_tx_cutoff: ms(200),
+                    total_work,
+                },
+            );
+        };
+        // Three slow finishes (ratio 1.7) step the multiplier up to its cap,
+        // and four fast ones (ratio 1.05) half a minute later leave the
+        // window's p75 there.
+        for _ in 0..3 {
+            finish(now, ms(340));
+        }
+        let fast = now + Duration::from_secs(30);
+        for _ in 0..4 {
+            finish(fast, ms(210));
+        }
+        assert!((estimator.build_time_multiplier(fast) - 1.7).abs() < 1e-6);
+
+        // Without a newer build the slow finishes stop counting once they
+        // are older than the ttl, and the multiplier follows the fast ones
+        // that are left down.
+        let slow_expired = now + BUILD_TIME_SAMPLE_TTL + ms(1);
+        assert!((estimator.build_time_multiplier(slow_expired) - 1.05).abs() < 1e-6);
+
+        // After a whole ttl without builds it is the configured initial value
+        // again, not the stale 1.05.
+        let quiet = fast + BUILD_TIME_SAMPLE_TTL + ms(1);
+        assert!((estimator.build_time_multiplier(quiet) - initial).abs() < 1e-9);
+        assert_eq!(estimator.snapshot(quiet).build_time_samples, 0);
+
+        // So the first build after the quiet period steps up from the initial
+        // value, as the first build after startup would.
+        finish(quiet, ms(340));
+        assert!((estimator.build_time_multiplier(quiet) - (initial + 0.15)).abs() < 1e-6);
     }
 
     #[test]
@@ -1149,12 +1341,12 @@ mod tests {
         let estimator = Estimator::new(config());
         let now = Instant::now();
         let base_ms = 1_800_000_000_000u64;
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
-        assert_eq!(estimator.proposal_budget().return_budget, ms(500));
+        assert_eq!(estimator.proposal_budget(now).network_reserve, ms(50));
+        assert_eq!(estimator.proposal_budget(now).return_budget, ms(500));
 
         // Children of other proposers' blocks are ignored.
         estimator.on_child_block_built(now, (0, 7), 8, base_ms);
-        assert_eq!(estimator.snapshot().network_samples, 0);
+        assert_eq!(estimator.snapshot(now).network_samples, 0);
 
         // Own proposals: the next leader starts building 420 ms after the
         // return, of which validators were expected to spend 240 ms
@@ -1173,10 +1365,14 @@ mod tests {
                 returned_ms + 420,
             );
         }
-        let budget = estimator.proposal_budget();
+        let last_built = now + ms(4_420);
+        let budget = estimator.proposal_budget(last_built);
         assert_eq!(budget.network_reserve, ms(180));
         assert_eq!(budget.return_budget, ms(370));
-        assert_eq!(estimator.snapshot().network_observed, Some(ms(180)));
+        assert_eq!(
+            estimator.snapshot(last_built).network_observed,
+            Some(ms(180))
+        );
     }
 
     #[test]
@@ -1190,7 +1386,10 @@ mod tests {
         // Faster than the floor: stays at the floor.
         estimator.on_proposal_returned(now, base_ms, (0, 1), expectation);
         estimator.on_child_block_built(now + ms(210), (0, 1), 2, base_ms + 210);
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
+        assert_eq!(
+            estimator.proposal_budget(now + ms(210)).network_reserve,
+            ms(50)
+        );
 
         // Slower than the cap: clamped, but the observation is kept.
         for view in 2..=6u64 {
@@ -1204,8 +1403,15 @@ mod tests {
                 returned_ms + 700,
             );
         }
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(300));
-        assert_eq!(estimator.snapshot().network_observed, Some(ms(500)));
+        let last_built = now + ms(6_700);
+        assert_eq!(
+            estimator.proposal_budget(last_built).network_reserve,
+            ms(300)
+        );
+        assert_eq!(
+            estimator.snapshot(last_built).network_observed,
+            Some(ms(500))
+        );
 
         // A proposal whose child never arrives takes no sample. Its view may
         // have been nullified, or the next leader may have held both a
@@ -1215,7 +1421,7 @@ mod tests {
         let orphan_ms = base_ms + 10_000;
         estimator.on_proposal_returned(orphan, orphan_ms, (0, 9), expectation);
         estimator.on_child_block_built(orphan + ms(300), (0, 8), 10, orphan_ms + 300);
-        let snapshot = estimator.snapshot();
+        let snapshot = estimator.snapshot(orphan + ms(300));
         assert_eq!(snapshot.network_samples, 6);
         assert_eq!(snapshot.pending_proposals, 1);
 
@@ -1224,7 +1430,7 @@ mod tests {
         let next = orphan + PENDING_PROPOSAL_TTL + ms(1);
         let next_ms = orphan_ms + PENDING_PROPOSAL_TTL.as_millis() as u64 + 1;
         estimator.on_proposal_returned(next, next_ms, (0, 11), expectation);
-        let snapshot = estimator.snapshot();
+        let snapshot = estimator.snapshot(next);
         assert_eq!(snapshot.network_samples, 6);
         assert_eq!(
             snapshot.pending_proposals, 1,
@@ -1233,38 +1439,59 @@ mod tests {
 
         // Neither does a proposal whose child skipped a view: the chain
         // waited on a leader timeout, not on propagation.
-        estimator.on_child_block_built(next + ms(1_500), (0, 11), 13, next_ms + 1_500);
-        assert_eq!(estimator.snapshot().network_samples, 6);
-        assert_eq!(estimator.snapshot().pending_proposals, 0);
+        let skipped = next + ms(1_500);
+        estimator.on_child_block_built(skipped, (0, 11), 13, next_ms + 1_500);
+        let snapshot = estimator.snapshot(skipped);
+        assert_eq!(snapshot.network_samples, 6);
+        assert_eq!(snapshot.pending_proposals, 0);
 
         // Nor an implausibly late child, which is clock skew or a stall.
         estimator.on_proposal_returned(now + ms(30_000), base_ms + 30_000, (0, 14), expectation);
         estimator.on_child_block_built(now + ms(36_000), (0, 14), 15, base_ms + 36_000);
-        assert_eq!(estimator.snapshot().network_samples, 6);
+        assert_eq!(estimator.snapshot(now + ms(36_000)).network_samples, 6);
 
         // Clock skew that puts the child before the return counts as zero
         // network time rather than being dropped.
         estimator.on_proposal_returned(now + ms(40_000), base_ms + 40_000, (0, 16), expectation);
         estimator.on_child_block_built(now + ms(40_100), (0, 16), 17, base_ms + 39_990);
-        assert_eq!(estimator.snapshot().network_samples, 7);
+        assert_eq!(estimator.snapshot(now + ms(40_100)).network_samples, 7);
     }
 
     #[test]
     fn network_samples_expire_back_to_the_floor() {
-        let estimator = Estimator::new(config());
         let now = Instant::now();
         let base_ms = 1_800_000_000_000u64;
         let expectation = ProposalExpectation::default();
-        estimator.on_proposal_returned(now, base_ms, (0, 1), expectation);
-        estimator.on_child_block_built(now + ms(150), (0, 1), 2, base_ms + 150);
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(150));
-        // Pushing a sample much later prunes the stale one first.
+        // An estimator that learned 150 ms from one own proposal. The network
+        // time comes from the unix millisecond timestamps alone; the
+        // `Instant` only ages the sample, which is taken at `now`.
+        let learned = || {
+            let estimator = Estimator::new(config());
+            estimator.on_proposal_returned(now, base_ms, (0, 1), expectation);
+            estimator.on_child_block_built(now, (0, 1), 2, base_ms + 150);
+            assert_eq!(estimator.proposal_budget(now).network_reserve, ms(150));
+            estimator
+        };
+
+        // Reads expire the sample on their own: without a newer sample, the
+        // reservation is back at the floor once it is older than the ttl.
+        let estimator = learned();
+        let expired = now + NETWORK_SAMPLE_TTL + ms(1);
+        assert_eq!(estimator.proposal_budget(expired).network_reserve, ms(50));
+        assert_eq!(estimator.snapshot(expired).network_samples, 0);
+
+        // A proposal much later prunes the stale sample before its own
+        // completes.
+        let estimator = learned();
         let later = now + NETWORK_SAMPLE_TTL + ms(1000);
         let later_ms = base_ms + NETWORK_SAMPLE_TTL.as_millis() as u64 + 1000;
         estimator.on_proposal_returned(later, later_ms, (0, 2), expectation);
         estimator.on_child_block_built(later + ms(40), (0, 2), 3, later_ms + 40);
-        assert_eq!(estimator.snapshot().network_samples, 1);
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(50));
+        assert_eq!(estimator.snapshot(later + ms(40)).network_samples, 1);
+        assert_eq!(
+            estimator.proposal_budget(later + ms(40)).network_reserve,
+            ms(50)
+        );
     }
 
     #[test]
@@ -1281,10 +1508,11 @@ mod tests {
                     .with_network_reserve_fast_rise(false),
             );
             let now = Instant::now();
+            let mut last_built = now;
             for (view, network) in (1..).zip(samples) {
-                own_proposal(&estimator, now, view, ms(network));
+                last_built = own_proposal(&estimator, now, view, ms(network));
             }
-            let budget = estimator.proposal_budget();
+            let budget = estimator.proposal_budget(last_built);
             assert_eq!(budget.network_reserve, ms(expected), "p{percentile}");
             assert_eq!(budget.return_budget, ms(550 - expected), "p{percentile}");
         }
@@ -1295,13 +1523,17 @@ mod tests {
         let plain = Estimator::new(config().with_network_reserve_fast_rise(false));
         let fast = Estimator::new(config().with_network_reserve_fast_rise(true));
         let now = Instant::now();
-        // Feeds the same own proposal to both estimators, returns their reserves.
+        // Budgets are read when the proposal they are for returns, `view`
+        // seconds after `now`.
+        let next_return = |view| now + Duration::from_secs(view);
+        // Feeds the same own proposal to both estimators, returns their
+        // reserves for the next proposal.
         let reserves = |view, network| {
             own_proposal(&plain, now, view, network);
             own_proposal(&fast, now, view, network);
             (
-                plain.proposal_budget().network_reserve,
-                fast.proposal_budget().network_reserve,
+                plain.proposal_budget(next_return(view + 1)).network_reserve,
+                fast.proposal_budget(next_return(view + 1)).network_reserve,
             )
         };
         for view in 1..=6 {
@@ -1310,13 +1542,22 @@ mod tests {
         // One slow proposal: the window's p75 still reads 150 ms, while fast
         // rise reserves the slow sample for the very next proposal.
         assert_eq!(reserves(7, ms(240)), (ms(150), ms(240)));
-        assert_eq!(fast.snapshot().network_last_sample, Some(ms(240)));
-        assert_eq!(fast.proposal_budget().return_budget, ms(310));
+        assert_eq!(
+            fast.snapshot(next_return(8)).network_last_sample,
+            Some(ms(240))
+        );
+        assert_eq!(fast.proposal_budget(next_return(8)).return_budget, ms(310));
         // The next fast proposal hands the reservation back to the window.
         assert_eq!(reserves(8, ms(150)), (ms(150), ms(150)));
-        assert_eq!(fast.snapshot().network_last_sample, Some(ms(150)));
+        assert_eq!(
+            fast.snapshot(next_return(9)).network_last_sample,
+            Some(ms(150))
+        );
         // The last sample is reported with fast rise disabled too.
-        assert_eq!(plain.snapshot().network_last_sample, Some(ms(150)));
+        assert_eq!(
+            plain.snapshot(next_return(9)).network_last_sample,
+            Some(ms(150))
+        );
     }
 
     #[test]
@@ -1327,27 +1568,26 @@ mod tests {
             own_proposal(&estimator, now, view, ms(150));
         }
         // A sample above the cap lifts the reservation only up to the cap.
-        own_proposal(&estimator, now, 7, ms(400));
-        let snapshot = estimator.snapshot();
+        let sampled_at = own_proposal(&estimator, now, 7, ms(400));
+        let snapshot = estimator.snapshot(sampled_at);
         assert_eq!(snapshot.network_last_sample, Some(ms(400)));
         assert_eq!(snapshot.network_observed, Some(ms(400)));
         assert_eq!(snapshot.network_reserve, ms(300));
 
-        // Without a newer sample the slow one still counts at exactly the
-        // window's ttl, as it would in the window, and is ignored once it is
-        // older. Any hook that carries the clock expires it, here blocks
-        // built on other proposers' parents.
-        let sampled_at = now + Duration::from_secs(7) + ms(400);
-        estimator.on_child_block_built(sampled_at + NETWORK_SAMPLE_TTL, (0, 20), 21, 0);
-        assert_eq!(estimator.proposal_budget().network_reserve, ms(300));
-        estimator.on_child_block_built(sampled_at + NETWORK_SAMPLE_TTL + ms(1), (0, 21), 22, 0);
-        let snapshot = estimator.snapshot();
-        assert_eq!(snapshot.network_last_sample, None);
+        // The slow sample is the newest one in the window, so it expires with
+        // the window rather than on its own. Without a newer sample it still
+        // counts at exactly the window's ttl, and once it is older every
+        // other sample has aged out as well, so the reservation is back at the
+        // floor rather than at the window percentile.
+        let ttl_reached = sampled_at + NETWORK_SAMPLE_TTL;
         assert_eq!(
-            snapshot.network_reserve,
-            ms(150),
-            "falls back to the window percentile"
+            estimator.proposal_budget(ttl_reached).network_reserve,
+            ms(300)
         );
+        let snapshot = estimator.snapshot(ttl_reached + ms(1));
+        assert_eq!(snapshot.network_last_sample, None);
+        assert_eq!(snapshot.network_samples, 0);
+        assert_eq!(snapshot.network_reserve, ms(50));
     }
 
     #[test]
@@ -1410,7 +1650,7 @@ mod tests {
         let estimator = Estimator::new(config());
         let workload = ValidationLatencyWorkload::new(1_000_000, 10);
         estimator.on_block_verified(1, workload, ms(200));
-        let plan = estimator.build_plan(ms(400));
+        let plan = estimator.build_plan(Instant::now(), ms(400));
         assert_eq!(
             plan.validation_latency().and_then(|e| e.estimate(workload)),
             Some(ms(200))
@@ -1466,7 +1706,7 @@ mod tests {
                 let key = (0, height);
                 let ours = height % self.validators == 0;
                 if ours {
-                    let budget = self.estimator.proposal_budget();
+                    let budget = self.estimator.proposal_budget(self.now);
                     budgets.push(budget.return_budget);
                     let expected_work = self
                         .estimator
@@ -1511,7 +1751,7 @@ mod tests {
         assert_eq!(budgets[0], ms(500));
         // Afterwards the reservation is the measured 210 ms.
         assert_eq!(*budgets.last().unwrap(), ms(340));
-        let snapshot = network.estimator.snapshot();
+        let snapshot = network.estimator.snapshot(network.now);
         assert_eq!(snapshot.network_reserve, ms(210));
         assert_eq!(snapshot.validation_latency_p90, Some(ms(225)));
     }

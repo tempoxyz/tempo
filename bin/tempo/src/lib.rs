@@ -557,6 +557,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
+        // A mapper may rebuild the node and drop the estimator, while consensus keeps this one.
+        let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
         let NodeHandle {
@@ -1173,7 +1175,11 @@ mod tests {
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.15);
         assert_eq!(
-            node_cmd.ext.consensus.network_budget_max.into_duration(),
+            node_cmd
+                .ext
+                .consensus
+                .estimator_config(node_cmd.ext.node_args.builder_build_time_multiplier)
+                .network_budget_max,
             Duration::from_millis(300)
         );
         assert_eq!(node_cmd.ext.consensus.network_reserve_percentile, 75);
