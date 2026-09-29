@@ -350,7 +350,7 @@ jobs:
 
       - name: Publish event (sha tag)
         id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && !startsWith(steps.source.outputs.branch, 'automation/prover-e2e/') }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
@@ -383,7 +383,7 @@ jobs:
 
       - name: Publish event (nightly tag)
         id: publish-nightly-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && !startsWith(steps.source.outputs.branch, 'automation/prover-e2e/') }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
