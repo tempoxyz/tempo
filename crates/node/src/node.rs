@@ -1,6 +1,7 @@
 use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
+    executed_state::{ExecutedState, TempoEngineTreeValidatorBuilder},
     gossip::GossipProtocol,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
@@ -23,8 +24,8 @@ use reth_node_builder::{
         NetworkBuilder, PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
-        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
+        EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_primitives_traits::SealedHeader;
@@ -42,7 +43,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
+use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
@@ -122,6 +123,15 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
+
+    /// Replay canonical blocks under the latest compiled hardfork, or an explicit HARDFORK.
+    #[arg(
+        long = "shadow-replay",
+        visible_alias = "shadow-replay.hardfork",
+        value_name = "HARDFORK",
+        num_args = 0..=1
+    )]
+    pub shadow_replay: Option<Option<TempoHardfork>>,
 }
 
 impl Default for TempoNodeArgs {
@@ -137,6 +147,7 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            shadow_replay: None,
         }
     }
 }
@@ -235,6 +246,8 @@ pub struct TempoNode {
     validator_key: Option<B256>,
     /// Network builder with optional `tempo/1` support.
     network_builder: TempoNetworkBuilder,
+    /// Filled with the engine's in-memory overlay when the node launches.
+    executed_state: ExecutedState,
 }
 
 impl TempoNode {
@@ -245,7 +258,16 @@ impl TempoNode {
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
+            executed_state: ExecutedState::default(),
         }
+    }
+
+    /// Returns the handle that reads the state of blocks executed by this
+    /// node's engine, including blocks on forks.
+    ///
+    /// The handle works after the node is launched.
+    pub fn executed_state(&self) -> ExecutedState {
+        self.executed_state.clone()
     }
 
     /// Announces `tempo/1` for finalization certificate gossip on every session.
@@ -346,7 +368,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        TempoEngineTreeValidatorBuilder,
         Identity,
     >,
     validator_key: Option<B256>,
@@ -357,13 +379,15 @@ where
     N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
+    ///
+    /// `executed_state` is filled when reth launches the engine.
+    pub fn new(validator_key: Option<B256>, executed_state: ExecutedState) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::default(),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                TempoEngineTreeValidatorBuilder::new(executed_state),
                 Identity::default(),
                 Default::default(),
             ),
@@ -434,7 +458,7 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = TempoEngineTreeValidatorBuilder;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -465,7 +489,7 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key, self.executed_state.clone())
     }
 }
 

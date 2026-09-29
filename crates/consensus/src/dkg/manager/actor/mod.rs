@@ -1,10 +1,10 @@
-use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc, task::Poll};
+use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
-    Heightable as _,
+    CertifiableBlock as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
@@ -12,8 +12,8 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{
-            self as dkg, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog,
-            observe,
+            self as dkg, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, Output, PlayerAck,
+            SignedDealerLog, observe,
         },
         primitives::{group::Share, variant::MinSig},
     },
@@ -33,14 +33,18 @@ use commonware_runtime::{
         histogram::{Buckets, Timed},
     },
 };
-use commonware_utils::{Acknowledgement, N3f1, NZU32, acknowledgement::Exact};
+use commonware_utils::{
+    Acknowledgement, N3f1, NZU32,
+    acknowledgement::Exact,
+    futures::{AbortablePool, Aborter},
+};
 
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure, eyre};
 use futures::{
-    FutureExt as _, Stream, StreamExt as _,
+    FutureExt as _, StreamExt as _,
     channel::mpsc,
     future::{Ready, ready},
-    stream::{FusedStream, FuturesOrdered},
+    stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
 use tempo_chainspec::TempoHardforks as _;
@@ -59,7 +63,7 @@ use state::{Dealer, Player, Round, ShareState, State};
 
 use super::{
     Command, EpochManager, ExecutionLayer, Marshal,
-    ingress::{GetDkgOutcome, VerifyDealerLog},
+    ingress::{SubscribeDkgCeremony, VerifyDealerLog},
 };
 
 /// Wire message type for DKG protocol communication.
@@ -117,14 +121,13 @@ impl Read for Message {
 
 pub(crate) struct Actor<
     TContext,
-    TExecutionLayer = Arc<tempo_node::TempoFullNode>,
+    TExecutionLayer = super::TempoExecutionLayer,
     TMarshal = crate::alias::marshal::Mailbox,
-    TEpochManager = crate::epoch::manager::Mailbox,
 > where
     TContext: BufferPooler + Clock + commonware_runtime::Metrics + Storage,
 {
     /// The actor configuration passed in when constructing the actor.
-    config: super::Config<TExecutionLayer, TMarshal, TEpochManager>,
+    config: super::Config<TExecutionLayer, TMarshal>,
 
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
@@ -144,16 +147,14 @@ pub(crate) struct Actor<
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 }
 
-impl<TContext, TExecutionLayer, TMarshal, TEpochManager>
-    Actor<TContext, TExecutionLayer, TMarshal, TEpochManager>
+impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
 where
     TContext: BufferPooler + Clock + CryptoRng + commonware_runtime::Metrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
-    TEpochManager: EpochManager,
 {
     pub(super) async fn new(
-        config: super::Config<TExecutionLayer, TMarshal, TEpochManager>,
+        config: super::Config<TExecutionLayer, TMarshal>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -191,16 +192,18 @@ where
 
     pub(crate) fn start(
         mut self,
+        epoch_manager: impl EpochManager,
         dkg_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(dkg_channel))
+        spawn_cell!(self.context, self.run(epoch_manager, dkg_channel))
     }
 
     async fn run(
         mut self,
+        mut epoch_manager: impl EpochManager,
         (sender, receiver): (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -234,7 +237,10 @@ where
         mux.start();
 
         let reason = loop {
-            if let Err(error) = self.run_dkg_loop(&mut storage, &mut dkg_mux).await {
+            if let Err(error) = self
+                .run_dkg_loop(&mut epoch_manager, &mut storage, &mut dkg_mux)
+                .await
+            {
                 break error;
             }
         };
@@ -272,6 +278,7 @@ where
     #[instrument(skip_all, fields(epoch = %storage.current().epoch))]
     async fn run_dkg_loop<TStorageContext, TSender, TReceiver>(
         &mut self,
+        epoch_manager: &mut impl EpochManager,
         storage: &mut state::Storage<TStorageContext>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<()>
@@ -296,7 +303,7 @@ where
             storage.prune(previous).await;
         }
 
-        self.enter_epoch(&state)
+        self.enter_epoch(epoch_manager, &state)
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
 
         // TODO: emit an event with round info
@@ -338,8 +345,9 @@ where
                 )
             })?;
 
-        let ancestry_ctx = Arc::new(self.context.child("ancestry_stream"));
-        let mut ancestry_stream = AncestorStream::<TMarshal::Ancestry>::new();
+        let fetch_ctx = Arc::new(self.context.child("ancestor_fetch"));
+        let mut outcome_requests = BTreeMap::<Digest, PendingOutcome>::new();
+        let mut fetches = AbortablePool::default();
 
         info_span!("start_dkg", epoch = %state.epoch).in_scope(|| {
             info!(
@@ -352,7 +360,20 @@ where
             )
         });
 
+        // After a restart, storage can already hold the logs of all dealers.
+        self.maybe_conclude_ceremony_for_epoch(storage, &round, &state, player_state.is_some());
+
         loop {
+            self.serve_dkg_outcomes(
+                storage,
+                &player_state,
+                &round,
+                &state,
+                &mut outcome_requests,
+                &mut fetches,
+                &fetch_ctx,
+            )
+            .await;
             let mut shutdown = self.context.stopped().fuse();
             select!(
                 biased;
@@ -386,7 +407,7 @@ where
 
                             storage.set_state(new_state).await;
                             // Emits an error event.
-                            let _ = self.exit_epoch(&state);
+                            let _ = self.exit_epoch(epoch_manager, &state);
 
                             true
                         }
@@ -462,38 +483,22 @@ where
                             });
                         }
 
-                        Command::GetDkgOutcome(request) => {
-                            if let Some(target) = ancestry_stream.tip()
-                            && target == request.digest
-                            {
-                                ancestry_stream.update_receiver((msg.cause, request));
-                                continue;
-                            }
-                            if let Ok(Some((hole, request))) = self
-                                .handle_get_dkg_outcome(
-                                    &msg.cause,
-                                    storage,
-                                    &player_state,
-                                    &round,
-                                    &state,
-                                    request,
-                                )
-                                .await
-                            {
-                                let stream = match self
-                                    .config
-                                    .marshal
-                                    .ancestry(
-                                        ancestry_ctx.clone(),
-                                        (DigestFallback::Wait, hole),
-                                        self.metrics.ancestor_fetch_duration.clone(),
-                                    )
-                                    .await
-                                {
-                                    Some(stream) => stream,
-                                    None => break Err(eyre!("marshal mailbox is closed")),
-                                };
-                                ancestry_stream.set((msg.cause, request), stream);
+                        Command::SubscribeDkgCeremony(request) => {
+                            let epoch = self
+                                .config
+                                .epoch_strategy
+                                .containing(request.parent.height())
+                                .expect("our strategy covers all heights")
+                                .epoch();
+                            if epoch == state.epoch {
+                                outcome_requests.entry(request.parent.digest())
+                                    .or_insert_with(|| PendingOutcome {
+                                        cause: msg.cause,
+                                        parent: request.parent.clone(),
+                                        requests: Vec::new(),
+                                        fetch: None,
+                                    })
+                                    .requests.push(request);
                             }
                         }
                         Command::VerifyDealerLog(verify) => {
@@ -506,29 +511,20 @@ where
                     }
                 }
 
-                Some(notarized_block) = ancestry_stream.next() => {
-                    storage.cache_notarized_block(&round, notarized_block);
-                    let (cause, request) = ancestry_stream
-                        .take_request()
-                        .expect("if the stream is yielding blocks, there must be a receiver");
-                    if let Ok(Some((hole, request))) = self
-                        .handle_get_dkg_outcome(&cause, storage, &player_state, &round, &state, request)
-                        .await
-                    {
-                        let stream = match self
-                            .config
-                            .marshal
-                            .ancestry(
-                                ancestry_ctx.clone(),
-                                (DigestFallback::Wait, hole),
-                                self.metrics.ancestor_fetch_duration.clone(),
-                            )
-                            .await
-                        {
-                            Some(stream) => stream,
-                            None => break Err(eyre!("marshal mailbox is closed")),
-                        };
-                        ancestry_stream.set((cause, request), stream);
+                completion = fetches.next_completed() => {
+                    if let Ok((digest, block)) = completion {
+                        match block {
+                            Some(block) => {
+                                if let Some(pending) = outcome_requests.get_mut(&digest) {
+                                    pending.fetch = None;
+                                    storage.cache_notarized_block(&round, (*block).clone());
+                                }
+                            }
+                            None => {
+                                // This ancestry cannot supply the requested outcome.
+                                outcome_requests.remove(&digest);
+                            }
+                        }
                     }
                 }
             )
@@ -692,11 +688,9 @@ where
         }: VerifyDealerLog,
     ) {
         if state.epoch != epoch {
-            let _ = response.send(Err(eyre!(
-                "requested dealer log for epoch `{epoch}`, but current round \
-                is for epoch `{}`",
-                state.epoch
-            )));
+            // Missing local ceremony state says nothing about the log's validity.
+            // Dropping the response makes the application abstain from certification.
+            warn!(%epoch, current_epoch = %state.epoch, "cannot verify dealer log for another epoch");
             return;
         }
         let res = SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
@@ -712,10 +706,11 @@ where
         .inspect(|_| {
             self.metrics.dealings_read.metric().inc();
         })
-        .inspect_err(|_| {
+        .inspect_err(|reason| {
+            warn!(%reason, "invalid DKG dealer log");
             self.metrics.bad_dealings.metric().inc();
         });
-        let _ = response.send(res);
+        let _ = response.send(res.ok());
     }
 
     /// Handles a finalized block.
@@ -827,6 +822,7 @@ where
         if height != epoch_info.last() {
             self.record_finalized_header(storage, round, header, dealer_state.as_mut())
                 .await;
+            self.maybe_conclude_ceremony_for_epoch(storage, round, state, player_state.is_some());
 
             return Ok(None);
         }
@@ -843,64 +839,10 @@ where
                 debug!("using cached DKG outcome");
                 (outcome.clone(), share.clone())
             } else {
-                let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-                for (k, v) in storage.logs_for_epoch(round.epoch()) {
-                    logs.record(k.clone(), v.clone());
-                }
-
-                let ctx_mut = self.context.as_present_mut();
-                let player_outcome = if let Some(player) = player_state.take() {
-                    info!("we were a player in the ceremony; finalizing share");
-                    match player.finalize(ctx_mut, logs.clone(), &Sequential) {
-                        Ok((new_output, new_share)) => {
-                            info!("local DKG ceremony was a success");
-                            Some((new_output, ShareState::Plaintext(Some(new_share))))
-                        }
-                        // `FinalizeError::Error` means our local player state is
-                        // unusable (missing or invalid persisted dealings) while the
-                        // round itself may have succeeded; `observe` still yields the
-                        // public output, so continue as an observer.
-                        Err(dkg::FinalizeError::Error(reason)) => {
-                            warn!(
-                                reason = %Report::new(reason),
-                                "local DKG state cannot reconstruct a share in this epoch; has \
-                                consensus state been deleted or corrupted, or a node with the same \
-                                identity started without consensus state? Finalizing the current \
-                                round as an observer and will not have a share in the next epoch"
-                            );
-                            None
-                        }
-                        // `FinalizeError::Failure` means the agreed dealer logs cannot
-                        // produce an output for anyone; keep the previous epoch's output.
-                        Err(dkg::FinalizeError::Failure(failure)) => {
-                            warn!(
-                                failure = %Report::new(failure),
-                                "local DKG ceremony was a failure",
-                            );
-                            Some((state.output.clone(), state.share.clone()))
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(outcome) = player_outcome {
-                    outcome
-                } else {
-                    match observe::<_, _, N3f1, Batch>(ctx_mut, logs, &Sequential) {
-                        Ok(output) => {
-                            info!("local DKG ceremony was a success");
-                            (output, ShareState::Plaintext(None))
-                        }
-                        Err(error) => {
-                            warn!(
-                                error = %Report::new(error),
-                                "local DKG ceremony was a failure",
-                            );
-                            (state.output.clone(), state.share.clone())
-                        }
-                    }
-                }
+                let logs = storage
+                    .logs_for_epoch(round.epoch())
+                    .map(|(dealer, log)| (dealer.clone(), log.clone()));
+                self.conclude_ceremony(round, state, player_state.take(), logs)
             };
 
         if local_output != onchain_outcome.output {
@@ -1065,44 +1007,124 @@ where
         Ok(())
     }
 
-    /// Attempts to serve a `GetDkgOutcome` request by finalizing the DKG outcome.
+    /// Serves ready outcome subscriptions and fetches ancestry for the walks
+    /// that still wait for a block.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "subscription handling uses the state scoped to the current epoch"
+    )]
+    async fn serve_dkg_outcomes<TStorageContext>(
+        &mut self,
+        storage: &mut state::Storage<TStorageContext>,
+        player_state: &Option<Player>,
+        round: &Round,
+        state: &State,
+        outcome_requests: &mut BTreeMap<Digest, PendingOutcome>,
+        fetches: &mut AbortablePool<'static, (Digest, Option<Arc<Block>>)>,
+        fetch_ctx: &Arc<TContext>,
+    ) where
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
+    {
+        for (digest, pending) in outcome_requests.iter_mut() {
+            pending
+                .requests
+                .retain(|request| !request.response.is_canceled());
+            match self
+                .handle_subscribe_dkg_ceremony(
+                    &pending.cause,
+                    storage,
+                    player_state,
+                    round,
+                    state,
+                    &pending.parent,
+                )
+                .await
+            {
+                Ok(Outcome::Ready(output)) => {
+                    for request in pending.requests.drain(..) {
+                        let _ = request.response.send(output.clone());
+                    }
+                }
+                Ok(Outcome::NeedsAncestor(height, hole, round)) => {
+                    if pending.fetch.is_none() {
+                        let receiver = self
+                            .config
+                            .marshal
+                            .subscribe_by_digest(hole, DigestFallback::FetchByRound { round });
+                        let timer = self
+                            .metrics
+                            .ancestor_fetch_duration
+                            .timer(fetch_ctx.as_ref());
+                        let context = fetch_ctx.clone();
+                        let cause = pending.cause.clone();
+                        let digest = *digest;
+                        pending.fetch = Some(fetches.push(async move {
+                            let block = receiver.await.ok().filter(|block| {
+                                timer.observe(context.as_ref());
+                                if block.height() == height && block.digest() == hole {
+                                    true
+                                } else {
+                                    warn!(parent: &cause,
+                                        expected.height = %height, expected.digest = %hole,
+                                        actual.height = %block.height(), actual.digest = %block.digest(),
+                                        "fetched DKG ancestor does not match the requested block",
+                                    );
+                                    false
+                                }
+                            });
+                            (digest, block)
+                        }));
+                    }
+                }
+                // The handler logs the error. The request is for another
+                // epoch and cannot succeed later, so drop it to close the
+                // channel.
+                Err(_) => {
+                    pending.requests.clear();
+                    pending.fetch = None;
+                }
+            }
+        }
+        outcome_requests
+            .retain(|_, pending| !pending.requests.is_empty() || pending.fetch.is_some());
+    }
+
+    /// Attempts to conclude the DKG ceremony for a boundary block on top of
+    /// `parent`.
     ///
-    /// A DKG outcome can be finalized in one of the following cases:
+    /// The ceremony uses the finalized dealer logs. For dealers without a
+    /// finalized log, it adds the logs from the notarized blocks between the
+    /// finalized tip and `parent`. Once the logs of all dealers are
+    /// finalized, [`Self::maybe_conclude_ceremony_for_epoch`] has cached the
+    /// output for every parent, and the request does not walk the blocks.
     ///
-    /// 1. if the DKG actor has observed as many dealer logs as there are dealers.
-    /// 2. if all blocks in an epoch were observed (finalized + notarized leading
-    /// up to `request.digest`).
-    ///
-    /// If the DKG was finalized this way, this method will return `None`.
-    /// Otherwise will return `Some((digest, request))` if the block identified
-    /// by `digest` was missing and needs to be fetched first to ensure all
-    /// blocks in an epoch were observed.
+    /// Returns the ceremony output, or identifies the next missing ancestor.
     #[instrument(
         parent = cause,
         skip_all,
         fields(
             as_player = player_state.is_some(),
             our.epoch = %round.epoch(),
-            for_block = %request.digest,
+            for_block = %parent.digest(),
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_get_dkg_outcome<TStorageContext>(
+    async fn handle_subscribe_dkg_ceremony<TStorageContext>(
         &mut self,
         cause: &Span,
         storage: &mut state::Storage<TStorageContext>,
         player_state: &Option<Player>,
         round: &Round,
         state: &State,
-        request: GetDkgOutcome,
-    ) -> eyre::Result<Option<(Digest, GetDkgOutcome)>>
+        parent: &Block,
+    ) -> eyre::Result<Outcome>
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let epoch_info = self
             .config
             .epoch_strategy
-            .containing(request.height)
+            .containing(parent.height())
             .expect("our strategy covers all epochs");
 
         ensure!(
@@ -1112,7 +1134,7 @@ where
         );
 
         let output = if let Some((output, _)) = storage
-            .get_dkg_outcome(&state.epoch, &request.digest)
+            .get_dkg_outcome(&state.epoch, &parent.digest())
             .cloned()
         {
             output
@@ -1122,164 +1144,192 @@ where
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
 
-            'ensure_enough_logs: {
-                if finalized_logs.len() == round.dealers().len() {
-                    info!("collected as many logs as there are dealers; concluding DKG");
-                    break 'ensure_enough_logs;
-                }
-
-                info!(
-                    "did not have all dealer logs yet; will try to extend with \
-                    logs read from notarized blocks and concluding DKG that way",
-                );
-                let mut notarized_logs = BTreeMap::new();
-                let (mut height, mut digest) = (request.height, request.digest);
-                while height >= epoch_info.first()
-                    && Some(height)
-                        >= storage
-                            .get_latest_finalized_block_for_epoch(&round.epoch())
-                            .map(|(_, info)| info.height)
-                {
-                    if let Some(block) =
-                        storage.get_notarized_reduced_block(&round.epoch(), &digest)
-                    {
-                        if let Some((dealer, log)) = block.log.clone()
-                            && !finalized_logs.contains_key(&dealer)
-                        {
-                            // The ancestry walk is newest-to-oldest, so older logs replace
-                            // newer ancestry duplicates while finalized logs stay authoritative.
-                            notarized_logs.insert(dealer, log);
-                        }
-                        height = if let Some(height) = block.height.previous() {
-                            height
-                        } else {
-                            break;
-                        };
-                        digest = block.parent;
-                    } else {
-                        debug!(
-                            missing = %digest,
-                            "cannot yet finalize the DKG because a block is missing"
-                        );
-                        return Ok(Some((digest, request)));
-                    }
-                }
-                for (dealer, log) in notarized_logs {
-                    finalized_logs.entry(dealer).or_insert(log);
-                }
-            }
-
-            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-            debug!(how_many = finalized_logs.len(), "recording longs");
-            for (k, v) in finalized_logs {
-                debug!(?k, ?v, "recording log");
-                logs.record(k, v);
-            }
-
-            // Create a player-state ad hoc: the DKG player object is not
-            // cloneable, and finalizing consumes it.
-            let player_state = player_state.is_some().then(||
-                storage
-                        .create_player_for_round(self.config.me.clone(), round)
-                        .expect("created a player instance before, must be able to create it again")
-                        .expect("did not return a player instance even though we created it for this round already")
+            info!(
+                "did not have all dealer logs yet; will try to extend with \
+                logs read from notarized blocks and concluding DKG that way",
             );
-
-            let (output, share) = {
-                let player_outcome = if let Some(player) = player_state {
-                    info!("we were a player in the ceremony; finalizing share");
-                    match player.finalize(&mut *self.context, logs.clone(), &Sequential) {
-                        Ok((new_output, new_share)) => {
-                            info!("local DKG ceremony was a success");
-                            Some((new_output, ShareState::Plaintext(Some(new_share))))
-                        }
-                        // See the early-finalization match above: local-state
-                        // errors fall through to `observe`, protocol failures
-                        // keep the previous output.
-                        Err(dkg::FinalizeError::Error(reason)) => {
-                            warn!(
-                                reason = %Report::new(reason),
-                                "local DKG state cannot reconstruct a share in this epoch; has \
-                                consensus state been deleted or corrupted, or a node with the same \
-                                identity started without consensus state? Finalizing the current \
-                                round as an observer and will not have a share in the next epoch"
-                            );
-                            None
-                        }
-                        Err(dkg::FinalizeError::Failure(failure)) => {
-                            warn!(
-                                failure = %Report::new(failure),
-                                "local DKG ceremony was a failure",
-                            );
-                            Some((state.output.clone(), state.share.clone()))
-                        }
+            let mut notarized_logs = BTreeMap::new();
+            let (mut height, mut digest) = (parent.height(), parent.digest());
+            let mut ancestor_round = parent.context().round;
+            while height >= epoch_info.first()
+                && Some(height)
+                    >= storage
+                        .get_latest_finalized_block_for_epoch(&round.epoch())
+                        .map(|(_, info)| info.height)
+            {
+                if let Some(block) = storage.get_notarized_reduced_block(&round.epoch(), &digest) {
+                    if let Some((dealer, log)) = block.log.clone()
+                        && !finalized_logs.contains_key(&dealer)
+                    {
+                        // The ancestry walk is newest-to-oldest, so older logs replace
+                        // newer ancestry duplicates while finalized logs stay authoritative.
+                        notarized_logs.insert(dealer, log);
                     }
+                    height = if let Some(height) = block.height.previous() {
+                        height
+                    } else {
+                        break;
+                    };
+                    digest = block.parent;
+                    ancestor_round = block.parent_round;
                 } else {
-                    None
-                };
-
-                if let Some(outcome) = player_outcome {
-                    outcome
-                } else {
-                    match observe::<_, _, N3f1, Batch>(&mut *self.context, logs, &Sequential) {
-                        Ok(output) => {
-                            info!("local DKG ceremony was a success");
-                            (output, ShareState::Plaintext(None))
-                        }
-                        Err(error) => {
-                            warn!(
-                                error = %Report::new(error),
-                                "local DKG ceremony was a failure",
-                            );
-                            (state.output.clone(), state.share.clone())
-                        }
-                    }
+                    debug!(
+                        missing = %digest,
+                        "cannot yet finalize the DKG because a block is missing"
+                    );
+                    return Ok(Outcome::NeedsAncestor(height, digest, ancestor_round));
                 }
-            };
+            }
+            for (dealer, log) in notarized_logs {
+                finalized_logs.entry(dealer).or_insert(log);
+            }
 
-            storage.cache_dkg_outcome(state.epoch, request.digest, output.clone(), share);
+            let player = self.ad_hoc_player(storage, round, player_state.is_some());
+            let (output, share) = self.conclude_ceremony(round, state, player, finalized_logs);
+            storage.cache_dkg_outcome(state.epoch, parent.digest(), output.clone(), share);
             output
         };
 
-        // Check if next ceremony should be full.
-        let next_epoch = state.epoch.next();
-        let will_be_re_dkg = self
-            .config
-            .execution_node
-            .next_full_dkg_epoch(request.digest)
-            // in theory it should never fail, but if it does, just stick to reshare.
-            .is_ok_and(|epoch| epoch == next_epoch.get());
-        info!(
-            will_be_re_dkg,
-            %next_epoch,
-            "determined if the next epoch will be a reshare or full re-dkg process",
-        );
+        Ok(Outcome::Ready(output))
+    }
 
-        let next_players = self
-            .config
-            .execution_node
-            .next_players(request.digest)
-            .wrap_err("could not determine who the next players are supposed to be")?;
+    /// Concludes the ceremony for the whole epoch once the logs of all
+    /// dealers are finalized.
+    ///
+    /// A request for the ceremony output adds logs from notarized blocks only
+    /// for dealers without a finalized log. So from this point, the output is
+    /// the same for each parent of the boundary block. Requests and the
+    /// boundary block use the cached result, and requests do not walk the
+    /// notarized blocks.
+    fn maybe_conclude_ceremony_for_epoch<TStorageContext>(
+        &mut self,
+        storage: &mut state::Storage<TStorageContext>,
+        round: &Round,
+        state: &State,
+        as_player: bool,
+    ) where
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
+    {
+        if storage.has_dkg_outcome_for_epoch(&round.epoch())
+            || storage.logs_for_epoch(round.epoch()).count() != round.dealers().len()
+        {
+            return;
+        }
 
-        request
-            .response
-            .send(OnchainDkgOutcome {
-                epoch: next_epoch.get(),
-                output,
-                next_players,
-                is_next_full_dkg: will_be_re_dkg,
-            })
-            .map_err(|_| {
-                eyre!("requester went away before speculative DKG outcome could be sent")
-            })?;
+        info!("finalized the logs of all dealers; concluding DKG for the epoch");
+        let player = self.ad_hoc_player(storage, round, as_player);
+        let logs = storage
+            .logs_for_epoch(round.epoch())
+            .map(|(dealer, log)| (dealer.clone(), log.clone()));
+        let (output, share) = self.conclude_ceremony(round, state, player, logs);
+        storage.cache_dkg_outcome_for_epoch(round.epoch(), output, share);
+    }
 
-        Ok(None)
+    /// Creates a player for `round` if this node is a player in it.
+    ///
+    /// Concluding a ceremony consumes a player, and the player of the event
+    /// loop cannot be cloned. This player replays the dealings in storage, so
+    /// it gets the same share.
+    fn ad_hoc_player<TStorageContext>(
+        &self,
+        storage: &state::Storage<TStorageContext>,
+        round: &Round,
+        as_player: bool,
+    ) -> Option<Player>
+    where
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
+    {
+        as_player.then(|| {
+            storage
+                .create_player_for_round(self.config.me.clone(), round)
+                .expect("created a player instance before, must be able to create it again")
+                .expect(
+                    "did not return a player instance even though we created it for this \
+                    round already",
+                )
+        })
+    }
+
+    /// Concludes the ceremony of `round` with `logs`.
+    ///
+    /// With a `player`, this node finalizes its share of the new output. If
+    /// its local state cannot give a share, or without a `player`, this node
+    /// only observes the output. If the logs cannot give an output, the
+    /// ceremony fails and the output and share of `state` carry forward.
+    fn conclude_ceremony(
+        &mut self,
+        round: &Round,
+        state: &State,
+        player: Option<Player>,
+        logs: impl IntoIterator<Item = (PublicKey, DealerLog<MinSig, PublicKey>)>,
+    ) -> (Output<MinSig, PublicKey>, ShareState) {
+        let mut ceremony_logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+        for (dealer, log) in logs {
+            ceremony_logs.record(dealer, log);
+        }
+
+        if let Some(player) = player {
+            info!("we were a player in the ceremony; finalizing share");
+            match player.finalize(
+                self.context.as_present_mut(),
+                ceremony_logs.clone(),
+                &Sequential,
+            ) {
+                Ok((output, share)) => {
+                    info!("local DKG ceremony was a success");
+                    return (output, ShareState::Plaintext(Some(share)));
+                }
+                // `FinalizeError::Error` means our local player state is
+                // unusable (missing or invalid persisted dealings) while the
+                // round itself may have succeeded; `observe` still yields the
+                // public output, so continue as an observer.
+                Err(dkg::FinalizeError::Error(reason)) => {
+                    warn!(
+                        reason = %Report::new(reason),
+                        "local DKG state cannot reconstruct a share in this epoch; has \
+                        consensus state been deleted or corrupted, or a node with the same \
+                        identity started without consensus state? Finalizing the current \
+                        round as an observer and will not have a share in the next epoch"
+                    );
+                }
+                // `FinalizeError::Failure` means the agreed dealer logs cannot
+                // produce an output for anyone; keep the previous epoch's output.
+                Err(dkg::FinalizeError::Failure(failure)) => {
+                    warn!(
+                        failure = %Report::new(failure),
+                        "local DKG ceremony was a failure",
+                    );
+                    return (state.output.clone(), state.share.clone());
+                }
+            }
+        }
+
+        match observe::<_, _, N3f1, Batch>(
+            self.context.as_present_mut(),
+            ceremony_logs,
+            &Sequential,
+        ) {
+            Ok(output) => {
+                info!("local DKG ceremony was a success");
+                (output, ShareState::Plaintext(None))
+            }
+            Err(error) => {
+                warn!(
+                    error = %Report::new(error),
+                    "local DKG ceremony was a failure",
+                );
+                (state.output.clone(), state.share.clone())
+            }
+        }
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
-    fn enter_epoch(&mut self, state: &State) -> eyre::Result<()> {
-        self.config
-            .epoch_manager
+    fn enter_epoch(
+        &mut self,
+        epoch_manager: &mut impl EpochManager,
+        state: &State,
+    ) -> eyre::Result<()> {
+        epoch_manager
             .enter(
                 state.epoch,
                 state.output.public().clone(),
@@ -1290,9 +1340,12 @@ where
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
-    fn exit_epoch(&mut self, state: &State) -> eyre::Result<()> {
-        self.config
-            .epoch_manager
+    fn exit_epoch(
+        &mut self,
+        epoch_manager: &mut impl EpochManager,
+        state: &State,
+    ) -> eyre::Result<()> {
+        epoch_manager
             .exit(state.epoch)
             .wrap_err("could not instruct epoch manager to enter epoch")
     }
@@ -1678,7 +1731,7 @@ impl Metrics {
 
         let ancestor_fetch_duration = Timed::new(context.histogram(
             "ancestor_fetch_duration",
-            "Histogram of time taken to fetch a block via the DKG ancestry stream, in seconds",
+            "Histogram of time taken to fetch a block for a DKG outcome, in seconds",
             Buckets::LOCAL,
         ));
 
@@ -1709,81 +1762,23 @@ impl Metrics {
     }
 }
 
-/// A wrapper around an ancestry stream held in an option to make it easier to
-/// use with select macros.
+/// The walk for the ceremony output of a boundary block on top of `parent`.
 ///
-/// Invariant: the inner stream and its matching original request are set and
-/// cleared together.
-struct AncestorStream<T> {
-    pending_request: Option<(Span, GetDkgOutcome)>,
-    inner: Option<T>,
+/// The walk lives while it has requests or waits for a block from marshal.
+/// So it continues after all its requests went away, and a later request
+/// for the same parent gets the output from the storage cache without a new
+/// fetch. It ends when the output is ready, when a fetch fails, or when the
+/// epoch ends.
+struct PendingOutcome {
+    cause: Span,
+    parent: Arc<Block>,
+    requests: Vec<SubscribeDkgCeremony>,
+    fetch: Option<Aborter>,
 }
 
-impl<T> AncestorStream<T>
-where
-    T: Stream<Item = Arc<Block>> + Unpin,
-{
-    fn new() -> Self {
-        Self {
-            pending_request: None,
-            inner: None,
-        }
-    }
-
-    fn take_request(&mut self) -> Option<(Span, GetDkgOutcome)> {
-        self.inner.take();
-        self.pending_request.take()
-    }
-
-    fn set(&mut self, pending_request: (Span, GetDkgOutcome), stream: T) {
-        self.pending_request.replace(pending_request);
-        self.inner.replace(stream);
-    }
-
-    fn tip(&self) -> Option<Digest> {
-        self.pending_request.as_ref().map(|(_, req)| req.digest)
-    }
-
-    fn update_receiver(&mut self, pending_request: (Span, GetDkgOutcome)) {
-        self.pending_request.replace(pending_request);
-    }
-}
-
-impl<T> Stream for AncestorStream<T>
-where
-    T: Stream<Item = Arc<Block>> + Unpin,
-{
-    type Item = Block;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let item = {
-            let this = match self.inner.as_mut() {
-                Some(inner) => inner,
-                None => return Poll::Ready(None),
-            };
-            this.poll_next_unpin(cx)
-        };
-        match futures::ready!(item) {
-            None => {
-                self.inner.take();
-                self.pending_request.take();
-                Poll::Ready(None)
-            }
-            Some(block) => Poll::Ready(Some((*block).clone())),
-        }
-    }
-}
-
-impl<T> FusedStream for AncestorStream<T>
-where
-    T: Stream<Item = Arc<Block>> + Unpin,
-{
-    fn is_terminated(&self) -> bool {
-        self.inner.is_none()
-    }
+enum Outcome {
+    Ready(Output<MinSig, PublicKey>),
+    NeedsAncestor(Height, Digest, commonware_consensus::types::Round),
 }
 
 fn read_dealer_log(
