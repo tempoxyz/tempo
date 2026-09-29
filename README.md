@@ -19,6 +19,8 @@
 
 The blockchain for payments at scale.
 
+Tempo nodes use published [network identities](#network-identities) to verify consensus finalisation and authenticate snapshots.
+
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
 You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://docs.tempo.xyz/guide/use-accounts), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
@@ -160,6 +162,24 @@ just localnet
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
+
+## Network identities
+
+These BLS threshold public keys are built into Tempo nodes and used by both follow/RPC nodes and validators to verify consensus finalisation certificates, including those used to authenticate snapshots.
+
+**Mainnet — from epoch 0**
+
+```text
+0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193
+```
+
+**Testnet (Moderato) — from epoch 51**
+
+```text
+0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c70474798ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242
+```
+
+See the [compiled network identities](./crates/chainspec/src/network_identity.rs) for the built-in values. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/guide/node/validator-troubleshooting#override-network-identity).
 
 ## Security
 
