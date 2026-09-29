@@ -26,6 +26,13 @@ use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
+/// Pending nonce bookkeeping transferred to the coordinator for off-thread cleanup.
+type PendingGeneralGas = (
+    Receiver<BestTransaction>,
+    BTreeMap<u64, HashMap<B256, BestTransaction>>,
+    HashMap<(Address, U256), u64>,
+);
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
@@ -199,9 +206,9 @@ impl BestTransactionsPrewarming {
                             )),
                         );
                     }
-                    BestTransactionsCommand::Stop { drain_rx } => {
+                    BestTransactionsCommand::Stop { drain_rx, pending } => {
                         ctx.prewarm.stop();
-                        drop(drain_rx);
+                        drop((drain_rx, pending));
                         return;
                     }
                 }
@@ -299,9 +306,16 @@ impl Drop for BestTransactionsPrewarming {
         // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
         let (_drain_tx, replacement_rx) = mpsc::channel();
         let drain_rx = core::mem::replace(&mut self.transactions_rx, replacement_rx);
+        let (_, replacement_rx) = mpsc::channel();
+        let pending_rx = core::mem::replace(&mut self.pending_non_payments_rx, replacement_rx);
+        let pending = Box::new((
+            pending_rx,
+            core::mem::take(&mut self.pending_non_payments),
+            core::mem::take(&mut self.blocked_sequences),
+        ));
         let _ = self
             .commands_tx
-            .send(BestTransactionsCommand::Stop { drain_rx });
+            .send(BestTransactionsCommand::Stop { drain_rx, pending });
     }
 }
 
@@ -559,6 +573,8 @@ enum BestTransactionsCommand {
     Stop {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<PrewarmedTransaction>>,
+        /// General-lane bookkeeping is also destroyed off the builder thread.
+        pending: Box<PendingGeneralGas>,
     },
 }
 
@@ -1213,5 +1229,41 @@ mod tests {
             let log = log.lock().unwrap();
             log.yielded == count && log.empty_polls >= completed_advances
         });
+    }
+
+    #[test]
+    fn pending_general_gas_bookkeeping_is_dropped_by_the_coordinator() {
+        let (_, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let (pending_tx, pending_rx) = mpsc::channel();
+        let tx = test_tx(Address::random(), 0);
+        let hash = *tx.hash();
+        let weak = Arc::downgrade(&tx);
+        pending_tx.send(tx.clone()).unwrap();
+        let prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            general_gas_limit: None,
+            pending_non_payments_rx: pending_rx,
+            pending_non_payments: BTreeMap::from([(
+                tx.gas_limit(),
+                HashMap::from_iter([(hash, tx)]),
+            )]),
+            blocked_sequences: HashMap::default(),
+        };
+        drop(prewarming);
+        assert!(
+            weak.upgrade().is_some(),
+            "builder drop must transfer ownership"
+        );
+        let BestTransactionsCommand::Stop { drain_rx, pending } = commands_rx.try_recv().unwrap()
+        else {
+            panic!("expected coordinator cleanup command");
+        };
+        assert_eq!(pending.1.len(), 1);
+        assert_eq!(*pending.0.try_recv().unwrap().hash(), hash);
+        drop((drain_rx, pending));
+        assert!(weak.upgrade().is_none());
     }
 }
