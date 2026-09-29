@@ -921,7 +921,7 @@ where
         &self,
         attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        Box::new(Self::best_transactions_with_attributes(self, attributes))
+        Box::new(self.best_transactions_with_attributes(attributes))
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
