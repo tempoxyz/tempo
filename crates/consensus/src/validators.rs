@@ -163,11 +163,12 @@ where
 
     debug!(height = header.number(), "header found");
 
-    let state_provider = node.state_by_block_hash(block_hash).wrap_err_with(|| {
-        format!("failed to get state from node provider for hash `{block_hash}`")
-    })?;
     let db = State::builder()
-        .with_database(StateProviderDatabase::new(state_provider))
+        .with_database(StateProviderDatabase::new(
+            node.state_by_block_hash(block_hash).wrap_err_with(|| {
+                format!("failed to get state from node provider for hash `{block_hash}`")
+            })?,
+        ))
         .build();
 
     let mut evm = node

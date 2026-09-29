@@ -353,7 +353,7 @@ where
             ));
         }
 
-        let state = StateProviderDatabase::new(evm_state_provider);
+        let state = StateProviderDatabase::new(&evm_state_provider);
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
@@ -1091,6 +1091,7 @@ where
         );
 
         drop(db);
+        drop(evm_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }
