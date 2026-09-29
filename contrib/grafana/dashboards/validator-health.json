@@ -747,7 +747,7 @@
       ],
       "title": "Sync Gap (Finalized - Processed)",
       "type": "stat",
-      "description": "Number of finalized blocks the execution layer has not yet processed (Finalized - Processed height). Should be ~0 on a healthy node. Yellow above 10, red above 100. A persistently growing value means execution is falling behind consensus. Note: this only measures the node's local backlog; if the node stops receiving finalized blocks both heights stall and the gap stays 0 — use Finalization Lag to detect lag relative to the network."
+      "description": "Number of finalized blocks the execution layer has not yet processed (Finalized - Processed height). Should be ~0 on a healthy node. Yellow above 10, red above 100. A persistently growing value means execution is falling behind consensus. This is a local measure: if the node stops receiving finalized blocks both heights stall and the gap stays 0 — use the block rate panel and CW Peers to detect that."
     },
     {
       "datasource": {
@@ -887,7 +887,7 @@
       ],
       "title": "Finalization Lag",
       "type": "stat",
-      "description": "Blocks between this node's locally canonicalized finalized tip and the network's finalized tip. Should be ~0; a growing value means the node is falling behind."
+      "description": "Blocks between the finalized tip this node's consensus layer has seen and the finalized tip its execution layer has committed. Should be ~0; a growing value means execution is falling behind consensus. This is a local measure: if the node stops receiving finalized blocks (cut off or stalled) it stays 0 — use the block rate panel and CW Peers to detect that."
     },
     {
       "datasource": {
