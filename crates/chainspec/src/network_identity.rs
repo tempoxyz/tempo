@@ -6,11 +6,11 @@ use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::Context;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
-const TESTNET_NETWORK_IDENTITY_EPOCH: u64 = 51;
+const TESTNET_NETWORK_IDENTITY_EPOCH: u64 = 1734;
 const TESTNET_NETWORK_IDENTITY: [u8; 96] = hex!(
-    "0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c"
-    "185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c704747"
-    "98ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242"
+    "0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f"
+    "43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4"
+    "642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193"
 );
 
 const MAINNET_NETWORK_IDENTITY_EPOCH: u64 = 0;
