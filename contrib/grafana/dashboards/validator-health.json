@@ -677,7 +677,7 @@
       ],
       "title": "Finalized vs Processed Height",
       "type": "timeseries",
-      "description": "Finalized: highest block height the consensus layer (marshal) knows is finalized. Processed: highest height the execution layer has applied and acknowledged, in order. On a healthy node both lines rise together at the block rate and overlap. A widening gap means the node is receiving finalized blocks faster than it can execute them (e.g. catching up after a restart or slow disk); a flat Finalized line means the node is not learning about new finalized blocks at all (consensus stalled or node partitioned) — check CW Peers and Finalization Lag."
+      "description": "Finalized: highest block height the consensus layer (marshal) knows is finalized. Processed: highest height the execution layer has applied and acknowledged, in order. On a healthy node both lines rise together at the block rate and overlap. A widening gap means the node is receiving finalized blocks faster than it can execute them (e.g. catching up after a restart or slow disk); a flat Finalized line means the node is not learning about new finalized blocks at all (consensus stalled or node partitioned) — check CW Peers and the block rate panel."
     },
     {
       "datasource": {
