@@ -57,6 +57,10 @@ async fn test_fork_schedule() -> eyre::Result<()> {
         .expect("active fork must be in schedule");
     let eth_config: serde_json::Value = provider.raw_request("eth_config".into(), ()).await?;
     assert_eq!(
+        eth_config["current"]["precompiles"]["ECREC"],
+        "0x0000000000000000000000000000000000000001"
+    );
+    assert_eq!(
         active_entry.fork_id.as_deref().unwrap(),
         eth_config["current"]["forkId"].as_str().unwrap()
     );

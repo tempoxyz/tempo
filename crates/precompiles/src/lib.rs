@@ -64,7 +64,7 @@ use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{MovePrecompileError, PrecompileError, PrecompileResult},
+    precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -252,6 +252,10 @@ where
 
     fn addresses(&self) -> Vec<Address> {
         self.base.addresses()
+    }
+
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+        self.base.precompile_ids()
     }
 
     fn contains(&self, address: &Address) -> bool {
