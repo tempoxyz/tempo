@@ -82,7 +82,7 @@ use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorC
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
-    best::{BestTransaction, TempoBestTransactions},
+    best::{BestTransaction, GeneralGasLimit, TempoBestTransactions},
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
@@ -131,15 +131,6 @@ impl PayloadTransactions {
             Self::Parallel(_) => {
                 // Parallel does not use state-aware best transactions iterator.
             }
-        }
-    }
-
-    /// Stop yielding and prewarming non-payment transactions once the general lane is full.
-    fn skip_non_payment(&mut self) {
-        match self {
-            Self::Sequential(txs) => txs.skip_non_payment(),
-            Self::Prewarming(txs) => txs.skip_non_payment(),
-            Self::Parallel(txs) => txs.skip_non_payment(),
         }
     }
 }
@@ -490,10 +481,15 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
-        let minimum_transaction_gas = executor.evm().cfg.gas_params.tx_base_stipend();
-        let mut skip_non_payment = hardfork.is_t5() && general_gas_limit < minimum_transaction_gas;
-        if skip_non_payment {
-            raw_best_txs.skip_non_payment();
+        // The pool caches the T5 payment classification. Keep legacy admission in the builder.
+        let general_gas_budget = hardfork.is_t5().then(|| {
+            GeneralGasLimit::new(
+                general_gas_limit,
+                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+            )
+        });
+        if let Some(limit) = &general_gas_budget {
+            raw_best_txs.set_general_gas_limit(limit.clone());
         }
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
@@ -508,10 +504,15 @@ where
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
                     raw_best_txs,
+                    general_gas_budget.clone(),
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    BestTransactionsPrewarming::new(
+                        prewarm_ctx,
+                        raw_best_txs,
+                        general_gas_budget.clone(),
+                    ),
                 ))
             }
         } else {
@@ -535,16 +536,6 @@ where
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
-
-            // The iterator uses the T5 payment classification. Before T5, keep checking each
-            // transaction against the legacy classification below.
-            if !skip_non_payment
-                && hardfork.is_t5()
-                && general_gas_limit.saturating_sub(non_payment_gas_used) < minimum_transaction_gas
-            {
-                skip_non_payment = true;
-                best_txs.skip_non_payment();
-            }
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
@@ -672,6 +663,9 @@ where
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
                     non_payment_gas_used += result.block_gas_used();
+                    if let Some(limit) = &general_gas_budget {
+                        limit.set_remaining(general_gas_limit.saturating_sub(non_payment_gas_used));
+                    }
                 }
 
                 // Score payload value by the validator-credited fee amount that the

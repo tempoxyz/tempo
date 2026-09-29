@@ -1,10 +1,13 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
-use alloy_primitives::{B256, map::HashMap};
+use alloy_primitives::{Address, B256, U256, map::HashMap};
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -16,7 +19,7 @@ use reth_transaction_pool::{
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{
     StateAwarePoolTransaction,
-    best::{BestTransaction, TempoBestTransactions},
+    best::{BestTransaction, GeneralGasLimit, TempoBestTransactions},
     transaction::TempoPoolTransactionError,
 };
 use tracing::{instrument, trace};
@@ -31,27 +34,38 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
-    skip_non_payment: Arc<AtomicBool>,
+    general_gas_limit: Option<GeneralGasLimit>,
+    pending_non_payments_rx: Receiver<BestTransaction>,
+    /// Pending nonce ancestors indexed by admission gas, so budget updates need no buffer scan.
+    pending_non_payments: BTreeMap<u64, HashMap<B256, BestTransaction>>,
+    blocked_sequences: HashMap<(Address, U256), u64>,
 }
 
 impl BestTransactionsPrewarming {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs, Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
-        best_txs: Txs,
+        mut best_txs: Txs,
+        general_gas_limit: Option<GeneralGasLimit>,
     ) -> Self
     where
         Txs: TempoBestTransactions<Item = BestTransaction> + Send + 'static,
         Provider: StateProviderFactory + Clone + 'static,
     {
+        if let Some(limit) = &general_gas_limit {
+            best_txs.set_general_gas_limit(limit.clone());
+        }
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
-        let skip_non_payment = Arc::new(AtomicBool::new(false));
+        let (pending_non_payments_tx, pending_non_payments_rx) = mpsc::channel();
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
-            skip_non_payment: skip_non_payment.clone(),
+            general_gas_limit: general_gas_limit.clone(),
+            pending_non_payments_rx,
+            pending_non_payments: BTreeMap::new(),
+            blocked_sequences: HashMap::default(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -67,7 +81,8 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
-                        skip_non_payment,
+                        general_gas_limit,
+                        pending_non_payments_tx,
                     },
                 );
             });
@@ -98,6 +113,14 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+                // Register before scheduling this transaction or any nonce descendants. Even an
+                // out-of-order payment result must observe its pending non-payment ancestors.
+                if ctx.general_gas_limit.is_some()
+                    && !tx.transaction.is_payment()
+                    && !tx.transaction.is_expiring_nonce()
+                {
+                    let _ = ctx.pending_non_payments_tx.send(tx.clone());
+                }
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
@@ -110,7 +133,7 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
-                let skip_non_payment = ctx.skip_non_payment.clone();
+                let general_gas_limit = ctx.general_gas_limit.clone();
 
                 if !parallel {
                     let _ = ctx
@@ -119,8 +142,9 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
-                    let tx = if skip_non_payment.load(Ordering::Relaxed)
-                        && !tx.transaction.is_payment()
+                    let tx = if general_gas_limit
+                        .as_ref()
+                        .is_some_and(|limit| !limit.fits(&tx))
                     {
                         PrewarmedTransaction::without_replay(tx)
                     } else {
@@ -167,45 +191,13 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::SkipBlobs(skip_blobs) => {
                         ctx.best_txs.set_skip_blobs(skip_blobs);
                     }
-                    BestTransactionsCommand::SkipNonPayment { old_rx, new_tx } => {
-                        ctx.best_txs.skip_non_payment();
-                        ctx.transactions_tx = new_tx;
-
-                        // Wait for in-flight workers on the old channel before filtering. Parallel
-                        // execution can return a payment before its non-payment ancestor.
-                        let buffered = old_rx.into_iter().flatten().collect::<Vec<_>>();
-                        let mut blocked_sequences = HashMap::new();
-                        for tx in &buffered {
-                            if !tx.tx.transaction.is_payment() {
-                                ctx.best_txs.mark_invalid(
-                                    &tx.tx,
-                                    InvalidPoolTransactionError::Other(Box::new(
-                                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                                    )),
-                                );
-                                if !tx.tx.transaction.is_expiring_nonce() {
-                                    let nonce = blocked_sequences
-                                        .entry((
-                                            tx.tx.transaction.sender(),
-                                            tx.tx.transaction.nonce_key().unwrap_or_default(),
-                                        ))
-                                        .or_insert(tx.tx.nonce());
-                                    *nonce = (*nonce).min(tx.tx.nonce());
-                                }
-                            }
-                        }
-                        for tx in buffered {
-                            if tx.tx.transaction.is_payment()
-                                && !blocked_sequences
-                                    .get(&(
-                                        tx.tx.transaction.sender(),
-                                        tx.tx.transaction.nonce_key().unwrap_or_default(),
-                                    ))
-                                    .is_some_and(|nonce| tx.tx.nonce() >= *nonce)
-                            {
-                                let _ = ctx.transactions_tx.send(Some(tx));
-                            }
-                        }
+                    BestTransactionsCommand::ExceedsGeneralGas(tx) => {
+                        ctx.best_txs.mark_invalid(
+                            &tx,
+                            InvalidPoolTransactionError::Other(Box::new(
+                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                            )),
+                        );
                     }
                     BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
@@ -316,25 +308,100 @@ impl Drop for BestTransactionsPrewarming {
     }
 }
 
+impl BestTransactionsPrewarming {
+    /// Lazily discard newly oversized ancestors and their buffered nonce descendants.
+    fn fits_general_gas(&mut self, tx: &BestTransaction) -> bool {
+        let Some(limit) = &self.general_gas_limit else {
+            return true;
+        };
+        // A result is received before draining registrations: the coordinator registers a
+        // non-payment before scheduling it or any descendants, even in parallel mode.
+        while let Ok(pending) = self.pending_non_payments_rx.try_recv() {
+            self.pending_non_payments
+                .entry(limit.required_gas(&pending))
+                .or_default()
+                .insert(*pending.hash(), pending);
+        }
+        let remaining = limit.remaining();
+        let required = limit.required_gas(tx);
+        let fits = tx.transaction.is_payment() || required <= remaining;
+        while self
+            .pending_non_payments
+            .last_key_value()
+            .is_some_and(|(gas, _)| *gas > remaining)
+        {
+            let (_, pending) = self
+                .pending_non_payments
+                .pop_last()
+                .expect("oversized entry exists");
+            for (_, ancestor) in pending {
+                self.reject_general_gas(ancestor);
+            }
+        }
+        if let std::collections::btree_map::Entry::Occupied(mut entry) =
+            self.pending_non_payments.entry(required)
+        {
+            entry.get_mut().remove(tx.hash());
+            if entry.get().is_empty() {
+                entry.remove();
+            }
+        }
+        if !tx.transaction.is_expiring_nonce()
+            && self
+                .blocked_sequences
+                .get(&(
+                    tx.transaction.sender(),
+                    tx.transaction.nonce_key().unwrap_or_default(),
+                ))
+                .is_some_and(|nonce| tx.nonce() >= *nonce)
+        {
+            return false;
+        }
+        if !fits {
+            self.reject_general_gas(tx.clone());
+        }
+        fits
+    }
+
+    /// Invalidate the source without rotating or rescanning the result channel.
+    fn reject_general_gas(&mut self, tx: BestTransaction) {
+        if !tx.transaction.is_expiring_nonce() {
+            let nonce = self
+                .blocked_sequences
+                .entry((
+                    tx.transaction.sender(),
+                    tx.transaction.nonce_key().unwrap_or_default(),
+                ))
+                .or_insert(tx.nonce());
+            *nonce = (*nonce).min(tx.nonce());
+        }
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::ExceedsGeneralGas(tx));
+    }
+}
+
 impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Empty replies describe earlier source polls. Drain them before deciding
-        // whether a ready transaction exists, preserving the order of actual txs.
-        if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
-            return Some(tx);
+        loop {
+            // Empty replies describe earlier source polls, not necessarily the current buffer.
+            let tx = if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
+                tx
+            } else {
+                self.commands_tx
+                    .send(BestTransactionsCommand::Advance)
+                    .ok()?;
+                self.transactions_rx
+                    .recv()
+                    .ok()?
+                    .or_else(|| self.transactions_rx.try_iter().flatten().next())?
+            };
+            if self.fits_general_gas(&tx.tx) {
+                return Some(tx);
+            }
         }
-        self.commands_tx
-            .send(BestTransactionsCommand::Advance)
-            .ok()?;
-        // An eager advance can also reply empty while this receive is waiting.
-        // Check for buffered transactions before reporting empty to the builder,
-        // but do not wait for more replies: it must still check its build budget.
-        self.transactions_rx
-            .recv()
-            .ok()?
-            .or_else(|| self.transactions_rx.try_iter().flatten().next())
     }
 }
 
@@ -372,19 +439,6 @@ impl BestTransactions for BestTransactionsPrewarming {
     }
 }
 
-impl TempoBestTransactions for BestTransactionsPrewarming {
-    fn skip_non_payment(&mut self) {
-        if self.skip_non_payment.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        let (new_tx, new_rx) = mpsc::channel();
-        let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
-        let _ = self
-            .commands_tx
-            .send(BestTransactionsCommand::SkipNonPayment { old_rx, new_tx });
-    }
-}
-
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
@@ -393,7 +447,8 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
-    skip_non_payment: Arc<AtomicBool>,
+    general_gas_limit: Option<GeneralGasLimit>,
+    pending_non_payments_tx: Sender<BestTransaction>,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -518,10 +573,7 @@ enum BestTransactionsCommand {
     },
     NoUpdates,
     SkipBlobs(bool),
-    SkipNonPayment {
-        old_rx: Receiver<Option<PrewarmedTransaction>>,
-        new_tx: Sender<Option<PrewarmedTransaction>>,
-    },
+    ExceedsGeneralGas(BestTransaction),
     Stop {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -574,7 +626,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
 mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Bytes, Signature, TxKind};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
@@ -605,7 +657,7 @@ mod tests {
         invalid: usize,
         no_updates: usize,
         skip_blobs: Vec<bool>,
-        skip_non_payment: usize,
+        general_gas_limit: usize,
     }
 
     struct TestBestTransactions {
@@ -659,18 +711,10 @@ mod tests {
     }
 
     impl TempoBestTransactions for TestBestTransactions {
-        fn skip_non_payment(&mut self) {
-            self.log.lock().unwrap().skip_non_payment += 1;
-            let skipped = self
-                .txs
-                .iter()
-                .filter(|tx| !tx.transaction.is_payment())
-                .cloned()
-                .collect::<Vec<_>>();
-            self.txs.retain(|tx| tx.transaction.is_payment());
-            for tx in skipped {
-                self.mark_invalid(&tx, InvalidPoolTransactionError::ExceedsGasLimit(1, 0));
-            }
+        fn set_general_gas_limit(&mut self, _limit: GeneralGasLimit) {
+            // Deliberately leave source filtering to the real pool iterator tests, so these
+            // tests exercise the prewarmer's checks of already-selected transactions.
+            self.log.lock().unwrap().general_gas_limit += 1;
         }
     }
 
@@ -719,6 +763,16 @@ mod tests {
         nonce_key: U256,
         nonce: u64,
     ) -> BestTransaction {
+        test_aa_tx(sender, gas_limit, nonce_key, nonce, true)
+    }
+
+    fn test_aa_tx(
+        sender: Address,
+        gas_limit: u64,
+        nonce_key: U256,
+        nonce: u64,
+        payment: bool,
+    ) -> BestTransaction {
         let mut token = [0u8; 20];
         token[..2].copy_from_slice(&[0x20, 0xc0]);
         let token = Address::from(token);
@@ -731,13 +785,13 @@ mod tests {
             fee_token: Some(token),
             gas_limit,
             calls: vec![Call {
-                to: TxKind::Call(token),
+                to: TxKind::Call(if payment { token } else { Address::random() }),
                 value: U256::ZERO,
                 input: input.into(),
             }],
             nonce_key,
-            valid_before: (nonce_key == U256::MAX).then_some(NonZeroU64::new(100).unwrap()),
             nonce,
+            valid_before: (nonce_key == U256::MAX).then(|| NonZeroU64::new(u64::MAX).unwrap()),
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
@@ -800,8 +854,11 @@ mod tests {
         parallel: bool,
     ) -> TestPrewarming {
         let context = prewarming_context(executor.clone(), parallel);
-        let prewarming =
-            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
+        let prewarming = BestTransactionsPrewarming::new(
+            context,
+            TestBestTransactions::new(txs, log),
+            Some(GeneralGasLimit::new(u64::MAX, u64::MAX)),
+        );
         TestPrewarming {
             prewarming: Some(prewarming),
             executor,
@@ -906,10 +963,13 @@ mod tests {
         ];
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_mode(TaskExecutor::test(), txs, log.clone(), parallel);
-        wait_until(|| log.lock().unwrap().yielded == 4);
+        wait_for_buffered(&prewarming, &log, 4);
 
-        prewarming.skip_non_payment();
-        prewarming.skip_non_payment();
+        prewarming
+            .general_gas_limit
+            .as_ref()
+            .unwrap()
+            .set_remaining(0);
         let mut actual = (0..2)
             .map(|_| *prewarming.next().expect("independent payment").tx.hash())
             .collect::<Vec<_>>();
@@ -918,7 +978,7 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(actual, expected);
         assert!(prewarming.next().is_none());
-        assert_eq!(log.lock().unwrap().skip_non_payment, 1);
+        assert_eq!(log.lock().unwrap().general_gas_limit, 1);
     }
 
     #[test]
@@ -976,6 +1036,10 @@ mod tests {
                 transactions_rx,
                 commands_tx,
                 stop: Arc::default(),
+                general_gas_limit: None,
+                pending_non_payments_rx: mpsc::channel().1,
+                pending_non_payments: BTreeMap::new(),
+                blocked_sequences: HashMap::default(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
@@ -1009,6 +1073,10 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            general_gas_limit: None,
+            pending_non_payments_rx: mpsc::channel().1,
+            pending_non_payments: BTreeMap::new(),
+            blocked_sequences: HashMap::default(),
         };
 
         let next = prewarming.next();
@@ -1035,6 +1103,10 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            general_gas_limit: None,
+            pending_non_payments_rx: mpsc::channel().1,
+            pending_non_payments: BTreeMap::new(),
+            blocked_sequences: HashMap::default(),
         };
 
         assert!(prewarming.next().is_none());
@@ -1062,6 +1134,10 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            general_gas_limit: None,
+            pending_non_payments_rx: mpsc::channel().1,
+            pending_non_payments: BTreeMap::new(),
+            blocked_sequences: HashMap::default(),
         };
 
         assert_eq!(
@@ -1188,6 +1264,10 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            general_gas_limit: None,
+            pending_non_payments_rx: mpsc::channel().1,
+            pending_non_payments: BTreeMap::new(),
+            blocked_sequences: HashMap::default(),
         };
 
         // Leave the coordinator commands unprocessed: the original buffer must
@@ -1249,5 +1329,115 @@ mod tests {
         for expected in remaining {
             assert_eq!(prewarming.next().unwrap().tx.hash(), expected.hash());
         }
+    }
+
+    #[test]
+    fn remaining_gas_filters_buffered_large_transactions_but_keeps_smaller_ones() {
+        for parallel in [false, true] {
+            let large = test_tx_with_gas_limit(Address::random(), 0, 300_000);
+            let exact = test_tx_with_gas_limit(Address::random(), 0, 200_000);
+            let small = test_tx_with_gas_limit(Address::random(), 0, 100_000);
+            let payment = test_payment_tx(Address::random(), 500_000);
+            let log = Arc::new(Mutex::new(TestLog::default()));
+            let mut prewarming = prewarming_with_mode(
+                TaskExecutor::test(),
+                vec![large, exact.clone(), small.clone(), payment.clone()],
+                log.clone(),
+                parallel,
+            );
+            wait_for_buffered(&prewarming, &log, 4);
+            prewarming
+                .general_gas_limit
+                .as_ref()
+                .unwrap()
+                .set_remaining(200_000);
+            let mut actual = (0..3)
+                .map(|_| *prewarming.next().unwrap().tx.hash())
+                .collect::<Vec<_>>();
+            let mut expected = vec![*exact.hash(), *small.hash(), *payment.hash()];
+            actual.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(actual, expected);
+            assert!(prewarming.next().is_none());
+        }
+    }
+
+    #[test]
+    fn remaining_gas_preserves_nonce_dependencies_and_expiring_independence() {
+        for parallel in [false, true] {
+            for nonce_key in [U256::ZERO, U256::ONE, U256::MAX] {
+                let sender = Address::random();
+                let general = test_aa_tx(sender, 300_000, nonce_key, 0, false);
+                let child = test_payment_tx_with_nonce(
+                    sender,
+                    500_000,
+                    nonce_key,
+                    u64::from(nonce_key != U256::MAX),
+                );
+                let independent = test_payment_tx(Address::random(), 500_000);
+                let log = Arc::new(Mutex::new(TestLog::default()));
+                // Simulate an out-of-order result: the child is already buffered first.
+                let mut prewarming = prewarming_with_mode(
+                    TaskExecutor::test(),
+                    vec![child.clone(), general, independent.clone()],
+                    log.clone(),
+                    parallel,
+                );
+                wait_for_buffered(&prewarming, &log, 3);
+                prewarming
+                    .general_gas_limit
+                    .as_ref()
+                    .unwrap()
+                    .set_remaining(200_000);
+                let mut expected = vec![*independent.hash()];
+                if nonce_key == U256::MAX {
+                    expected.push(*child.hash());
+                }
+                let mut actual = (0..expected.len())
+                    .map(|_| *prewarming.next().unwrap().tx.hash())
+                    .collect::<Vec<_>>();
+                actual.sort_unstable();
+                expected.sort_unstable();
+                assert_eq!(actual, expected);
+                assert!(prewarming.next().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn decreasing_budget_does_not_reject_descendants_of_already_yielded_ancestors() {
+        let sender = Address::random();
+        let general = test_tx_with_gas_limit(sender, 0, 300_000);
+        let child = test_payment_tx_with_nonce(sender, 500_000, U256::ZERO, 1);
+        let small = test_tx_with_gas_limit(Address::random(), 0, 100_000);
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming(
+            vec![general.clone(), child.clone(), small.clone()],
+            log.clone(),
+        );
+        wait_for_buffered(&prewarming, &log, 3);
+        prewarming
+            .general_gas_limit
+            .as_ref()
+            .unwrap()
+            .set_remaining(300_000);
+        assert_eq!(prewarming.next().unwrap().tx.hash(), general.hash());
+        // The builder charged 50k actual gas, not the transaction's 300k admission limit.
+        prewarming
+            .general_gas_limit
+            .as_ref()
+            .unwrap()
+            .set_remaining(250_000);
+        assert_eq!(prewarming.next().unwrap().tx.hash(), child.hash());
+        assert_eq!(prewarming.next().unwrap().tx.hash(), small.hash());
+        assert!(prewarming.next().is_none());
+    }
+
+    fn wait_for_buffered(prewarming: &TestPrewarming, log: &Mutex<TestLog>, count: usize) {
+        let completed_advances = prewarming.executor.prewarming_pool().current_num_threads() * 2;
+        wait_until(|| {
+            let log = log.lock().unwrap();
+            log.yielded == count && log.empty_polls >= completed_advances
+        });
     }
 }
