@@ -224,14 +224,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count(consensus_network_tracker_connected{${instance_label}=~\"$instance.*\"})",
+          "expr": "count(consensus_network_tracker_directory_connected{${instance_label}=~\"$instance.*\"})",
           "legendFormat": "connected",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "max(consensus_network_tracker_tracked{${instance_label}=~\"$instance.*\"})",
+          "expr": "max(consensus_network_tracker_directory_tracked{${instance_label}=~\"$instance.*\"})",
           "legendFormat": "tracked",
           "range": true,
           "refId": "B"
