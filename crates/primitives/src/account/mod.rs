@@ -29,7 +29,7 @@ pub fn decode_config_commitment(payload: &[u8], t14_active: bool) -> alloy_rlp::
         return Err(Error::Custom("unsupported account commitment format"));
     }
     let hash = B256::try_from(&payload[1..])
-        .map_err(|_| Error::Custom("account commitment must be 32 bytes"))?;
+        .map_err(|_| Error::Custom("tagged account commitment must be 33 bytes"))?;
     if hash.is_zero() {
         return Err(Error::Custom("explicit zero account commitment"));
     }
