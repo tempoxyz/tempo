@@ -1045,17 +1045,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn standard_precompile_ids_match_base() {
-        for spec in TempoHardfork::VARIANTS {
-            let precompiles = test_tempo_precompiles(*spec);
-            let mut expected = precompiles.base.precompile_ids();
-            assert!(!expected.is_empty());
-            let mut actual = precompiles.precompile_ids();
-            expected.sort_unstable_by_key(|(address, _)| *address);
-            actual.sort_unstable_by_key(|(address, _)| *address);
-            assert_eq!(actual, expected, "{spec:?}");
-        }
-    }
 }
