@@ -22,7 +22,23 @@ const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
 /// PCR0/1/2 policy changes, ordered from oldest to newest hardfork. Each entry takes effect at
 /// its hardfork and remains in effect until a newer entry replaces them.
-const APPROVED_PCRS: &[(TempoHardfork, [[u8; 48]; 3])] = &[];
+///
+/// Measurements for the T11 EIF built from `tempoxyz/zones` at commit
+/// `8d1745d5ef7aff2e8809fede3e28eac92651d2a3`.
+const APPROVED_PCRS: &[(TempoHardfork, [[u8; 48]; 3])] = &[(
+    TempoHardfork::T13,
+    [
+        alloy::primitives::hex!(
+            "9c2120ccd3d9315733471272a19150a54731c312603b680a39944a735c11116147fbbdf4f99ee4925708a06d92b2b41f"
+        ),
+        alloy::primitives::hex!(
+            "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81"
+        ),
+        alloy::primitives::hex!(
+            "b98dbc1b38545ff2babc8977d0e98ec6be2563b906b18abd05e8daba6d98abff8f7e3544c41e9a2193ddaef36e10b33f"
+        ),
+    ],
+)];
 
 /// Return the measurements accepted by the native verifier at this hardfork.
 pub fn approved_pcrs(hardfork: TempoHardfork) -> Option<[[u8; 48]; 3]> {
