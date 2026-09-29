@@ -1,14 +1,15 @@
 //! RPC types for the consensus namespace.
 
-use std::fmt::Display;
+use std::{fmt::Display, sync::Arc};
 
 use alloy_primitives::B256;
 use futures::Future;
 use reth_primitives_traits::SealedOrRecoveredBlock;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use tempo_payload_types::serde_sealed_or_recovered_block;
 use tempo_primitives::Block;
-use tokio::sync::broadcast;
+use tokio::sync::{OnceCell, broadcast};
 
 /// A block with a threshold BLS certificate (notarization or finalization).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -60,6 +61,51 @@ pub enum Event {
         /// Unix timestamp in milliseconds when this event was observed.
         seen: u64,
     },
+}
+
+/// A consensus event broadcast to all subscribers.
+///
+/// Every subscriber gets a cheap [`Arc`] clone, and the event, which can carry a large block, is
+/// serialized to JSON only once and reused for every subscription notification.
+pub struct SharedEvent {
+    event: Event,
+    /// Encoded on first use. tokio's [`OnceCell`] makes concurrent subscribers await that
+    /// encoding instead of blocking runtime threads.
+    json: OnceCell<Box<RawValue>>,
+}
+
+impl SharedEvent {
+    /// Wraps an event for broadcasting.
+    pub fn new(event: Event) -> Arc<Self> {
+        Arc::new(Self {
+            event,
+            json: Default::default(),
+        })
+    }
+
+    /// Returns the underlying event.
+    pub const fn event(&self) -> &Event {
+        &self.event
+    }
+
+    /// Returns the JSON encoding of the event, serializing it on the first call.
+    pub async fn json(&self) -> &RawValue {
+        self.json
+            .get_or_init(|| async {
+                serde_json::value::to_raw_value(&self.event).expect("Event should be serializable")
+            })
+            .await
+    }
+}
+
+impl std::fmt::Debug for SharedEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The cached JSON duplicates the event, so only report whether it has been encoded.
+        f.debug_struct("SharedEvent")
+            .field("event", &self.event)
+            .field("encoded", &self.json.initialized())
+            .finish()
+    }
 }
 
 /// Query for consensus data.
@@ -135,16 +181,17 @@ pub trait ConsensusFeed: Send + Sync + 'static {
     fn get_latest(&self) -> impl Future<Output = ConsensusState> + Send;
 
     /// Subscribe to consensus events.
-    fn subscribe(&self) -> impl Future<Output = Option<broadcast::Receiver<Event>>> + Send;
+    fn subscribe(
+        &self,
+    ) -> impl Future<Output = Option<broadcast::Receiver<Arc<SharedEvent>>>> + Send;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn certified_block_roundtrips_legacy_plain_block_json() {
-        let fixture = serde_json::json!({
+    fn certified_block_fixture() -> serde_json::Value {
+        serde_json::json!({
             "epoch": 7,
             "view": 11,
             "digest": "0x1111111111111111111111111111111111111111111111111111111111111111",
@@ -176,11 +223,29 @@ mod tests {
                     "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
                 }
             }
-        });
+        })
+    }
 
+    #[test]
+    fn certified_block_roundtrips_legacy_plain_block_json() {
+        let fixture = certified_block_fixture();
         let certified: CertifiedBlock = serde_json::from_value(fixture.clone()).unwrap();
         let roundtripped = serde_json::to_value(certified).unwrap();
 
         assert_eq!(roundtripped, fixture);
+    }
+
+    #[tokio::test]
+    async fn shared_event_json_matches_event_serialization() {
+        let event = Event::Finalized {
+            block: serde_json::from_value(certified_block_fixture()).unwrap(),
+            seen: 42,
+        };
+        let shared = SharedEvent::new(event.clone());
+
+        assert_eq!(
+            shared.json().await.get(),
+            serde_json::to_string(&event).unwrap()
+        );
     }
 }
