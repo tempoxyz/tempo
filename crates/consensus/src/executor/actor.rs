@@ -1100,7 +1100,12 @@ where
                 Height::new(height),
             )
             .await
-            .wrap_err_with(|| format!("failed backfilling block for height `{height}`"))?;
+            .wrap_err_with(|| {
+                format!(
+                    "failed backfilling block for height `{height}`: execution state is likely stale. \
+                     Run as a follower to sync to tip or restore a fresher snapshot"
+                )
+            })?;
 
             let (ack, _wait) = Exact::handle();
             let request = FinalizedBlockRequest {
