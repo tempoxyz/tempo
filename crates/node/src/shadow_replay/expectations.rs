@@ -8,6 +8,7 @@ use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post
 use alloy::{
     consensus::Transaction as _,
     primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
+    sol_types::SolCall as _,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
@@ -283,6 +284,32 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
+/// Accepts rollback and fee effects of a direct TIP-20 transfer halted by T12's SSTORE sentry.
+const T12_SSTORE_SENTRY: Expectation = Expectation {
+    id: "t12.sstore-sentry",
+    check: |ctx, field| {
+        let (real, shadow) = ctx.observed_txs()?;
+        if real.outcome != TxOutcome::Success
+            || shadow.outcome != TxOutcome::Halt
+            || !shadow.sstore_sentry
+            || field.name == "execution"
+        {
+            return None;
+        }
+
+        // A contract can catch a sentry failure and later halt for an unrelated reason. Restrict
+        // this rule to one direct transfer, whose storage errors propagate to the tx outcome.
+        // In particular, a marker from an earlier AA subcall must not excuse a later halt.
+        let mut calls = ctx.call();
+        let (kind, calldata) = calls.next()?;
+        if calls.next().is_some() || !kind.to()?.is_tip20() {
+            return None;
+        }
+        ITIP20::transferCall::abi_decode(calldata).ok()?;
+        Some(())
+    },
+};
+
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
 const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
     (
@@ -291,6 +318,7 @@ const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
             T12_ALLOW_PRECOMPILE_ABI_SUFFIX,
             T12_TIP20_CHANNEL,
             T12_STABLECOIN_DEX,
+            T12_SSTORE_SENTRY,
         ],
     ),
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
@@ -385,6 +413,7 @@ mod tests {
                 T12_ALLOW_PRECOMPILE_ABI_SUFFIX.id,
                 T12_TIP20_CHANNEL.id,
                 T12_STABLECOIN_DEX.id,
+                T12_SSTORE_SENTRY.id,
             ]
         );
         assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
@@ -625,5 +654,94 @@ mod tests {
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
+    }
+
+    #[test]
+    fn sentry_expectation_requires_a_direct_transfer_and_recorded_failure() {
+        let transfer = Call {
+            to: TxKind::Call(address!("20c0000000000000000000000000000000000001")),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: Address::ZERO,
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+        };
+        let mut real = evidence(&[32_366, 21_000]);
+        let mut shadow = evidence(&[35_212, 21_000]);
+        let halted = tx_mut(&mut shadow, 0);
+        halted.outcome = TxOutcome::Halt;
+        halted.sstore_sentry = true;
+        halted.receipt_logs_hash = B256::repeat_byte(1);
+        halted.output_hash = KECCAK256_EMPTY;
+        write_slot(tx_mut(&mut real, 0), 900);
+        write_slot(tx_mut(&mut shadow, 0), 800);
+
+        let block = block(vec![signed_tx(vec![transfer.clone()])]);
+        let rules = between(TempoHardfork::T11, TempoHardfork::T12);
+        let report = Report::analyze(&real, &shadow, &rules, &block);
+        assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
+        assert_eq!(report.expected, [(T12_SSTORE_SENTRY.id, 4)].into());
+
+        tx_mut(&mut shadow, 0).sstore_sentry = false;
+        assert_eq!(
+            Report::analyze(&real, &shadow, &rules, &block).unexplained,
+            4
+        );
+        tx_mut(&mut shadow, 0).sstore_sentry = true;
+        for outcome in [TxOutcome::Success, TxOutcome::Revert] {
+            tx_mut(&mut shadow, 0).outcome = outcome;
+            assert!(Report::analyze(&real, &shadow, &rules, &block).unexplained > 0);
+        }
+        tx_mut(&mut shadow, 0).outcome = TxOutcome::Halt;
+        tx_mut(&mut real, 0).outcome = TxOutcome::Revert;
+        assert_eq!(
+            Report::analyze(&real, &shadow, &rules, &block).unexplained,
+            4
+        );
+        tx_mut(&mut real, 0).outcome = TxOutcome::Success;
+
+        let field = Field {
+            name: "outcome",
+            address: None,
+            slot: None,
+            fee_associated: false,
+        };
+        for calls in [
+            vec![],
+            vec![transfer.clone(), transfer.clone()],
+            vec![Call {
+                to: TxKind::Call(LIFI_DIAMOND),
+                ..transfer.clone()
+            }],
+            vec![Call {
+                input: Default::default(),
+                ..transfer
+            }],
+        ] {
+            let tx = signed_tx(calls);
+            let ctx = Context {
+                boundary: Boundary::Transaction(0),
+                real: &real,
+                shadow: &shadow,
+                base_fee: None,
+                tx: Some(&tx),
+            };
+            assert!((T12_SSTORE_SENTRY.check)(&ctx, &field).is_none());
+        }
+
+        // No acceptance outside the activation boundary or at another transaction.
+        let rules = between(TempoHardfork::T12, TempoHardfork::T12);
+        assert_eq!(
+            Report::analyze(&real, &shadow, &rules, &block).unexplained,
+            4
+        );
+        tx_mut(&mut shadow, 1).outcome = TxOutcome::Halt;
+        let rules = between(TempoHardfork::T11, TempoHardfork::T12);
+        assert_eq!(
+            Report::analyze(&real, &shadow, &rules, &block).unexplained,
+            1
+        );
     }
 }

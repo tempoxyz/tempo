@@ -54,6 +54,7 @@ use tempo_chainspec::{
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoEvmConfig, TempoTxResult};
+use tempo_precompiles::storage::StorageActions;
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -383,11 +384,13 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .with_bundle_update()
             .build();
         let writes = Rc::new(RefCell::new(FeeWrites::default()));
+        let sentry = StorageActions::sentry_only();
         let evm = self
             .shadow_config
             .evm_for_block(&mut db, block.header())
             .map_err(|e| format!("failed to configure shadow EVM: {e}"))?
-            .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
+            .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)))
+            .with_storage_actions(sentry.clone());
         let context = self
             .shadow_config
             .context_for_block(block.sealed_block())
@@ -402,10 +405,12 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         executor.evm_mut().db_mut().bal_state = canonical_bal;
 
         for tx in block.transactions_recovered() {
+            sentry.take_sstore_sentry();
             match executor.execute_transaction_without_commit(tx) {
                 Ok(result) => {
-                    let observed =
+                    let mut observed =
                         ObservedTx::from_result(&result, std::mem::take(&mut *writes.borrow_mut()));
+                    observed.sstore_sentry = sentry.take_sstore_sentry();
                     shadow.txs.push(Ok(
                         observed.with_state(transition(result.into_result().state))
                     ));
@@ -566,6 +571,8 @@ struct ObservedTx {
     fee: FeeWrites,
     /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
+    /// A precompile SSTORE hit the sentry during this transaction, including reverted calls.
+    sstore_sentry: bool,
 }
 
 impl ObservedTx {
@@ -585,6 +592,7 @@ impl ObservedTx {
             fee_normalized,
             fee: writes,
             state: TransitionState::default(),
+            sstore_sentry: false,
         }
     }
 

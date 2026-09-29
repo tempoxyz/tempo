@@ -24,7 +24,10 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
+use tempo_precompiles::{
+    storage::{StorageAction, StorageActions},
+    storage_credits::NonCreditableSlots,
+};
 use tempo_revm::{
     ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -192,6 +195,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.inner.actions().replace(actions)
+    }
+
+    /// Uses the supplied recorder for precompile storage diagnostics.
+    pub fn with_storage_actions(mut self, actions: StorageActions) -> Self {
+        self.inner = self.inner.with_actions(actions);
+        self
     }
 }
 

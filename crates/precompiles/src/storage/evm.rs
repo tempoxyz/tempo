@@ -208,6 +208,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     ) -> Result<(), TempoPrecompileError> {
         // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
         if self.spec.is_t12() && self.gas_tracker.remaining() <= self.gas_params.call_stipend() {
+            self.actions.record_sstore_sentry();
             return Err(TempoPrecompileError::OutOfGas);
         }
 
@@ -1051,9 +1052,14 @@ mod tests {
 
             evm.provider_max_gas().sstore(address, key, U256::ONE)?;
 
+            let sentry = StorageActions::sentry_only();
             let result = evm
                 .provider_with_gas_limit(gas_params.call_stipend(), 0)
+                .with_actions(sentry.clone())
                 .sstore(address, key, U256::from(2));
+
+            assert_eq!(sentry.take_sstore_sentry(), spec.is_t12());
+            assert!(!sentry.take_sstore_sentry());
 
             let expected = if spec.is_t12() {
                 assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
@@ -1068,6 +1074,18 @@ mod tests {
                 expected,
                 "failed SSTORE must not mutate storage"
             );
+
+            evm.provider_with_gas_limit(gas_params.call_stipend() + 1, 0)
+                .with_actions(sentry.clone())
+                .sstore(address, key, U256::from(3))?;
+            assert!(!sentry.take_sstore_sentry());
+
+            let result = evm
+                .provider_with_gas_limit(0, 0)
+                .with_actions(sentry.clone())
+                .sload(address, key);
+            assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+            assert!(!sentry.take_sstore_sentry());
         }
 
         Ok(())

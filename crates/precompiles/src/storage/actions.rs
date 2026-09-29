@@ -83,6 +83,9 @@ pub struct StorageActionsState {
     /// Allows for nesting multiple unrecorded scopes, while [`StorageActions::recorded`]
     /// can temporarily reset the depth to resume normal recording inside such a scope.
     unrecorded_depth: usize,
+    /// Record only sentry failures, without collecting the storage action stream.
+    sentry_only: bool,
+    sstore_sentry: bool,
 }
 
 impl StorageActions {
@@ -101,7 +104,10 @@ impl StorageActions {
         match self {
             Self::Disabled => *self = Self::enabled(),
             Self::Enabled(state) => {
-                state.borrow_mut().actions.clear();
+                let mut state = state.borrow_mut();
+                state.actions.clear();
+                state.sentry_only = false;
+                state.sstore_sentry = false;
             }
         }
     }
@@ -115,7 +121,11 @@ impl StorageActions {
     pub fn clear(&self) {
         match self {
             Self::Disabled => {}
-            Self::Enabled(actions) => actions.borrow_mut().actions.clear(),
+            Self::Enabled(state) => {
+                let mut state = state.borrow_mut();
+                state.actions.clear();
+                state.sstore_sentry = false;
+            }
         }
     }
 
@@ -175,7 +185,7 @@ impl StorageActions {
     pub fn record(&self, action: StorageAction) {
         if let Self::Enabled(state) = self {
             let mut state = state.borrow_mut();
-            if state.unrecorded_depth == 0 {
+            if state.unrecorded_depth == 0 && !state.sentry_only {
                 state.actions.push(action);
             }
         }
@@ -184,7 +194,33 @@ impl StorageActions {
     /// Records an action if recording is enabled, even inside an unrecorded scope.
     pub fn record_always(&self, action: StorageAction) {
         if let Self::Enabled(state) = self {
-            state.borrow_mut().actions.push(action);
+            let mut state = state.borrow_mut();
+            if !state.sentry_only {
+                state.actions.push(action);
+            }
+        }
+    }
+
+    /// Records only whether a precompile SSTORE hit the EIP-2200 sentry.
+    pub fn sentry_only() -> Self {
+        Self::Enabled(Rc::new(RefCell::new(StorageActionsState {
+            sentry_only: true,
+            ..Default::default()
+        })))
+    }
+
+    /// Records a sentry failure even inside an unrecorded or subsequently reverted scope.
+    pub fn record_sstore_sentry(&self) {
+        if let Self::Enabled(state) = self {
+            state.borrow_mut().sstore_sentry = true;
+        }
+    }
+
+    /// Returns and resets the sentry evidence. Call at each transaction boundary.
+    pub fn take_sstore_sentry(&self) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::Enabled(state) => std::mem::take(&mut state.borrow_mut().sstore_sentry),
         }
     }
 }
@@ -223,6 +259,29 @@ impl Drop for RecordedStorageActionsGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sentry_only_records_failures_without_storage_actions() {
+        let mut actions = StorageActions::sentry_only();
+        let action = StorageAction::Sload(Address::ZERO, U256::ZERO, U256::ZERO);
+        actions.record(action);
+        actions.record_always(action);
+        actions.unrecorded(|| actions.record_sstore_sentry());
+        assert_eq!(actions.take(), Some(vec![]));
+        assert!(actions.clone().take_sstore_sentry());
+        assert!(!actions.take_sstore_sentry());
+
+        actions.record_sstore_sentry();
+        actions.clear();
+        assert!(!actions.take_sstore_sentry());
+        actions.enable();
+        actions.record(action);
+        assert_eq!(actions.take(), Some(vec![action]));
+
+        let disabled = StorageActions::disabled();
+        disabled.record_sstore_sentry();
+        assert!(!disabled.take_sstore_sentry());
+    }
 
     #[test]
     fn test_unrecorded_record_always() {
