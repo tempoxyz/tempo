@@ -111,9 +111,6 @@ impl Inner {
             parent.view = %context.parent.0,
             parent.digest = %context.parent.1,
             parent.height = %parent.height(),
-            block.digest = tracing::field::Empty,
-            block.height = tracing::field::Empty,
-            block.transactions = tracing::field::Empty,
         ),
         err(level = Level::WARN),
     )]
@@ -237,12 +234,6 @@ impl Inner {
             block,
             block_access_list,
             execution_block_encoded,
-        );
-        tracing::Span::current().record("block.digest", tracing::field::display(proposal.digest()));
-        tracing::Span::current().record("block.height", proposal.height().get());
-        tracing::Span::current().record(
-            "block.transactions",
-            proposal.block().body().transaction_count(),
         );
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the propose start. Validators still need
@@ -493,10 +484,6 @@ where
             parent.view = %context.parent.0,
             parent.digest = %context.parent.1,
             proposer = %context.leader,
-            digest = tracing::field::Empty,
-            block.digest = tracing::field::Empty,
-            block.height = tracing::field::Empty,
-            block.transactions = tracing::field::Empty,
         ),
     )]
     async fn verify(
@@ -519,13 +506,6 @@ where
             warn!("ancestry ended before yielding the block to verify; abstaining");
             return std::future::pending().await;
         };
-        tracing::Span::current().record("digest", tracing::field::display(block.digest()));
-        tracing::Span::current().record("block.digest", tracing::field::display(block.digest()));
-        tracing::Span::current().record("block.height", block.height().get());
-        tracing::Span::current().record(
-            "block.transactions",
-            block.block().body().transaction_count(),
-        );
 
         // Only a boundary block needs its parent. The DKG actor reads no chain
         // state, so it can work on the ceremony output of a boundary block
