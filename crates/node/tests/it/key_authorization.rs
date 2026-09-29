@@ -1,7 +1,7 @@
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     primitives::{Address, Bytes, U256},
-    providers::{Provider, ProviderBuilder},
+    providers::Provider,
     signers::{SignerSync, local::MnemonicBuilder},
 };
 use alloy_eips::Encodable2718;
@@ -78,7 +78,7 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
 
     let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let signer_addr = signer.address();
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
     let nonce = provider.get_transaction_count(signer_addr).await?;

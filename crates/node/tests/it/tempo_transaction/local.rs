@@ -922,8 +922,6 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Setup test node with direct access
     let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let http_url = setup.node.rpc_url();
-
     // Generate the correct P256 key pair for WebAuthn
     let correct_signing_key = SigningKey::random(&mut OsRng);
     let correct_verifying_key = correct_signing_key.verifying_key();
@@ -951,9 +949,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     // Create provider with funder's wallet
     let funder_wallet = EthereumWallet::from(funder_signer.clone());
-    let provider = ProviderBuilder::new()
-        .wallet(funder_wallet)
-        .connect_http(http_url.clone());
+    let provider = setup.node.rpc_provider_with_wallet(funder_wallet);
 
     println!("\n=== Testing WebAuthn Negative Cases ===\n");
 
@@ -1313,8 +1309,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     let mut tx_listener1 = node1.inner.pool.pending_transactions_listener();
     let mut tx_listener2 = node2.inner.pool.pending_transactions_listener();
 
-    let provider1 =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node1.rpc_url());
+    let provider1 = node1.rpc_provider_for::<TempoNetwork>();
     let chain_id = provider1.get_chain_id().await?;
 
     let tx = TempoTransaction {
@@ -1365,8 +1360,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     assert_eq!(pending_hash2, *envelope.tx_hash());
 
     // check we can fetch it from the second peer now
-    let provider2 =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node2.rpc_url());
+    let provider2 = node2.rpc_provider_for::<TempoNetwork>();
     let _rpc_tx = provider2
         .get_transaction_by_hash(pending_hash2)
         .await
@@ -1383,9 +1377,9 @@ async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse()
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
     let witness = B256::with_last_byte(0x53);
 
@@ -1448,9 +1442,9 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
     let witness = B256::with_last_byte(0x54);
 
@@ -1534,9 +1528,9 @@ async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let admin_signer = PrivateKeySigner::random();
@@ -1576,9 +1570,9 @@ async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let admin_key = PrivateKeySigner::random().address();
@@ -1611,9 +1605,9 @@ async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let admin_signer = PrivateKeySigner::random();
@@ -1665,9 +1659,7 @@ async fn test_t6_admin_key_authorization_cross_account_replay_rejected_e2e() -> 
         .index(1)?
         .build()?;
     let bob_addr = bob_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(alice_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider_with_wallet(alice_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     fund_address_with(
@@ -1725,9 +1717,9 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
 
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     // Generate an access key for the attack
@@ -2081,9 +2073,9 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
 
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     // Generate an access key for the attack
@@ -2360,9 +2352,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         .index(1)?
         .build()?;
     let bob_addr = bob_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(alice_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider_with_wallet(alice_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     // Shared access keys, same key authorized on both accounts
@@ -2504,9 +2494,9 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let (access_key_signing, pub_x, pub_y, access_key_addr) = generate_p256_access_key();

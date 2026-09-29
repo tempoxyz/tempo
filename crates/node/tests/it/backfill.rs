@@ -1,7 +1,7 @@
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
-    providers::{Provider, ProviderBuilder},
+    providers::Provider,
     signers::local::MnemonicBuilder,
 };
 use alloy_eips::{BlockNumberOrTag, Encodable2718};
@@ -42,10 +42,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     let node2 = multi_setup.nodes.remove(0);
 
     // Get provider for node1
-    let http_url1 = node1.rpc_url();
-    let provider1 = ProviderBuilder::new()
-        .wallet(eth_wallet.clone())
-        .connect_http(http_url1);
+    let provider1 = node1.rpc_provider_with_wallet(eth_wallet.clone());
 
     // Wait for nodes to be ready
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -131,10 +128,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     println!("First node advanced to block {final_block_number} (hash: {final_block_hash:?})");
 
     // Get provider for node2
-    let http_url2 = node2.rpc_url();
-    let provider2 = ProviderBuilder::new()
-        .wallet(eth_wallet)
-        .connect_http(http_url2);
+    let provider2 = node2.rpc_provider_with_wallet(eth_wallet);
 
     // Get initial block from node2 (should be genesis)
     let initial_block2 = provider2
