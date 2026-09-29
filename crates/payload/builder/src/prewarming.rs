@@ -101,7 +101,9 @@ impl BestTransactionsPrewarming {
                 let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
-                let transactions_tx = ctx.transactions_tx.clone();
+                // Only parallel jobs send their result. A sender held by every job would make
+                // the drain on invalidation wait for all in-flight and queued prewarms.
+                let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
 
                 if !parallel {
                     let _ = ctx
@@ -111,7 +113,7 @@ impl BestTransactionsPrewarming {
 
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
-                    if parallel {
+                    if let Some(transactions_tx) = transactions_tx {
                         let _ = transactions_tx.send(Some(tx));
                     }
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
@@ -930,6 +932,57 @@ mod tests {
         assert_eq!(next.tx.hash(), tx3.hash());
         assert_ne!(next.tx.hash(), tx2.hash());
         wait_until(|| log.lock().unwrap().invalid == 1);
+    }
+
+    #[test]
+    fn mark_invalid_does_not_wait_for_queued_prewarm_jobs() {
+        let executor = TaskExecutor::test();
+
+        // Occupy every prewarm worker so the jobs spawned for the transactions stay queued.
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let pool = executor.prewarming_pool();
+        for _ in 0..pool.current_num_threads() {
+            let release_rx = release_rx.clone();
+            pool.spawn(move || {
+                let _ = release_rx.lock().unwrap().recv();
+            });
+        }
+
+        let tx1 = test_tx(Address::random(), 0);
+        let tx2 = test_tx(Address::random(), 0);
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming =
+            prewarming_with_executor(executor, vec![tx1.clone(), tx2.clone()], log.clone());
+        assert_eq!(
+            prewarming.next().as_ref().map(|tx| tx.tx.hash()),
+            Some(tx1.hash())
+        );
+        wait_until(|| log.lock().unwrap().yielded == 2);
+
+        // Release the workers after a timeout so a regression fails instead of hanging.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let watchdog = thread::spawn(move || {
+            let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
+            drop(release_tx);
+            timed_out
+        });
+
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(tx1),
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        let first = prewarming.next().map(|tx| *tx.tx.hash());
+        // Answering this poll needs the coordinator, which must not be stuck in the drain.
+        let second = prewarming.next().map(|tx| *tx.tx.hash());
+        let _ = done_tx.send(());
+
+        assert!(
+            !watchdog.join().unwrap(),
+            "invalidation waited for queued prewarm jobs"
+        );
+        assert_eq!(first, Some(*tx2.hash()));
+        assert_eq!(second, None);
     }
 
     #[test]
