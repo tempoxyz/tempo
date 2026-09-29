@@ -2,10 +2,10 @@ use alloy::{
     network::ReceiptResponse,
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
 };
 use alloy_eips::BlockNumberOrTag;
 use futures::{StreamExt, future::join_all, stream};
+use reth_e2e_test_utils::wallet::test_signer;
 use std::{env, time::Duration};
 use tempo_chainspec::constants::gas::{
     TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR, tempo_t7_next_block_base_fee,
@@ -23,7 +23,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Get initial block to check base fee
@@ -152,7 +152,7 @@ async fn test_t7_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
     let setup = crate::utils::TestNodeBuilder::new()
         .build_http_only()
         .await?;
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(setup.http_url);
@@ -232,7 +232,7 @@ async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Resu
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()
         .await?;
-    let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;

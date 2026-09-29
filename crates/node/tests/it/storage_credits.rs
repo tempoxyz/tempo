@@ -1,18 +1,14 @@
-use crate::utils::{
-    PendingTransactionBuilderExt, TEST_MNEMONIC, TestNodeBuilder, setup_test_token,
-};
+use crate::utils::{PendingTransactionBuilderExt, TestNodeBuilder, setup_test_token};
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, Bytes, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::{SolCall, SolEvent},
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
@@ -104,7 +100,7 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root = test_signer(0);
     let root_addr = root.address();
     let provider = ProviderBuilder::new()
         .wallet(root.clone())
@@ -227,7 +223,7 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root = test_signer(0);
     let root_addr = root.address();
     let root_provider = ProviderBuilder::new()
         .wallet(root.clone())
@@ -461,19 +457,13 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         .build_http_only()
         .await?;
 
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root = test_signer(0);
     let root_addr = root.address();
-    let attacker = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let attacker = test_signer(1);
     let attacker_addr = attacker.address();
-    let validator = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(2)?
-        .build()?;
+    let validator = test_signer(2);
     let validator_addr = validator.address();
-    let user = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(3)?
-        .build()?;
+    let user = test_signer(3);
     let user_addr = user.address();
     let credit_source = PrivateKeySigner::random();
     let credit_source_addr = credit_source.address();
@@ -731,15 +721,11 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         .build_http_only()
         .await?;
 
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root = test_signer(0);
     let root_addr = root.address();
-    let validator = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(4)?
-        .build()?;
+    let validator = test_signer(4);
     let validator_addr = validator.address();
-    let user = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(5)?
-        .build()?;
+    let user = test_signer(5);
     let user_addr = user.address();
     let dummy_receiver = PrivateKeySigner::random();
     let dummy_receiver_addr = dummy_receiver.address();
@@ -1072,7 +1058,7 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root = test_signer(0);
     let root_addr = root.address();
     let provider = ProviderBuilder::new()
         .wallet(root.clone())
@@ -1193,7 +1179,7 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root = test_signer(0);
     let root_provider = ProviderBuilder::new()
         .wallet(root.clone())
         .connect_http(setup.http_url.clone());
@@ -1298,7 +1284,7 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root = test_signer(0);
     let root_addr = root.address();
     let provider = ProviderBuilder::new()
         .wallet(root.clone())
@@ -1405,16 +1391,10 @@ async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
-    let payer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let other_payer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(2)?
-        .build()?;
-    let payee = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(3)?
-        .build()?;
+    let root = test_signer(0);
+    let payer = test_signer(1);
+    let other_payer = test_signer(2);
+    let payee = test_signer(3);
 
     let provider = ProviderBuilder::new()
         .wallet(root)

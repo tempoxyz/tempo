@@ -3,16 +3,14 @@ use alloy::{
     consensus::Transaction,
     network::ReceiptResponse,
     providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolEvent,
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
 use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
@@ -31,7 +29,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let user_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -193,7 +191,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let validator_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -230,10 +228,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let signers = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .into_iter()
-        .take(2)
-        .collect::<Result<Vec<_>, _>>()?;
+    let signers = (0..2).map(test_signer).collect::<Vec<_>>();
 
     let mut wallet = EthereumWallet::new(signers[0].clone());
     wallet.register_signer(signers[1].clone());
@@ -321,7 +316,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let fee_payer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let fee_payer = test_signer(0);
     let user = PrivateKeySigner::random();
 
     let provider = ProviderBuilder::new().connect_http(http_url);
@@ -411,11 +406,9 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
 
-    let admin = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = test_signer(0);
     let admin_addr = admin.address();
-    let fee_payer_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let fee_payer_signer = test_signer(1);
     let fee_payer_addr = fee_payer_signer.address();
     let provider = ProviderBuilder::new()
         .wallet(admin.clone())

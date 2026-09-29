@@ -10,11 +10,11 @@ use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     primitives::Address,
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
 };
 use alloy_eips::{eip2718::Encodable2718, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Bytes;
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::{
@@ -22,7 +22,7 @@ use tempo_chainspec::{
     spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
 };
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, make_genesis_at};
+use crate::utils::{TestNodeBuilder, make_genesis_at};
 
 /// Helper to build and encode a signed EIP-1559 transaction with a specific gas limit.
 fn build_tx(
@@ -53,9 +53,7 @@ async fn test_post_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -81,9 +79,7 @@ async fn test_post_t1a_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -112,9 +108,7 @@ async fn test_post_t1a_tx_at_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -145,9 +139,7 @@ async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
         .with_genesis(make_genesis_at(TempoHardfork::T3))
         .build_with_node_access()
         .await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -173,9 +165,7 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -206,9 +196,7 @@ async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 

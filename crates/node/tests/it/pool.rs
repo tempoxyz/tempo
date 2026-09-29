@@ -1,14 +1,11 @@
-use crate::utils::TEST_MNEMONIC;
 use alloy::{
     consensus::Transaction,
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
 use reth_chainspec::EthChainSpec;
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::{
     evm::revm::primitives::hex,
     node::builder::{NodeBuilder, NodeHandle},
@@ -155,7 +152,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     let mut setup = crate::utils::TestNodeBuilder::new()
         .build_with_node_access()
         .await?;
-    let signer_wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer_wallet = test_signer(0);
     let signer_addr = signer_wallet.address();
 
     let payload = setup.node.advance_block().await?;
@@ -254,7 +251,7 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
     let block_b_hash = block_b.block().hash();
 
     // Step 2: Submit a 2D nonce AA tx to node1 and mine it in block A
-    let signer_wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer_wallet = test_signer(0);
 
     let tx_aa = TempoTransaction {
         chain_id: 1337,
@@ -322,8 +319,7 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 /// block producers (tracked via the AMM liquidity cache).
 #[tokio::test(flavor = "multi_thread")]
 async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
-    use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
-    use alloy::signers::local::MnemonicBuilder;
+    use crate::utils::TestNodeBuilder;
     use alloy_primitives::address;
 
     reth_tracing::init_test_tracing();
@@ -331,13 +327,8 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     // Setup node with direct access
     let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    // Set up signers - first is validator (coinbase), we use second for user transactions
-    let signers = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .into_iter()
-        .take(2)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let user_signer = signers[1].clone();
+    // First signer is the validator (coinbase), we use the second for user transactions
+    let user_signer = test_signer(1);
     let user_addr = user_signer.address();
 
     // Create a fake "new validator token" address that is NOT in the active validator set.
@@ -434,12 +425,10 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     let node1 = multi.nodes.remove(0);
     let mut node2 = multi.nodes.remove(0);
 
-    let admin_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let admin_signer = test_signer(0);
 
     // The whitelisted user is mnemonic index 10
-    let whitelisted_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(10)?
-        .build()?;
+    let whitelisted_signer = test_signer(10);
     let whitelisted_addr = whitelisted_signer.address();
 
     // === Step 1: On node2, mine a block with a single AA tx that creates a whitelist
@@ -520,9 +509,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     let mut evictable_hashes = Vec::new();
 
     for i in 1..=9u32 {
-        let user_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-            .index(i)?
-            .build()?;
+        let user_signer = test_signer(i);
 
         let tx_aa = TempoTransaction {
             chain_id: 1337,

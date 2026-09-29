@@ -1,7 +1,5 @@
-use alloy::{
-    primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
-    sol_types::SolError,
-};
+use alloy::{primitives::U256, providers::ProviderBuilder, sol_types::SolError};
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_contracts::precompiles::{
     IStablecoinDEX,
     ITIP20::{self, ITIP20Instance},
@@ -20,7 +18,7 @@ async fn test_bids() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -31,11 +29,7 @@ async fn test_bids() -> eyre::Result<()> {
 
     let account_data: Vec<_> = (1..=10)
         .map(|i| {
-            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i as u32)
-                .unwrap()
-                .build()
-                .unwrap();
+            let signer = test_signer(i as u32);
             let account = signer.address();
             (account, signer)
         })
@@ -172,7 +166,7 @@ async fn test_asks() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -183,11 +177,7 @@ async fn test_asks() -> eyre::Result<()> {
 
     let account_data: Vec<_> = (1..=3)
         .map(|i| {
-            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i as u32)
-                .unwrap()
-                .build()
-                .unwrap();
+            let signer = test_signer(i as u32);
             let account = signer.address();
             (account, signer)
         })
@@ -333,7 +323,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -344,11 +334,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
 
     let account_data: Vec<_> = (1..=10)
         .map(|i| {
-            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i as u32)
-                .unwrap()
-                .build()
-                .unwrap();
+            let signer = test_signer(i as u32);
             let account = signer.address();
             (account, signer)
         })
@@ -444,7 +430,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -456,18 +442,10 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     let eurc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=3
 
     // Setup liquidity provider (Alice) and trader (Bob)
-    let alice_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)
-        .unwrap()
-        .build()
-        .unwrap();
+    let alice_signer = test_signer(1);
     let alice = alice_signer.address();
 
-    let bob_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(2)
-        .unwrap()
-        .build()
-        .unwrap();
+    let bob_signer = test_signer(2);
     let bob = bob_signer.address();
 
     let mint_amount = U256::from(10_000_000_000u128);
@@ -621,7 +599,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -713,7 +691,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)

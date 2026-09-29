@@ -2,11 +2,11 @@ use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 use alloy::{
     primitives::{B256, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth,
@@ -65,7 +65,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -168,7 +168,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -294,9 +294,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let http_url = setup.http_url;
 
     // Setup user and validator wallets
-    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let user_wallet = test_signer(1);
     let user_address = user_wallet.address();
 
     let provider = ProviderBuilder::new()
@@ -430,9 +428,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let user_wallet = test_signer(1);
     let user_address = user_wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(user_wallet)
@@ -594,7 +590,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
         .await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let alice = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -674,7 +670,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let alice = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -785,7 +781,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let alice = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 

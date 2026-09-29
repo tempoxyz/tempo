@@ -266,10 +266,6 @@ pub(crate) fn make_genesis_at(last_active: TempoHardfork) -> String {
     serde_json::to_string(&genesis).expect("genesis must serialize")
 }
 
-/// Standard test mnemonic phrase used across integration tests
-pub(crate) const TEST_MNEMONIC: &str =
-    "test test test test test test test test test test test junk";
-
 use alloy::{
     network::Ethereum,
     primitives::Address,

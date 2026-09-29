@@ -1,17 +1,15 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::TestNodeBuilder;
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolEvent,
 };
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::{constants::gas::TEMPO_T7_BASE_FEE_FLOOR, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelReserve};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
@@ -43,16 +41,14 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(http_url.clone());
 
     // Create another wallet for sending different transactions
-    let wallet2 = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let wallet2 = test_signer(1);
     let caller2 = wallet2.address();
     let provider2 = ProviderBuilder::new()
         .wallet(wallet2)
@@ -102,9 +98,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     let mut providers = vec![];
 
     for i in 0..num_accounts {
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(i as u32 + 2)? // Start from index 2 (0 and 1 are already used)
-            .build()?;
+        // Start from index 2 (0 and 1 are already used)
+        let wallet = test_signer(i as u32 + 2);
         let address = wallet.address();
         let provider = ProviderBuilder::new()
             .wallet(wallet)
@@ -442,9 +437,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     const NUM_ACCOUNTS: usize = 10;
 
     for i in 0..NUM_ACCOUNTS {
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(i as u32)?
-            .build()?;
+        let wallet = test_signer(i as u32);
         let provider = ProviderBuilder::new()
             .wallet(wallet.clone())
             .connect_http(http_url.clone());
@@ -567,7 +560,7 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -635,7 +628,7 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let url = setup.http_url;
 
-    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let funder = test_signer(0);
     let funder_provider = ProviderBuilder::new()
         .wallet(funder.clone())
         .connect_http(url.clone());
