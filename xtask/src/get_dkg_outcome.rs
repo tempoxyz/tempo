@@ -26,7 +26,8 @@ pub(crate) struct GetDkgOutcome {
     #[arg(long, group = "target")]
     block_hash: Option<B256>,
 
-    /// Epoch the outcome is used in; reads the previous epoch's boundary (requires --epoch-length)
+    /// Epoch the outcome is used in; reads genesis for epoch 0, otherwise the previous epoch's
+    /// boundary (requires --epoch-length)
     #[arg(long, group = "target", requires = "epoch_length")]
     epoch: Option<u64>,
 
@@ -127,8 +128,11 @@ impl GetDkgOutcome {
 }
 
 fn outcome_block_number(epoch: u64, epoch_length: u64) -> eyre::Result<u64> {
-    eyre::ensure!(epoch > 0, "epoch 0 has no preceding DKG boundary block");
     eyre::ensure!(epoch_length > 0, "epoch length must be greater than zero");
+    if epoch == 0 {
+        return Ok(0);
+    }
+
     epoch
         .checked_mul(epoch_length)
         .and_then(|first_block| first_block.checked_sub(1))
@@ -148,8 +152,15 @@ mod tests {
 
     #[test]
     fn invalid_epoch_boundaries_return_errors() {
-        assert!(outcome_block_number(0, 100).is_err());
+        assert!(outcome_block_number(0, 0).is_err());
         assert!(outcome_block_number(1, 0).is_err());
         assert!(outcome_block_number(u64::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn epoch_zero_uses_genesis() {
+        assert_eq!(outcome_block_number(0, 100).unwrap(), 0);
+        assert_eq!(outcome_block_number(0, 1).unwrap(), 0);
+        assert_eq!(outcome_block_number(0, u64::MAX).unwrap(), 0);
     }
 }
