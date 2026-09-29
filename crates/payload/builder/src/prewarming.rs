@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_consensus::Transaction;
@@ -37,7 +40,7 @@ struct GeneralLaneFilter {
     remaining_gas: u64,
     tx_gas_limit_cap: u64,
     t5: bool,
-    blocked: std::collections::HashMap<(Address, Option<U256>), u64>,
+    blocked: HashMap<(Address, Option<U256>), u64>,
 }
 
 enum GeneralSkip {
