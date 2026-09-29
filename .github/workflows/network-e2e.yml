@@ -80,9 +80,6 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/docker.yml
-    with:
-      source_sha: ${{ needs.detect.outputs.sha }}
-      skip_publish_events: true
     secrets: inherit # zizmor: ignore[secrets-inherit]
 
   dispatch:
@@ -112,7 +109,6 @@ jobs:
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
           EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
-          EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
           SHA: ${{ needs.detect.outputs.sha }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           IMAGE_TAG: ${{ needs.build.outputs.tempo_image_tag }}
@@ -122,13 +118,11 @@ jobs:
           umask 077
           printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/network-e2e.key"
           printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/network-e2e.crt"
-          mapfile -d '' -t args < <(python3 -I -S -c 'import os,shlex,sys; sys.stdout.buffer.write(b"".join(x.encode()+b"\0" for x in shlex.split(os.environ["EVENTS_ARGS"])))')
-          (( ${#args[@]} > 0 ))
           payload=$(jq -n --arg sha "$SHA" --arg branch "$BRANCH" \
             --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --arg tag "$IMAGE_TAG" \
             '{repository:"tempoxyz/tempo", event:"tempo_network_e2e", data:{sha:$sha, branch:$branch, run:$run, tag:$tag}}')
           curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
-            --retry 3 --retry-all-errors "${args[@]}" \
+            --retry 3 --retry-all-errors ${{ secrets.EVENTS_ARGS }} \
             --key "$RUNNER_TEMP/network-e2e.key" --cert "$RUNNER_TEMP/network-e2e.crt" \
             -H 'Content-Type: application/json' --data "$payload"
       - name: Report skipped tests or dispatch failure
