@@ -61,7 +61,7 @@ pub async fn run_consensus_stack(
     executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
-    estimator: Arc<tempo_payload_types::Estimator>,
+    estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
     config.validate_simplex_timing()?;
     estimator

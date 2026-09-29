@@ -352,7 +352,7 @@ impl TempoNode {
     ///
     /// Consensus hands the same handle to its engine so that validation and
     /// network feedback reach the builder's stop decisions.
-    pub fn with_estimator(mut self, estimator: Arc<Estimator>) -> Self {
+    pub fn with_estimator(mut self, estimator: Estimator) -> Self {
         self.payload_builder_builder.estimator = Some(estimator);
         self
     }
@@ -883,7 +883,7 @@ pub struct TempoPayloadBuilderBuilder {
     /// Only used when no shared `estimator` is provided.
     pub build_time_multiplier: f64,
     /// Proposal budget estimator shared with consensus, if the node runs one.
-    pub estimator: Option<Arc<Estimator>>,
+    pub estimator: Option<Estimator>,
 }
 
 impl Default for TempoPayloadBuilderBuilder {

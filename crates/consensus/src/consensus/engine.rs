@@ -87,7 +87,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Owns the target block time, the learned network reservation and the
     /// validation and build feedback. The payload builder must be given the
     /// same handle so both sides pace the same proposal window.
-    pub estimator: Arc<tempo_payload_types::Estimator>,
+    pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
     pub feed_state: crate::feed::FeedStateHandle,
@@ -317,7 +317,6 @@ where
             partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
             views_to_track: ViewDelta::new(self.views_to_track),
             inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
-            estimator: self.estimator.clone(),
         };
 
         Ok(Engine {

@@ -1,5 +1,4 @@
 mod actor;
-mod estimator_reporter;
 pub(super) mod ingress;
 
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
@@ -40,8 +39,6 @@ where
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: ViewDelta,
     pub(crate) inactive_time_before_leader_skip: Duration,
-    /// Shared proposal budget estimator; told which views were nullified.
-    pub(crate) estimator: Arc<tempo_payload_types::Estimator>,
 }
 
 pub(crate) fn init<TContext, TBlocker>(

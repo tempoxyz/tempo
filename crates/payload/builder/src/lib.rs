@@ -142,7 +142,7 @@ pub struct TempoPayloadBuilder<Provider> {
     /// Consensus feeds it validation and network observations;
     /// the builder reads one [`tempo_payload_types::BuildPlan`] per paced build
     /// from it and reports the finished build's replayable work back.
-    estimator: Arc<Estimator>,
+    estimator: Estimator,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -206,9 +206,9 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             enable_bal: cfg!(feature = "bal"),
-            estimator: Arc::new(Estimator::new(
+            estimator: Estimator::new(
                 EstimatorConfig::default().with_build_time_multiplier(config.build_time_multiplier),
-            )),
+            ),
         }
     }
 
@@ -216,13 +216,13 @@ impl<Provider> TempoPayloadBuilder<Provider> {
     ///
     /// Without this the builder learns from its own builds only and never
     /// sees validation or network feedback.
-    pub fn with_estimator(mut self, estimator: Arc<Estimator>) -> Self {
+    pub fn with_estimator(mut self, estimator: Estimator) -> Self {
         self.estimator = estimator;
         self
     }
 
     /// The proposal budget estimator this builder reports to.
-    pub fn estimator(&self) -> &Arc<Estimator> {
+    pub fn estimator(&self) -> &Estimator {
         &self.estimator
     }
 }

@@ -62,14 +62,15 @@ pub(in crate::consensus) struct Config<TContext> {
     /// Shared proposal budget estimator.
     ///
     /// Provides the proposal return budget (the target block time minus the
-    /// learned network reservation) and receives validation and proposal
-    /// round-trip observations from this application.
+    /// learned network reservation). This application feeds it validation
+    /// times and, for the network reservation, when each own proposal was
+    /// returned and the header timestamp of the block built on top of it.
     ///
     /// The return budget starts when the application is called. Commonware's
     /// parent fetch happens beforehand and is not charged against it. Proposal
     /// preparation time is deducted before handing the remaining budget to the
     /// payload builder.
-    pub(in crate::consensus) estimator: Arc<Estimator>,
+    pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
@@ -81,8 +82,9 @@ pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
     /// Shared proposal budget estimator: provides the proposal window and
-    /// learns from this node's validations and proposal round trips.
-    estimator: Arc<Estimator>,
+    /// learns from this node's validations and from how long the chain took
+    /// to build on its proposals.
+    estimator: Estimator,
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
@@ -180,7 +182,12 @@ impl Inner {
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
         // If this node also proposed the parent, this build start is what the
-        // chain waited for; complete that network sample.
+        // chain waited for, and its timestamp completes that proposal's
+        // network sample. Children built by other leaders reach the estimator
+        // through `verify()`, but consensus does not run `verify()` for a
+        // node's own proposal, so without this call the sample would never
+        // complete. The hook therefore only fires for consecutive own
+        // proposals; the estimator ignores parents this node did not propose.
         self.estimator.on_child_block_built(
             Instant::now(),
             (round.epoch().get(), parent_view.get()),

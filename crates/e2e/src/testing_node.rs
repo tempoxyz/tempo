@@ -94,7 +94,7 @@ where
     pub proposal_return_budget: Duration,
     /// Proposal budget estimator shared by this node's builder and consensus
     /// engine. Pinned to `proposal_return_budget` so tests stay deterministic.
-    pub estimator: Arc<tempo_node::Estimator>,
+    pub estimator: tempo_node::Estimator,
     /// Verification mode used whenever the consensus engine starts.
     pub verification_mode: VerificationMode,
     n_starts: u32,
@@ -127,8 +127,9 @@ where
         let partition_prefix = uid.clone();
         // Fixed network reservation: tests pin the return budget instead of
         // learning it from the simulated network.
-        let estimator = Arc::new(tempo_node::Estimator::new(
-            tempo_node::EstimatorConfig::fixed(proposal_return_budget, Duration::from_millis(50)),
+        let estimator = tempo_node::Estimator::new(tempo_node::EstimatorConfig::fixed(
+            proposal_return_budget,
+            Duration::from_millis(50),
         ));
         execution_config.estimator = Some(estimator.clone());
         let execution_node_datadir = execution_runtime

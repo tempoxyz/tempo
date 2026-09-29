@@ -26,15 +26,16 @@
 //!
 //! Every learned quantity is a percentile over a bounded window of recent
 //! samples that also expire by age. A single slow observation (a finish that
-//! waited on a persistence commit, one slow round trip) therefore moves the estimate by
-//! at most one window slot instead of resetting it to the outlier, while a
-//! sustained change still takes over within a fraction of the window. The
-//! network reservation skips that damping on the way up by default, see
+//! waited on a persistence commit, one proposal that was slow to reach the
+//! next leader) therefore moves the estimate by at most one window slot
+//! instead of resetting it to the outlier, while a sustained change still
+//! takes over within a fraction of the window. The network reservation skips
+//! that damping on the way up by default, see
 //! [`EstimatorConfig::network_reserve_fast_rise`].
 
 use std::{
     collections::VecDeque,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -94,10 +95,11 @@ const NETWORK_SAMPLE_TTL: Duration = Duration::from_secs(120);
 const MIN_NETWORK_RESERVE_PERCENTILE: u8 = 50;
 /// Highest accepted network reserve percentile: the slowest sample in the window.
 const MAX_NETWORK_RESERVE_PERCENTILE: u8 = 100;
-/// A proposal that has not been notarized after this long is not a usable
-/// network sample; the view was most likely nullified.
+/// An own proposal whose child block has not arrived after this long is no
+/// longer a usable network sample: its view was most likely nullified, or
+/// the next leader built on an ancestor.
 const PENDING_PROPOSAL_TTL: Duration = Duration::from_secs(10);
-/// Upper bound on proposals awaiting their notarization.
+/// Upper bound on own proposals awaiting the block built on top of them.
 const MAX_PENDING_PROPOSALS: usize = 8;
 
 /// Percentile used for the build time reservation: the 75th.
@@ -264,6 +266,221 @@ impl EstimatorConfig {
     }
 }
 
+/// The shared proposal budget estimator; the module documentation describes
+/// the model.
+///
+/// This is a cheap handle: clones share one configuration and one set of
+/// observations, so consensus and the payload builder each keep a clone and
+/// read and feed the same picture.
+#[derive(Clone, Debug)]
+pub struct Estimator {
+    inner: Arc<EstimatorInner>,
+}
+
+/// What all clones of one [`Estimator`] share.
+#[derive(Debug)]
+struct EstimatorInner {
+    config: EstimatorConfig,
+    state: Mutex<State>,
+}
+
+impl Default for Estimator {
+    fn default() -> Self {
+        Self::new(EstimatorConfig::default())
+    }
+}
+
+impl Estimator {
+    /// Creates an estimator with no observations.
+    pub fn new(config: EstimatorConfig) -> Self {
+        Self {
+            inner: Arc::new(EstimatorInner {
+                config,
+                state: Mutex::new(State {
+                    validation: ValidationLatencyEstimator::default(),
+                    build_time: BuildTimeTracker::new(config.build_time_multiplier),
+                    network: NetworkTracker::new(&config),
+                }),
+            }),
+        }
+    }
+
+    /// The configuration this estimator was created with.
+    pub fn config(&self) -> EstimatorConfig {
+        self.inner.config
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        // The state is plain data; a poisoned lock only means another thread
+        // panicked mid-update, and the samples stay usable.
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    // --- observations -----------------------------------------------------
+
+    /// Records local execution-layer validation time for a block.
+    ///
+    /// `height` deduplicates repeated validations of the same block.
+    pub fn on_block_verified(
+        &self,
+        height: u64,
+        workload: ValidationLatencyWorkload,
+        elapsed: Duration,
+    ) {
+        self.state().validation.observe(height, workload, elapsed);
+    }
+
+    /// Records the replayable work of a finished consensus payload build.
+    pub fn on_build_finished(&self, now: Instant, build: FinishedBuild) {
+        let mut state = self.state();
+        if let Some(observed) =
+            state
+                .build_time
+                .observe(now, build.work_at_tx_cutoff, build.total_work)
+        {
+            debug!(
+                observed_multiplier = observed as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                build_time_multiplier =
+                    state.build_time.scaled() as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                samples = state.build_time.samples.len(),
+                "updated build time multiplier"
+            );
+        }
+    }
+
+    /// Records that this node returned a proposal to consensus.
+    ///
+    /// This opens the proposal's network sample, which the block built on top
+    /// of it completes through [`Self::on_child_block_built`]: that block's
+    /// header timestamp minus `returned_unix_ms` minus the validator work in
+    /// `expectation`. `returned_unix_ms` must therefore come from the same
+    /// clock that block header timestamps use.
+    ///
+    /// A proposal whose child never arrives takes no sample. Its view may
+    /// have been nullified, or the next leader may have held both a
+    /// notarization and a nullification for the view and built on an
+    /// ancestor instead. Such a proposal simply ages out of the pending list
+    /// as later proposals are recorded.
+    pub fn on_proposal_returned(
+        &self,
+        now: Instant,
+        returned_unix_ms: u64,
+        key: ProposalKey,
+        expectation: ProposalExpectation,
+    ) {
+        self.state()
+            .network
+            .proposal_returned(now, returned_unix_ms, key, expectation);
+    }
+
+    /// Records the header timestamp of a block built on top of `parent`,
+    /// completing the network sample that [`Self::on_proposal_returned`]
+    /// opened for it.
+    ///
+    /// The child reaches the estimator through the consensus application's
+    /// `verify()` when another validator is the next leader, and through its
+    /// `build()` when this node is the next leader itself. Consensus does not
+    /// run `verify()` for a node's own proposal, so without the `build()`
+    /// call the samples of consecutive own proposals would never complete.
+    ///
+    /// Only proposals this node returned itself produce a sample; other
+    /// parents are ignored, so this can be fed every block the node verifies
+    /// or builds. A child whose view does not directly follow `parent`'s
+    /// takes no sample either: the chain waited on a leader timeout, not on
+    /// propagation.
+    pub fn on_child_block_built(
+        &self,
+        now: Instant,
+        parent: ProposalKey,
+        child_view: u64,
+        child_timestamp_ms: u64,
+    ) {
+        let mut state = self.state();
+        if let Some(network) =
+            state
+                .network
+                .child_built(now, parent, child_view, child_timestamp_ms)
+        {
+            debug!(
+                epoch = parent.0,
+                view = parent.1,
+                ?network,
+                network_reserve = ?state.network.reserve(),
+                samples = state.network.samples.len(),
+                "updated network reservation"
+            );
+        }
+    }
+
+    /// Expected execution-layer validation time of a block with `workload`,
+    /// scaling the observed per-unit rates down as well as up.
+    ///
+    /// Use this to credit validators' work when measuring the network; the
+    /// pacing floor from [`Self::validation_latency_estimate`] never scales
+    /// down and would under-count the network for small blocks.
+    pub fn expected_validation(&self, workload: ValidationLatencyWorkload) -> Option<Duration> {
+        self.state().validation.workload_estimate(workload)
+    }
+
+    // --- reads ------------------------------------------------------------
+
+    /// The proposal window for the next proposal.
+    pub fn proposal_budget(&self) -> ProposalBudget {
+        let network_reserve = self.state().network.reserve();
+        let target_block_time = self.inner.config.target_block_time;
+        ProposalBudget {
+            target_block_time,
+            network_reserve,
+            return_budget: target_block_time.saturating_sub(network_reserve),
+        }
+    }
+
+    /// The current validation latency estimate, if any block was validated.
+    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
+        self.state().validation.estimate()
+    }
+
+    /// The current build time multiplier.
+    pub fn build_time_multiplier(&self) -> f64 {
+        self.state().build_time.scaled() as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64
+    }
+
+    /// Snapshots the inputs for one payload build.
+    pub fn build_plan(&self, build_budget: Duration) -> BuildPlan {
+        let state = self.state();
+        BuildPlan {
+            build_budget,
+            multiplier_scaled: state.build_time.scaled(),
+            validation_latency: state.validation.estimate(),
+        }
+    }
+
+    /// Everything the estimator currently believes.
+    pub fn snapshot(&self) -> EstimatorSnapshot {
+        let state = self.state();
+        let network_reserve = state.network.reserve();
+        EstimatorSnapshot {
+            validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
+            build_time_multiplier: state.build_time.scaled() as f64
+                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+            build_time_samples: state.build_time.samples.len(),
+            network_observed: state.network.observed(),
+            network_last_sample: state.network.last_sample(),
+            network_reserve,
+            network_samples: state.network.samples.len(),
+            pending_proposals: state.network.pending.len(),
+            proposal_return_budget: self
+                .inner
+                .config
+                .target_block_time
+                .saturating_sub(network_reserve),
+        }
+    }
+}
+
 /// Converts a human-readable build-work multiplier into the fixed-point representation.
 pub fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     assert!(
@@ -282,277 +499,20 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     )
 }
 
-/// Bounded, age-limited window of samples with percentile reads.
-#[derive(Clone, Debug)]
-struct SampleWindow<T> {
-    samples: VecDeque<(Instant, T)>,
-    capacity: usize,
-    ttl: Duration,
-}
-
-impl<T: Copy + Ord> SampleWindow<T> {
-    fn new(capacity: usize, ttl: Duration) -> Self {
-        Self {
-            samples: VecDeque::with_capacity(capacity),
-            capacity,
-            ttl,
-        }
-    }
-
-    fn push(&mut self, now: Instant, value: T) {
-        self.prune(now);
-        if self.samples.len() == self.capacity {
-            self.samples.pop_front();
-        }
-        self.samples.push_back((now, value));
-    }
-
-    fn prune(&mut self, now: Instant) {
-        while let Some((at, _)) = self.samples.front() {
-            if now.saturating_duration_since(*at) > self.ttl {
-                self.samples.pop_front();
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.samples.len()
-    }
-
-    /// Returns the `numerator / denominator` percentile, rounding the rank up
-    /// so that a single sample is returned as is.
-    fn percentile(&self, numerator: usize, denominator: usize) -> Option<T> {
-        if self.samples.is_empty() {
-            return None;
-        }
-        let mut values: Vec<T> = self.samples.iter().map(|(_, value)| *value).collect();
-        values.sort_unstable();
-        let rank = (values.len() * numerator).div_ceil(denominator).max(1);
-        values.get(rank - 1).copied()
-    }
-}
-
-/// Learns how much replayable work follows the transaction cutoff.
-#[derive(Clone, Debug)]
-struct BuildTimeTracker {
-    samples: SampleWindow<u64>,
-    /// Current multiplier in fixed point.
-    current: u64,
-}
-
-impl BuildTimeTracker {
-    fn new(initial: f64) -> Self {
-        Self {
-            samples: SampleWindow::new(BUILD_TIME_SAMPLE_WINDOW, BUILD_TIME_SAMPLE_TTL),
-            current: scaled_build_time_multiplier(initial).clamp(
-                MIN_BUILD_TIME_MULTIPLIER_SCALED,
-                MAX_BUILD_TIME_MULTIPLIER_SCALED,
-            ),
-        }
-    }
-
-    /// Records a finished build. Returns the observed multiplier, if usable.
-    fn observe(
-        &mut self,
-        now: Instant,
-        work_at_tx_cutoff: Duration,
-        total_work: Duration,
-    ) -> Option<u64> {
-        if work_at_tx_cutoff == Duration::ZERO {
-            return None;
-        }
-        let observed = (total_work
-            .as_nanos()
-            .saturating_mul(u128::from(BUILD_TIME_MULTIPLIER_SCALE))
-            / work_at_tx_cutoff.as_nanos())
-        .min(u128::from(MAX_BUILD_TIME_MULTIPLIER_SCALED)) as u64;
-        let observed = observed.max(MIN_BUILD_TIME_MULTIPLIER_SCALED);
-        self.samples.push(now, observed);
-
-        let target = self
-            .samples
-            .percentile(RESERVE_PERCENTILE.0, RESERVE_PERCENTILE.1)
-            .unwrap_or(observed);
-        self.current = if target > self.current {
-            target.min(
-                self.current
-                    .saturating_add(BUILD_TIME_MULTIPLIER_MAX_STEP_SCALED),
-            )
-        } else {
-            target
-        };
-        Some(observed)
-    }
-
-    fn scaled(&self) -> u64 {
-        self.current
-    }
-}
-
 /// What a proposer expects its validators to spend on a proposal.
 ///
-/// This is subtracted from the time between returning the proposal and the
-/// next leader building on it, so the network tracker only learns propagation
-/// and vote time.
+/// A proposal's network sample starts from the gap between this node
+/// returning it and the header timestamp of the block built on top of it,
+/// and that gap contains execution. With deferred verification peers vote
+/// before they execute, but the next leader still executes the proposal
+/// before it can build on it; with inline (immediate) verification peers
+/// execute it before they vote. Subtracting the expected validator work
+/// keeps the reservation tracking propagation and votes rather than
+/// execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProposalExpectation {
     /// Expected execution-layer validation time on a validator.
     pub validator_work: Duration,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PendingProposal {
-    key: ProposalKey,
-    returned_at: Instant,
-    /// Wall-clock time of the return, on the same clock the child block's
-    /// header timestamp is taken from.
-    returned_unix_ms: u64,
-    expected_remote: Duration,
-}
-
-/// Learns how long the network needs between this node returning a proposal
-/// and the next leader starting to build on it.
-///
-/// The sample is `child header timestamp - own return time - expected remote
-/// work`. The child's timestamp is the next leader's build start on a
-/// clock-synchronised network, and its propose path waits for the parent body,
-/// so the difference is exactly the time the chain waited on propagation and
-/// votes: the outbound leg to the quorum plus the vote leg to the next leader.
-/// Measuring the notarization at the proposer instead would add the vote leg
-/// back to the proposer, which the chain never waits for unless the proposer
-/// is also the next leader; on a ten validator network with two far-away
-/// proposers that over-reserved by roughly 90 ms for them.
-#[derive(Clone, Debug)]
-struct NetworkTracker {
-    samples: SampleWindow<u64>,
-    /// The most recent sample and when it was taken.
-    ///
-    /// The window only prunes when a sample is pushed, so every hook that
-    /// carries the clock drops this one once it is older than the window's
-    /// ttl.
-    last: Option<(Instant, u64)>,
-    pending: VecDeque<PendingProposal>,
-    floor: Duration,
-    cap: Duration,
-    /// Percentile of the window that is reserved.
-    percentile: u8,
-    /// Whether the most recent sample lifts the reservation above the
-    /// window percentile.
-    fast_rise: bool,
-}
-
-impl NetworkTracker {
-    fn new(config: &EstimatorConfig) -> Self {
-        Self {
-            samples: SampleWindow::new(NETWORK_SAMPLE_WINDOW, NETWORK_SAMPLE_TTL),
-            last: None,
-            pending: VecDeque::with_capacity(MAX_PENDING_PROPOSALS),
-            floor: config.network_budget,
-            cap: config.network_budget_max.max(config.network_budget),
-            percentile: config.network_reserve_percentile.clamp(
-                MIN_NETWORK_RESERVE_PERCENTILE,
-                MAX_NETWORK_RESERVE_PERCENTILE,
-            ),
-            fast_rise: config.network_reserve_fast_rise,
-        }
-    }
-
-    /// Forgets the most recent sample once it is older than the window's ttl.
-    fn expire_last(&mut self, now: Instant) {
-        if self
-            .last
-            .is_some_and(|(at, _)| now.saturating_duration_since(at) > self.samples.ttl)
-        {
-            self.last = None;
-        }
-    }
-
-    fn proposal_returned(
-        &mut self,
-        now: Instant,
-        returned_unix_ms: u64,
-        key: ProposalKey,
-        expectation: ProposalExpectation,
-    ) {
-        self.expire_last(now);
-        self.pending.retain(|pending| {
-            pending.key != key
-                && now.saturating_duration_since(pending.returned_at) <= PENDING_PROPOSAL_TTL
-        });
-        if self.pending.len() == MAX_PENDING_PROPOSALS {
-            self.pending.pop_front();
-        }
-        self.pending.push_back(PendingProposal {
-            key,
-            returned_at: now,
-            returned_unix_ms,
-            expected_remote: expectation.validator_work,
-        });
-    }
-
-    /// Completes a pending proposal with the header timestamp of the block
-    /// built on top of it. Returns the learned network time.
-    ///
-    /// A child that is not the very next view means a leader timed out in
-    /// between; the chain waited on that, not on propagation, so no sample is
-    /// taken.
-    fn child_built(
-        &mut self,
-        now: Instant,
-        parent: ProposalKey,
-        child_view: u64,
-        child_timestamp_ms: u64,
-    ) -> Option<Duration> {
-        self.expire_last(now);
-        let index = self
-            .pending
-            .iter()
-            .position(|pending| pending.key == parent)?;
-        let pending = self.pending.remove(index)?;
-        if child_view != parent.1.saturating_add(1) {
-            return None;
-        }
-        let elapsed =
-            Duration::from_millis(child_timestamp_ms.saturating_sub(pending.returned_unix_ms));
-        if elapsed > MAX_NETWORK_SAMPLE {
-            return None;
-        }
-        let network = elapsed.saturating_sub(pending.expected_remote);
-        let sample = network.as_nanos().min(u128::from(u64::MAX)) as u64;
-        self.samples.push(now, sample);
-        self.last = Some((now, sample));
-        Some(network)
-    }
-
-    fn abandoned(&mut self, key: ProposalKey) {
-        self.pending.retain(|pending| pending.key != key);
-    }
-
-    /// Unclamped learned network time, if any proposal has completed.
-    ///
-    /// This is the configured percentile of the window, or with fast rise
-    /// the most recent sample when that is higher.
-    fn observed(&self) -> Option<Duration> {
-        let window = self.samples.percentile(usize::from(self.percentile), 100);
-        let last = self
-            .last
-            .filter(|_| self.fast_rise)
-            .map(|(_, sample)| sample);
-        // `None` orders below every sample.
-        window.max(last).map(Duration::from_nanos)
-    }
-
-    /// The most recent sample, until it is older than the window's ttl.
-    fn last_sample(&self) -> Option<Duration> {
-        self.last.map(|(_, sample)| Duration::from_nanos(sample))
-    }
-
-    fn reserve(&self) -> Duration {
-        self.observed()
-            .map_or(self.floor, |observed| observed.clamp(self.floor, self.cap))
-    }
 }
 
 /// Timings of a finished payload build.
@@ -687,10 +647,290 @@ pub struct EstimatorSnapshot {
     pub network_reserve: Duration,
     /// Number of completed proposals in the window.
     pub network_samples: usize,
-    /// Proposals still waiting for their notarization.
+    /// Own proposals still waiting for the block built on top of them.
     pub pending_proposals: usize,
     /// Proposal return budget derived from the network reservation.
     pub proposal_return_budget: Duration,
+}
+
+/// Bounded, age-limited window of samples with percentile reads.
+#[derive(Clone, Debug)]
+struct SampleWindow<T> {
+    samples: VecDeque<(Instant, T)>,
+    capacity: usize,
+    ttl: Duration,
+}
+
+impl<T: Copy + Ord> SampleWindow<T> {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(capacity),
+            capacity,
+            ttl,
+        }
+    }
+
+    fn push(&mut self, now: Instant, value: T) {
+        self.prune(now);
+        if self.samples.len() == self.capacity {
+            self.samples.pop_front();
+        }
+        self.samples.push_back((now, value));
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while let Some((at, _)) = self.samples.front() {
+            if now.saturating_duration_since(*at) > self.ttl {
+                self.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Returns the `numerator / denominator` percentile, rounding the rank up
+    /// so that a single sample is returned as is.
+    fn percentile(&self, numerator: usize, denominator: usize) -> Option<T> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let mut values: Vec<T> = self.samples.iter().map(|(_, value)| *value).collect();
+        values.sort_unstable();
+        let rank = (values.len() * numerator).div_ceil(denominator).max(1);
+        values.get(rank - 1).copied()
+    }
+}
+
+/// Learns how much replayable work follows the transaction cutoff.
+#[derive(Clone, Debug)]
+struct BuildTimeTracker {
+    samples: SampleWindow<u64>,
+    /// Current multiplier in fixed point.
+    current: u64,
+}
+
+impl BuildTimeTracker {
+    fn new(initial: f64) -> Self {
+        Self {
+            samples: SampleWindow::new(BUILD_TIME_SAMPLE_WINDOW, BUILD_TIME_SAMPLE_TTL),
+            current: scaled_build_time_multiplier(initial).clamp(
+                MIN_BUILD_TIME_MULTIPLIER_SCALED,
+                MAX_BUILD_TIME_MULTIPLIER_SCALED,
+            ),
+        }
+    }
+
+    /// Records a finished build. Returns the observed multiplier, if usable.
+    fn observe(
+        &mut self,
+        now: Instant,
+        work_at_tx_cutoff: Duration,
+        total_work: Duration,
+    ) -> Option<u64> {
+        if work_at_tx_cutoff == Duration::ZERO {
+            return None;
+        }
+        let observed = (total_work
+            .as_nanos()
+            .saturating_mul(u128::from(BUILD_TIME_MULTIPLIER_SCALE))
+            / work_at_tx_cutoff.as_nanos())
+        .min(u128::from(MAX_BUILD_TIME_MULTIPLIER_SCALED)) as u64;
+        let observed = observed.max(MIN_BUILD_TIME_MULTIPLIER_SCALED);
+        self.samples.push(now, observed);
+
+        let target = self
+            .samples
+            .percentile(RESERVE_PERCENTILE.0, RESERVE_PERCENTILE.1)
+            .unwrap_or(observed);
+        self.current = if target > self.current {
+            target.min(
+                self.current
+                    .saturating_add(BUILD_TIME_MULTIPLIER_MAX_STEP_SCALED),
+            )
+        } else {
+            target
+        };
+        Some(observed)
+    }
+
+    fn scaled(&self) -> u64 {
+        self.current
+    }
+}
+
+/// Learns how long the network needs between this node returning a proposal
+/// and the next leader starting to build on it.
+///
+/// The sample is `header timestamp of the block built on top of the
+/// proposal - own return time - expected validator work`. On a
+/// clock-synchronised network that timestamp is the next leader's build
+/// start. The child block reaches the estimator through the consensus
+/// application's `verify()` when another validator is the next leader, and
+/// through its `build()` when this node is the next leader itself: consensus
+/// does not run `verify()` for a node's own proposal, so without the
+/// `build()` call those samples would never complete.
+///
+/// What the gap contains depends on the verification mode. With deferred
+/// verification peers vote `notarize` as soon as they receive a proposal
+/// whose context matches and execute it afterwards; the next leader still
+/// executes the parent before it can build on it, so the gap is propagation
+/// to that leader, the notarization it needs to enter its view, and its
+/// execution of the parent. With inline (immediate) verification peers
+/// execute before voting, so the gap contains propagation, execution and the
+/// vote leg. In both cases the expected validator work is subtracted, so the
+/// reservation tracks propagation and votes rather than execution.
+///
+/// Measuring the notarization at the proposer instead would add the vote leg
+/// back to the proposer, which the chain never waits for unless the proposer
+/// is also the next leader; on a ten validator network with two far-away
+/// proposers that over-reserved by roughly 90 ms for them.
+///
+/// A next leader that holds both a notarization and a nullification for the
+/// view may build on an ancestor instead. Such a proposal never gets a child
+/// whose `parent_view` is its view, so it takes no sample and simply ages out
+/// of the pending list: the first proposal recorded more than
+/// [`PENDING_PROPOSAL_TTL`] after it drops it, and [`MAX_PENDING_PROPOSALS`]
+/// newer ones push it out earlier.
+#[derive(Clone, Debug)]
+struct NetworkTracker {
+    samples: SampleWindow<u64>,
+    /// The most recent sample and when it was taken.
+    ///
+    /// The window only prunes when a sample is pushed, so every hook that
+    /// carries the clock drops this one once it is older than the window's
+    /// ttl.
+    last: Option<(Instant, u64)>,
+    pending: VecDeque<PendingProposal>,
+    floor: Duration,
+    cap: Duration,
+    /// Percentile of the window that is reserved.
+    percentile: u8,
+    /// Whether the most recent sample lifts the reservation above the
+    /// window percentile.
+    fast_rise: bool,
+}
+
+impl NetworkTracker {
+    fn new(config: &EstimatorConfig) -> Self {
+        Self {
+            samples: SampleWindow::new(NETWORK_SAMPLE_WINDOW, NETWORK_SAMPLE_TTL),
+            last: None,
+            pending: VecDeque::with_capacity(MAX_PENDING_PROPOSALS),
+            floor: config.network_budget,
+            cap: config.network_budget_max.max(config.network_budget),
+            percentile: config.network_reserve_percentile.clamp(
+                MIN_NETWORK_RESERVE_PERCENTILE,
+                MAX_NETWORK_RESERVE_PERCENTILE,
+            ),
+            fast_rise: config.network_reserve_fast_rise,
+        }
+    }
+
+    /// Forgets the most recent sample once it is older than the window's ttl.
+    fn expire_last(&mut self, now: Instant) {
+        if self
+            .last
+            .is_some_and(|(at, _)| now.saturating_duration_since(at) > self.samples.ttl)
+        {
+            self.last = None;
+        }
+    }
+
+    fn proposal_returned(
+        &mut self,
+        now: Instant,
+        returned_unix_ms: u64,
+        key: ProposalKey,
+        expectation: ProposalExpectation,
+    ) {
+        self.expire_last(now);
+        self.pending.retain(|pending| {
+            pending.key != key
+                && now.saturating_duration_since(pending.returned_at) <= PENDING_PROPOSAL_TTL
+        });
+        if self.pending.len() == MAX_PENDING_PROPOSALS {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(PendingProposal {
+            key,
+            returned_at: now,
+            returned_unix_ms,
+            expected_remote: expectation.validator_work,
+        });
+    }
+
+    /// Completes a pending proposal with the header timestamp of the block
+    /// built on top of it. Returns the learned network time.
+    ///
+    /// A child that is not the very next view means a leader timed out in
+    /// between; the chain waited on that, not on propagation, so no sample is
+    /// taken.
+    fn child_built(
+        &mut self,
+        now: Instant,
+        parent: ProposalKey,
+        child_view: u64,
+        child_timestamp_ms: u64,
+    ) -> Option<Duration> {
+        self.expire_last(now);
+        let index = self
+            .pending
+            .iter()
+            .position(|pending| pending.key == parent)?;
+        let pending = self.pending.remove(index)?;
+        if child_view != parent.1.saturating_add(1) {
+            return None;
+        }
+        let elapsed =
+            Duration::from_millis(child_timestamp_ms.saturating_sub(pending.returned_unix_ms));
+        if elapsed > MAX_NETWORK_SAMPLE {
+            return None;
+        }
+        let network = elapsed.saturating_sub(pending.expected_remote);
+        let sample = network.as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.samples.push(now, sample);
+        self.last = Some((now, sample));
+        Some(network)
+    }
+
+    /// Unclamped learned network time, if any proposal has completed.
+    ///
+    /// This is the configured percentile of the window, or with fast rise
+    /// the most recent sample when that is higher.
+    fn observed(&self) -> Option<Duration> {
+        let window = self.samples.percentile(usize::from(self.percentile), 100);
+        let last = self
+            .last
+            .filter(|_| self.fast_rise)
+            .map(|(_, sample)| sample);
+        // `None` orders below every sample.
+        window.max(last).map(Duration::from_nanos)
+    }
+
+    /// The most recent sample, until it is older than the window's ttl.
+    fn last_sample(&self) -> Option<Duration> {
+        self.last.map(|(_, sample)| Duration::from_nanos(sample))
+    }
+
+    fn reserve(&self) -> Duration {
+        self.observed()
+            .map_or(self.floor, |observed| observed.clamp(self.floor, self.cap))
+    }
+}
+
+/// An own proposal waiting for the block built on top of it.
+#[derive(Clone, Copy, Debug)]
+struct PendingProposal {
+    key: ProposalKey,
+    returned_at: Instant,
+    /// Wall-clock time of the return, on the same clock the child block's
+    /// header timestamp is taken from.
+    returned_unix_ms: u64,
+    expected_remote: Duration,
 }
 
 #[derive(Debug)]
@@ -698,196 +938,6 @@ struct State {
     validation: ValidationLatencyEstimator,
     build_time: BuildTimeTracker,
     network: NetworkTracker,
-}
-
-/// The shared proposal budget estimator; the module documentation describes
-/// the model.
-#[derive(Debug)]
-pub struct Estimator {
-    config: EstimatorConfig,
-    state: Mutex<State>,
-}
-
-impl Default for Estimator {
-    fn default() -> Self {
-        Self::new(EstimatorConfig::default())
-    }
-}
-
-impl Estimator {
-    /// Creates an estimator with no observations.
-    pub fn new(config: EstimatorConfig) -> Self {
-        Self {
-            config,
-            state: Mutex::new(State {
-                validation: ValidationLatencyEstimator::default(),
-                build_time: BuildTimeTracker::new(config.build_time_multiplier),
-                network: NetworkTracker::new(&config),
-            }),
-        }
-    }
-
-    /// The configuration this estimator was created with.
-    pub fn config(&self) -> EstimatorConfig {
-        self.config
-    }
-
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        // The state is plain data; a poisoned lock only means another thread
-        // panicked mid-update, and the samples stay usable.
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    // --- observations -----------------------------------------------------
-
-    /// Records local execution-layer validation time for a block.
-    ///
-    /// `height` deduplicates repeated validations of the same block.
-    pub fn on_block_verified(
-        &self,
-        height: u64,
-        workload: ValidationLatencyWorkload,
-        elapsed: Duration,
-    ) {
-        self.state().validation.observe(height, workload, elapsed);
-    }
-
-    /// Records the replayable work of a finished consensus payload build.
-    pub fn on_build_finished(&self, now: Instant, build: FinishedBuild) {
-        let mut state = self.state();
-        if let Some(observed) =
-            state
-                .build_time
-                .observe(now, build.work_at_tx_cutoff, build.total_work)
-        {
-            debug!(
-                observed_multiplier = observed as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64,
-                build_time_multiplier =
-                    state.build_time.scaled() as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64,
-                samples = state.build_time.samples.len(),
-                "updated build time multiplier"
-            );
-        }
-    }
-
-    /// Records that this node returned a proposal to consensus.
-    ///
-    /// `returned_unix_ms` must come from the same clock that block header
-    /// timestamps use; the matching [`Self::on_child_block_built`] completes
-    /// the network sample.
-    pub fn on_proposal_returned(
-        &self,
-        now: Instant,
-        returned_unix_ms: u64,
-        key: ProposalKey,
-        expectation: ProposalExpectation,
-    ) {
-        self.state()
-            .network
-            .proposal_returned(now, returned_unix_ms, key, expectation);
-    }
-
-    /// Records the header timestamp of a block built on top of `parent`.
-    ///
-    /// Only proposals this node returned itself produce a sample; other
-    /// parents are ignored, so this can be fed every block the node verifies
-    /// or builds.
-    pub fn on_child_block_built(
-        &self,
-        now: Instant,
-        parent: ProposalKey,
-        child_view: u64,
-        child_timestamp_ms: u64,
-    ) {
-        let mut state = self.state();
-        if let Some(network) =
-            state
-                .network
-                .child_built(now, parent, child_view, child_timestamp_ms)
-        {
-            debug!(
-                epoch = parent.0,
-                view = parent.1,
-                ?network,
-                network_reserve = ?state.network.reserve(),
-                samples = state.network.samples.len(),
-                "updated network reservation"
-            );
-        }
-    }
-
-    /// Expected execution-layer validation time of a block with `workload`,
-    /// scaling the observed per-unit rates down as well as up.
-    ///
-    /// Use this to credit validators' work when measuring the network; the
-    /// pacing floor from [`Self::validation_latency_estimate`] never scales
-    /// down and would under-count the network for small blocks.
-    pub fn expected_validation(&self, workload: ValidationLatencyWorkload) -> Option<Duration> {
-        self.state().validation.workload_estimate(workload)
-    }
-
-    /// Drops a pending proposal whose view did not notarize.
-    pub fn on_view_abandoned(&self, key: ProposalKey) {
-        self.state().network.abandoned(key);
-    }
-
-    // --- reads ------------------------------------------------------------
-
-    /// The proposal window for the next proposal.
-    pub fn proposal_budget(&self) -> ProposalBudget {
-        let network_reserve = self.state().network.reserve();
-        ProposalBudget {
-            target_block_time: self.config.target_block_time,
-            network_reserve,
-            return_budget: self
-                .config
-                .target_block_time
-                .saturating_sub(network_reserve),
-        }
-    }
-
-    /// The current validation latency estimate, if any block was validated.
-    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
-        self.state().validation.estimate()
-    }
-
-    /// The current build time multiplier.
-    pub fn build_time_multiplier(&self) -> f64 {
-        self.state().build_time.scaled() as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64
-    }
-
-    /// Snapshots the inputs for one payload build.
-    pub fn build_plan(&self, build_budget: Duration) -> BuildPlan {
-        let state = self.state();
-        BuildPlan {
-            build_budget,
-            multiplier_scaled: state.build_time.scaled(),
-            validation_latency: state.validation.estimate(),
-        }
-    }
-
-    /// Everything the estimator currently believes.
-    pub fn snapshot(&self) -> EstimatorSnapshot {
-        let state = self.state();
-        let network_reserve = state.network.reserve();
-        EstimatorSnapshot {
-            validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
-            build_time_multiplier: state.build_time.scaled() as f64
-                / BUILD_TIME_MULTIPLIER_SCALE as f64,
-            build_time_samples: state.build_time.samples.len(),
-            network_observed: state.network.observed(),
-            network_last_sample: state.network.last_sample(),
-            network_reserve,
-            network_samples: state.network.samples.len(),
-            pending_proposals: state.network.pending.len(),
-            proposal_return_budget: self
-                .config
-                .target_block_time
-                .saturating_sub(network_reserve),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1157,28 +1207,45 @@ mod tests {
         assert_eq!(estimator.proposal_budget().network_reserve, ms(300));
         assert_eq!(estimator.snapshot().network_observed, Some(ms(500)));
 
-        // A nullified proposal is not a sample.
-        estimator.on_proposal_returned(now + ms(10_000), base_ms + 10_000, (0, 9), expectation);
-        estimator.on_view_abandoned((0, 9));
-        estimator.on_child_block_built(now + ms(10_300), (0, 9), 10, base_ms + 10_300);
-        assert_eq!(estimator.snapshot().network_samples, 6);
+        // A proposal whose child never arrives takes no sample. Its view may
+        // have been nullified, or the next leader may have held both a
+        // notarization and a nullification for it and built on an ancestor,
+        // as here where view 10 extends view 8.
+        let orphan = now + ms(10_000);
+        let orphan_ms = base_ms + 10_000;
+        estimator.on_proposal_returned(orphan, orphan_ms, (0, 9), expectation);
+        estimator.on_child_block_built(orphan + ms(300), (0, 8), 10, orphan_ms + 300);
+        let snapshot = estimator.snapshot();
+        assert_eq!(snapshot.network_samples, 6);
+        assert_eq!(snapshot.pending_proposals, 1);
 
-        // Neither is a child that skipped a view: the chain waited on a
-        // leader timeout, not on propagation.
-        estimator.on_proposal_returned(now + ms(20_000), base_ms + 20_000, (0, 10), expectation);
-        estimator.on_child_block_built(now + ms(21_500), (0, 10), 12, base_ms + 21_500);
+        // It simply ages out: the first proposal recorded more than
+        // `PENDING_PROPOSAL_TTL` later drops it.
+        let next = orphan + PENDING_PROPOSAL_TTL + ms(1);
+        let next_ms = orphan_ms + PENDING_PROPOSAL_TTL.as_millis() as u64 + 1;
+        estimator.on_proposal_returned(next, next_ms, (0, 11), expectation);
+        let snapshot = estimator.snapshot();
+        assert_eq!(snapshot.network_samples, 6);
+        assert_eq!(
+            snapshot.pending_proposals, 1,
+            "only the new proposal is pending"
+        );
+
+        // Neither does a proposal whose child skipped a view: the chain
+        // waited on a leader timeout, not on propagation.
+        estimator.on_child_block_built(next + ms(1_500), (0, 11), 13, next_ms + 1_500);
         assert_eq!(estimator.snapshot().network_samples, 6);
         assert_eq!(estimator.snapshot().pending_proposals, 0);
 
         // Nor an implausibly late child, which is clock skew or a stall.
-        estimator.on_proposal_returned(now + ms(30_000), base_ms + 30_000, (0, 11), expectation);
-        estimator.on_child_block_built(now + ms(36_000), (0, 11), 12, base_ms + 36_000);
+        estimator.on_proposal_returned(now + ms(30_000), base_ms + 30_000, (0, 14), expectation);
+        estimator.on_child_block_built(now + ms(36_000), (0, 14), 15, base_ms + 36_000);
         assert_eq!(estimator.snapshot().network_samples, 6);
 
         // Clock skew that puts the child before the return counts as zero
         // network time rather than being dropped.
-        estimator.on_proposal_returned(now + ms(40_000), base_ms + 40_000, (0, 12), expectation);
-        estimator.on_child_block_built(now + ms(40_100), (0, 12), 13, base_ms + 39_990);
+        estimator.on_proposal_returned(now + ms(40_000), base_ms + 40_000, (0, 16), expectation);
+        estimator.on_child_block_built(now + ms(40_100), (0, 16), 17, base_ms + 39_990);
         assert_eq!(estimator.snapshot().network_samples, 7);
     }
 
