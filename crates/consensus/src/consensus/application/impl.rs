@@ -484,6 +484,7 @@ where
             parent.view = %context.parent.0,
             parent.digest = %context.parent.1,
             proposer = %context.leader,
+            digest = tracing::field::Empty,
         ),
     )]
     async fn verify(
@@ -506,6 +507,7 @@ where
             warn!("ancestry ended before yielding the block to verify; abstaining");
             return std::future::pending().await;
         };
+        tracing::Span::current().record("digest", tracing::field::display(block.digest()));
 
         // Only a boundary block needs its parent. The DKG actor reads no chain
         // state, so it can work on the ceremony output of a boundary block
