@@ -14,7 +14,9 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use core::{fmt, num::NonZeroU64};
-use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
+use tempo_contracts::precompiles::{
+    ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, tip20::MAX_PAYMENT_TRAILING_BYTES,
+};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
 /// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
@@ -278,21 +280,41 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
+        self.is_tip1045_payment(0)
+    }
+
+    /// T12+ [TIP-20 payment] (TIP-1045) classification.
+    ///
+    /// Like [`is_payment_v2`](Self::is_payment_v2), but static-only payment calls may carry up to
+    /// [`MAX_PAYMENT_TRAILING_BYTES`] bytes after their ABI-encoded arguments, e.g. an attribution
+    /// tag appended by integrators. Dynamic payment calls are unchanged.
+    ///
+    /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment_v3(&self) -> bool {
+        self.is_tip1045_payment(MAX_PAYMENT_TRAILING_BYTES)
+    }
+
+    /// TIP-1045 classification allowing `max_trailing_bytes` after static-only payment calls.
+    fn is_tip1045_payment(&self, max_trailing_bytes: usize) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input),
+            Self::Legacy(tx) => {
+                is_tip1045_call(tx.tx().to.to(), &tx.tx().input, max_trailing_bytes)
+            }
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty()
+                    && is_tip1045_call(tx.to.to(), &tx.input, max_trailing_bytes)
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty()
+                    && is_tip1045_call(tx.to.to(), &tx.input, max_trailing_bytes)
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
                     && tx.authorization_list.is_empty()
-                    && is_tip1045_call(Some(&tx.to), &tx.input)
+                    && is_tip1045_call(Some(&tx.to), &tx.input, max_trailing_bytes)
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
@@ -306,7 +328,7 @@ impl TempoTxEnvelope {
                     && tx
                         .calls
                         .iter()
-                        .all(|call| is_tip1045_call(call.to.to(), &call.input))
+                        .all(|call| is_tip1045_call(call.to.to(), &call.input, max_trailing_bytes))
             }
         }
     }
@@ -571,14 +593,15 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
 
 /// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
 #[inline]
-fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
+fn is_tip1045_call(to: Option<&Address>, input: &[u8], max_trailing_bytes: usize) -> bool {
     match to {
         // TIP20 call + payment calldata constraints
-        Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
+        Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input, max_trailing_bytes),
         // TIP20ChannelReserve call + payment calldata constraints
         Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
             ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
                 input,
+                max_trailing_bytes,
                 |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
             )
         }
@@ -1094,6 +1117,52 @@ mod tests {
             for envelope in payment_envelopes(Bytes::from(data)) {
                 assert!(envelope.is_payment_v1(), "V1 must accept (prefix-only)");
                 assert!(!envelope.is_payment_v2(), "V2 must reject excess calldata");
+                assert!(envelope.is_payment_v3(), "V3 must accept 32 trailing bytes");
+            }
+        }
+    }
+
+    #[test]
+    fn test_payment_v3_trailing_bytes() {
+        let [open, top_up, settle, close, request_close, withdraw] =
+            channel_reserve_payment_calldatas();
+        let static_calls = payment_calldatas()
+            .map(|calldata| (PAYMENT_TKN, calldata))
+            .into_iter()
+            .chain(
+                [open, top_up, request_close, withdraw]
+                    .map(|calldata| (TIP20_CHANNEL_RESERVE_ADDRESS, calldata)),
+            );
+
+        for (to, calldata) in static_calls {
+            for trailing in [1, MAX_PAYMENT_TRAILING_BYTES] {
+                let mut data = calldata.to_vec();
+                data.extend(core::iter::repeat_n(0xab, trailing));
+                for envelope in payment_envelopes_to(to, Bytes::from(data)) {
+                    assert!(!envelope.is_payment_v2(), "V2 must reject trailing bytes");
+                    assert!(
+                        envelope.is_payment_v3(),
+                        "V3 must accept bounded trailing bytes"
+                    );
+                }
+            }
+
+            let mut data = calldata.to_vec();
+            data.extend([0xab; MAX_PAYMENT_TRAILING_BYTES + 1]);
+            for envelope in payment_envelopes_to(to, Bytes::from(data)) {
+                assert!(
+                    !envelope.is_payment_v3(),
+                    "V3 must reject excess trailing bytes"
+                );
+            }
+        }
+
+        // Dynamic calls are bounded by total calldata length, so V3 leaves them unchanged.
+        for calldata in [settle, close] {
+            let mut data = calldata.to_vec();
+            data.extend([0xab; MAX_PAYMENT_TRAILING_BYTES + 1]);
+            for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, Bytes::from(data)) {
+                assert_eq!(envelope.is_payment_v2(), envelope.is_payment_v3());
             }
         }
     }

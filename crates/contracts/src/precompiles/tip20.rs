@@ -207,21 +207,39 @@ impl ITIP20::ITIP20Calls {
     ///
     /// # NOTES
     /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
-    /// - Only selector and exact ABI-encoded length match, no decoding (better performance).
+    /// - Only selector and ABI-encoded length match, no decoding (better performance).
+    /// - At most `max_trailing_bytes` may follow the ABI-encoded arguments: `0` before T12 and
+    ///   [`MAX_PAYMENT_TRAILING_BYTES`] from T12.
     /// - Use [`PaymentSlots::classify`] when the call's addresses are needed as well.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
-    pub fn is_payment(input: &[u8]) -> bool {
-        PaymentSlotsKind::from_calldata(input).is_some()
+    pub fn is_payment(input: &[u8], max_trailing_bytes: usize) -> bool {
+        PaymentSlotsKind::from_calldata(input, max_trailing_bytes).is_some()
     }
 }
+
+/// [TIP-1045] Maximum number of bytes that may follow the ABI-encoded arguments of a static-only
+/// payment call from T12.
+///
+/// Integrators commonly append a fixed-size tag, such as an attribution ID, after otherwise
+/// canonical calldata.
+///
+/// [TIP-1045]: <https://docs.tempo.xyz/protocol/tips/tip-1045>
+pub const MAX_PAYMENT_TRAILING_BYTES: usize = 32;
 
 const WORD: usize = 32;
 const ADDRESS_PADDING: usize = WORD - Address::len_bytes();
 
-fn is_call<C: SolCall>(input: &[u8]) -> bool {
+/// Returns `true` if `input` starts with the selector of `C`, followed by its static ABI-encoded
+/// arguments and at most `max_trailing_bytes` trailing bytes.
+pub(crate) fn is_static_call<C: SolCall>(input: &[u8], max_trailing_bytes: usize) -> bool {
     input.first_chunk::<4>() == Some(&C::SELECTOR)
-        && <C::Parameters<'_> as SolType>::ENCODED_SIZE.is_some_and(|size| input.len() == 4 + size)
+        && <C::Parameters<'_> as SolType>::ENCODED_SIZE.is_some_and(|size| {
+            input
+                .len()
+                .checked_sub(4 + size)
+                .is_some_and(|trailing| trailing <= max_trailing_bytes)
+        })
 }
 
 /// Shape of the addresses needed to derive a payment call's storage slots.
@@ -236,20 +254,20 @@ enum PaymentSlotsKind {
 }
 
 impl PaymentSlotsKind {
-    fn from_calldata(input: &[u8]) -> Option<Self> {
-        if is_call::<ITIP20::transferCall>(input)
-            || is_call::<ITIP20::transferWithMemoCall>(input)
-            || is_call::<ITIP20::mintCall>(input)
-            || is_call::<ITIP20::mintWithMemoCall>(input)
+    fn from_calldata(input: &[u8], max_trailing_bytes: usize) -> Option<Self> {
+        if is_static_call::<ITIP20::transferCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20::transferWithMemoCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20::mintCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20::mintWithMemoCall>(input, max_trailing_bytes)
         {
             Some(Self::Direct)
-        } else if is_call::<ITIP20::transferFromCall>(input)
-            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+        } else if is_static_call::<ITIP20::transferFromCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20::transferFromWithMemoCall>(input, max_trailing_bytes)
         {
             Some(Self::Delegated)
-        } else if is_call::<ITIP20::approveCall>(input)
-            || is_call::<ITIP20::burnCall>(input)
-            || is_call::<ITIP20::burnWithMemoCall>(input)
+        } else if is_static_call::<ITIP20::approveCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20::burnCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20::burnWithMemoCall>(input, max_trailing_bytes)
         {
             Some(Self::Empty)
         } else {
@@ -274,14 +292,17 @@ pub struct PaymentSlots {
 }
 
 impl PaymentSlots {
-    /// Classifies payment calldata by exact selector and length, reading only its addresses.
+    /// Classifies payment calldata by selector and length, reading only its addresses.
+    ///
+    /// Accepts up to [`MAX_PAYMENT_TRAILING_BYTES`] trailing bytes, the most permissive
+    /// classification of any hardfork, since the result only drives cache warming.
     pub fn classify(input: &[u8]) -> Option<Self> {
         fn address(input: &[u8], index: usize) -> Address {
             let start = 4 + WORD * index + ADDRESS_PADDING;
             Address::from_slice(&input[start..start + Address::len_bytes()])
         }
 
-        let kind = PaymentSlotsKind::from_calldata(input)?;
+        let kind = PaymentSlotsKind::from_calldata(input, MAX_PAYMENT_TRAILING_BYTES)?;
         let addresses = match kind {
             PaymentSlotsKind::Empty => [Address::ZERO; 2],
             PaymentSlotsKind::Direct => [address(input, 0), Address::ZERO],
@@ -363,11 +384,41 @@ mod test {
     #[test]
     fn test_is_payment() {
         for calldata in payment_calldatas() {
-            assert!(ITIP20::ITIP20Calls::is_payment(&calldata))
+            assert!(ITIP20::ITIP20Calls::is_payment(&calldata, 0));
+            assert!(ITIP20::ITIP20Calls::is_payment(
+                &calldata,
+                MAX_PAYMENT_TRAILING_BYTES
+            ));
         }
 
         for calldata in non_payment_calldatas() {
-            assert!(!ITIP20::ITIP20Calls::is_payment(&calldata))
+            assert!(!ITIP20::ITIP20Calls::is_payment(&calldata, 0));
+            assert!(!ITIP20::ITIP20Calls::is_payment(
+                &calldata,
+                MAX_PAYMENT_TRAILING_BYTES
+            ));
+        }
+    }
+
+    #[test]
+    fn test_is_payment_trailing_bytes() {
+        for calldata in payment_calldatas() {
+            for trailing in 1..=MAX_PAYMENT_TRAILING_BYTES {
+                let mut input = calldata.clone();
+                input.extend(core::iter::repeat_n(0xab, trailing));
+                assert!(!ITIP20::ITIP20Calls::is_payment(&input, 0));
+                assert!(ITIP20::ITIP20Calls::is_payment(
+                    &input,
+                    MAX_PAYMENT_TRAILING_BYTES
+                ));
+            }
+
+            let mut input = calldata;
+            input.extend([0xab; MAX_PAYMENT_TRAILING_BYTES + 1]);
+            assert!(!ITIP20::ITIP20Calls::is_payment(
+                &input,
+                MAX_PAYMENT_TRAILING_BYTES
+            ));
         }
     }
 
@@ -413,8 +464,13 @@ mod test {
                 );
             }
 
-            // trailing bytes break the exact length match, unlike a non-validating decode
+            // up to `MAX_PAYMENT_TRAILING_BYTES` trailing bytes classify, more do not
             let mut trailing = calldata.clone();
+            trailing.extend([0xab; MAX_PAYMENT_TRAILING_BYTES]);
+            assert_eq!(
+                PaymentSlots::classify(&trailing),
+                PaymentSlots::classify(&calldata)
+            );
             trailing.push(0);
             assert!(PaymentSlots::classify(&trailing).is_none());
         }

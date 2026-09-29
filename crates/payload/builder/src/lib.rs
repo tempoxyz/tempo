@@ -590,8 +590,10 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
-                tx.transaction.is_payment()
+            let is_payment = if hardfork.is_t12() {
+                tx.transaction.is_payment_v3()
+            } else if hardfork.is_t5() {
+                tx.transaction.is_payment_v2()
             } else {
                 tx.transaction.inner().is_payment_v1()
             };
