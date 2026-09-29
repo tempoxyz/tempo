@@ -191,6 +191,7 @@ jobs:
     uses: tempoxyz/gh-actions/.github/workflows/rust-deny.yml@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
     with:
       rust-toolchain: nightly
+      flags: --all-features --locked
 
   zepter:
     name: zepter
