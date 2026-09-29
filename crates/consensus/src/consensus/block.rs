@@ -67,6 +67,9 @@ pub(crate) enum Error {
     /// The BAL sidecar does not match the commitment in the execution block header.
     #[error("block access list does not match its header commitment")]
     BlockAccessList(#[from] BlockAccessListError),
+    /// A non-genesis consensus block must carry the context committed to by its header.
+    #[error("missing consensus context")]
+    MissingConsensusContext,
 }
 
 impl Error {
@@ -77,6 +80,9 @@ impl Error {
                 error.into(),
             ),
             Self::BlockAccessList(error) => error.codec_error(),
+            Self::MissingConsensusContext => {
+                commonware_codec::Error::Invalid("consensus context", "missing from block header")
+            }
         }
     }
 }
@@ -118,7 +124,8 @@ impl PartialEq for Block {
 impl Eq for Block {}
 
 impl Block {
-    /// Creates a block after validating its body and optional BAL against the header.
+    /// Creates a block after requiring consensus context outside genesis and validating its body
+    /// and optional BAL.
     pub(crate) fn try_from_execution_block<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
@@ -127,6 +134,9 @@ impl Block {
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
         let execution_block = execution_block.into();
+        if execution_block.number() != 0 && execution_block.header().consensus_context.is_none() {
+            return Err(Error::MissingConsensusContext);
+        }
         validate_body_against_header(execution_block.body(), execution_block.header())?;
         validate_block_access_list_hash(
             execution_block.block_access_list_hash(),
@@ -153,11 +163,12 @@ impl Block {
         Ok(block)
     }
 
-    /// Creates a block without checking that BAL bytes match the header.
+    /// Creates a block without requiring consensus context or checking its body and BAL.
     ///
-    /// This is for reconstructing blocks from persisted EL data that does not include
-    /// commonware sidecars. Callers must not encode or broadcast a block whose header
-    /// commits to a BAL unless the corresponding BAL bytes have been restored.
+    /// This is for reconstructing blocks from persisted EL data, including genesis and
+    /// pre-activation headers, that does not include commonware sidecars.
+    /// Callers must not broadcast non-genesis blocks without consensus context. If the header
+    /// commits to a BAL, restore its bytes before encoding or broadcasting the block.
     pub(crate) fn from_execution_block_unchecked<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
@@ -454,25 +465,23 @@ fn validate_block_access_list_hash(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "bal")]
-    use alloy_consensus::BlockHeader as _;
+    use super::*;
+
     use alloy_consensus::{BlockBody, EMPTY_ROOT_HASH};
     use alloy_primitives::{B256, bytes, keccak256};
-    #[cfg(not(feature = "bal"))]
-    use commonware_codec::Write as _;
-    use commonware_codec::{Encode, Read as _};
+    use commonware_codec::Encode;
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
     #[cfg(feature = "bal")]
-    use super::BlockAccessListError;
-    use super::{Block, Error};
+    use alloy_consensus::BlockHeader as _;
 
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
     ) -> SealedBlock<TempoBlock> {
         SealedBlock::seal_slow(TempoBlock {
             header: TempoHeader {
+                consensus_context: Some(TempoConsensusContext::default()),
                 inner: alloy_consensus::Header {
                     base_fee_per_gas: Some(0),
                     withdrawals_root: Some(EMPTY_ROOT_HASH),
@@ -513,6 +522,7 @@ mod tests {
     fn reads_block_without_block_access_list_bytes() {
         let execution_block = SealedBlock::seal_slow(TempoBlock {
             header: TempoHeader {
+                consensus_context: Some(TempoConsensusContext::default()),
                 inner: alloy_consensus::Header {
                     number: 42,
                     gas_limit: 30_000_000,
@@ -550,6 +560,7 @@ mod tests {
     fn read_rejects_execution_body_that_does_not_match_header() {
         let execution_block = SealedBlock::seal_slow(TempoBlock {
             header: TempoHeader {
+                consensus_context: Some(TempoConsensusContext::default()),
                 inner: alloy_consensus::Header {
                     base_fee_per_gas: Some(0),
                     withdrawals_root: Some(B256::ZERO),
@@ -587,6 +598,7 @@ mod tests {
     fn constructor_rejects_execution_body_that_does_not_match_header() {
         let execution_block = SealedBlock::seal_slow(TempoBlock {
             header: TempoHeader {
+                consensus_context: Some(TempoConsensusContext::default()),
                 inner: alloy_consensus::Header {
                     withdrawals_root: Some(B256::ZERO),
                     ..Default::default()
@@ -626,7 +638,10 @@ mod tests {
     #[test]
     fn rejects_block_access_list_without_header_hash() {
         let execution_block = SealedBlock::seal_slow(TempoBlock {
-            header: TempoHeader::default(),
+            header: TempoHeader {
+                consensus_context: Some(TempoConsensusContext::default()),
+                ..Default::default()
+            },
             body: Default::default(),
         });
         assert!(execution_block.block_access_list_hash().is_none());
@@ -720,5 +735,80 @@ mod tests {
             err,
             commonware_codec::Error::Invalid("block access list", "hash does not match header")
         ));
+    }
+
+    #[test]
+    fn constructor_rejects_missing_consensus_context() {
+        for number in [1, 42] {
+            let execution_block = SealedBlock::seal_slow(TempoBlock {
+                header: TempoHeader {
+                    inner: alloy_consensus::Header {
+                        number,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                body: Default::default(),
+            });
+            assert!(matches!(
+                Block::try_from_execution_block(execution_block.clone(), None),
+                Err(Error::MissingConsensusContext)
+            ));
+            assert!(matches!(
+                Block::try_from_execution_block_with_encoded_cache(
+                    execution_block,
+                    None,
+                    EncodedBlock::default(),
+                ),
+                Err(Error::MissingConsensusContext)
+            ));
+        }
+    }
+
+    #[test]
+    fn read_rejects_missing_consensus_context_but_preserves_legacy_execution_blocks() {
+        for number in [1, 42] {
+            let execution_block = SealedBlock::seal_slow(TempoBlock {
+                header: TempoHeader {
+                    inner: alloy_consensus::Header {
+                        number,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                body: Default::default(),
+            });
+            let encoded = alloy_rlp::encode(&execution_block);
+
+            // Historical execution blocks must still decode with their original hashes.
+            let decoded = <TempoBlock as reth_primitives_traits::Block>::decode_sealed(
+                &mut encoded.as_slice(),
+            )
+            .unwrap();
+            assert_eq!(decoded, execution_block);
+            let legacy = Block::from_execution_block_unchecked(decoded, None);
+            assert_eq!(legacy.encode().as_ref(), encoded.as_slice());
+
+            // The same bytes cannot enter the consensus protocol as a proposal.
+            assert!(matches!(
+                Block::read_cfg(&mut encoded.as_slice(), &()),
+                Err(commonware_codec::Error::Invalid(
+                    "consensus context",
+                    "missing from block header"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn genesis_without_consensus_context_roundtrips() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock::default());
+        let block = Block::try_from_execution_block(execution_block.clone(), None).unwrap();
+        let encoded = block.encode();
+        let decoded = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap();
+
+        assert_eq!(decoded, block);
+        assert_eq!(decoded.block_hash(), execution_block.hash());
+        assert_eq!(decoded.header().consensus_context, None);
     }
 }

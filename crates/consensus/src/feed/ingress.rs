@@ -83,6 +83,7 @@ mod tests {
             let block = Block::try_from_execution_block(
                 SealedBlock::seal_slow(TempoBlock {
                     header: TempoHeader {
+                        consensus_context: Some(Default::default()),
                         inner: Header {
                             number: 1,
                             ..Default::default()

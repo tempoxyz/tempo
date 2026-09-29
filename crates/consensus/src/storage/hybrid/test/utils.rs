@@ -59,6 +59,7 @@ const TEST_PARTITION_PREFIX: &str = "test";
 /// would compute.
 pub(in crate::storage) fn make_block(height: u64, parent_hash: B256) -> Block {
     let header = TempoHeader {
+        consensus_context: (height != 0).then(Default::default),
         inner: Header {
             parent_hash,
             number: height,

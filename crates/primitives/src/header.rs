@@ -174,6 +174,20 @@ impl Sealable for TempoHeader {
     }
 }
 
+/// An all-zero placeholder. Proposals must populate the actual consensus values.
+impl Default for TempoConsensusContext {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            view: 0,
+            parent_view: 0,
+            proposer: B256::ZERO
+                .try_into()
+                .expect("all-zero bytes encode an Ed25519 public key"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +364,22 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(header.hash_slow(), header2.hash_slow());
+    }
+
+    #[test]
+    fn default_consensus_context_is_zero_and_roundtrips() {
+        let context = TempoConsensusContext::default();
+        assert_eq!(context.epoch, 0);
+        assert_eq!(context.view, 0);
+        assert_eq!(context.parent_view, 0);
+        assert_eq!(B256::from(context.proposer), B256::ZERO);
+
+        // Check both the network codec and the consensus library's key validation.
+        let _ = context.proposer.to_inner();
+        let encoded = alloy_rlp::encode(context);
+        assert_eq!(
+            TempoConsensusContext::decode(&mut encoded.as_slice()).unwrap(),
+            context
+        );
     }
 }

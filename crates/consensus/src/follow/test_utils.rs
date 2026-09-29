@@ -57,6 +57,7 @@ fn make_block_with_parent(
     outcome: Option<&OnchainDkgOutcome>,
 ) -> Block {
     let header = TempoHeader {
+        consensus_context: (height != 0).then(Default::default),
         inner: Header {
             number: height,
             parent_hash,
