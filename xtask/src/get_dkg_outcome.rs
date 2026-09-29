@@ -1,13 +1,16 @@
 //! Dump DKG outcome from a block's extra_data.
 
+use std::num::NonZeroU64;
+
 use alloy::{
     primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder},
 };
 use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::N3f1;
-use eyre::{Context as _, eyre};
+use eyre::{Context as _, OptionExt as _, eyre};
 use serde::Serialize;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
@@ -128,15 +131,16 @@ impl GetDkgOutcome {
 }
 
 fn outcome_block_number(epoch: u64, epoch_length: u64) -> eyre::Result<u64> {
-    eyre::ensure!(epoch_length > 0, "epoch length must be greater than zero");
-    if epoch == 0 {
+    let epoch_length =
+        NonZeroU64::new(epoch_length).ok_or_eyre("epoch length must be greater than zero")?;
+    let Some(previous) = Epoch::new(epoch).previous() else {
         return Ok(0);
-    }
+    };
 
-    epoch
-        .checked_mul(epoch_length)
-        .and_then(|first_block| first_block.checked_sub(1))
-        .ok_or_else(|| eyre!("epoch boundary block number overflows u64"))
+    FixedEpocher::new(epoch_length)
+        .last(previous)
+        .map(|height| height.get())
+        .ok_or_eyre("epoch boundary block number overflows u64")
 }
 
 #[cfg(test)]
