@@ -120,7 +120,7 @@ jobs:
           printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/network-e2e.crt"
           payload=$(jq -n --arg sha "$SHA" --arg branch "$BRANCH" \
             --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --arg tag "$IMAGE_TAG" \
-            '{repository:"tempoxyz/tempo", event:"tempo_network_e2e", data:{sha:$sha, branch:$branch, run:$run, tag:$tag}}')
+            '{repository:"tempoxyz/tempo", event:"tempo_network_e2e", data:{sha:$sha, branch:$branch, run:$run, tag:$tag, notify_slack:false}}')
           curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
             --retry 3 --retry-all-errors ${{ secrets.EVENTS_ARGS }} \
             --key "$RUNNER_TEMP/network-e2e.key" --cert "$RUNNER_TEMP/network-e2e.crt" \
