@@ -6,16 +6,12 @@ variable "VERGEN_GIT_SHA_SHORT" {
   default = ""
 }
 
-variable "REGISTRY" {
-  default = "ghcr.io/tempoxyz"
-}
-
 group "default" {
   targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
 }
 
 group "nightly" {
-  targets = ["tempo-nightly", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
 }
 
 target "docker-metadata" {}
@@ -50,15 +46,6 @@ target "_common" {
 target "tempo" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo"
-}
-
-target "tempo-nightly" {
-  inherits = ["tempo"]
-  args = {
-    RETH_ENGINE_PERSISTENCE_THRESHOLD = "30"
-    RETH_ENGINE_NUM_STATE_MASKING_BLOCKS = "20"
-  }
-  tags = ["${REGISTRY}/tempo:nightly", "docker.io/tempoxyz/tempo:nightly"]
 }
 
 target "tempo-localnet" {

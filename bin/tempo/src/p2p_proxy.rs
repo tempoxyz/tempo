@@ -34,7 +34,7 @@ use std::{
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tracing::{debug, error, info};
 
 /// Tempo-specific network primitives for the proxy node.
@@ -47,8 +47,13 @@ const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
 const HEADER_RPC_BATCH_SIZE: usize = 128;
 /// Maximum number of block headers to serve in a `GetBlockHeaders` response.
 const MAX_HEADERS_SERVE: usize = 1024;
+/// Maximum number of block bodies to serve in a `GetBlockBodies` response.
+const MAX_BODIES_SERVE: usize = 1024;
 /// Soft cap on the total encoded body size in a `GetBlockBodies` response.
 const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
+/// Maximum number of header and body requests handled at once. Further requests wait in the
+/// network's request channel, which drops new requests once it's full.
+const MAX_CONCURRENT_REQUESTS: usize = 256;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -217,8 +222,9 @@ impl BlockCache {
         }
 
         let body = match self.by_number.remove(&number) {
-            Some(existing) => body.or(existing.body),
-            None => body,
+            // A different block at this height, e.g. after a reorg, must not inherit the old body.
+            Some(existing) if existing.hash == hash => body.or(existing.body),
+            _ => body,
         };
 
         self.by_number
@@ -385,6 +391,7 @@ async fn run_p2p_network(
     });
 
     // Handle incoming eth requests
+    let request_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     while let Some(eth_request) = requests_rx.recv().await {
         match eth_request {
             IncomingEthRequest::GetBlockHeaders {
@@ -396,9 +403,14 @@ async fn run_p2p_network(
                 stats
                     .header_requests_received
                     .fetch_add(1, Ordering::Relaxed);
+                let permit = Arc::clone(&request_permits)
+                    .acquire_owned()
+                    .await
+                    .expect("semaphore is never closed");
                 let fetch_tx = fetch_tx.clone();
                 let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let headers = async {
                         let (tx, rx) = oneshot::channel();
                         fetch_tx
@@ -427,9 +439,14 @@ async fn run_p2p_network(
             } => {
                 debug!(%peer_id, ?request, "received GetBlockBodies");
                 stats.body_requests_received.fetch_add(1, Ordering::Relaxed);
+                let permit = Arc::clone(&request_permits)
+                    .acquire_owned()
+                    .await
+                    .expect("semaphore is never closed");
                 let fetch_tx = fetch_tx.clone();
                 let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let bodies = async {
                         let (tx, rx) = oneshot::channel();
                         fetch_tx
@@ -533,7 +550,7 @@ async fn fetch_and_cache_header_by_number(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
     number: u64,
-) -> Result<()> {
+) -> Result<TempoHeader> {
     let block = provider
         .get_block_by_number(number.into())
         .await
@@ -541,15 +558,15 @@ async fn fetch_and_cache_header_by_number(
         .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
 
     let header: TempoHeader = block.header.inner.inner.clone();
-    cache.insert_header(block.header.number(), block.header.hash(), header);
-    Ok(())
+    cache.insert_header(block.header.number(), block.header.hash(), header.clone());
+    Ok(header)
 }
 
 async fn fetch_and_cache_header_batch(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
     numbers: &[u64],
-) -> Result<()> {
+) -> Result<Vec<TempoHeader>> {
     let mut batch = BatchRequest::new(provider.client());
     let mut waiters = Vec::with_capacity(numbers.len());
 
@@ -563,46 +580,63 @@ async fn fetch_and_cache_header_batch(
 
     batch.send().await.context("failed to fetch header batch")?;
 
+    let mut headers = Vec::with_capacity(numbers.len());
     for (number, waiter) in waiters {
         match waiter.await {
             Ok(Some(block)) => {
                 let header: TempoHeader = block.header.inner.inner.clone();
-                cache.insert_header(block.header.number(), block.header.hash(), header);
+                cache.insert_header(block.header.number(), block.header.hash(), header.clone());
+                headers.push(header);
             }
             Ok(None) => {
                 debug!(number, "header batch returned no block");
             }
             Err(err) => {
                 debug!(number, %err, "header batch waiter failed; falling back to single request");
-                let _ = fetch_and_cache_header_by_number(provider, cache, number).await;
+                if let Ok(header) = fetch_and_cache_header_by_number(provider, cache, number).await
+                {
+                    headers.push(header);
+                }
             }
         }
     }
 
-    Ok(())
+    Ok(headers)
 }
 
+/// Fetches the headers missing from the cache and returns them by number.
+///
+/// Headers older than everything cached are evicted as soon as they're inserted into a full
+/// cache, so callers can't rely on reading them back from it.
 async fn fetch_and_cache_headers(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
     numbers: &[u64],
-) {
+) -> HashMap<u64, TempoHeader> {
     let missing_numbers: Vec<u64> = numbers
         .iter()
         .copied()
         .filter(|number| cache.get_by_number(*number).is_none())
         .collect();
 
+    let mut fetched = HashMap::with_capacity(missing_numbers.len());
     for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
-        if fetch_and_cache_header_batch(provider, cache, chunk)
-            .await
-            .is_err()
-        {
-            for &number in chunk {
-                let _ = fetch_and_cache_header_by_number(provider, cache, number).await;
+        match fetch_and_cache_header_batch(provider, cache, chunk).await {
+            Ok(headers) => {
+                fetched.extend(headers.into_iter().map(|header| (header.number(), header)));
+            }
+            Err(_) => {
+                for &number in chunk {
+                    if let Ok(header) =
+                        fetch_and_cache_header_by_number(provider, cache, number).await
+                    {
+                        fetched.insert(number, header);
+                    }
+                }
             }
         }
     }
+    fetched
 }
 
 async fn resolve_start_block_number(
@@ -662,14 +696,18 @@ async fn resolve_headers(
     };
 
     let requested_numbers = requested_header_numbers(start_num, request);
-    fetch_and_cache_headers(provider, cache, &requested_numbers).await;
+    let mut fetched = fetch_and_cache_headers(provider, cache, &requested_numbers).await;
 
     let mut headers = Vec::with_capacity(requested_numbers.len());
     for number in requested_numbers {
-        let Some(block) = cache.get_by_number(number) else {
+        let Some(header) = fetched.remove(&number).or_else(|| {
+            cache
+                .get_by_number(number)
+                .map(|block| block.header.clone())
+        }) else {
             break;
         };
-        headers.push(block.header.clone());
+        headers.push(header);
     }
 
     headers
@@ -711,7 +749,7 @@ async fn resolve_bodies(
     let mut bodies = Vec::new();
     let mut total_bytes = 0usize;
 
-    for &hash in hashes {
+    for &hash in hashes.iter().take(MAX_BODIES_SERVE) {
         let body = match cache
             .get_by_hash(&hash)
             .and_then(|block| block.body.clone())
@@ -775,6 +813,21 @@ mod tests {
             ..Default::default()
         };
         cache.insert_header(number, numbered_hash(number), header);
+    }
+
+    #[test]
+    fn upsert_keeps_body_only_for_same_block() {
+        let mut cache = BlockCache::new(10);
+        let (old, new) = (B256::with_last_byte(1), B256::with_last_byte(2));
+
+        cache.insert_block(1, old, TempoHeader::default(), Default::default());
+        cache.insert_header(1, old, TempoHeader::default());
+        assert!(cache.get_by_hash(&old).unwrap().body.is_some());
+
+        // A different block replaces it at the same height, e.g. after a reorg.
+        cache.insert_header(1, new, TempoHeader::default());
+        assert!(cache.get_by_hash(&old).is_none());
+        assert!(cache.get_by_hash(&new).unwrap().body.is_none());
     }
 
     #[test]
@@ -869,6 +922,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_bodies_caps_number_of_bodies() {
+        let provider = moderato_provider();
+        let count = MAX_BODIES_SERVE as u64 + 10;
+        let mut cache = BlockCache::new(count);
+        let hashes = (1..=count).map(numbered_hash).collect::<Vec<_>>();
+        for (number, hash) in (1..=count).zip(&hashes) {
+            cache.insert_block(
+                number,
+                *hash,
+                TempoHeader::default(),
+                tempo_primitives::BlockBody::default(),
+            );
+        }
+
+        let bodies = resolve_bodies(&provider, &mut cache, &hashes).await;
+        assert_eq!(bodies.len(), MAX_BODIES_SERVE);
+    }
+
+    #[tokio::test]
     async fn fetch_headers_and_bodies() {
         let provider = moderato_provider();
         let mut cache = BlockCache::new(100);
@@ -948,5 +1020,27 @@ mod tests {
         assert_eq!(headers[0].number(), start);
         assert_eq!(headers[0].hash_slow(), start_hash);
         assert!(cache.get_by_hash(&start_hash).is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_headers_serves_headers_older_than_cached_blocks() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(2);
+
+        // A full cache of newer blocks evicts each fetched header as soon as it's inserted.
+        insert_test_header(&mut cache, 1 << 40);
+        insert_test_header(&mut cache, (1 << 40) + 1);
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(1),
+            limit: 3,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+        let headers = resolve_headers(&provider, &mut cache, &request).await;
+
+        assert_eq!(headers.len(), 3);
+        assert_eq!(headers[0].number(), 1);
+        assert_eq!(headers[2].number(), 3);
     }
 }

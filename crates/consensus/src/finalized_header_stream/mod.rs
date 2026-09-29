@@ -272,7 +272,7 @@ where
                 })?;
 
             let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch.get() >= network_identity.from_epoch
+            if onchain_outcome.epoch >= network_identity.from_epoch
                 && network_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
@@ -401,7 +401,7 @@ where
 
     Ok(FinalizationVerifier::new(
         NetworkIdentity {
-            from_epoch: outcome.epoch.get(),
+            from_epoch: outcome.epoch,
             identity: *outcome.network_identity(),
         },
         strategy.clone(),

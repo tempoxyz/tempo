@@ -1,42 +1,33 @@
 //! Dump DKG outcome from a block's extra_data.
 
-use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use alloy::{
     primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder},
 };
 use commonware_codec::{Encode as _, ReadExt as _};
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
+use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::N3f1;
-use eyre::{Context as _, OptionExt as _, eyre};
+use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use serde::Serialize;
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 #[derive(Debug, clap::Args)]
-#[clap(group = clap::ArgGroup::new("target").required(true))]
 pub(crate) struct GetDkgOutcome {
-    /// RPC endpoint URL (http://, https://, ws://, or wss://)
+    /// Chain to inspect (mainnet, moderato, testnet, dev, or a genesis JSON path).
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Arc<TempoChainSpec>,
+
+    /// RPC endpoint URL override. Required when the selected chainspec does not define a default.
     #[arg(long)]
-    rpc_url: String,
+    rpc_url: Option<String>,
 
-    /// Block number to query directly (use when epoch length varies)
-    #[arg(long, group = "target")]
-    block: Option<u64>,
-
-    /// Block hash to query directly
-    #[arg(long, group = "target")]
-    block_hash: Option<B256>,
-
-    /// Epoch the outcome is used in; reads genesis for epoch 0, otherwise the previous epoch's
-    /// boundary (requires --epoch-length)
-    #[arg(long, group = "target", requires = "epoch_length")]
+    /// Epoch the outcome is used in; read from genesis for epoch 0, otherwise from the previous
+    /// epoch's boundary. Defaults to the latest DKG outcome available at the current block.
+    #[arg(long)]
     epoch: Option<u64>,
-
-    /// Epoch length in blocks (required with --epoch)
-    #[arg(long, requires = "epoch")]
-    epoch_length: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -67,40 +58,81 @@ fn pubkey_to_hex(pk: &PublicKey) -> String {
     const_hex::encode_prefixed(pk.as_ref())
 }
 
+fn latest_dkg_block(epocher: &FixedEpocher, height: Height) -> Height {
+    let epoch_info = epocher
+        .containing(height)
+        .expect("fixed epocher is valid for all heights");
+    if epoch_info.last() == height {
+        height
+    } else {
+        epoch_info
+            .epoch()
+            .previous()
+            .map_or_else(Height::zero, |epoch| {
+                epocher
+                    .last(epoch)
+                    .expect("fixed epocher is valid for all epochs")
+            })
+    }
+}
+
+/// Returns the block storing the DKG outcome used in `epoch`: genesis for epoch 0, otherwise the
+/// last block of the previous epoch.
+fn epoch_dkg_block(epocher: &FixedEpocher, epoch: Epoch) -> eyre::Result<Height> {
+    epoch.previous().map_or(Ok(Height::zero()), |previous| {
+        epocher
+            .last(previous)
+            .ok_or_eyre("epoch boundary block number overflows u64")
+    })
+}
+
 impl GetDkgOutcome {
     pub(crate) async fn run(self) -> eyre::Result<()> {
+        let Self {
+            chain,
+            rpc_url,
+            epoch,
+        } = self;
+
+        let rpc_url = rpc_url
+            .or_else(|| chain.default_follow_url().map(str::to_owned))
+            .ok_or_eyre(
+                "selected chainspec does not define a default RPC URL; pass --rpc-url for a custom network",
+            )?;
+
         let provider = ProviderBuilder::new()
-            .connect(&self.rpc_url)
+            .connect(&rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
 
-        let block = if let Some(hash) = self.block_hash {
-            provider
-                .get_block_by_hash(hash)
-                .await
-                .wrap_err_with(|| format!("failed to fetch block hash `{hash}`"))?
-                .ok_or_else(|| eyre!("block {hash} not found"))?
-        } else {
-            let block_number = if let Some(block) = self.block {
-                block
-            } else {
-                let epoch = self.epoch.expect("epoch required when block not provided");
-                let epoch_length = self.epoch_length.expect("epoch_length required with epoch");
-                outcome_block_number(epoch, epoch_length)?
-            };
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
-            provider
-                .get_block_by_number(block_number.into())
+        let epocher = FixedEpocher::new(epoch_length);
+        let block_number = if let Some(epoch) = epoch {
+            epoch_dkg_block(&epocher, Epoch::new(epoch))?
+        } else {
+            let height = provider
+                .get_block_number()
                 .await
-                .wrap_err_with(|| format!("failed to fetch block number `{block_number}`"))?
-                .ok_or_else(|| eyre!("block {block_number} not found"))?
-        };
+                .wrap_err("failed to fetch current block number")?;
+            latest_dkg_block(&epocher, Height::new(height))
+        }
+        .get();
+
+        let block = provider
+            .get_block_by_number(block_number.into())
+            .await
+            .wrap_err_with(|| format!("failed to fetch block number `{block_number}`"))?
+            .ok_or_else(|| eyre!("block {block_number} not found"))?;
 
         let block_number = block.header.number;
         let block_hash = block.header.hash;
         let extra_data = &block.header.inner.extra_data;
 
-        eyre::ensure!(
+        ensure!(
             !extra_data.is_empty(),
             "block {} has empty extra_data (not an epoch boundary?)",
             block_number
@@ -110,17 +142,16 @@ impl GetDkgOutcome {
             .wrap_err("failed to parse DKG outcome from extra_data")?;
 
         let sharing = outcome.sharing();
-
         let info = DkgOutcomeInfo {
-            epoch: outcome.epoch.get(),
+            epoch: outcome.epoch,
             block_number,
             block_hash,
             dealers: outcome.dealers().iter().map(pubkey_to_hex).collect(),
             players: outcome.players().iter().map(pubkey_to_hex).collect(),
             next_players: outcome.next_players().iter().map(pubkey_to_hex).collect(),
             is_next_full_dkg: outcome.is_next_full_dkg,
-            network_identity: Bytes::copy_from_slice(&sharing.public().encode()),
-            threshold: sharing.required::<N3f1>(),
+            network_identity: sharing.public().encode().into(),
+            threshold: sharing.required(),
             total_participants: sharing.total().get(),
         };
 
@@ -130,41 +161,58 @@ impl GetDkgOutcome {
     }
 }
 
-fn outcome_block_number(epoch: u64, epoch_length: u64) -> eyre::Result<u64> {
-    let epoch_length =
-        NonZeroU64::new(epoch_length).ok_or_eyre("epoch length must be greater than zero")?;
-    let Some(previous) = Epoch::new(epoch).previous() else {
-        return Ok(0);
-    };
-
-    FixedEpocher::new(epoch_length)
-        .last(previous)
-        .map(|height| height.get())
-        .ok_or_eyre("epoch boundary block number overflows u64")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
+    use commonware_utils::NZU64;
 
     #[test]
-    fn outcome_uses_previous_epoch_boundary() {
-        assert_eq!(outcome_block_number(10, 100).unwrap(), 999);
-        assert_eq!(outcome_block_number(1, 100).unwrap(), 99);
-        assert_eq!(outcome_block_number(1, 1).unwrap(), 0);
+    fn epoch_argument_is_optional() {
+        for (args, expected) in [
+            (vec!["xtask", "get-dkg-outcome", "--chain", "mainnet"], None),
+            (
+                vec![
+                    "xtask",
+                    "get-dkg-outcome",
+                    "--chain",
+                    "mainnet",
+                    "--epoch",
+                    "7",
+                ],
+                Some(7),
+            ),
+        ] {
+            let parsed = crate::Args::try_parse_from(args).unwrap();
+            let crate::Action::GetDkgOutcome(args) = parsed.action else {
+                panic!("expected get-dkg-outcome");
+            };
+            assert_eq!(args.epoch, expected);
+        }
     }
 
     #[test]
-    fn invalid_epoch_boundaries_return_errors() {
-        assert!(outcome_block_number(0, 0).is_err());
-        assert!(outcome_block_number(1, 0).is_err());
-        assert!(outcome_block_number(u64::MAX, 2).is_err());
+    fn latest_dkg_uses_the_last_available_boundary_or_genesis() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        for (height, expected) in [(0, 0), (8, 0), (9, 9), (10, 9), (18, 9), (19, 19), (20, 19)] {
+            assert_eq!(
+                latest_dkg_block(&epocher, Height::new(height)).get(),
+                expected,
+                "at height {height}"
+            );
+        }
     }
 
     #[test]
-    fn epoch_zero_uses_genesis() {
-        assert_eq!(outcome_block_number(0, 100).unwrap(), 0);
-        assert_eq!(outcome_block_number(0, 1).unwrap(), 0);
-        assert_eq!(outcome_block_number(0, u64::MAX).unwrap(), 0);
+    fn epoch_dkg_uses_the_previous_boundary_or_genesis() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        for (epoch, expected) in [(0, 0), (1, 9), (2, 19), (10, 99)] {
+            assert_eq!(
+                epoch_dkg_block(&epocher, Epoch::new(epoch)).unwrap().get(),
+                expected,
+                "at epoch {epoch}"
+            );
+        }
+        assert!(epoch_dkg_block(&FixedEpocher::new(NZU64!(2)), Epoch::new(u64::MAX)).is_err());
     }
 }

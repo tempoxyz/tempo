@@ -1,0 +1,4 @@
+include: vault/base.yml
+mix:
+- template: vault_deposit
+  weight: 100

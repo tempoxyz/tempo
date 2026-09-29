@@ -36,19 +36,17 @@
 //!   below).
 //!
 //! Pick `retention_blocks` as a few multiples of `items_per_section` so
-//! section overshoot is a small fraction of the working set; see
-//! [`super::DEFAULT_FINALIZED_BLOCKS_RETENTION`].
+//! section overshoot is a small fraction of the working set.
 //!
 //! # Stale puts
 //!
-//! [`Hybrid::put`] absorbs the prunable archive's
-//! [`archive::Error::AlreadyPrunedTo`] as a silent success. The
-//! eviction invariant
+//! The prunable archive silently ignores puts below its prune floor, so
+//! [`Hybrid::put`] treats them as successful no-ops. The eviction invariant
 //! `oldest_allowed ≤ section_aligned(reth.finalized − retention + 1)
 //! ≤ reth.finalized` guarantees that a put at `H < oldest_allowed`
 //! also has `H ≤ reth.finalized`, so the block is durable in reth and
-//! a subsequent [`Blocks::get`] will hit the reth fallback. Surfacing
-//! the error would crash the node on a recoverable condition (e.g.
+//! a subsequent [`Blocks::get`] will hit the reth fallback. Rejecting
+//! the put would crash the node on a recoverable condition (e.g.
 //! follow-mode catching up while reth has synced past the cache
 //! window).
 //!
@@ -95,6 +93,7 @@
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
@@ -103,11 +102,14 @@ use commonware_storage::{
     translator::TwoCap,
 };
 use reth_node_core::primitives::SealedBlock;
+use reth_primitives_traits::SealedOrRecoveredBlock;
 use reth_provider::{
-    BlockReader, BlockSource, ProviderError, ProviderResult,
+    BalProvider, BalStoreHandle, BlockReader, BlockSource, HeaderProvider, ProviderError,
+    ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tracing::{debug, info, instrument, warn};
+use tempo_primitives::TempoHeader;
+use tracing::{info, instrument};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -115,7 +117,7 @@ use crate::consensus::{Digest, block::Block};
 pub(in crate::storage) mod test;
 
 /// Narrow view of reth that [`Hybrid`] needs: a finalized watermark and
-/// canonical-by-height / canonical-by-hash block reads.
+/// block and header reads by height or hash.
 ///
 /// Exists to make unit testing easier. [`BlockchainProvider`] is used in
 /// production.
@@ -140,6 +142,13 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
     /// only — pending/in-flight blocks must never be returned, otherwise
     /// the marshal could be handed a non-finalized block.
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Block>>;
+
+    /// Look up a header at or below the finalized watermark. Genesis is
+    /// implicitly finalized even when the watermark is unset.
+    fn header_by_height(&self, height: u64) -> ProviderResult<Option<TempoHeader>>;
+
+    /// Look up a header by its exact hash, without consulting the finalized watermark.
+    fn header_by_hash(&self, hash: B256) -> ProviderResult<Option<TempoHeader>>;
 }
 
 /// Production impl over reth's [`BlockchainProvider`] — the only type
@@ -151,7 +160,7 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
 impl<N> FinalizedBlocksProvider for BlockchainProvider<N>
 where
     N: ProviderNodeTypes,
-    Self: BlockReader<Block = tempo_primitives::Block>,
+    Self: BlockReader<Block = tempo_primitives::Block> + HeaderProvider<Header = TempoHeader>,
 {
     fn finalized_height(&self) -> Option<u64> {
         // Direct read of `canonical_in_memory_state` — equivalent to
@@ -180,9 +189,10 @@ where
             return Ok(None);
         }
         match self.block_by_number(height) {
-            Ok(maybe_block) => Ok(maybe_block.map(|block| {
-                Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
-            })),
+            Ok(Some(block)) => {
+                restore_block(SealedBlock::seal_slow(block).into(), self.bal_store()).map(Some)
+            }
+            Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)
@@ -197,9 +207,8 @@ where
         // block that lives only in reth's pending in-memory tree — see
         // [`Blocks::get`] on [`Hybrid`].
         match self.find_sealed_or_recovered_block(hash, BlockSource::Canonical) {
-            Ok(maybe_block) => {
-                Ok(maybe_block.map(|block| Block::from_execution_block_unchecked(block, None)))
-            }
+            Ok(Some(block)) => restore_block(block, self.bal_store()).map(Some),
+            Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)
@@ -207,6 +216,39 @@ where
             Err(bad_error) => Err(bad_error),
         }
     }
+
+    #[instrument(skip_all, fields(height), err)]
+    fn header_by_height(&self, height: u64) -> ProviderResult<Option<TempoHeader>> {
+        if height > self.finalized_height().unwrap_or_default() {
+            return Ok(None);
+        }
+        self.header_by_number(height)
+    }
+
+    #[instrument(skip_all, fields(hash), err)]
+    fn header_by_hash(&self, hash: B256) -> ProviderResult<Option<TempoHeader>> {
+        self.header(hash)
+    }
+}
+
+/// Restore sidecars before handing an EL block to marshal, which may encode it for
+/// a peer or re-propose it at an epoch boundary. A missing BAL or a BAL-bearing
+/// block with BAL support disabled is an invariant violation and returns an error.
+fn restore_block(
+    block: SealedOrRecoveredBlock<tempo_primitives::Block>,
+    bal_store: &BalStoreHandle,
+) -> ProviderResult<Block> {
+    let block_access_list = if block.block_access_list_hash().is_some() {
+        if !cfg!(feature = "bal") {
+            return Err(ProviderError::other(
+                reth_consensus::ConsensusError::BlockAccessListHashUnexpected,
+            ));
+        }
+        bal_store.get_by_hash(block.hash())?
+    } else {
+        None
+    };
+    Block::try_from_execution_block(block, block_access_list).map_err(ProviderError::other)
 }
 
 /// Error returned by [`Hybrid`]'s [`Blocks`] impl.
@@ -286,6 +328,35 @@ where
         }
     }
 
+    /// Reads a header from the prunable archive, falling back to execution
+    /// headers without requiring a block body. Execution reads by height are
+    /// limited to the finalized watermark; reads by hash are not.
+    pub(crate) async fn get_header(
+        &self,
+        id: Identifier<'_, Digest>,
+    ) -> Result<Option<TempoHeader>, Error> {
+        let cached = match id {
+            Identifier::Index(height) => {
+                archive::Archive::get(&self.prunable, Identifier::Index(height)).await?
+            }
+            Identifier::Key(digest) => {
+                archive::Archive::get(&self.prunable, Identifier::Key(digest)).await?
+            }
+        };
+        if let Some(block) = cached {
+            return Ok(Some(block.block().header().clone()));
+        }
+
+        match id {
+            Identifier::Index(height) => {
+                Ok(self.execution_block_provider.header_by_height(height)?)
+            }
+            Identifier::Key(digest) => {
+                Ok(self.execution_block_provider.header_by_hash(digest.0)?)
+            }
+        }
+    }
+
     /// Drops blocks below the execution layer's finalized watermark.
     ///
     /// The cache is sized relative to the EL's finalized boundary, not to
@@ -297,21 +368,25 @@ where
     /// - Eviction tracks the EL's progress monotonically. Once the EL
     ///   finalizes height `H`, the cache may drop everything below
     ///   `H - retention_blocks + 1` on the next put.
-    async fn evict_below_execution_finalized_floor(&mut self) -> Result<(), archive::Error> {
+    ///
+    /// Consumes `self`; on error the archive handle is gone and the store is
+    /// dropped. No retry: marshal treats the failed `put` as fatal.
+    async fn evict_below_execution_finalized_floor(mut self) -> Result<Self, archive::Error> {
         // Reth hasn't finalized anything yet (fresh chain) — nothing is
         // safe to evict.
         let Some(execution_finalized) = self.execution_block_provider.finalized_height() else {
-            return Ok(());
+            return Ok(self);
         };
         let Some(min_to_keep) = execution_finalized.checked_sub(self.retention_blocks) else {
-            return Ok(());
+            return Ok(self);
         };
         // `prune(min)` keeps `min` and above, and the archive rounds `min`
         // *down* to a section boundary, so the actual retained window can
         // exceed `retention_blocks` by up to `items_per_section − 1` items.
         // See the module docs ("Section-rounding") for the full story.
         let prune_floor = min_to_keep.saturating_add(1);
-        prunable::Archive::prune(&mut self.prunable, prune_floor).await
+        self.prunable = prunable::Archive::prune(self.prunable, prune_floor).await?;
+        Ok(self)
     }
 }
 
@@ -324,53 +399,18 @@ where
     type Error = Error;
 
     #[instrument(skip_all, err)]
-    async fn put(&mut self, block: Self::Block) -> Result<(), Self::Error> {
+    async fn put(mut self, block: Self::Block) -> Result<Self, Self::Error> {
         let height = block.height();
         let digest = block.digest();
-        match archive::Archive::put(&mut self.prunable, height.get(), digest, block).await {
-            Ok(()) => {}
-            // The prunable cache has already evicted this height — but
-            // by the cache's eviction invariant
-            // (`oldest_allowed ≤ section_aligned(execution_finalized − retention + 1)
-            // ≤ execution_finalized`), `height < oldest_allowed` implies
-            // `height ≤ execution_finalized`. The EL's finality contract
-            // guarantees every block at or below `execution_finalized` is
-            // durably persisted, so the marshal's subsequent
-            // `Blocks::get(height)` will be served out of the execution
-            // layer fallback path. We can't write to EL ourselves (it owns
-            // its own storage), but we don't have to — the block is
-            // already durable. Treat the put as a successful no-op so
-            // we don't trip the marshal's "failed to finalize" panic
-            // on a perfectly recoverable condition.
-            Err(archive::Error::AlreadyPrunedTo(oldest_allowed)) => {
-                debug!(
-                    %height,
-                    oldest_allowed,
-                    execution_finalized = ?self.execution_block_provider.finalized_height(),
-                    "finalized block below prunable cache window; trusting the \
-                    execution layer's finalized storage and treating put as a \
-                    no-op"
-                );
-            }
-            Err(other) => return Err(other.into()),
-        }
+        self.prunable = archive::Archive::put(self.prunable, height.get(), digest, block).await?;
 
-        if let Err(err) = self.evict_below_execution_finalized_floor().await {
-            // Eviction failures are not fatal; the next put will retry.
-            // We log because they may indicate disk-level issues.
-            warn!(
-                %err,
-                %height,
-                retention = self.retention_blocks,
-                "failed to evict prunable finalized blocks cache after put"
-            );
-        }
-        Ok(())
+        self = self.evict_below_execution_finalized_floor().await?;
+        Ok(self)
     }
 
-    async fn sync(&mut self) -> Result<(), Self::Error> {
-        archive::Archive::sync(&mut self.prunable).await?;
-        Ok(())
+    async fn sync(mut self) -> Result<Self, Self::Error> {
+        self.prunable = archive::Archive::sync(self.prunable).await?;
+        Ok(self)
     }
 
     /// Attempts to read `id` from the prunable archive, falling back to EL on miss.
@@ -398,8 +438,8 @@ where
     }
 
     /// No-op: Cache eviction is EL-driven (see [`Self::evict_below_execution_finalized_floor`]).
-    async fn prune(&mut self, _min: Height) -> Result<(), Self::Error> {
-        Ok(())
+    async fn prune(self, _min: Height) -> Result<Self, Self::Error> {
+        Ok(self)
     }
 
     fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {
