@@ -1,5 +1,6 @@
 //! TIP-1108 configuration commitments in the opaque account extension payload.
 
+use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Error;
 
