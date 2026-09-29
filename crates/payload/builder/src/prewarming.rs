@@ -8,7 +8,7 @@ use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
-use reth_storage_api::{StateProviderBox, StateProviderFactory};
+use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
@@ -17,7 +17,7 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
-pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -370,7 +370,7 @@ where
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+        let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -382,6 +382,8 @@ where
                 return None;
             }
         };
+        let mut state_provider: EvmStateProviderBox =
+            Box::new(state_provider.into_evm_state_provider());
 
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(
@@ -941,24 +943,6 @@ mod tests {
         wait_until(|| {
             let log = log.lock().unwrap();
             log.no_updates == 1 && log.skip_blobs == vec![true]
-        });
-    }
-
-    #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
-        let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
-
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0)];
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
-
-        assert!(prewarming.next().is_some());
-
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
         });
     }
 

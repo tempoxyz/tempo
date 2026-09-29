@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, mutate,
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
@@ -54,20 +54,20 @@ impl Precompile for TIP403Registry {
                         })
                     }),
                     #[schedule(since = T6)]
-                    setReceivePolicy(call) => mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c)),
+                    setReceivePolicy(call) => mutate(call, msg_sender, |sender, c| self.set_receive_policy(sender, c)),
                     #[schedule(since = T9)]
                     migrateTransferPolicyIds(call) => mutate(call, msg_sender, |_, c| {
                         self.migrate_transfer_policy_ids(c)
                     }),
-                    createPolicy(call) => mutate(call, msg_sender, |s, c| self.create_policy(s, c)),
-                    createPolicyWithAccounts(call) => mutate(call, msg_sender, |s, c| {
-                        self.create_policy_with_accounts(s, c)
+                    createPolicy(call) => mutate(call, msg_sender, |sender, c| self.create_policy(sender, c)),
+                    createPolicyWithAccounts(call) => mutate(call, msg_sender, |sender, c| {
+                        self.create_policy_with_accounts(sender, c)
                     }),
-                    setPolicyAdmin(call) => mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c)),
-                    modifyPolicyWhitelist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c)),
-                    modifyPolicyBlacklist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c)),
+                    setPolicyAdmin(call) => mutate(call, msg_sender, |sender, c| self.set_policy_admin(sender, c)),
+                    modifyPolicyWhitelist(call) => mutate(call, msg_sender, |sender, c| self.modify_policy_whitelist(sender, c)),
+                    modifyPolicyBlacklist(call) => mutate(call, msg_sender, |sender, c| self.modify_policy_blacklist(sender, c)),
                     #[schedule(since = T2)]
-                    createCompoundPolicy(call) => mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
+                    createCompoundPolicy(call) => mutate(call, msg_sender, |sender, c| self.create_compound_policy(sender, c))
                 }
             }
         )

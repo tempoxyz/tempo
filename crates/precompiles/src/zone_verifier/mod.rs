@@ -7,6 +7,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolStruct,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 pub use tempo_contracts::precompiles::IZoneVerifier;
 use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
 use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
@@ -19,15 +20,25 @@ const MODE_NITRO_V1: &[u8] = &[1];
 const MODE_NO_PROOF: &[u8] = &[2];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
-/// Production measurements remain deliberately unset until the reproducible T13 EIF is finalized.
-const APPROVED_PCRS: Option<[[u8; 48]; 3]> = None;
+/// PCR0/1/2 policy changes, ordered from oldest to newest hardfork. Each entry takes effect at
+/// its hardfork and remains in effect until a newer entry replaces them.
+const APPROVED_PCRS: &[(TempoHardfork, [[u8; 48]; 3])] = &[];
 
+/// Return the measurements accepted by the native verifier at this hardfork.
+pub fn approved_pcrs(hardfork: TempoHardfork) -> Option<[[u8; 48]; 3]> {
+    APPROVED_PCRS
+        .iter()
+        .filter(|(fork, _)| hardfork >= *fork)
+        .max_by_key(|(fork, _)| fork.variant_index())
+        .map(|(_, pcrs)| *pcrs)
+}
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS)
+        let pcrs = approved_pcrs(self.storage.spec());
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, pcrs)
     }
 
     /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
@@ -123,7 +134,6 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{primitives::Bytes, sol_types::SolCall};
-    use tempo_chainspec::hardfork::TempoHardfork;
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -345,7 +355,12 @@ mod tests {
             );
             assert!(
                 !verifier
-                    .verify_with_policy(portal, call.clone(), &root, APPROVED_PCRS)
+                    .verify_with_policy(
+                        portal,
+                        call.clone(),
+                        &root,
+                        approved_pcrs(TempoHardfork::T12)
+                    )
                     .unwrap()
             );
             // The public observer API must still reject a synthetic, non-AWS trust root.

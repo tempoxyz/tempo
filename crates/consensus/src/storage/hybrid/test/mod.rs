@@ -30,6 +30,105 @@ const PER_HEIGHT_SECTION: std::num::NonZeroU64 = NZU64!(1);
 /// observe pre-prune behavior.
 const RETENTION: u64 = 4;
 
+#[cfg(not(feature = "bal"))]
+#[test]
+fn execution_fallback_rejects_bal_when_feature_is_disabled() {
+    let block = SealedBlock::seal_slow(tempo_primitives::Block {
+        header: TempoHeader {
+            inner: alloy_consensus::Header {
+                block_access_list_hash: Some(B256::repeat_byte(42)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        body: Default::default(),
+    });
+
+    let error = restore_block(block.into(), &BalStoreHandle::noop()).expect_err(
+        "a stored BAL block with support disabled is an invariant violation, not a miss",
+    );
+    assert!(matches!(
+        error
+            .as_other()
+            .and_then(|error| error.downcast_ref::<reth_consensus::ConsensusError>()),
+        Some(reth_consensus::ConsensusError::BlockAccessListHashUnexpected)
+    ));
+}
+
+#[cfg(feature = "bal")]
+#[test]
+fn execution_fallback_restores_bal_before_encoding() {
+    use crate::consensus::block::{BlockAccessListError, Error as BlockError};
+    use alloy_primitives::{Bytes, keccak256};
+    use commonware_codec::{Encode, Read};
+    use reth_provider::{InMemoryBalStore, RawBal};
+
+    let bal = Bytes::from_static(&[0xc0]);
+    let block = SealedBlock::seal_slow(tempo_primitives::Block {
+        header: TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 42,
+                base_fee_per_gas: Some(0),
+                withdrawals_root: Some(alloy_consensus::constants::EMPTY_ROOT_HASH),
+                blob_gas_used: Some(0),
+                excess_blob_gas: Some(0),
+                parent_beacon_block_root: Some(B256::ZERO),
+                requests_hash: Some(B256::ZERO),
+                block_access_list_hash: Some(keccak256(&bal)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        body: tempo_primitives::BlockBody {
+            withdrawals: Some(Default::default()),
+            ..Default::default()
+        },
+    });
+    let store = BalStoreHandle::new(InMemoryBalStore::default());
+
+    // Missing sidecars are a storage invariant violation, not a cache miss.
+    let error = restore_block(block.clone().into(), &store)
+        .expect_err("a missing finalized BAL must shut down marshal");
+    assert!(matches!(
+        error.as_other().and_then(|error| error.downcast_ref::<BlockError>()),
+        Some(BlockError::BlockAccessList(BlockAccessListError::Missing { expected }))
+            if *expected == keccak256(&bal)
+    ));
+
+    store
+        .insert(block.num_hash(), RawBal::from(bal.clone()))
+        .unwrap();
+    let restored = restore_block(block.clone().into(), &store).unwrap();
+    let expected = Block::try_from_execution_block(block.clone(), Some(bal)).unwrap();
+    assert_eq!(restored, expected);
+    let encoded = restored.encode();
+    assert_eq!(
+        Block::read_cfg(&mut encoded.as_ref(), &()).unwrap(),
+        expected
+    );
+
+    store
+        .insert(block.num_hash(), RawBal::from(Bytes::from_static(&[0xc1])))
+        .unwrap();
+    assert!(
+        restore_block(block.into(), &store).is_err(),
+        "mismatched BAL must be rejected"
+    );
+}
+
+#[test]
+fn execution_fallback_without_bal_remains_available() {
+    let block = make_block(42, B256::ZERO);
+    assert_eq!(
+        restore_block(
+            block.clone().into_execution_block(),
+            &BalStoreHandle::noop()
+        )
+        .unwrap(),
+        block
+    );
+}
+
 struct SetupHybrid {
     retention: u64,
     section_size: std::num::NonZeroU64,
