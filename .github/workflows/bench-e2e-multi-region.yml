@@ -397,6 +397,30 @@ jobs:
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
 
+      - name: Configure matched split-pending experiment
+        working-directory: ${{ env.BENCH_REPO_DIR }}
+        run: |
+          # Experiment-only harness patch against the pinned runner revision.
+          # Both phases use the same node and txgen binaries. Only the feature
+          # phase replaces the implicit 50k shared pending limit with 40k/10k.
+          git apply <<'PATCH'
+          diff --git a/scripts/run_benchmark.sh b/scripts/run_benchmark.sh
+          --- a/scripts/run_benchmark.sh
+          +++ b/scripts/run_benchmark.sh
+          @@ -3739,2 +3739,3 @@
+           ORIGINAL_TEMPO_COMMIT="$TEMPO_COMMIT"
+          +ORIGINAL_BENCH_ARGS_JSON="$BENCH_ARGS_JSON"
+           while IFS=$'\t' read -r phase_label phase_side phase_commit phase_name phase_node_args_b64 phase_hardfork_b64; do
+          @@ -3799,1 +3800,6 @@
+          +  BENCH_ARGS_JSON="$ORIGINAL_BENCH_ARGS_JSON"
+          +  if [[ "$phase_side" == "feature" ]]; then
+          +    BENCH_ARGS_JSON="$(jq -c '. + ["--max-pending-payments", "40000", "--max-pending-general", "10000"]' <<< "$BENCH_ARGS_JSON")"
+          +  fi
+          +  printf '%s\n' "$BENCH_ARGS_JSON" > "$DEST/experiment-bench-args.json"
+             run_cloud_load_generator
+          PATCH
+          bash -n scripts/run_benchmark.sh
+
       - name: Resolve baseline and feature refs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
