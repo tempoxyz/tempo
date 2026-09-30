@@ -147,9 +147,9 @@ pub struct PcrPolicy(Cow<'static, [(TempoHardfork, [[u8; 48]; 3])]>);
 
 impl PcrPolicy {
     /// Validate use as a custom override. Custom PCRs are forbidden on mainnet and Moderato.
-    pub fn validate(&self, chain_id: u64) -> std::result::Result<(), PcrPolicyError> {
+    pub fn validate(&self, chain_id: u64) -> std::result::Result<(), PolicyError> {
         if matches!(chain_id, MAINNET_CHAIN_ID | MODERATO_CHAIN_ID) {
-            return Err(PcrPolicyError::CustomPolicyNotAllowed(chain_id));
+            return Err(PolicyError::CustomPolicyNotAllowed(chain_id));
         }
         Ok(())
     }
@@ -174,7 +174,7 @@ impl From<[[u8; 48]; 3]> for PcrPolicy {
 /// - `PCR0,PCR1,PCR2` (effective from genesis)
 /// - `;`-separated `HARDFORK=PCR0,PCR1,PCR2` entries
 impl FromStr for PcrPolicy {
-    type Err = PcrPolicyError;
+    type Err = PolicyError;
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         let mut entries = Vec::new();
@@ -187,41 +187,40 @@ impl FromStr for PcrPolicy {
                 Some((fork, pcrs)) => (
                     fork.trim()
                         .parse::<TempoHardfork>()
-                        .map_err(|_| PcrPolicyError::InvalidHardfork(fork.trim().to_string()))?,
+                        .map_err(|_| PolicyError::InvalidHardfork(fork.trim().to_string()))?,
                     pcrs,
                 ),
                 None => (TempoHardfork::Genesis, entry),
             };
             if entries.iter().any(|(existing, _)| *existing == fork) {
-                return Err(PcrPolicyError::DuplicateHardfork(fork));
+                return Err(PolicyError::DuplicateHardfork(fork));
             }
             entries.push((fork, parse_pcrs(pcrs)?));
         }
         if entries.is_empty() {
-            return Err(PcrPolicyError::InvalidMeasurements);
+            return Err(PolicyError::InvalidMeasurements);
         }
         Ok(Self(Cow::Owned(entries)))
     }
 }
 
-fn parse_pcrs(value: &str) -> std::result::Result<[[u8; 48]; 3], PcrPolicyError> {
-    let values = value
+fn parse_pcrs(value: &str) -> std::result::Result<[[u8; 48]; 3], PolicyError> {
+    let values: [FixedBytes<48>; 3] = value
         .split(',')
-        .map(|part| part.trim().parse::<FixedBytes<48>>())
+        .map(|part| part.trim().parse())
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| PcrPolicyError::InvalidMeasurements)?;
-    let values: [FixedBytes<48>; 3] = values
+        .map_err(|_| PolicyError::InvalidMeasurements)?
         .try_into()
-        .map_err(|_| PcrPolicyError::InvalidMeasurements)?;
+        .map_err(|_| PolicyError::InvalidMeasurements)?;
     if values.iter().any(FixedBytes::is_zero) {
-        return Err(PcrPolicyError::DebugMeasurements);
+        return Err(PolicyError::DebugMeasurements);
     }
     Ok(values.map(|value| value.0))
 }
 
 /// Error returned when parsing a [`PcrPolicy`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum PcrPolicyError {
+pub enum PolicyError {
     #[error("custom zone verifier PCRs are not allowed on chain {0}")]
     CustomPolicyNotAllowed(u64),
     #[error("expected three comma-separated 48-byte PCR measurements (PCR0,PCR1,PCR2)")]
@@ -480,12 +479,7 @@ mod tests {
 
     #[test]
     fn pcr_policy() {
-        let (a, b, c, zero) = (
-            "11".repeat(48),
-            "22".repeat(48),
-            "33".repeat(48),
-            "00".repeat(48),
-        );
+        let [a, b, c, zero] = ["11", "22", "33", "00"].map(|s| s.repeat(48));
         let bare = format!("{a},{b},0x{c}").parse::<PcrPolicy>().unwrap();
         assert_eq!(bare, PcrPolicy::from([[0x11; 48], [0x22; 48], [0x33; 48]]));
         assert_eq!(
@@ -511,26 +505,23 @@ mod tests {
         for chain_id in [MAINNET_CHAIN_ID, MODERATO_CHAIN_ID] {
             assert_eq!(
                 bare.validate(chain_id),
-                Err(PcrPolicyError::CustomPolicyNotAllowed(chain_id))
+                Err(PolicyError::CustomPolicyNotAllowed(chain_id))
             );
         }
         assert_eq!(bare.validate(1), Ok(()));
         for (input, expected) in [
-            (String::new(), PcrPolicyError::InvalidMeasurements),
-            (format!("{a},{a}"), PcrPolicyError::InvalidMeasurements),
-            (
-                format!("{a},{a},{a},{a}"),
-                PcrPolicyError::InvalidMeasurements,
-            ),
-            (format!("{a},{a},11"), PcrPolicyError::InvalidMeasurements),
-            (format!("{a},{a},{zero}"), PcrPolicyError::DebugMeasurements),
+            (String::new(), PolicyError::InvalidMeasurements),
+            (format!("{a},{a}"), PolicyError::InvalidMeasurements),
+            (format!("{a},{a},{a},{a}"), PolicyError::InvalidMeasurements),
+            (format!("{a},{a},11"), PolicyError::InvalidMeasurements),
+            (format!("{a},{a},{zero}"), PolicyError::DebugMeasurements),
             (
                 format!("T99={a},{a},{a}"),
-                PcrPolicyError::InvalidHardfork("T99".to_string()),
+                PolicyError::InvalidHardfork("T99".to_string()),
             ),
             (
                 format!("T13={a},{a},{a};T13={a},{a},{a}"),
-                PcrPolicyError::DuplicateHardfork(TempoHardfork::T13),
+                PolicyError::DuplicateHardfork(TempoHardfork::T13),
             ),
         ] {
             assert_eq!(input.parse::<PcrPolicy>(), Err(expected), "input: {input}");
