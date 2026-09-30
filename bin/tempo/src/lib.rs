@@ -533,6 +533,17 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         };
         let chain_id = builder.config().chain.chain().id();
 
+        #[cfg(feature = "custom-pcrs")]
+        if let Some(policy) = args.custom_pcrs.clone() {
+            eyre::ensure!(
+                tempo_chainspec::spec::chainspec_from_chain_id(chain_id).is_none(),
+                "--zone-verifier.custom-pcrs is not allowed on chain {chain_id}"
+            );
+            warn!(?policy, "replacing compiled-in zone verifier PCRs with a custom policy");
+            tempo_precompiles::zone_verifier::set_custom_pcrs(policy)
+                .map_err(|_| eyre::eyre!("zone verifier PCRs were already set"))?;
+        }
+
         // Resolve the bootnodes endpoint:
         // --tempo.bootnodes-endpoint=none -> disabled
         // otherwise -> use the provided/default URL
@@ -1247,6 +1258,19 @@ mod tests {
                 .node_args
                 .payload_builder_builder()
                 .enable_prewarming
+        );
+    }
+
+    #[cfg(feature = "custom-pcrs")]
+    #[test]
+    fn parses_custom_zone_verifier_pcrs() {
+        let pcr = "11".repeat(48);
+        let policy = format!("T13={pcr},{pcr},{pcr}");
+        let args = parse_node_args(&["tempo", "node", "--zone-verifier.custom-pcrs", &policy]);
+        assert_eq!(args.custom_pcrs, Some(policy.parse().unwrap()));
+        assert!(
+            TempoCli::try_parse_from(["tempo", "node", "--zone-verifier.custom-pcrs", "0x11"])
+                .is_err()
         );
     }
 }
