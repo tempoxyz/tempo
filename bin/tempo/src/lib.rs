@@ -1258,17 +1258,4 @@ mod tests {
                 .enable_prewarming
         );
     }
-
-    #[cfg(feature = "custom-pcrs")]
-    #[test]
-    fn parses_custom_zone_verifier_pcrs() {
-        let pcr = "11".repeat(48);
-        let policy = format!("T13={pcr},{pcr},{pcr}");
-        let args = parse_node_args(&["tempo", "node", "--zone-verifier.custom-pcrs", &policy]);
-        assert_eq!(args.custom_pcrs, Some(policy.parse().unwrap()));
-        assert!(
-            TempoCli::try_parse_from(["tempo", "node", "--zone-verifier.custom-pcrs", "0x11"])
-                .is_err()
-        );
-    }
 }

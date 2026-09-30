@@ -99,8 +99,11 @@ pub struct TempoArgs {
 
     /// Replace the compiled-in zone verifier PCR policy. DEVNET ONLY.
     ///
-    /// Accepts `PCR0,PCR1,PCR2` (effective from genesis) or `;`-separated
-    /// `HARDFORK=PCR0,PCR1,PCR2` entries. Rejected on mainnet and Moderato.
+    /// Parses the measurements from:
+    /// - `PCR0,PCR1,PCR2` (effective from genesis)
+    /// - `;`-separated `HARDFORK=PCR0,PCR1,PCR2` entries
+    ///
+    /// Rejected on mainnet and Moderato.
     #[cfg(feature = "custom-pcrs")]
     #[arg(
         long = "zone-verifier.custom-pcrs",
