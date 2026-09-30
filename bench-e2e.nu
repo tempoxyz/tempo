@@ -1347,9 +1347,14 @@ def "main summarize" [
 def "main render-txgen-spec" [
     --preset: string = ""                              # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
+    --accounts: int = 1000                             # Public-mix user count
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
-    print $spec.spec_path
+    if $spec.scenario_id == "public-mix" {
+        print (txgen-prepare-public-mix-preset $spec.spec_path 0 $accounts 0 1337 --out-dir $out_dir)
+    } else {
+        print $spec.spec_path
+    }
 }
 
 # Run the e2e sequence on one runner.

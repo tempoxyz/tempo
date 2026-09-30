@@ -1,9 +1,16 @@
 # Forward-looking public workload, weighted by submitted transactions (not gas).
-# Transaction shares: plain transfer 80%, mint 5%, MPP 15%.
+# Vault traffic is 20%: deposits 12%, withdrawals 8%.
+# The remaining 80% preserves plain transfer/memo transfer/mint/MPP ratios of
+# 25/40/1/15. Integer weights total 2025 to represent these shares exactly.
 # These are benchmark assumptions, not a replay of mainnet activity.
-# Uses the native MPP open-only preset with txgen main.
+# Uses native MPP and explicit setup dependencies (tempoxyz/txgen#214).
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
-include: mpp.yml
+# The helper combines vault fixture setup and expands per-user templates.
+# All workload templates use expiring nonces with a 25-second validity window;
+# setup retains ordered nonces and explicit dependencies.
+include:
+  - mpp.yml
+  - vault/base.yml
 
 address_pools:
   existing_recipients:
@@ -33,6 +40,23 @@ templates:
       args:
         - {address_pool: {pool: existing_recipients, select: random}}
         - 1
+  public_transfer_memo:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transferWithMemo
+      args:
+        - {address_pool: {pool: existing_recipients, select: random}}
+        - 1
+        - {random_bytes: 32}
   public_mint:
     type: tempo
     # Dev genesis grants the pathUSD issuer role to users[0].
@@ -53,8 +77,14 @@ templates:
 # Each selection emits one transaction, including MPP.
 mix:
   - template: public_transfer
-    weight: 80
+    weight: 500
+  - template: public_transfer_memo
+    weight: 800
   - template: public_mint
-    weight: 5
+    weight: 20
   - sequence: mpp_open_only
-    weight: 15
+    weight: 300
+  - template: vault_deposit
+    weight: 243
+  - template: vault_withdraw
+    weight: 162

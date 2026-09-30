@@ -194,11 +194,6 @@ on:
         type: string
         required: false
         default: ""
-      token-count:
-        description: Number of TIP20 tokens to use in txgen presets.
-        type: string
-        required: true
-        default: "4"
       profiling:
         description: Profiling.
         type: choice
@@ -239,6 +234,11 @@ on:
         type: string
         required: true
         default: "5000000000"
+      general-gas-limit:
+        description: General non-payment gas limit override. Empty preserves the chain default.
+        type: string
+        required: false
+        default: ""
       no-cache:
         description: Skip binary cache.
         type: boolean
@@ -307,7 +307,8 @@ jobs:
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
-      BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
+      # Manual dispatch is limited to 25 inputs; use the four-token workload default.
+      BENCH_INPUT_TOKEN_COUNT: '4'
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
       BENCH_INPUT_METRICS: ${{ (inputs.metrics == true || inputs.metrics == 'true') && 'true' || 'false' }}
@@ -400,7 +401,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          # Pin the command replay fix until tempoxyz/tempo-multi-region-benchmark#456 lands.
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || '656b20249362002967a798df1d2bca48e22a475a' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
