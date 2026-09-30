@@ -1370,7 +1370,7 @@ struct InfoOutput {
 #[derive(Debug, clap::Args)]
 pub struct Info {
     /// RPC URL to query when no default RPC URL is available from --chain.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Chain spec (mainnet, testnet, moderato, or path to chainspec file).
