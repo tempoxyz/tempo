@@ -185,7 +185,7 @@ mod tests {
         let permit2 = state.accounts[&PERMIT2_ADDRESS]
             .as_ref()
             .expect("Permit2 account must exist");
-        assert!(state.contracts[&permit2.code_hash].len() > 0);
+        assert!(!state.contracts[&permit2.code_hash].is_empty());
     }
 
     #[test]
