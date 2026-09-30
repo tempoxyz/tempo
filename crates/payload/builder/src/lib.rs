@@ -59,7 +59,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -79,7 +79,8 @@ use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationL
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+    StateAwareBestTransactions, TempoTransactionPool,
+    best::{BestTransaction, GeneralGasLimit, TempoBestTransactions},
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
@@ -94,7 +95,7 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
-    Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
+    Sequential(StateAwareBestTransactions<Box<dyn TempoBestTransactions<Item = BestTransaction>>>),
     Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
     Parallel(BestTransactionsPrewarming),
 }
@@ -297,7 +298,7 @@ where
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: TempoBestTransactions<Item = BestTransaction> + Send + 'static,
     {
         let BuildArguments {
             cached_reads,
@@ -470,7 +471,7 @@ where
         }
 
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
+        let mut raw_best_txs = best_txs(BestTransactionsAttributes::new(
             executor.evm().block().basefee,
             executor
                 .evm()
@@ -478,6 +479,16 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        // The pool caches the T5 payment classification. Keep legacy admission in the builder.
+        let general_gas_budget = hardfork.is_t5().then(|| {
+            GeneralGasLimit::new(
+                general_gas_limit,
+                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+            )
+        });
+        if let Some(limit) = &general_gas_budget {
+            raw_best_txs.set_general_gas_limit(limit.clone());
+        }
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -491,10 +502,15 @@ where
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
                     raw_best_txs,
+                    general_gas_budget.clone(),
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    BestTransactionsPrewarming::new(
+                        prewarm_ctx,
+                        raw_best_txs,
+                        general_gas_budget.clone(),
+                    ),
                 ))
             }
         } else {
@@ -641,6 +657,9 @@ where
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
                     non_payment_gas_used += result.block_gas_used();
+                    if let Some(limit) = &general_gas_budget {
+                        limit.set_remaining(general_gas_limit.saturating_sub(non_payment_gas_used));
+                    }
                 }
 
                 // Score payload value by the validator-credited fee amount that the

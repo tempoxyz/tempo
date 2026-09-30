@@ -1,17 +1,21 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    ordering::TempoTipOrdering,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
+    BestTransactions, PoolTransaction, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -25,6 +29,7 @@ pub struct MergeBestTransactions {
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
     base_fee: u64,
+    general_gas_limit: Option<GeneralGasLimit>,
 }
 
 impl MergeBestTransactions {
@@ -40,6 +45,7 @@ impl MergeBestTransactions {
             next_protocol_pool: None,
             next_aa_2d_pool: None,
             base_fee,
+            general_gas_limit: None,
         }
     }
 }
@@ -91,7 +97,23 @@ impl Iterator for MergeBestTransactions {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_best().map(|(tx, _)| tx)
+        loop {
+            let (tx, _) = self.next_best()?;
+            if self
+                .general_gas_limit
+                .as_ref()
+                .is_some_and(|limit| !limit.fits(&tx))
+            {
+                self.mark_invalid(
+                    &tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                    )),
+                );
+                continue;
+            }
+            return Some(tx);
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -101,9 +123,13 @@ impl Iterator for MergeBestTransactions {
         let (aa_2d_lower, aa_2d_upper) = self.aa_2d_pool.size_hint();
 
         (
-            buffered
-                .saturating_add(protocol_lower)
-                .saturating_add(aa_2d_lower),
+            if self.general_gas_limit.is_some() {
+                0
+            } else {
+                buffered
+                    .saturating_add(protocol_lower)
+                    .saturating_add(aa_2d_lower)
+            },
             protocol_upper
                 .zip(aa_2d_upper)
                 .and_then(|(protocol_upper, aa_2d_upper)| protocol_upper.checked_add(aa_2d_upper))
@@ -116,8 +142,24 @@ impl BestTransactions for MergeBestTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
+            if !transaction.transaction.is_expiring_nonce()
+                && self.next_aa_2d_pool.as_ref().is_some_and(|(next, _)| {
+                    next.transaction.aa_transaction_id().map(|id| id.seq_id)
+                        == transaction
+                            .transaction
+                            .aa_transaction_id()
+                            .map(|id| id.seq_id)
+                })
+            {
+                self.next_aa_2d_pool = None;
+            }
         } else {
             self.protocol_pool.mark_invalid(transaction, kind);
+            if self.next_protocol_pool.as_ref().is_some_and(|(next, _)| {
+                next.transaction.sender() == transaction.transaction.sender()
+            }) {
+                self.next_protocol_pool = None;
+            }
         }
     }
 
@@ -241,6 +283,80 @@ impl StateAwarePoolTransaction for BestTransaction {
     }
 }
 
+/// Tempo-specific controls for best-transaction iterators.
+pub trait TempoBestTransactions: BestTransactions {
+    /// Filter non-payments against a shared, decreasing general-lane gas budget.
+    ///
+    /// This affects this iterator only and does not remove transactions from the pool.
+    /// The caller must use the T5 payment classification.
+    fn set_general_gas_limit(&mut self, limit: GeneralGasLimit);
+}
+
+impl TempoBestTransactions for MergeBestTransactions {
+    fn set_general_gas_limit(&mut self, limit: GeneralGasLimit) {
+        self.general_gas_limit = Some(limit);
+    }
+}
+
+impl<I> TempoBestTransactions for StateAwareBestTransactions<I>
+where
+    I: TempoBestTransactions,
+    I::Item: StateAwarePoolTransaction,
+{
+    fn set_general_gas_limit(&mut self, limit: GeneralGasLimit) {
+        self.inner.set_general_gas_limit(limit);
+    }
+}
+
+impl<I: TempoBestTransactions + ?Sized> TempoBestTransactions for Box<I> {
+    fn set_general_gas_limit(&mut self, limit: GeneralGasLimit) {
+        (**self).set_general_gas_limit(limit);
+    }
+}
+
+impl<T> TempoBestTransactions for std::iter::Empty<T> {
+    fn set_general_gas_limit(&mut self, _limit: GeneralGasLimit) {}
+}
+
+/// General-lane admission budget shared by the builder, iterator, and prewarm workers.
+#[derive(Clone, Debug)]
+pub struct GeneralGasLimit {
+    remaining: Arc<AtomicU64>,
+    tx_gas_limit_cap: u64,
+}
+
+impl GeneralGasLimit {
+    /// Creates a budget using the same transaction gas cap as the block executor.
+    pub fn new(remaining: u64, tx_gas_limit_cap: u64) -> Self {
+        Self {
+            remaining: Arc::new(AtomicU64::new(remaining)),
+            tx_gas_limit_cap,
+        }
+    }
+
+    /// Returns the remaining general gas.
+    pub fn remaining(&self) -> u64 {
+        self.remaining.load(Ordering::Relaxed)
+    }
+
+    /// Decreases the budget after execution charges actual gas to the general lane.
+    ///
+    /// Increasing the budget cannot restore transactions already excluded from this iterator.
+    pub fn set_remaining(&self, remaining: u64) {
+        self.remaining.fetch_min(remaining, Ordering::Relaxed);
+    }
+
+    /// Returns the regular gas required for admission, not the gas eventually consumed.
+    pub fn required_gas(&self, tx: &BestTransaction) -> u64 {
+        tx.gas_limit().min(self.tx_gas_limit_cap)
+    }
+
+    /// Payments do not consume the general lane's budget.
+    pub fn fits(&self, tx: &BestTransaction) -> bool {
+        tx.transaction.is_payment() || self.required_gas(tx) <= self.remaining()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +374,7 @@ mod tests {
     };
     use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+    use tempo_primitives::transaction::Call;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -346,6 +463,82 @@ mod tests {
             aa_2d_best_transactions(aa_2d_txs),
             TEMPO_T1_BASE_FEE,
         )
+    }
+
+    fn payment_tx(sender: Address, nonce_key: U256, nonce: u64, priority: u128) -> TestTx {
+        let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
+        input.resize(68, 0);
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(nonce)
+            .max_priority_fee(priority)
+            .max_fee(u128::from(TEMPO_T1_BASE_FEE) + priority)
+            .calls(vec![Call {
+                to: alloy_primitives::TxKind::Call(tempo_precompiles::PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: input.into(),
+            }])
+            .build();
+        assert!(tx.is_payment());
+        Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
+    }
+
+    #[test]
+    fn skip_non_payment_filters_both_pools_and_buffered_candidates() {
+        for first_is_protocol in [false, true] {
+            let protocol_general = protocol_tx(0, if first_is_protocol { 10 } else { 9 });
+            let aa_general = aa_2d_tx(0, if first_is_protocol { 9 } else { 10 });
+            let protocol_payment = payment_tx(Address::random(), U256::ZERO, 0, 2);
+            let aa_payment = payment_tx(Address::random(), U256::ONE, 0, 1);
+            let mut best = merged_best_transactions(
+                vec![protocol_general, protocol_payment.clone()],
+                vec![aa_general, aa_payment.clone()],
+            );
+            assert!(!best.next().unwrap().transaction.is_payment());
+            best.set_general_gas_limit(GeneralGasLimit::new(0, u64::MAX));
+            best.set_general_gas_limit(GeneralGasLimit::new(0, u64::MAX));
+            assert_eq!(best.size_hint().0, 0);
+            assert_eq!(
+                best.map(|tx| *tx.hash()).collect::<Vec<_>>(),
+                vec![*protocol_payment.hash(), *aa_payment.hash()],
+            );
+        }
+    }
+
+    #[test]
+    fn skip_non_payment_excludes_dependent_payments_but_preserves_other_nonce_keys() {
+        let sender = Address::random();
+        let protocol_general = protocol_tx_for_sender(sender, 0, 10);
+        let protocol_child = payment_tx(sender, U256::ZERO, 1, 9);
+        let aa_general = aa_2d_tx_for_sequence(sender, 0, 8);
+        let aa_child = payment_tx(sender, U256::ONE, 1, 7);
+        let independent = payment_tx(sender, U256::from(2), 0, 6);
+        let mut best = merged_best_transactions(
+            vec![protocol_general, protocol_child],
+            vec![aa_general, aa_child, independent.clone()],
+        );
+        best.set_general_gas_limit(GeneralGasLimit::new(0, u64::MAX));
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*independent.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn skip_non_payment_keeps_payments_after_an_included_general_transaction() {
+        for nonce_key in [U256::ZERO, U256::ONE] {
+            let sender = Address::random();
+            let general = tx_with_nonce_key(nonce_key, sender, 0, 2);
+            let payment = payment_tx(sender, nonce_key, 1, 1);
+            let txs = vec![general.clone(), payment.clone()];
+            let mut best = if nonce_key.is_zero() {
+                merged_best_transactions(txs, vec![])
+            } else {
+                merged_best_transactions(vec![], txs)
+            };
+            assert_eq!(best.next().map(|tx| *tx.hash()), Some(*general.hash()));
+            best.set_general_gas_limit(GeneralGasLimit::new(0, u64::MAX));
+            assert_eq!(best.next().map(|tx| *tx.hash()), Some(*payment.hash()));
+            assert!(best.next().is_none());
+        }
     }
 
     #[test]
@@ -575,5 +768,116 @@ mod tests {
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn skip_non_payment_invalidates_cached_descendants_after_prewarming() {
+        for nonce_key in [U256::ZERO, U256::ONE] {
+            let sender = Address::random();
+            let general = tx_with_nonce_key(nonce_key, sender, 0, 10);
+            let child = payment_tx(sender, nonce_key, 1, 1);
+            let other_key = if nonce_key.is_zero() {
+                U256::ONE
+            } else {
+                U256::ZERO
+            };
+            let other = payment_tx(Address::random(), other_key, 0, 5);
+            let txs = vec![general.clone(), child];
+            let mut best = if nonce_key.is_zero() {
+                merged_best_transactions(txs, vec![other.clone()])
+            } else {
+                merged_best_transactions(vec![other.clone()], txs)
+            };
+            let skipped = best.next().unwrap();
+            assert_eq!(*skipped.hash(), *general.hash());
+            assert_eq!(best.next().map(|tx| *tx.hash()), Some(*other.hash()));
+            // Prewarming has buffered the general transaction and the merged iterator has
+            // already pulled its descendant from the underlying pool.
+            best.set_general_gas_limit(GeneralGasLimit::new(0, u64::MAX));
+            best.mark_invalid(
+                &skipped,
+                InvalidPoolTransactionError::Other(Box::new(
+                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                )),
+            );
+            assert!(best.next().is_none());
+        }
+    }
+
+    #[test]
+    fn skip_non_payment_keeps_independent_expiring_nonce_payments() {
+        let sender = Address::random();
+        let general = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::MAX)
+                .valid_before(u64::MAX)
+                .build(),
+            TransactionOrigin::External,
+        ));
+        let payment = payment_tx(sender, U256::MAX, 0, 1);
+        let mut best = merged_best_transactions(vec![], vec![general, payment.clone()]);
+        best.set_general_gas_limit(GeneralGasLimit::new(0, u64::MAX));
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*payment.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn general_gas_budget_keeps_smaller_non_payments_and_payments() {
+        for nonce_key in [U256::ZERO, U256::ONE, U256::MAX] {
+            let large = general_tx_with_gas_limit(nonce_key, 300_000, 10);
+            let exact = general_tx_with_gas_limit(nonce_key, 200_000, 9);
+            let small = general_tx_with_gas_limit(nonce_key, 100_000, 8);
+            let payment = payment_tx(Address::random(), nonce_key, 0, 7);
+            let txs = vec![large, exact.clone(), small.clone(), payment.clone()];
+            let mut best = if nonce_key.is_zero() {
+                merged_best_transactions(txs, vec![])
+            } else {
+                merged_best_transactions(vec![], txs)
+            };
+            best.set_general_gas_limit(GeneralGasLimit::new(200_000, u64::MAX));
+            assert_eq!(
+                best.map(|tx| *tx.hash()).collect::<Vec<_>>(),
+                vec![*exact.hash(), *small.hash(), *payment.hash()]
+            );
+        }
+    }
+
+    #[test]
+    fn general_gas_budget_updates_filter_cached_candidates() {
+        let first = general_tx_with_gas_limit(U256::ZERO, 100_000, 10);
+        let cached = general_tx_with_gas_limit(U256::ONE, 200_000, 9);
+        let small = general_tx_with_gas_limit(U256::ONE, 100_000, 8);
+        let mut best = merged_best_transactions(vec![first.clone()], vec![cached, small.clone()]);
+        let limit = GeneralGasLimit::new(250_000, u64::MAX);
+        best.set_general_gas_limit(limit.clone());
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*first.hash()));
+        limit.set_remaining(150_000);
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*small.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn general_gas_budget_uses_executor_cap_and_never_increases() {
+        let tx = general_tx_with_gas_limit(U256::ONE, 500_000, 1);
+        let limit = GeneralGasLimit::new(200_000, 200_000);
+        assert!(limit.fits(&tx));
+        limit.set_remaining(199_999);
+        assert!(!limit.fits(&tx));
+        limit.set_remaining(300_000);
+        assert_eq!(limit.remaining(), 199_999);
+        assert!(!limit.fits(&tx));
+    }
+
+    fn general_tx_with_gas_limit(nonce_key: U256, gas_limit: u64, priority: u128) -> TestTx {
+        Arc::new(wrap_valid_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(nonce_key)
+                .gas_limit(gas_limit)
+                .valid_before(u64::MAX)
+                .max_priority_fee(priority)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE) + priority)
+                .build(),
+            TransactionOrigin::External,
+        ))
     }
 }
