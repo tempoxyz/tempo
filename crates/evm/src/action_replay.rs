@@ -1,4 +1,5 @@
 use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
+use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, U256,
     map::{AddressMap, U256Map, hash_map::Entry},
@@ -45,6 +46,10 @@ impl TempoBlockExecutor<'_> {
             return Err(StorageActionReplayError::TransactionExecutionFailed.into());
         }
 
+        let next_section = self
+            .validate_tx_pre_execution(original)
+            .map_err(BlockExecutionError::from)?;
+
         let state = self
             .replay_actions(
                 tx_env.inner().evm_tx().signer(),
@@ -63,9 +68,16 @@ impl TempoBlockExecutor<'_> {
         } else {
             gas.tx_gas_used()
         };
-        let next_section = self
-            .validate_tx(original, block_gas_used)
-            .map_err(BlockExecutionError::from)?;
+        let next_section = if let Some(next_section) = next_section {
+            next_section
+        } else {
+            self.validate_tx(
+                *original.tx_hash(),
+                self.is_payment(original),
+                block_gas_used,
+            )
+            .map_err(BlockExecutionError::from)?
+        };
 
         let result = TempoTxResult::new_precomputed(
             original,

@@ -485,36 +485,28 @@ impl<'a> TempoBlockExecutor<'a> {
 
     pub(crate) fn validate_tx(
         &self,
-        tx: &TempoTxEnvelope,
+        tx_hash: B256,
+        is_payment: bool,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
-        // Start with processing of transaction kinds that require specific sections.
-        if tx.is_system_tx() {
-            self.validate_system_tx(tx)
-        } else if tx.has_sub_block_nonce_key_prefix() {
-            Err(BlockValidationError::msg(
-                "subblock transactions are not supported",
-            ))
-        } else {
-            match self.section {
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
-                    if gas_used > self.non_shared_gas_left
-                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
-                    {
-                        // Historical blocks can use the gas incentive section after
-                        // exhausting the non-shared or general gas budget.
-                        Ok(BlockSection::GasIncentive)
-                    } else {
-                        Ok(BlockSection::NonShared)
-                    }
+        match self.section {
+            BlockSection::StartOfBlock | BlockSection::NonShared => {
+                if gas_used > self.non_shared_gas_left
+                    || (!is_payment && gas_used > self.non_payment_gas_left)
+                {
+                    // Historical blocks can use the gas incentive section after
+                    // exhausting the non-shared or general gas budget.
+                    Ok(BlockSection::GasIncentive)
+                } else {
+                    Ok(BlockSection::NonShared)
                 }
-                BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
-                BlockSection::System { .. } => {
-                    trace!(target: "tempo::block", tx_hash = ?*tx.tx_hash(), "Rejecting: regular transaction after system transaction");
-                    Err(BlockValidationError::msg(
-                        "regular transaction can't follow system transaction",
-                    ))
-                }
+            }
+            BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
+            BlockSection::System { .. } => {
+                trace!(target: "tempo::block", ?tx_hash, "Rejecting: regular transaction after system transaction");
+                Err(BlockValidationError::msg(
+                    "regular transaction can't follow system transaction",
+                ))
             }
         }
     }
@@ -585,8 +577,11 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
         let execution_context = tx_env.inner().execution_context();
-        let original = recovered.tx().clone();
-        let next_section = self.validate_tx_pre_execution(&original)?;
+        let original = recovered.tx();
+        let next_section = self.validate_tx_pre_execution(original)?;
+        let tx_hash = *original.tx_hash();
+        let tx_type = original.tx_type();
+        let is_payment = self.is_payment(original);
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
@@ -603,16 +598,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(&original, block_gas_used)?
+            self.validate_tx(tx_hash, is_payment, block_gas_used)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = inner.result().result.ext.validator_fee;
         Ok(TempoTxResult {
             inner,
-            tx_type: original.tx_type(),
+            tx_type,
             execution_context,
             next_section,
-            is_payment: self.is_payment(&original),
+            is_payment,
             block_gas_used,
             validator_fee,
         })
@@ -1070,7 +1065,7 @@ mod tests {
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx(*tx.tx_hash(), executor.is_payment(&tx), 21_000);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -1107,9 +1102,12 @@ mod tests {
                 .with_spec(spec)
                 .build(&mut db, &chainspec);
             let tx = create_subblock_tx();
-            // Precomputed execution results must pass the same transaction-kind validation.
+            // Precomputed execution results must pass the same pre-execution validation.
             assert_eq!(
-                executor.validate_tx(&tx, 21_000).unwrap_err().to_string(),
+                executor
+                    .validate_tx_pre_execution(&tx)
+                    .unwrap_err()
+                    .to_string(),
                 "subblock transactions are not supported"
             );
             let recovered = Recovered::new_unchecked(tx, Address::ZERO);
@@ -1136,7 +1134,7 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx(*tx.tx_hash(), executor.is_payment(&tx), 21_000);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
