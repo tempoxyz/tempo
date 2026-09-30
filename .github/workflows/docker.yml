@@ -13,6 +13,11 @@ on:
   merge_group:
   workflow_dispatch:
     inputs:
+      build_scope:
+        description: "all, or amd64 node + matching xtask for a temporary devnet branch"
+        type: choice
+        options: [all, devnet]
+        default: all
       request_id:
         description: "Source command comment ID for updating its receipt (optional)"
         type: string
@@ -26,6 +31,10 @@ on:
         type: string
         default: ""
   workflow_call:
+    inputs:
+      build_scope:
+        type: string
+        default: all
     outputs:
       tempo_image_tag:
         description: Image tag published by this build attempt
@@ -64,6 +73,8 @@ jobs:
         id: source
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          BUILD_SCOPE: ${{ inputs.build_scope || 'all' }}
+          NIGHTLY: ${{ inputs.nightly }}
           PR_NUMBER: ${{ inputs.pr_number }}
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
         with:
@@ -97,6 +108,13 @@ jobs:
                 throw new Error('PR head did not resolve to a commit SHA');
               }
             }
+            const scope = process.env.BUILD_SCOPE || 'all';
+            if (!['all', 'devnet'].includes(scope)) throw new Error('Unknown build scope');
+            if (scope === 'devnet' && (number || pullRequest || process.env.NIGHTLY === 'true' ||
+                context.ref.startsWith('refs/tags/') || !branch.startsWith('automation/prover-e2e/'))) {
+              throw new Error('Devnet builds require a temporary automation/prover-e2e/ branch without PR or nightly tags');
+            }
+            core.setOutput('image_tag', `${scope === 'devnet' ? 'devnet-' : ''}sha-${sha.slice(0, 7)}`);
             core.setOutput('sha', sha);
             core.setOutput('short_sha', sha.slice(0, 7));
             core.setOutput('branch', branch);
@@ -144,7 +162,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
-            docker.io/tempoxyz/tempo
+            ${{ inputs.build_scope != 'devnet' && 'docker.io/tempoxyz/tempo' || '' }}
           bake-target: tempo
           labels: |
             ${{ steps.docker-labels.outputs.value }}
@@ -158,10 +176,11 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-localnet
+        if: inputs.build_scope != 'devnet'
         id: meta-tempo-localnet
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
@@ -181,10 +200,11 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-sidecar
+        if: inputs.build_scope != 'devnet'
         id: meta-tempo-sidecar
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
@@ -204,7 +224,7 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-xtask
@@ -213,7 +233,7 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
-            docker.io/tempoxyz/tempo-xtask
+            ${{ inputs.build_scope != 'devnet' && 'docker.io/tempoxyz/tempo-xtask' || '' }}
           bake-target: tempo-xtask
           labels: |
             ${{ steps.docker-labels.outputs.value }}
@@ -227,7 +247,7 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry
@@ -238,6 +258,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
+        if: inputs.build_scope != 'devnet'
         uses: tempoxyz/gh-actions/vendor/docker/login-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
@@ -253,12 +274,13 @@ jobs:
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
-          targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
+          targets: ${{ inputs.build_scope == 'devnet' && 'devnet' || ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
           no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
+          BUILD_SCOPE: ${{ inputs.build_scope || 'all' }}
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
 
@@ -279,7 +301,8 @@ jobs:
             const fs = require('node:fs');
             const path = require('node:path');
             const metadata = JSON.parse(process.env.BUILD_METADATA || '{}');
-            const images = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'].map(name => ({
+            const images = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask']
+              .filter(name => metadata[name]?.['containerimage.digest']).map(name => ({
               name,
               tags: (process.env[`${name.toUpperCase().replaceAll('-', '_')}_TAGS`] || '').split('\n').filter(Boolean),
               digest: metadata[name]?.['containerimage.digest'] || '',
@@ -336,14 +359,23 @@ jobs:
             "$TEMPO_SIDECAR_TAGS"
             "$TEMPO_XTASK_TAGS"
           )
-          sign_failures=0
+          # Parallelize independent repositories, keeping aliases within each
+          # repository serial so cosign does not race on the same signature tag.
+          pids=()
           for tags in "${images[@]}"; do
-            while IFS= read -r image; do
-              [ -n "$image" ] || continue
-              if ! sign_image "$image"; then
-                sign_failures=$((sign_failures + 1))
-              fi
-            done <<< "$tags"
+            (
+              failed=0
+              while IFS= read -r image; do
+                [ -n "$image" ] || continue
+                sign_image "$image" || failed=1
+              done <<< "$tags"
+              exit "$failed"
+            ) &
+            pids+=("$!")
+          done
+          sign_failures=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || sign_failures=$((sign_failures + 1))
           done
 
           if [ "$sign_failures" -ne 0 ]; then
@@ -353,7 +385,7 @@ jobs:
 
       - name: Publish event (sha tag)
         id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' }}
+        if: ${{ inputs.build_scope != 'devnet' && github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
@@ -386,7 +418,7 @@ jobs:
 
       - name: Publish event (nightly tag)
         id: publish-nightly-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
+        if: ${{ inputs.build_scope != 'devnet' && github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
@@ -433,6 +465,7 @@ jobs:
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
           SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+          IMAGE_TAG: ${{ steps.source.outputs.image_tag }}
           COMMIT_SHA: ${{ steps.source.outputs.sha }}
           BRANCH_NAME: ${{ steps.source.outputs.branch }}
           BUILD_OUTCOME: ${{ steps.build-and-push.outcome }}
@@ -466,7 +499,7 @@ jobs:
             echo "| Workflow run | [run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Workflow run ID | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Job summary | [Build and Push Docker Images](${job_url}) |"
-            echo "| Short SHA tag | \`sha-${SHORT_SHA}\` |"
+            echo "| Image tag | \`${IMAGE_TAG}\` |"
             echo "| Build | \`${BUILD_OUTCOME:-unknown}\` |"
             echo "| Sign | \`${SIGN_OUTCOME:-unknown}\` |"
             echo

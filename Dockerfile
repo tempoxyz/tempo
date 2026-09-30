@@ -3,6 +3,7 @@ ARG CHEF_IMAGE=chef
 FROM ${CHEF_IMAGE} AS builder
 
 ARG TARGETARCH
+ARG BUILD_SCOPE=all
 ARG RUST_PROFILE=profiling
 ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
 ARG VERGEN_GIT_SHA
@@ -11,16 +12,20 @@ ARG EXTRA_RUSTFLAGS=""
 
 COPY . .
 
-# Build ALL binaries in one pass - they share compiled artifacts
+# Devnets need only the node and matching xtask. Keep normal build features.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
+    set -eu; \
+    case "$BUILD_SCOPE" in \
+      all) set -- --bin tempo-localnet --bin tempo-sidecar ;; \
+      devnet) set -- ;; \
+      *) echo "Unknown build scope: $BUILD_SCOPE" >&2; exit 1 ;; \
+    esac; \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --profile ${RUST_PROFILE} \
-        --bin tempo --features "${RUST_FEATURES},localnet" \
-        --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
-        --bin tempo-sidecar \
-        --bin tempo-xtask
+        --features "${RUST_FEATURES},localnet" \
+        --bin tempo --bin tempo-xtask "$@"
 
 FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
 

@@ -333,3 +333,55 @@ for (const stage of ['permission', 'pull', 'dispatch']) {
     assert.equal(f.outputs['run-id'], undefined);
   });
 }
+
+for (const [scope, branch, nightly, ref, allowed, isPullRequest] of [
+  ['all', 'main', '', 'refs/heads/main', true],
+  ['devnet', 'automation/prover-e2e/fixture', '', 'refs/heads/automation/prover-e2e/fixture', true],
+  ['devnet', 'main', '', 'refs/heads/main', false],
+  ['devnet', 'automation/prover-e2e/fixture', 'true', 'refs/heads/automation/prover-e2e/fixture', false],
+  ['devnet', 'automation/prover-e2e/fixture', '', 'refs/tags/v1.2.3', false],
+  ['devnet', 'automation/prover-e2e/fixture', '', 'refs/pull/1/merge', false, true],
+  ['invalid', 'automation/prover-e2e/fixture', '', 'refs/heads/automation/prover-e2e/fixture', false],
+]) {
+  test(`build scope ${scope}, ${branch}, nightly=${nightly}, ref=${ref}`, async () => {
+    const build = fs.readFileSync(path.join(__dirname, '../workflows/docker.yml'), 'utf8');
+    const step = build.split('      - name: Resolve build source\n')[1].split('\n      - name: ')[0];
+    const script = step.split('          script: |\n')[1].split('\n').map(line => line.replace(/^ {12}/, '')).join('\n');
+    const outputs = {};
+    const summary = { addHeading() { return this; }, addTable() { return this; }, async write() {} };
+    const result = vm.runInNewContext(`(async () => {${script}\n})()`, {
+      process: { env: { BUILD_SCOPE: scope, BRANCH_NAME: branch, NIGHTLY: nightly } },
+      context: { payload: isPullRequest ? { pull_request: { head: { sha: 'a'.repeat(40), repo: { full_name: 'tempoxyz/tempo' } } } } : {}, ref, sha: 'a'.repeat(40), repo: { owner: 'tempoxyz', repo: 'tempo' } },
+      core: { setOutput: (key, value) => { outputs[key] = value; }, summary },
+    });
+    if (!allowed) return assert.rejects(result, /build scope|Devnet builds/);
+    await result;
+    assert.equal(outputs.image_tag, scope === 'devnet' ? 'devnet-sha-aaaaaaa' : 'sha-aaaaaaa');
+  });
+}
+
+for (const shouldFail of [false, true]) {
+  test(`image signing waits for every repository and propagates failure=${shouldFail}`, () => {
+    const { spawnSync } = require('node:child_process');
+    const os = require('node:os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docker-sign-'));
+    try {
+      const build = fs.readFileSync(path.join(__dirname, '../workflows/docker.yml'), 'utf8');
+      const step = build.split('      - name: Sign Docker images\n')[1].split('\n      - name: ')[0];
+      const script = step.split('        run: |\n')[1].split('\n').map(line => line.replace(/^ {10}/, '')).join('\n');
+      fs.writeFileSync(path.join(dir, 'cosign'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\ncase "$*" in *bad*) exit 1;; esac\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const calls = path.join(dir, 'calls');
+      const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: {
+        ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: calls,
+        TEMPO_TAGS: `ghcr.io/example/tempo:${shouldFail ? 'bad' : 'ok'}\ndocker.io/example/tempo:alias`,
+        TEMPO_XTASK_TAGS: 'ghcr.io/example/xtask:ok', TEMPO_LOCALNET_TAGS: '', TEMPO_SIDECAR_TAGS: '',
+      } });
+      assert.equal(result.status, shouldFail ? 1 : 0, result.stderr);
+      const signed = fs.readFileSync(calls, 'utf8').trim().split('\n');
+      assert.equal(signed.length, shouldFail ? 5 : 3);
+      assert.ok(signed.includes('sign --yes --recursive ghcr.io/example/xtask:ok'));
+      assert.ok(signed.includes('sign --yes --recursive docker.io/example/tempo:alias'));
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+}
