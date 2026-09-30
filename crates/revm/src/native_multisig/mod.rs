@@ -3,7 +3,7 @@ use crate::{ExecutionContext, TempoInvalidTransaction, TempoTxEnv};
 use alloy_primitives::{Address, B256};
 use revm::{
     context::{JournalTr, result::EVMError},
-    context_interface::cfg::GasParams,
+    context_interface::cfg::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::native_multisig::{initial_account_proof_gas, valid_account};
@@ -141,9 +141,9 @@ fn grant_delegate_access_gas<J: JournalTr>(
     Ok(0)
 }
 
-/// Validates all native actors without cryptography, and returns state-dependent intrinsic gas.
+/// Validates all native actors without cryptography, returning regular and state intrinsic gas.
 /// Loads and warms accounts, but does not register commitments.
-/// Caller must charge the returned amount and check fee affordability before `verify`.
+/// Caller must charge both components and check fee affordability before `verify`.
 /// Transaction access-list and beneficiary warmth must be initialized before these account loads.
 pub fn validate_state<J: JournalTr>(
     journal: &mut J,
@@ -151,7 +151,7 @@ pub fn validate_state<J: JournalTr>(
     block: &TempoBlockEnv,
     spec: TempoHardfork,
     gas: &GasParams,
-) -> Result<u64, EVMError<<J::Database as revm::Database>::Error, TempoInvalidTransaction>> {
+) -> Result<(u64, u64), EVMError<<J::Database as revm::Database>::Error, TempoInvalidTransaction>> {
     let roles = authorizations(tx);
     let invalid = |error| EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(error));
     // Context rejection must not depend on factory configuration or account reads.
@@ -186,7 +186,7 @@ pub fn validate_state<J: JournalTr>(
         }
     }
     if roles.iter().all(Option::is_none) {
-        return grant_delegate_access_gas(journal, tx, spec, gas, &[]);
+        return Ok((grant_delegate_access_gas(journal, tx, spec, gas, &[])?, 0));
     }
     let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
     // Grant signers may be admin access keys; later checks bind them to the caller.
@@ -204,6 +204,7 @@ pub fn validate_state<J: JournalTr>(
         .ok_or_else(|| invalid(NativeMultisigError::FactoryNotConfigured))?;
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
+    let mut state_gas = 0;
     for role in roles.into_iter().flatten() {
         let signature = role.signature;
         let address = signature.account();
@@ -240,10 +241,20 @@ pub fn validate_state<J: JournalTr>(
             extra_gas += initial_account_proof_gas(signature.config());
             if first {
                 extra_gas += 20_000;
+                if info.is_empty()
+                    && !(address == tx.caller
+                        && crate::handler::pays_nonce_zero_account_gas(tx, spec))
+                {
+                    extra_gas += gas.get(GasId::new_account_cost());
+                    state_gas += gas.new_account_state_gas();
+                }
             }
         }
     }
-    Ok(extra_gas + grant_delegate_access_gas(journal, tx, spec, gas, &accounts)?)
+    Ok((
+        extra_gas + grant_delegate_access_gas(journal, tx, spec, gas, &accounts)?,
+        state_gas,
+    ))
 }
 
 /// Verifies each signed role separately. RPC simulation must validate the claimed owner quorum
