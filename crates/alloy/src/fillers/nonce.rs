@@ -157,10 +157,11 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
                 builder.set_nonce(0);
             }
             // Preserve a caller-supplied validity window, defaulting to current time +
-            // expiry window.
+            // expiry window. Saturate so an oversized `expiry_secs` cannot wrap into the
+            // past and build an already-expired transaction.
             if builder.valid_before.is_none() {
                 builder.set_valid_before(
-                    NonZeroU64::new(Self::current_timestamp() + self.expiry_secs)
+                    NonZeroU64::new(Self::current_timestamp().saturating_add(self.expiry_secs))
                         .expect("expiring nonce filler requires a non-zero valid_before"),
                 );
             }
@@ -369,6 +370,24 @@ mod tests {
         assert_eq!(request.nonce_key, Some(TEMPO_EXPIRING_NONCE_KEY));
         assert_eq!(request.nonce(), Some(0));
         assert_eq!(request.valid_before, Some(valid_before));
+    }
+
+    #[test]
+    fn expiring_nonce_filler_saturates_expiry_window() {
+        let filler = ExpiringNonceFiller::with_expiry_secs(u64::MAX);
+        let mut request = TempoTransactionRequest::default();
+        let mut tx = SendableTx::Builder(request.clone());
+
+        TxFiller::<TempoNetwork>::fill_sync(&filler, &mut tx);
+        request = tx
+            .as_builder()
+            .expect("transaction remains a builder")
+            .clone();
+
+        // `now + u64::MAX` must saturate instead of wrapping into the past, which would
+        // silently produce an already-expired transaction.
+        let valid_before = request.valid_before.expect("valid_before is filled");
+        assert!(valid_before.get() > ExpiringNonceFiller::current_timestamp());
     }
 
     #[tokio::test]
