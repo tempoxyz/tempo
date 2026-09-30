@@ -30,8 +30,7 @@ use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{
-    Estimator, EstimatorSnapshot, ProposalExpectation, TempoPayloadAttributes,
-    ValidationLatencyWorkload,
+    Estimator, EstimatorSnapshot, TempoPayloadAttributes, ValidationLatencyWorkload,
 };
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
@@ -196,7 +195,6 @@ impl Inner {
         let build_budget = proposal_budget
             .return_budget
             .saturating_sub(propose_start.elapsed());
-        let validation_latency_estimate = self.estimator.validation_latency_estimate();
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -204,8 +202,7 @@ impl Inner {
             extra_data,
             consensus_context,
         )
-        .with_payload_build_budget(build_budget)
-        .with_validation_latency_estimate(validation_latency_estimate);
+        .with_payload_build_budget(build_budget);
 
         // Subscribe to the payload build. The executor owns the build job
         // and runs it to completion; dropping the receiver (for example
@@ -231,13 +228,14 @@ impl Inner {
 
         // If this node also proposed the parent, the start of this build
         // (`epoch_millis`, the header timestamp) is what the chain waited for
-        // and completes that proposal's network sample. Children built by
-        // other leaders reach the estimator through `verify()`, but consensus
-        // does not run `verify()` for a node's own proposal, so without this
-        // call the sample would never complete. It therefore only takes a
-        // sample for consecutive own proposals; the estimator ignores parents
-        // this node did not propose. It runs only once the payload is built,
-        // so a failed build never becomes a sample.
+        // and completes that proposal's network sample; the estimator ignores
+        // parents this node did not propose. Children built by other leaders
+        // reach the estimator through `verify()`, which consensus does not
+        // run for a node's own proposal. Under deferred verification such a
+        // sample contains no execution (peers notarize on receipt and the
+        // parent is already executed here), so it lands near the floor and
+        // the window percentile discards it. This runs only once the payload
+        // is built, so a failed build never becomes a sample.
         self.estimator.on_child_block_built(
             Instant::now(),
             (round.epoch().get(), parent_view.get()),
@@ -255,18 +253,6 @@ impl Inner {
             block_access_list,
             execution_block_encoded,
         );
-        // Validators' expected work on this block, scaled to its actual size.
-        // `validation_latency_elapsed` is the pacing estimate, a floor that
-        // never scales down; using it to credit validators would under-count
-        // the network for blocks smaller than the recent ones this node
-        // validated.
-        let expected_validator_work = self
-            .estimator
-            .expected_validation(ValidationLatencyWorkload::new(
-                proposal.block().gas_used(),
-                proposal.block().body().transaction_count(),
-            ))
-            .unwrap_or(validation_latency_elapsed);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the propose start. Validators still need
         // to repeat replayable build work, so leave room for it before
@@ -283,24 +269,33 @@ impl Inner {
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
-            expected_validator_work = %display_duration(expected_validator_work),
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
         runtime.sleep_until(runtime.current() + return_delay).await;
 
-        // The proposal leaves this node now; the header timestamp of the block
-        // built on top of it completes the network sample, so record the
-        // return on the same clock.
+        // The proposal leaves this node now. What the return budget has left
+        // at this point is what it reserved for the validators' replay, so
+        // the chain's wait beyond it is the network sample that the block
+        // built on top of this proposal completes; record the return on the
+        // clock header timestamps use. A proposal that overran its budget
+        // takes no sample: its gap would contain the successor's whole
+        // execution, and the overrun is the build time multiplier's to absorb.
         let returned_at = Instant::now();
-        self.estimator.on_proposal_returned(
-            returned_at,
-            runtime.current().epoch_millis(),
-            (round.epoch().get(), round.view().get()),
-            ProposalExpectation {
-                validator_work: expected_validator_work,
-            },
-        );
+        let spent = propose_start.elapsed();
+        match proposal_budget.return_budget.checked_sub(spent) {
+            Some(unspent_return_budget) => self.estimator.on_proposal_returned(
+                returned_at,
+                runtime.current().epoch_millis(),
+                (round.epoch().get(), round.view().get()),
+                unspent_return_budget,
+            ),
+            None => debug!(
+                proposal.digest = %proposal.digest(),
+                overrun = %display_duration(spent - proposal_budget.return_budget),
+                "proposal overran its return budget; taking no network sample"
+            ),
+        }
         self.metrics
             .observe_estimator(&self.estimator.snapshot(returned_at));
 

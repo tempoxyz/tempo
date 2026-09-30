@@ -63,17 +63,17 @@ pub async fn run_consensus_stack(
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
     estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
-    config.validate_simplex_timing()?;
+    config.validate()?;
     estimator
         .config()
         .validate()
         .map_err(|reason| eyre!("invalid proposal budget estimator configuration: {reason}"))?;
-    if estimator.config().target_block_time != config.target_block_time.into_duration()
-        || estimator.config().network_budget != config.network_budget.into_duration()
-    {
+    let expected = config.estimator_config(estimator.config().build_time_multiplier);
+    if estimator.config() != expected {
         eyre::bail!(
-            "proposal budget estimator was configured with a different block time or network \
-             budget than consensus"
+            "proposal budget estimator was configured differently than the consensus flags: \
+             {:?} vs {expected:?}",
+            estimator.config()
         );
     }
 

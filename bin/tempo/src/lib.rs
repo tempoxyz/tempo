@@ -550,14 +550,14 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 .estimator_config(args.node_args.builder_build_time_multiplier),
         );
         let tempo_node = overrides.apply_tempo_node({
-            let node = TempoNode::new(&args.node_args, validator_key)
-                .with_estimator(estimator.clone());
+            let node = TempoNode::new(&args.node_args, validator_key);
             match gossip_protocol_handler {
                 Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
                 None => node,
             }
         });
-        // A mapper may rebuild the node and drop the estimator, while consensus keeps this one.
+        // Applied after the mapper, which may rebuild the node, so that the
+        // builder cannot end up with a different estimator than consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 

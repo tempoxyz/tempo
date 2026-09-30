@@ -508,18 +508,10 @@ where
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
-        // build uses the same multiplier and validation feedback. Consensus
-        // may attach a validation snapshot taken when it dispatched the build;
-        // prefer that when present.
-        let build_plan = payload_build_budget.map(|build_budget| {
-            self.estimator
-                .build_plan(Instant::now(), build_budget)
-                .with_validation_latency(attributes.validation_latency_estimate())
-        });
-        let validation_latency = build_plan.map_or_else(
-            || attributes.validation_latency_estimate(),
-            |plan| plan.validation_latency(),
-        );
+        // build uses the same multiplier and validation feedback.
+        let build_plan = payload_build_budget
+            .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
+        let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
         let block_build_stop_reason = loop {
             check_cancel!();
 

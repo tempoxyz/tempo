@@ -211,8 +211,8 @@ pub struct Args {
     /// Largest network reservation the proposal budget estimator may learn.
     ///
     /// The estimator measures how long its own proposals take from return
-    /// until the next leader starts building on them, subtracts the
-    /// validators' expected validation work, and reserves a recent
+    /// until the next leader starts building on them, subtracts what the
+    /// return budget had left for validation, and reserves a recent
     /// percentile of the rest (`--consensus.network-reserve-percentile`):
     /// never less than `--consensus.network-budget`, never more than this.
     /// Set it equal to `--consensus.network-budget` for a fixed reservation.
@@ -220,13 +220,7 @@ pub struct Args {
     ///
     /// Defaults to `network-budget + (target-block-time - network-budget) / 2`,
     /// at most 300ms and never below `--consensus.network-budget`: 300ms with
-    /// the default 550ms target and 50ms network budget. The learned
-    /// reservation can then at most halve the initial proposal window
-    /// (`target-block-time - network-budget`), so a shorter target block time
-    /// or a larger network budget still gets a valid default. The 300ms
-    /// ceiling covers the far-away proposers of a 10 validator, four region
-    /// network, whose p75 network time was about 265-290ms; a 250ms cap
-    /// clamped them and cost p90 block time.
+    /// the default 550ms target and 50ms network budget.
     #[arg(long = "consensus.network-budget-max")]
     pub network_budget_max: Option<PositiveDuration>,
 
@@ -242,18 +236,19 @@ pub struct Args {
     )]
     pub network_reserve_percentile: u8,
 
-    /// Reserve at least the most recent own-proposal network time, not only
-    /// the window percentile.
+    /// Let the most recent own-proposal network time lift the reservation
+    /// above the window percentile.
     ///
-    /// The percentile over the last 16 own proposals, up to two minutes of
-    /// them, lags a network that is getting slower, for example while blocks
-    /// grow, so proposals made during the rise exceed their reservation far
-    /// more often than the percentile implies. Fast rise follows one slow
-    /// proposal up for the next one immediately, still capped by
-    /// `--consensus.network-budget-max`, and the next faster proposal hands
-    /// the reservation back to the window percentile. On a 10 validator, four
-    /// region benchmark it cut the share of proposals whose network time
-    /// exceeded the reservation from 43% to 37% without costing throughput.
+    /// The percentile over the last 16 own proposals lags a network that is
+    /// getting slower, for example while blocks grow, so proposals made
+    /// during the rise exceed their reservation far more often than the
+    /// percentile implies. Fast rise follows one slow proposal up for the
+    /// next one immediately, by at most 100ms above the window percentile
+    /// and still capped by `--consensus.network-budget-max`, and the next
+    /// faster proposal hands the reservation back to the window percentile.
+    /// On a 10 validator, four region benchmark it cut the share of proposals
+    /// whose network time exceeded the reservation from 43% to 37% without
+    /// costing throughput.
     ///
     /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
     /// reserve the window percentile alone.
@@ -505,18 +500,10 @@ impl FromStr for PositiveDuration {
 
 impl Args {
     /// The largest network reservation the proposal budget estimator may
-    /// learn: `--consensus.network-budget-max` if given, otherwise derived
-    /// from the target block time and the network budget.
-    ///
-    /// A fixed default would reject otherwise valid configurations, such as
-    /// a target block time at or below it or a network budget above it. The
-    /// derived cap is the midpoint between the network budget and the target
-    /// block time, so the learned reservation can at most halve the initial
-    /// proposal window. It is limited to
-    /// [`tempo_payload_types::DEFAULT_NETWORK_BUDGET_MAX`] and never below
-    /// the network budget; a cap equal to the network budget pins a fixed
-    /// reservation. The midpoint is rounded down, so the cap stays below the
-    /// target block time whenever the network budget does.
+    /// learn: `--consensus.network-budget-max` if given, otherwise
+    /// [`tempo_payload_types::EstimatorConfig::default_network_budget_max`],
+    /// which stays valid for any target block time and network budget where a
+    /// fixed default would not.
     pub fn network_budget_max(&self) -> Duration {
         if let Some(network_budget_max) = self.network_budget_max {
             return network_budget_max.into_duration();
@@ -544,9 +531,10 @@ impl Args {
     }
 
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
-    /// would panic on when the first epoch is entered, so a misconfiguration
-    /// fails at startup with a descriptive error instead.
-    pub fn validate_simplex_timing(&self) -> eyre::Result<()> {
+    /// would panic on when the first epoch is entered, and proposal budget
+    /// flags the estimator would reject, so a misconfiguration fails at
+    /// startup with a descriptive error instead.
+    pub fn validate(&self) -> eyre::Result<()> {
         let wait_for_proposal = self.wait_for_proposal.into_duration();
         let wait_for_notarizations = self.wait_for_notarizations.into_duration();
         eyre::ensure!(
@@ -792,10 +780,7 @@ mod tests {
 
     #[test]
     fn simplex_timing_defaults_validate() {
-        parse(&["--dev"])
-            .consensus
-            .validate_simplex_timing()
-            .unwrap();
+        parse(&["--dev"]).consensus.validate().unwrap();
     }
 
     #[test]
@@ -805,7 +790,7 @@ mod tests {
         for notarizations in ["1200ms", "1s"] {
             let err = parse(&["--dev", "--consensus.wait-for-notarizations", notarizations])
                 .consensus
-                .validate_simplex_timing()
+                .validate()
                 .unwrap_err();
             assert!(err.to_string().contains("wait-for-notarizations"), "{err}");
         }
@@ -817,7 +802,7 @@ mod tests {
             "2s",
         ])
         .consensus
-        .validate_simplex_timing()
+        .validate()
         .unwrap();
     }
 
@@ -838,7 +823,7 @@ mod tests {
 
         // An explicit cap is used as given.
         let args = parse(&["--dev", "--consensus.network-budget-max", "320ms"]).consensus;
-        args.validate_simplex_timing().unwrap();
+        args.validate().unwrap();
         assert_eq!(
             args.estimator_config(multiplier).network_budget_max,
             Duration::from_millis(320)
@@ -852,7 +837,7 @@ mod tests {
             "90",
         ])
         .consensus;
-        args.validate_simplex_timing().unwrap();
+        args.validate().unwrap();
         let config = args.estimator_config(multiplier);
         assert_eq!(config.network_reserve_percentile, 90);
         assert!(config.network_reserve_fast_rise);
@@ -864,7 +849,7 @@ mod tests {
 
         // An explicit value turns it off.
         let args = parse(&["--dev", "--consensus.network-reserve-fast-rise=false"]).consensus;
-        args.validate_simplex_timing().unwrap();
+        args.validate().unwrap();
         assert!(!args.estimator_config(multiplier).network_reserve_fast_rise);
 
         for percentile in ["49", "101"] {
@@ -874,7 +859,7 @@ mod tests {
                 percentile,
             ])
             .consensus
-            .validate_simplex_timing()
+            .validate()
             .unwrap_err();
             assert!(
                 err.to_string().contains("network reserve percentile"),
@@ -894,7 +879,7 @@ mod tests {
             (["--consensus.network-budget", "350ms"], 350),
         ] {
             let args = parse(&[&["--dev"][..], &flags[..]].concat()).consensus;
-            args.validate_simplex_timing()
+            args.validate()
                 .unwrap_or_else(|err| panic!("{flags:?}: {err}"));
             assert_eq!(
                 args.network_budget_max(),
@@ -912,7 +897,7 @@ mod tests {
         // window still fails validation with the reason.
         let err = parse(&["--dev", "--consensus.network-budget-max", "600ms"])
             .consensus
-            .validate_simplex_timing()
+            .validate()
             .unwrap_err();
         assert!(
             err.to_string().contains(
@@ -926,7 +911,7 @@ mod tests {
     fn simplex_timing_rejects_zero_views_to_track() {
         let err = parse(&["--dev", "--consensus.views-to-track", "0"])
             .consensus
-            .validate_simplex_timing()
+            .validate()
             .unwrap_err();
         assert!(err.to_string().contains("views-to-track"), "{err}");
     }
@@ -956,7 +941,7 @@ mod tests {
                 value,
             ])
             .consensus
-            .validate_simplex_timing()
+            .validate()
             .unwrap_err();
             let msg = err.to_string();
             assert!(msg.contains("inactive-time-before-leader-skip"), "{msg}");
@@ -972,7 +957,7 @@ mod tests {
             args.inactive_time_before_leader_skip.into_duration(),
             Duration::from_millis(10_001)
         );
-        args.validate_simplex_timing().unwrap();
+        args.validate().unwrap();
     }
 
     #[test]
