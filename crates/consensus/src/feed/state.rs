@@ -3,7 +3,7 @@
 use crate::alias::marshal;
 use alloy_primitives::hex;
 use commonware_codec::Encode;
-use commonware_consensus::types::Height;
+use commonware_consensus::{Epochable as _, Viewable as _, types::Height};
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tempo_node::rpc::consensus::{
@@ -122,8 +122,8 @@ impl ConsensusFeed for FeedStateHandle {
                 };
 
                 Response::Success(CertifiedBlock {
-                    epoch: finalization.proposal.round.epoch().get(),
-                    view: finalization.proposal.round.view().get(),
+                    epoch: finalization.epoch().get(),
+                    view: finalization.view().get(),
                     block: block.into_execution_block(),
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.encode()),

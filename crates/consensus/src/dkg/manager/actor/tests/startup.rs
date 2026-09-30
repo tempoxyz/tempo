@@ -150,10 +150,7 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
             );
             assert_eq!(result.is_ok(), expected.is_some(), "{name}: {result:?}");
             if let Some(expected) = expected {
-                for epoch in [
-                    Epoch::new(expected.from_epoch),
-                    tip.1.proposal.round.epoch(),
-                ] {
+                for epoch in [Epoch::new(expected.from_epoch), tip.1.round().epoch()] {
                     assert_eq!(
                         provider.scheme(epoch).unwrap().identity(),
                         &expected.identity,
@@ -161,10 +158,7 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
                     );
                 }
             } else {
-                assert!(
-                    provider.scheme(tip.1.proposal.round.epoch()).is_none(),
-                    "{name}"
-                );
+                assert!(provider.scheme(tip.1.round().epoch()).is_none(), "{name}");
             }
         }
     });
@@ -218,7 +212,7 @@ fn historical_tips_and_genesis_remain_allowed() {
 #[test]
 fn startup_rejects_malformed_or_invalid_tip_certificates() {
     Runner::default().start(|mut context| async move {
-        let fixture = dkg_fixture(&mut context, Epoch::new(0));
+        let fixture = dkg_fixture(&mut context, Epoch::zero());
         let configured_identity = identity(&fixture);
         let valid = tip(&fixture, 1);
         let mut altered_header = header(valid.0);

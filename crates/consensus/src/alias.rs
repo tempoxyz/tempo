@@ -158,11 +158,9 @@ pub(crate) mod marshal {
         )
         .await?;
         let (tip_round, tip_height, tip_digest) = match &finalized_tip {
-            Some((height, certificate)) => (
-                certificate.proposal.round,
-                *height,
-                certificate.proposal.payload,
-            ),
+            Some((height, certificate)) => {
+                (certificate.round(), *height, certificate.proposal.payload)
+            }
             None => (Round::zero(), finalized_floor.0, finalized_floor.1),
         };
         info!(

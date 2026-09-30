@@ -98,7 +98,7 @@ mod tests {
     use commonware_consensus::{
         Reporter as _,
         marshal::Update,
-        types::{Epoch, Height, Round, View},
+        types::{Height, Round},
     };
     use tempo_node::rpc::consensus::Event;
 
@@ -124,7 +124,7 @@ mod tests {
         let mut marshal_reporter = mailbox.to_marshal_reporter();
         assert_eq!(
             marshal_reporter.report(Update::Tip(
-                Round::new(Epoch::zero(), View::zero()),
+                Round::zero(),
                 Height::zero(),
                 Digest(B256::ZERO),
             )),
