@@ -867,6 +867,9 @@ where
             (None, None)
         };
 
+        let state_trie_updates = state_root_outcome
+            .as_ref()
+            .and_then(|outcome| outcome.state_trie_updates.clone());
         let (state_root, trie_updates) = if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
@@ -1072,6 +1075,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state,
             trie_updates,
+            state_trie_updates,
         };
 
         let payload = TempoBuiltPayload::new(
