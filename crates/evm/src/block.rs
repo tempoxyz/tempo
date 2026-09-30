@@ -385,6 +385,15 @@ impl<'a> TempoBlockExecutor<'a> {
         Ok(())
     }
 
+    /// Selects the EIP-7928 index reserved for post-execution system calls.
+    fn set_post_execution_block_access_index(&mut self) {
+        if self.evm().state().bal_builder().is_some() {
+            let index = self.evm().state().bal_index().get() + 1;
+            self.inner
+                .set_block_access_index(BlockAccessIndex::new(index));
+        }
+    }
+
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
         &self,
@@ -667,6 +676,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
+        self.set_post_execution_block_access_index();
         self.apply_current_committee_system_call()?;
 
         let block_gas_used = self.block_gas_used;
@@ -1210,6 +1220,66 @@ mod tests {
         let committee = read_current_committee(&mut executor);
         assert_eq!(committee.epoch, outcome.epoch);
         assert_eq!(committee.publicKeys, expected_public_keys);
+    }
+
+    #[test]
+    fn test_current_committee_bal_writes_use_post_execution_index() {
+        let chainspec = test_chainspec();
+        let mut db = InMemoryDB::default();
+        let outcome = create_dkg_outcome(42, 3);
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(outcome.encode().into())
+            .with_spec(TempoHardfork::T8)
+            .build(&mut db, &chainspec);
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+        executor.enable_block_access_list_builder();
+
+        executor
+            .commit_transaction(TempoTxResult {
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: B256::ZERO,
+                },
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult::<TempoEvmTypes> {
+                            status: true,
+                            total_gas_spent: 21_000,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    TempoTxType::Legacy,
+                    0,
+                ),
+                next_section: BlockSection::StartOfBlock,
+                is_payment: false,
+                block_gas_used: 21_000,
+                validator_fee: U256::ZERO,
+            })
+            .unwrap();
+
+        let (_, block_access_list) = executor.finish_with_block_access_list().unwrap();
+        let committee_changes = block_access_list
+            .unwrap()
+            .into_iter()
+            .find(|account| account.address == CURRENT_COMMITTEE_ADDRESS)
+            .expect("committee account must be present in the block access list");
+        let storage_changes = committee_changes
+            .storage_changes
+            .iter()
+            .flat_map(|slot| &slot.changes)
+            .collect::<Vec<_>>();
+
+        assert!(!storage_changes.is_empty());
+        assert!(
+            storage_changes
+                .iter()
+                .all(|change| { change.block_access_index == BlockAccessIndex::new(2) })
+        );
     }
 
     #[test]
