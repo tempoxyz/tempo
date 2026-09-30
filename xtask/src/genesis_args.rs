@@ -1,5 +1,5 @@
 use alloy::{
-    genesis::{ChainConfig, Genesis, GenesisAccount},
+    genesis::{Genesis, GenesisAccount},
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
@@ -16,11 +16,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-use evm2::{
-    bytecode::Bytecode,
-    evm::{AccountInfo, InMemoryDB, SystemTx, precompile::NoPrecompiles},
-    interpreter::GasTracker,
-};
+use evm2::bytecode::Bytecode;
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
@@ -33,19 +29,26 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    TempoHardfork,
+    cli::TempoHardforkArgs,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
+    CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
+    contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
         t13_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::{SYSTEM_CALL_GAS_LIMIT, TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
+use tempo_evm::genesis::{
+    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
+    ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
+    with_genesis_storage,
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
@@ -54,7 +57,7 @@ use tempo_precompiles::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{ContractStorage, StorageCtx, evm::EvmPrecompileStorageProvider},
+    storage::ContractStorage,
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -154,77 +157,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     no_pairwise_liquidity: bool,
 
-    /// Timestamp for T0 hardfork activation (0 = genesis).
-    #[arg(long, default_value = "0")]
-    t0_time: u64,
-
-    /// T1 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1_time: u64,
-
-    /// T1.A hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1a_time: u64,
-
-    /// T1.B hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1b_time: u64,
-
-    /// T1.C hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1c_time: u64,
-
-    /// T2 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t2_time: u64,
-
-    /// T3 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t3_time: u64,
-
-    /// T4 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t4_time: u64,
-
-    /// T5 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t5_time: u64,
-
-    /// T6 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t6_time: u64,
-
-    /// T7 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t7_time: u64,
-
-    /// T8 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t8_time: u64,
-
-    /// T9 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t9_time: u64,
-
-    /// T10 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t10_time: u64,
-
-    /// T11 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t11_time: u64,
-
-    /// T12 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t12_time: u64,
-
-    /// T13 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t13_time: u64,
-
-    /// T14 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t14_time: u64,
+    /// Tempo hardfork schedule. Individual `--<fork>-time` flags default to genesis (0).
+    #[command(flatten)]
+    hardforks: TempoHardforkArgs,
 }
 
 #[derive(Clone, Debug)]
@@ -325,17 +260,17 @@ impl GenesisArgs {
 
         let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
         let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
-        let mut evm = setup_tempo_evm(self.chain_id);
+        let mut evm = create_genesis_evm(genesis_evm_env(self.chain_id));
 
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm)?;
 
         println!("Initializing registry");
-        initialize_registry(&mut evm)?;
+        with_genesis_storage(&mut evm, || TIP403Registry::new().initialize())?;
 
         // Initialize TIP20Factory once before creating any tokens
         println!("Initializing TIP20Factory");
-        initialize_tip20_factory(&mut evm)?;
+        with_genesis_storage(&mut evm, || TIP20Factory::new().initialize())?;
 
         println!("Creating pathUSD through factory");
         create_path_usd_token(pathusd_admin, &addresses, self.pathusd_amount, &mut evm)?;
@@ -428,26 +363,14 @@ impl GenesisArgs {
         let consensus_config =
             generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
-        let validator_onchain_addresses = if self.validator_addresses.is_empty() {
-            if addresses.len() < self.validators.len() + 1 {
-                return Err(eyre!("not enough accounts created for validators"));
-            }
-
-            &addresses[1..self.validators.len() + 1]
-        } else {
-            if self.validator_addresses.len() < self.validators.len() {
-                return Err(eyre!("not enough addresses provided for validators"));
-            }
-
-            &self.validator_addresses[0..self.validators.len()]
-        };
+        let validator_onchain_addresses = self.validator_onchain_addresses()?;
 
         println!("Initializing validator config v2");
         initialize_validator_config_v2(
             validator_admin,
             &mut evm,
             &consensus_config,
-            validator_onchain_addresses,
+            &validator_onchain_addresses,
             self.no_dkg_in_genesis,
             self.chain_id,
         )?;
@@ -475,25 +398,25 @@ impl GenesisArgs {
         );
 
         println!("Initializing stablecoin exchange");
-        initialize_stablecoin_dex(&mut evm)?;
+        with_genesis_storage(&mut evm, || StablecoinDEX::new().initialize())?;
 
         println!("Initializing nonce manager");
-        initialize_nonce_manager(&mut evm)?;
+        with_genesis_storage(&mut evm, || NonceManager::new().initialize())?;
 
         println!("Initializing account keychain");
-        initialize_account_keychain(&mut evm)?;
+        with_genesis_storage(&mut evm, || AccountKeychain::new().initialize())?;
 
         println!("Initializing TIP20 registry");
-        initialize_address_registry(&mut evm)?;
+        with_genesis_storage(&mut evm, || AddressRegistry::new().initialize())?;
 
-        if self.t3_time == 0 {
+        if self.hardforks.active_at_genesis(TempoHardfork::T3) {
             println!("Initializing signature verifier (T3 active at genesis)");
-            initialize_signature_verifier(&mut evm)?;
+            with_genesis_storage(&mut evm, || SignatureVerifier::new().initialize())?;
         }
 
-        if self.t6_time == 0 {
+        if self.hardforks.active_at_genesis(TempoHardfork::T6) {
             println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
-            initialize_receive_policy_guard(&mut evm)?;
+            with_genesis_storage(&mut evm, || ReceivePolicyGuard::new().initialize())?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -534,91 +457,33 @@ impl GenesisArgs {
                     .and_then(Option::as_ref)
                     .cloned()
                     .unwrap_or_default();
-                let storage = state.storage.get(&address).and_then(|storage| {
-                    (!storage.slots.is_empty()).then(|| {
-                        storage
-                            .slots
-                            .iter()
-                            .map(|(key, value)| ((*key).into(), (*value).into()))
-                            .collect()
-                    })
-                });
-                let genesis_account = GenesisAccount {
-                    nonce: Some(account.nonce),
-                    balance: account.balance,
-                    code: state
-                        .contracts
-                        .get(&account.code_hash)
-                        .filter(|code| !code.is_empty())
-                        .map(Bytecode::original_bytes),
-                    storage,
-                    ..Default::default()
-                };
+                let storage = state
+                    .storage
+                    .get(&address)
+                    .into_iter()
+                    .flat_map(|storage| storage.slots.iter())
+                    .map(|(key, value)| (*key, *value));
+                let mut genesis_account = genesis_account(&account, storage);
+                genesis_account.code = state
+                    .contracts
+                    .get(&account.code_hash)
+                    .filter(|code| !code.is_empty())
+                    .map(Bytecode::original_bytes);
                 (address, genesis_account)
             })
             .collect();
 
-        genesis_alloc.insert(
-            MULTICALL3_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&Multicall3::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
+        for (address, code) in [
+            (MULTICALL3_ADDRESS, &Multicall3::DEPLOYED_BYTECODE),
+            (CREATEX_ADDRESS, &CreateX::DEPLOYED_BYTECODE),
+            (SAFE_DEPLOYER_ADDRESS, &SafeDeployer::DEPLOYED_BYTECODE),
+            (HISTORY_STORAGE_ADDRESS, &HISTORY_STORAGE_CODE),
+        ] {
+            genesis_alloc.insert(address, predeployed_contract(code));
+        }
+        insert_zone_state_at_genesis(&self.hardforks, &mut genesis_alloc);
 
-        genesis_alloc.insert(
-            CREATEX_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&CreateX::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
-            SAFE_DEPLOYER_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&SafeDeployer::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        insert_zone_state_at_genesis(self.t10_time, self.t13_time, &mut genesis_alloc);
-
-        genesis_alloc.insert(
-            HISTORY_STORAGE_ADDRESS,
-            GenesisAccount {
-                code: Some(HISTORY_STORAGE_CODE.clone()),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        let mut chain_config = ChainConfig {
-            chain_id: self.chain_id,
-            homestead_block: Some(0),
-            eip150_block: Some(0),
-            eip155_block: Some(0),
-            eip158_block: Some(0),
-            byzantium_block: Some(0),
-            constantinople_block: Some(0),
-            petersburg_block: Some(0),
-            istanbul_block: Some(0),
-            berlin_block: Some(0),
-            london_block: Some(0),
-            merge_netsplit_block: Some(0),
-            shanghai_time: Some(0),
-            cancun_time: Some(0),
-            prague_time: Some(0),
-            osaka_time: Some(0),
-            terminal_total_difficulty: Some(U256::from(0)),
-            terminal_total_difficulty_passed: true,
-            deposit_contract_address: Some(Address::ZERO),
-            ..Default::default()
-        };
-
+        let mut chain_config = ethereum_chain_config(self.chain_id);
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
@@ -627,60 +492,7 @@ impl GenesisArgs {
                 .extra_fields
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
         }
-        chain_config
-            .extra_fields
-            .insert_value("t0Time".to_string(), self.t0_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1Time".to_string(), self.t1_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1aTime".to_string(), self.t1a_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1bTime".to_string(), self.t1b_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1cTime".to_string(), self.t1c_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t2Time".to_string(), self.t2_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t3Time".to_string(), self.t3_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t4Time".to_string(), self.t4_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t5Time".to_string(), self.t5_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t6Time".to_string(), self.t6_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t7Time".to_string(), self.t7_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t8Time".to_string(), self.t8_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t9Time".to_string(), self.t9_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t10Time".to_string(), self.t10_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t11Time".to_string(), self.t11_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t12Time".to_string(), self.t12_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t13Time".to_string(), self.t13_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t14Time".to_string(), self.t14_time)?;
+        self.hardforks.write_to(&mut chain_config);
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -691,8 +503,8 @@ impl GenesisArgs {
             }
         }
 
-        // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
-        let base_fee: u128 = if self.t1_time == 0 {
+        // Base fee determined by hardfork: T1 active at genesis uses T1 fee
+        let base_fee: u128 = if self.hardforks.active_at_genesis(TempoHardfork::T1) {
             u128::from(TEMPO_T1_BASE_FEE)
         } else {
             u128::from(TEMPO_T0_BASE_FEE)
@@ -726,13 +538,12 @@ impl GenesisArgs {
 }
 
 fn insert_zone_state_at_genesis(
-    t10_time: u64,
-    t13_time: u64,
+    hardforks: &TempoHardforkArgs,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
-    if t10_time == 0 {
+    if hardforks.active_at_genesis(TempoHardfork::T10) {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if t13_time == 0 {
+        let accounts = if hardforks.active_at_genesis(TempoHardfork::T13) {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -752,88 +563,15 @@ fn insert_zone_state_at_genesis(
     }
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<'static> {
-    // The block timestamp defaults to 0 for genesis initializations.
-    build_tempo_evm(
-        tempo_chainspec::hardfork::TempoHardfork::T0,
-        chain_id,
-        TempoBlockEnv::default(),
-        InMemoryDB::default(),
-        NoPrecompiles::default(),
-        TempoEvmExt::default(),
-    )
-}
-
-fn with_evm_storage<R>(evm: &mut TempoEvm<'_>, f: impl FnOnce() -> R) -> R {
-    let spec = evm.config_spec_id();
-    let actions = evm.ext().actions.clone();
-    let non_creditable_slots = evm.ext().non_creditable_slots.clone();
-    let mut gas = GasTracker::new(u64::MAX);
-    let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
-        .with_actions(actions)
-        .with_non_creditable_slots(non_creditable_slots);
-    let result = StorageCtx::enter(&mut storage, f);
-    drop(storage);
-
-    evm.state_mut().commit_transaction();
-    evm.state_mut().clear_transaction_state();
-    result
-}
-
-/// Deploys the Arachnid CREATE2 factory by directly inserting it into the EVM state.
-fn deploy_arachnid_create2_factory(evm: &mut TempoEvm<'_>) {
-    println!("Deploying Arachnid CREATE2 factory at {ARACHNID_CREATE2_FACTORY_ADDRESS}");
-
-    evm.overlay_db_mut().insert_account_info(
-        &ARACHNID_CREATE2_FACTORY_ADDRESS,
-        AccountInfo::default().with_code(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
-    );
-}
-
-/// Deploys Permit2 contract via the Arachnid CREATE2 factory.
-fn deploy_permit2(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    // Build calldata for Arachnid CREATE2 factory: salt (32 bytes) || creation bytecode
-    let bytecode = &tempo_contracts::Permit2::BYTECODE;
-    let calldata: Bytes = PERMIT2_SALT
-        .as_slice()
-        .iter()
-        .chain(bytecode.iter())
-        .copied()
-        .collect();
-
-    println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
-
-    let result = evm.system_call(
-        SystemTx::new(ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)
-            .with_caller(Address::ZERO)
-            .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
-    )?;
-
-    if !result.result().status {
-        return Err(eyre!("Permit2 deployment failed: {:?}", result.result()));
-    }
-
-    let _ = result.commit();
-
-    println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
-    Ok(())
-}
-
-/// Initializes the TIP20Factory contract (should be called once before creating any tokens)
-fn initialize_tip20_factory(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || TIP20Factory::new().initialize())?;
-    Ok(())
-}
-
 /// Creates pathUSD as the first TIP20 token at a reserved address.
 /// pathUSD is not created via factory since it's at a reserved address.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
     amount_per_recipient: u64,
-    evm: &mut TempoEvm<'_>,
+    evm: &mut GenesisEvm,
 ) -> eyre::Result<()> {
-    with_evm_storage(evm, || {
+    with_genesis_storage(evm, || {
         TIP20Factory::new().create_token_reserved_address(
             PATH_USD_ADDRESS,
             "pathUSD",
@@ -881,9 +619,9 @@ fn create_and_mint_token(
     recipients: &[Address],
     mint_amount: U256,
     salt_or_address: SaltOrAddress,
-    evm: &mut TempoEvm<'_>,
+    evm: &mut GenesisEvm,
 ) -> eyre::Result<Address> {
-    with_evm_storage(evm, || {
+    with_genesis_storage(evm, || {
         let mut factory = TIP20Factory::new();
         assert!(
             factory
@@ -954,10 +692,10 @@ fn initialize_fee_manager(
     user_fee_token_address: Address,
     initial_accounts: Vec<Address>,
     validators: Vec<Address>,
-    evm: &mut TempoEvm<'_>,
+    evm: &mut GenesisEvm,
 ) {
     // Update the beneficiary since the validator can't set the validator fee token for themselves
-    with_evm_storage(evm, || {
+    with_genesis_storage(evm, || {
         let mut fee_manager = TipFeeManager::new();
         fee_manager
             .initialize()
@@ -994,63 +732,19 @@ fn initialize_fee_manager(
     });
 }
 
-/// Initializes the [`TIP403Registry`] contract.
-fn initialize_registry(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || TIP403Registry::new().initialize())?;
-
-    Ok(())
-}
-
-fn initialize_stablecoin_dex(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || StablecoinDEX::new().initialize())?;
-
-    Ok(())
-}
-
-fn initialize_nonce_manager(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || NonceManager::new().initialize())?;
-
-    Ok(())
-}
-
-/// Initializes the [`AccountKeychain`] contract.
-fn initialize_account_keychain(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || AccountKeychain::new().initialize())?;
-
-    Ok(())
-}
-
-fn initialize_address_registry(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || AddressRegistry::new().initialize())?;
-
-    Ok(())
-}
-
-fn initialize_signature_verifier(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || SignatureVerifier::new().initialize())?;
-
-    Ok(())
-}
-
-fn initialize_receive_policy_guard(evm: &mut TempoEvm<'_>) -> eyre::Result<()> {
-    with_evm_storage(evm, || ReceivePolicyGuard::new().initialize())?;
-
-    Ok(())
-}
-
 /// Initializes the [`ValidatorConfigV2`] contract at genesis (T2 active at genesis).
 ///
 /// Populates validators directly into V2 with `needs_migration = false`.
 /// Each `add_validator` call requires an Ed25519 signature from the validator's signing key.
 fn initialize_validator_config_v2(
     admin: Address,
-    evm: &mut TempoEvm<'_>,
+    evm: &mut GenesisEvm,
     consensus_config: &Option<ConsensusConfig>,
     onchain_validator_addresses: &[Address],
     no_dkg_in_genesis: bool,
     chain_id: u64,
 ) -> eyre::Result<()> {
-    with_evm_storage(evm, || {
+    with_genesis_storage(evm, || {
         let mut v2 = ValidatorConfigV2::new();
         v2.initialize(admin)
             .wrap_err("failed to initialize validator config v2")?;
@@ -1178,9 +872,9 @@ fn mint_pairwise_liquidity(
     b_tokens: Vec<Address>,
     amount: U256,
     admin: Address,
-    evm: &mut TempoEvm<'_>,
+    evm: &mut GenesisEvm,
 ) {
-    with_evm_storage(evm, || {
+    with_genesis_storage(evm, || {
         let mut fee_manager = TipFeeManager::new();
 
         for b_token_address in b_tokens {
@@ -1206,10 +900,73 @@ mod tests {
         },
     };
 
+    #[derive(Debug, clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        genesis: GenesisArgs,
+    }
+
+    fn parse(args: &str) -> Result<GenesisArgs, clap::Error> {
+        use clap::Parser as _;
+        let base = "xtask --accounts 2 --no-dkg-in-genesis --seed 1";
+        Cli::try_parse_from(format!("{base} {args}").split_whitespace()).map(|cli| cli.genesis)
+    }
+
+    async fn generate(args: &str) -> Genesis {
+        parse(args).unwrap().generate_genesis().await.unwrap().0
+    }
+
+    #[tokio::test]
+    async fn legacy_genesis_writes_every_fork_time() {
+        let genesis = generate("--t3-time 100").await;
+
+        for fork in TempoHardfork::VARIANTS.iter().skip(1) {
+            let expected = if *fork == TempoHardfork::T3 { 100 } else { 0 };
+            assert_eq!(
+                genesis.config.extra_fields.get(fork.genesis_key().unwrap()),
+                Some(&serde_json::json!(expected)),
+                "{fork}"
+            );
+        }
+        // T3 is not active at genesis, so the signature verifier is not initialized.
+        assert!(
+            !genesis
+                .alloc
+                .contains_key(&tempo_precompiles::SIGNATURE_VERIFIER_ADDRESS)
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_genesis_disables_later_forks() {
+        let genesis = generate("--hardfork T13").await;
+        let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis.clone());
+
+        assert_eq!(
+            genesis.config.extra_fields.get("t13Time"),
+            Some(&serde_json::json!(0))
+        );
+        assert_eq!(
+            genesis.config.extra_fields.get("t14Time"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            tempo_chainspec::TempoHardforks::tempo_hardfork_at(&chainspec, u64::MAX),
+            TempoHardfork::T13
+        );
+        assert_eq!(
+            genesis.alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
+            Some(&T13_ZONE_PORTAL_RUNTIME)
+        );
+    }
+
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, 1, &mut alloc);
+        let hardforks = TempoHardforkArgs {
+            t13_time: Some(1),
+            ..Default::default()
+        };
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
         let expected_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
@@ -1231,7 +988,11 @@ mod tests {
     #[test]
     fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(1, 1, &mut alloc);
+        let hardforks = TempoHardforkArgs {
+            t10_time: Some(1),
+            ..Default::default()
+        };
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
     }
@@ -1239,7 +1000,8 @@ mod tests {
     #[test]
     fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, 0, &mut alloc);
+        let hardforks = TempoHardforkArgs::default();
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         for (destination, expected) in [
             (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),

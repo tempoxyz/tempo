@@ -27,7 +27,7 @@ use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
-use evm2::evm::{Cache, PendingState, StateChangeSource};
+use evm2::evm::{Cache, PendingState, StateChangeSource, TxResultExt};
 use fees::{FeeWrites, RecordingFeeManager};
 use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
@@ -588,8 +588,8 @@ enum TxOutcome {
 struct ObservedTx {
     /// Whether execution succeeded, reverted, or halted.
     outcome: TxOutcome,
-    /// Gas consumed by the transaction for its receipt and fee charge.
-    gas_used: u64,
+    /// Execution gas accounting for receipt validation, fee charges, and headroom checks.
+    gas: TxResultExt,
     /// Hash of the unmodified ordered logs, used to validate canonical receipts.
     receipt_logs_hash: B256,
     /// Hash of the transaction's output bytes (empty when there is no output).
@@ -615,7 +615,13 @@ impl ObservedTx {
             } else {
                 TxOutcome::Halt
             },
-            gas_used: execution.tx_gas_used(),
+            gas: TxResultExt {
+                total_gas_spent: execution.total_gas_spent,
+                state_gas_spent: execution.state_gas_spent,
+                refunded: execution.refunded,
+                floor_gas: execution.floor_gas,
+                ..Default::default()
+            },
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(&execution.output),
             fee_normalized,
@@ -679,7 +685,7 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
         let gas_used = receipt.cumulative_gas_used - previous_gas;
         previous_gas = receipt.cumulative_gas_used;
         (tx.outcome == TxOutcome::Success) == receipt.success
-            && tx.gas_used == gas_used
+            && tx.gas.tx_gas_used() == gas_used
             && tx.receipt_logs_hash == hash_logs(&receipt.logs)
     })
 }

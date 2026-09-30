@@ -9,6 +9,8 @@ extern crate alloc;
 
 #[cfg(feature = "reth")]
 mod bootnodes;
+#[cfg(feature = "cli")]
+pub mod cli;
 #[cfg(feature = "reth")]
 mod network_identity;
 #[cfg(feature = "reth")]

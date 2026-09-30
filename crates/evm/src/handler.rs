@@ -295,7 +295,8 @@ fn key_authorization_gas(
 /// This includes:
 /// - Base 21k stipend (once for the transaction)
 /// - Signature verification gas (P256: 5k, WebAuthn: 5k + webauthn_data)
-/// - Per-call account access cost (COLD_ACCOUNT_ACCESS_COST * calls.len())
+/// - Per-call account access cost (`COLD_ACCOUNT_ACCESS_COST * (calls.len() - 1)`); the 21k
+///   stipend above already covers the first call's target access
 /// - Per-call input data gas (calldata tokens * 4 gas)
 /// - Per-call CREATE costs (if applicable):
 ///   - Additional 32k base (CREATE constant)
@@ -322,8 +323,8 @@ fn intrinsic_gas(
     // 2. Signature verification gas
     regular = regular.saturating_add(tempo_signature_verification_gas(signed.signature()));
 
-    // 3. Per-call overhead: cold account access
-    // if the `to` address has not appeared in the call batch before.
+    // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
+    // already covers the first call's target access.
     let cold_account = u64::from(params.get(GasId::WarmStorageReadCost))
         + u64::from(params.get(GasId::ColdAccountAdditionalCost));
     regular = regular
