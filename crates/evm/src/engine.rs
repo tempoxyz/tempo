@@ -1,5 +1,8 @@
 use crate::{TempoEvmConfig, TempoTxEnv};
-use alloy_consensus::{crypto::RecoveryError, transaction::Recovered};
+use alloy_consensus::{
+    crypto::RecoveryError,
+    transaction::{Recovered, TxHashRef},
+};
 use alloy_primitives::Address;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutableTxParts,
@@ -112,6 +115,9 @@ impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBl
 
     fn into_parts(self) -> (Recovered<TempoTxEnv>, Self::Recovered) {
         let signer = *self.signer();
+        // Populate the original envelope's lazy hash before cloning it into the EVM transaction
+        // environment so both copies carry the cached value.
+        let _ = self.tx().tx_hash();
         let recovered = Recovered::new_unchecked(self.tx().clone(), signer);
         let mut tx_env = TempoTxEnv::from(recovered);
         tx_env.set_expiring_nonce_idx(self.expiring_nonce_idx);
