@@ -239,6 +239,11 @@ on:
         type: string
         required: true
         default: "5000000000"
+      general-gas-limit:
+        description: General non-payment gas limit override. Empty preserves the chain default.
+        type: string
+        required: false
+        default: ""
       no-cache:
         description: Skip binary cache.
         type: boolean
@@ -400,7 +405,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          # Pin the command replay fix until tempoxyz/tempo-multi-region-benchmark#456 lands.
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || '656b20249362002967a798df1d2bca48e22a475a' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
