@@ -14229,9 +14229,11 @@ dependencies = [
  "reth-tasks",
  "reth-trie",
  "reth-trie-db",
+ "tempfile",
  "tempo-chainspec",
  "tempo-precompiles",
  "tempo-primitives",
+ "tokio",
  "tracing",
 ]
 
@@ -14334,6 +14336,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "tempfile",
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-contracts",
