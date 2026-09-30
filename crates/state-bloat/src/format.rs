@@ -30,8 +30,13 @@ pub fn read_dump(
 pub(crate) fn read_header(reader: &mut impl Read) -> eyre::Result<Option<(Address, u64)>> {
     let mut header = [0u8; 40];
     // Only EOF before the first byte denotes the end of a complete dump.
-    if reader.read(&mut header[..1])? == 0 {
-        return Ok(None);
+    loop {
+        match reader.read(&mut header[..1]) {
+            Ok(0) => return Ok(None),
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     reader
         .read_exact(&mut header[1..])
@@ -63,20 +68,41 @@ pub(crate) fn read_entry(reader: &mut impl Read) -> eyre::Result<(B256, U256)> {
 mod tests {
     use super::*;
 
+    fn block(pairs: u64, entries: usize) -> Vec<u8> {
+        let mut block = Vec::from(&b"TEMPOSB\0\0\x01\0\0"[..]);
+        block.extend_from_slice(Address::ZERO.as_slice());
+        block.extend_from_slice(&pairs.to_be_bytes());
+        for _ in 0..entries {
+            block.extend_from_slice(&[1; 64]);
+        }
+        block
+    }
+
     #[test]
     fn rejects_truncation_and_unknown_format() {
-        let mut dump = Vec::from(&b"TEMPOSB\0\0\x01\0\0"[..]);
-        dump.extend_from_slice(Address::ZERO.as_slice());
-        dump.extend_from_slice(&1u64.to_be_bytes());
-        dump.extend_from_slice(&[1; 64]);
+        let dump = block(1, 1);
         for len in 0..dump.len() {
             assert!(read_dump(&dump[..len], |_, _, _| Ok(())).is_err());
         }
         assert_eq!(read_dump(dump.as_slice(), |_, _, _| Ok(())).unwrap(), 1);
-        for offset in [0, 8, 10] {
+        for offset in [0, 8, 9, 10, 11] {
             let mut invalid = dump.clone();
             invalid[offset] = 42;
             assert!(read_dump(invalid.as_slice(), |_, _, _| Ok(())).is_err());
         }
+        assert!(read_dump(block(0, 0).as_slice(), |_, _, _| Ok(())).is_err());
+    }
+
+    #[test]
+    fn accepts_only_complete_multi_block_dumps() {
+        let first = block(2, 2);
+        let dump = [first.clone(), block(1, 1)].concat();
+        assert_eq!(read_dump(dump.as_slice(), |_, _, _| Ok(())).unwrap(), 3);
+        assert_eq!(read_dump(first.as_slice(), |_, _, _| Ok(())).unwrap(), 2);
+        for len in first.len() + 1..dump.len() {
+            assert!(read_dump(&dump[..len], |_, _, _| Ok(())).is_err());
+        }
+        let trailing_empty = [first, block(0, 0)].concat();
+        assert!(read_dump(trailing_empty.as_slice(), |_, _, _| Ok(())).is_err());
     }
 }

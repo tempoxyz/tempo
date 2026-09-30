@@ -229,6 +229,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             total_blocks += 1;
         }
+        ensure!(total_blocks > 0, "empty state dump");
 
         // Send any remaining entries to the worker and join.
         if !hash_chunk.is_empty() {
