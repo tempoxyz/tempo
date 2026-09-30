@@ -34,7 +34,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")
         .map(|describe| describe.ends_with(&format!("-g{sha_short}")))
         .unwrap_or(true);
-    let version_suffix = if is_dirty || not_on_tag { "-dev" } else { "" };
+    // Development versions on main (for example 1.16.0-dev) already carry a
+    // pre-release suffix, so don't append another one.
+    let has_pre_release = env!("CARGO_PKG_VERSION").contains('-');
+    let version_suffix = if !has_pre_release && (is_dirty || not_on_tag) {
+        "-dev"
+    } else {
+        ""
+    };
     println!("cargo:rustc-env=RETH_VERSION_SUFFIX={version_suffix}");
 
     // Set short SHA

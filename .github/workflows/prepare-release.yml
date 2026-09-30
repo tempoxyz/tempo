@@ -101,12 +101,17 @@ jobs:
               '/^\[workspace\.package\]$/,/^\[/ s/^version = "([^"]+)"$/\1/p' \
               Cargo.toml
           )"
-          if [[ ! "$current_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::Could not read an X.Y.Z version from [workspace.package]"
+          if [[ ! "$current_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev)?$ ]]; then
+            echo "::error::Could not read an X.Y.Z or X.Y.Z-dev version from [workspace.package]"
             exit 1
           fi
-          if [[ "$current_version" == "$VERSION" ]] ||
-             [[ "$(printf '%s\n%s\n' "$current_version" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
+          # Main carries the upcoming version as X.Y.Z-dev, which may be
+          # released as X.Y.Z. A plain X.Y.Z must be strictly exceeded.
+          base_version="${current_version%-dev}"
+          if [[ "$current_version" == *-dev && "$base_version" == "$VERSION" ]]; then
+            :
+          elif [[ "$base_version" == "$VERSION" ]] ||
+             [[ "$(printf '%s\n%s\n' "$base_version" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
             echo "::error::version ${VERSION} must be greater than workspace version ${current_version}"
             exit 1
           fi
