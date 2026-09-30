@@ -223,3 +223,5 @@ min-trace-logs = [
 	"tempo-node/min-trace-logs",
 ]
 trie-debug = ["tempo-node/trie-debug"]
+# Devnet-only: accept zone verifier PCRs via `--zone-verifier.custom-pcrs`.
+custom-pcrs = ["tempo-precompiles/custom-pcrs"]

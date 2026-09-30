@@ -533,6 +533,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         };
         let chain_id = builder.config().chain.chain().id();
 
+        #[cfg(feature = "custom-pcrs")]
+        if let Some(policy) = args.custom_pcrs.clone() {
+            policy.validate(chain_id)?;
+            warn!(?policy, "replacing compiled-in zone verifier PCRs with a custom policy");
+            tempo_precompiles::zone_verifier::CUSTOM_PCRS
+                .set(policy)
+                .map_err(|_| eyre::eyre!("zone verifier PCRs were already set"))?;
+        }
+
         // Resolve the bootnodes endpoint:
         // --tempo.bootnodes-endpoint=none -> disabled
         // otherwise -> use the provided/default URL
