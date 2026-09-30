@@ -81,6 +81,10 @@ pub(crate) struct GenesisArgs {
     )]
     mnemonic: String,
 
+    /// Read the account-generation mnemonic from a file.
+    #[arg(long, value_name = "PATH", conflicts_with = "mnemonic")]
+    mnemonic_file: Option<PathBuf>,
+
     /// Coinbase address
     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
     coinbase: Address,
@@ -287,9 +291,10 @@ impl GenesisArgs {
                 return Err(eyre!("not enough accounts created for validators"));
             }
 
+            let mnemonic = self.resolved_mnemonic()?;
             (1..=validator_count)
                 .map(|worker_id| {
-                    let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                    let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
                     Ok(secret_key_to_address(signer.credential()))
                 })
                 .collect()
@@ -307,13 +312,14 @@ impl GenesisArgs {
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
     pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, Option<ConsensusConfig>)> {
+        let mnemonic = self.resolved_mnemonic()?;
         println!("Generating {:?} accounts", self.accounts);
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
             .progress()
             .map(|worker_id| -> eyre::Result<Address> {
-                let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
                 let address = secret_key_to_address(signer.credential());
                 Ok(address)
             })
@@ -699,6 +705,19 @@ impl GenesisArgs {
         genesis.config = chain_config;
 
         Ok((genesis, consensus_config))
+    }
+
+    fn resolved_mnemonic(&self) -> eyre::Result<String> {
+        let Some(path) = &self.mnemonic_file else {
+            return Ok(self.mnemonic.clone());
+        };
+        let mnemonic = std::fs::read_to_string(path)
+            .wrap_err_with(|| format!("failed reading mnemonic file `{}`", path.display()))?;
+        let mnemonic = mnemonic.trim();
+        if mnemonic.is_empty() {
+            return Err(eyre!("mnemonic file `{}` is empty", path.display()));
+        }
+        Ok(mnemonic.to_owned())
     }
 }
 
@@ -1265,6 +1284,7 @@ fn mint_pairwise_liquidity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use tempo_contracts::{
         precompiles::{
             ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
@@ -1318,5 +1338,50 @@ mod tests {
         ] {
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
+    }
+
+    #[derive(Parser)]
+    struct GenesisCli {
+        #[command(flatten)]
+        args: GenesisArgs,
+    }
+
+    #[test]
+    fn mnemonic_file_matches_inline_validator_accounts() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mnemonic");
+        std::fs::write(&path, format!("{mnemonic}\n")).unwrap();
+        let args = [
+            "genesis",
+            "--validators",
+            "127.0.0.1:8000",
+            "--accounts",
+            "2",
+        ];
+        let inline = GenesisCli::parse_from(args.into_iter().chain(["--mnemonic", mnemonic])).args;
+        let from_file = GenesisCli::parse_from(
+            args.into_iter()
+                .chain(["--mnemonic-file", path.to_str().unwrap()]),
+        )
+        .args;
+        assert_eq!(from_file.resolved_mnemonic().unwrap(), mnemonic);
+        assert_eq!(
+            from_file.validator_onchain_addresses().unwrap(),
+            inline.validator_onchain_addresses().unwrap()
+        );
+        assert!(
+            GenesisCli::try_parse_from(args.into_iter().chain([
+                "--mnemonic",
+                mnemonic,
+                "--mnemonic-file",
+                path.to_str().unwrap(),
+            ]))
+            .is_err()
+        );
+        std::fs::write(&path, " \n").unwrap();
+        assert!(from_file.resolved_mnemonic().is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(from_file.validator_onchain_addresses().is_err());
     }
 }

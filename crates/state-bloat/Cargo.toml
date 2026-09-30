@@ -38,3 +38,7 @@ indicatif.workspace = true
 itertools.workspace = true
 rayon.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
