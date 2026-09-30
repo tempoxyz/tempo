@@ -1100,7 +1100,12 @@ where
                 Height::new(height),
             )
             .await
-            .wrap_err_with(|| format!("failed backfilling block for height `{height}`"))?;
+            .wrap_err_with(|| {
+                format!(
+                    "failed backfilling block for height `{height}`: execution state is likely stale. \
+                     Run as a follower to sync to tip or restore a fresher snapshot"
+                )
+            })?;
 
             let (ack, _wait) = Exact::handle();
             let request = FinalizedBlockRequest {
@@ -2413,6 +2418,8 @@ async fn execute_build(
     fields(
         block.digest = %request.block.digest(),
         block.height = %request.block.height(),
+        proposal.epoch = request.block.context().round.epoch().get(),
+        proposal.view = request.block.context().round.view().get(),
     ),
 )]
 async fn execute_finalization(
@@ -2432,6 +2439,8 @@ async fn execute_finalization(
         block.digest = %block.digest(),
         block.height = %block.height(),
         block.parent_digest = %block.parent_digest(),
+        proposal.epoch = block.context().round.epoch().get(),
+        proposal.view = block.context().round.view().get(),
     ),
 )]
 async fn execute_delivery(

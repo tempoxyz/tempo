@@ -176,6 +176,7 @@ jobs:
       run-pairs: ${{ inputs['run-pairs'] || '1' }}
       clickhouse-run: feature-1
       otlp: true
+      tcp-highres: true
       valscope: true
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
