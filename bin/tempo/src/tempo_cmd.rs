@@ -1369,9 +1369,9 @@ struct InfoOutput {
 
 #[derive(Debug, clap::Args)]
 pub struct Info {
-    /// RPC URL to query when no default RPC URL is available from --chain.
-    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
-    rpc_url: String,
+    /// RPC URL to query. Takes precedence over the chain spec's default RPC URL.
+    #[arg(long)]
+    rpc_url: Option<String>,
 
     /// Chain spec (mainnet, testnet, or path to chainspec file).
     /// Resolved automatically from the RPC chain id when omitted.
@@ -1385,10 +1385,14 @@ impl Info {
         use alloy_provider::ProviderBuilder;
 
         let rpc_url = self
-            .chain
+            .rpc_url
             .as_deref()
-            .and_then(TempoChainSpec::default_follow_url)
-            .unwrap_or(&self.rpc_url);
+            .or_else(|| {
+                self.chain
+                    .as_deref()
+                    .and_then(TempoChainSpec::default_follow_url)
+            })
+            .ok_or_eyre("no RPC URL available; pass --rpc-url or --chain with a default RPC URL")?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(rpc_url)
@@ -1404,9 +1408,7 @@ impl Info {
             Some(chain) => {
                 let spec_chain_id = chain.chain().id();
                 if spec_chain_id != chain_id {
-                    eprintln!(
-                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
-                    );
+                    bail!("--chain spec has chain id {spec_chain_id} but RPC returned {chain_id}");
                 }
                 chain
             }
