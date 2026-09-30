@@ -152,7 +152,7 @@ impl BootstrapShadowfork {
         };
 
         ensure!(
-            outcome.epoch == Epoch::new(SHADOW_EPOCH),
+            outcome.epoch == SHADOW_EPOCH,
             "shadow DKG outcome is for epoch `{}`, expected `{SHADOW_EPOCH}`",
             outcome.epoch,
         );
@@ -635,7 +635,7 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
         .and_then(serde_json::Value::as_str)
         .ok_or_eyre("shadow genesis JSON does not contain string field `extraData`")?;
     let mut outcome = decode_outcome(extra_data)?;
-    outcome.epoch = Epoch::new(SHADOW_EPOCH);
+    outcome.epoch = SHADOW_EPOCH;
     Ok(outcome)
 }
 
@@ -1095,8 +1095,17 @@ fn seed_consensus_state(
     std::thread::Builder::new()
         .name("shadowfork-bootstrap-commonware".to_string())
         .spawn(move || {
+            #[expect(
+                deprecated,
+                reason = "Keep bootstrapped consensus storage readable until all nodes have \
+                          been updated; V1 blob creation will be enabled in a followup."
+            )]
             let runner = commonware_runtime::tokio::Runner::new(
-                commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir),
+                commonware_runtime::tokio::Config::default()
+                    .with_storage_directory(consensus_dir)
+                    .with_storage_blob_layouts(
+                        commonware_runtime::BlobLayout::V0..=commonware_runtime::BlobLayout::V0,
+                    ),
             );
 
             runner.start(|context| async move {
@@ -1122,7 +1131,7 @@ fn seed_consensus_state(
 
                 let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
                 let state = BootstrapDkgState {
-                    epoch: outcome.epoch,
+                    epoch: Epoch::new(outcome.epoch),
                     seed: Summary::random(&mut rng),
                     output: outcome.output,
                     share: BootstrapShareState::Plaintext(Some(signing_share)),
@@ -1133,6 +1142,7 @@ fn seed_consensus_state(
                 states
                     .put_sync(SHADOW_EPOCH, state)
                     .await
+                    .map(|_| ())
                     .map_err(eyre::Report::from)
                     .wrap_err("unable to write shadow DKG state metadata")
             })

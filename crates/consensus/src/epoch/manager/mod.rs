@@ -15,10 +15,16 @@ use commonware_runtime::{
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
-use crate::{epoch::scheme_provider::SchemeProvider, subblocks};
+use crate::{
+    VerificationMode, consensus::application::Application, epoch::scheme_provider::SchemeProvider,
+};
 
-pub(crate) struct Config<TBlocker> {
-    pub(crate) application: crate::consensus::application::Mailbox,
+pub(crate) struct Config<TContext, TBlocker>
+where
+    TContext: Rng + Spawner + Metrics + Clock,
+{
+    pub(crate) application: Application<TContext>,
+    pub(crate) verification_mode: VerificationMode,
     pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) blocker: TBlocker,
     pub(crate) page_cache: CacheRef,
@@ -26,19 +32,18 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
     pub(crate) mailbox_size: NonZeroUsize,
-    pub(crate) subblocks: Option<subblocks::Mailbox>,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: ViewDelta,
-    pub(crate) views_until_leader_skip: ViewDelta,
+    pub(crate) inactive_time_before_leader_skip: Duration,
 }
 
 pub(crate) fn init<TContext, TBlocker>(
     context: TContext,
-    config: Config<TBlocker>,
+    config: Config<TContext, TBlocker>,
 ) -> (Actor<TContext, TBlocker>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
