@@ -1,10 +1,7 @@
 //! ABI dispatch for the [`TIP20ChannelReserve`] precompile.
 
 use super::{CLOSE_GRACE_PERIOD, TIP20ChannelReserve, VOUCHER_TYPEHASH};
-use crate::{
-    Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
-    preserve_storage_credits, view,
-};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, preserve_storage_credits, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20ChannelReserve;
@@ -18,31 +15,29 @@ impl Precompile for TIP20ChannelReserve {
             calldata,
             |call| match call {
                 ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
-                    CLOSE_GRACE_PERIOD(_) => metadata::<ITIP20ChannelReserve::CLOSE_GRACE_PERIODCall>(|| {
-                        Ok(CLOSE_GRACE_PERIOD)
-                    }),
-                    VOUCHER_TYPEHASH(_) => metadata::<ITIP20ChannelReserve::VOUCHER_TYPEHASHCall>(|| Ok(VOUCHER_TYPEHASH)),
+                    CLOSE_GRACE_PERIOD(call) => view(call, |_| Ok(CLOSE_GRACE_PERIOD)),
+                    VOUCHER_TYPEHASH(call) => view(call, |_| Ok(VOUCHER_TYPEHASH)),
                     open(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
                         self.open(sender, c)
                     }),
-                    settle(call) => mutate_void(call, msg_sender, |sender, c| {
+                    settle(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
                         self.settle(sender, c)
                     }),
-                    topUp(call) => mutate_void(call, msg_sender, |sender, c| {
+                    topUp(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
                         self.top_up(sender, c)
                     }),
-                    close(call) => mutate_void(call, msg_sender, |sender, c| {
+                    close(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
                         self.close(sender, c)
                     }),
-                    requestClose(call) => mutate_void(call, msg_sender, |sender, c| {
+                    requestClose(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
                         self.request_close(sender, c)
                     }),
-                    withdraw(call) => mutate_void(call, msg_sender, |sender, c| {
+                    withdraw(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
                         self.withdraw(sender, c)
                     }),

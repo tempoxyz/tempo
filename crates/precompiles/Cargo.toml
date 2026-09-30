@@ -51,7 +51,7 @@ alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
 minicbor = { version = "=2.3.0", features = ["alloc"] }
 p256.workspace = true
-p384.workspace = true
+p384 = { workspace = true, features = ["serde"] }
 rand_08.workspace = true
 proptest.workspace = true
 serde.workspace = true
@@ -73,6 +73,20 @@ test-utils = [
     "tempo-primitives/test-utils",
 ]
 rpc = ["tempo-contracts/rpc"]
+serde = [
+	"dep:serde",
+	"alloy/serde",
+	"alloy-primitives/serde",
+	"bitflags/serde",
+	"revm/serde",
+	"tempo-chainspec/serde",
+	"tempo-contracts/serde",
+	"tempo-primitives/serde",
+	"p256/serde",
+	"p384/serde",
+	"rand_08/serde",
+	"tempo-revm/serde"
+]
 
 [[test]]
 name = "storage"

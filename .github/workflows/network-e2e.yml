@@ -1,0 +1,155 @@
+name: Tempo Network E2E
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: network-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      id-token: write
+    outputs:
+      required: ${{ steps.decision.outputs.required }}
+      sha: ${{ steps.target.outputs.sha }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
+      - name: Resolve exact revision
+        id: target
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Mark network tests pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state=pending -f context='Tempo Network E2E' \
+            -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: Checking changes" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
+      - name: Detect consensus changes
+        id: paths
+        uses: tempoxyz/gh-actions/actions/changed-paths@c28778f589e9cd5b6e17a395a3203cedbd0f3f6f # 2026-09-28T07-25-04Z-c28778f5
+        with:
+          base: ${{ steps.target.outputs.base }}
+          head: ${{ steps.target.outputs.sha }}
+          filters: |
+            consensus:
+              - 'crates/consensus/**'
+      - name: Detect Reth revision changes
+        id: reth
+        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@f7d27204eeb7d11e0148267e070b179efa053fa3 # 2026-09-28T13-05-41Z-f7d27204
+        with:
+          base: ${{ steps.target.outputs.base }}
+          head: ${{ steps.target.outputs.sha }}
+          package-prefix: reth
+      - name: Decide whether tests are required
+        id: decision
+        env:
+          REQUIRED: ${{ contains(fromJSON(steps.paths.outputs.changes), 'consensus') || steps.reth.outputs.changed == 'true' }}
+          SAME_REPO: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          if [[ "$REQUIRED" == true && "$SAME_REPO" != true ]]; then
+            echo '::error::Network E2E image publishing requires a branch in tempoxyz/tempo. A maintainer must import this fork revision into the repository.'
+            exit 1
+          fi
+          echo "required=$REQUIRED" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.required == 'true'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker.yml
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+
+  dispatch:
+    name: Dispatch network tests
+    needs: [detect, build]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
+      - name: Initialize status for this dispatch attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state=pending -f context='Tempo Network E2E' \
+            -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: Preparing dispatch" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
+      - name: Submit network E2E event
+        id: submit
+        if: needs.detect.result == 'success' && needs.detect.outputs.required == 'true' && needs.build.result == 'success'
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          SHA: ${{ needs.detect.outputs.sha }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          IMAGE_TAG: ${{ needs.build.outputs.tempo_image_tag }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$RUNNER_TEMP/network-e2e.key" "$RUNNER_TEMP/network-e2e.crt"' EXIT
+          umask 077
+          printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/network-e2e.key"
+          printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/network-e2e.crt"
+          payload=$(jq -n --arg sha "$SHA" --arg branch "$BRANCH" \
+            --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --arg tag "$IMAGE_TAG" \
+            '{repository:"tempoxyz/tempo", event:"tempo_network_e2e", data:{sha:$sha, branch:$branch, run:$run, tag:$tag}}')
+          curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
+            --retry 3 --retry-all-errors ${{ secrets.EVENTS_ARGS }} \
+            --key "$RUNNER_TEMP/network-e2e.key" --cert "$RUNNER_TEMP/network-e2e.crt" \
+            -H 'Content-Type: application/json' --data "$payload"
+      - name: Report skipped tests or dispatch failure
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          DETECT_RESULT: ${{ needs.detect.result }}
+          REQUIRED: ${{ needs.detect.outputs.required }}
+          SUBMIT_RESULT: ${{ steps.submit.outcome }}
+        with:
+          script: |
+            if (process.env.SUBMIT_RESULT === 'success') return; // Argo owns the result now.
+            const skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
+            const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
+            for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
+              ...context.repo, ref: process.env.SHA, per_page: 100,
+            })) {
+              const latest = page.data.find(status => status.context === 'Tempo Network E2E');
+              if (!latest) continue;
+              if (!latest.description?.startsWith(`${owner}: `)) return; // A newer attempt owns this SHA.
+              break;
+            }
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha: process.env.SHA, context: 'Tempo Network E2E',
+              state: skipped ? 'success' : 'failure',
+              description: `${owner}: ${skipped ? 'No relevant changes' : 'Build or dispatch failed'}`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`,
+            });
+            if (!skipped) core.setFailed('Network E2E could not be started');

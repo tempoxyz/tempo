@@ -17,12 +17,13 @@ use crate::{
     test_utils::{dkg_fixture, make_certificate},
 };
 use alloy_consensus::{Header, Sealable as _};
+use alloy_primitives::B256;
 use commonware_actor::{Feedback, Unreliable};
 use commonware_codec::Encode as _;
 use commonware_consensus::{
     Heightable as _, Reporter as _,
     marshal::{Update, core::DigestFallback},
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round as ConsensusRound},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -40,10 +41,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_parallel::Sequential;
-use commonware_runtime::{
-    Clock, Handle, IoBufs, Supervisor as _, deterministic::Context,
-    telemetry::metrics::histogram::Timed,
-};
+use commonware_runtime::{Handle, IoBufs, Supervisor as _, deterministic::Context};
 use commonware_utils::{
     Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
 };
@@ -54,7 +52,8 @@ use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_primitives::{BlockBody, TempoHeader};
+use tempo_primitives::{BlockBody, TempoConsensusContext, TempoHeader};
+use tokio::sync::oneshot;
 
 use super::super::{
     super::{Config, Mailbox, init},
@@ -62,7 +61,7 @@ use super::super::{
     state::{self, Round, ShareState},
 };
 
-type TestActor = Actor<Context, StubExecutionProvider, StubMarshal, StubEpochManager>;
+type TestActor = Actor<Context, StubExecutionProvider, StubMarshal>;
 
 pub(super) struct Harness {
     context: Context,
@@ -279,7 +278,6 @@ impl Harness {
             self.context.child("actor"),
             Config {
                 epoch_strategy: self.epoch_strategy.clone(),
-                epoch_manager: self.epoch_manager.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.identity.clone(),
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
@@ -299,9 +297,12 @@ impl Harness {
     pub(super) async fn start(&mut self) {
         let (actor, mailbox) = self.init().await.unwrap();
         self.mailbox = Some(mailbox);
+        let epoch_manager = self.epoch_manager.clone();
         self.handle = Some(match &self.network {
-            Some(network) => actor.start(network.register(self.identity.public_key())),
-            None => actor.start((self.sender.clone(), InertReceiver)),
+            Some(network) => {
+                actor.start(epoch_manager, network.register(self.identity.public_key()))
+            }
+            None => actor.start(epoch_manager, (self.sender.clone(), InertReceiver)),
         });
     }
 
@@ -575,9 +576,6 @@ pub(super) struct StubExecutionProvider {
     pub(super) chain_spec: Arc<TempoChainSpec>,
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
-    next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
-    fail_next_players: Arc<AtomicBool>,
-    fail_next_full_dkg_epoch: Arc<AtomicBool>,
 }
 
 impl Default for StubExecutionProvider {
@@ -586,9 +584,6 @@ impl Default for StubExecutionProvider {
             chain_spec: DEV.clone(),
             headers: Default::default(),
             reads: Default::default(),
-            next_players: Default::default(),
-            fail_next_players: Default::default(),
-            fail_next_full_dkg_epoch: Default::default(),
         }
     }
 }
@@ -622,18 +617,6 @@ impl StubExecutionProvider {
     pub(super) fn reads(&self) -> Vec<Height> {
         self.reads.lock().unwrap().clone()
     }
-
-    pub(super) fn set_next_players(&self, players: ordered::Set<PublicKey>) {
-        *self.next_players.lock().unwrap() = players;
-    }
-
-    pub(super) fn fail_next_players(&self) {
-        self.fail_next_players.store(true, Ordering::SeqCst);
-    }
-
-    pub(super) fn fail_next_full_dkg_epoch(&self) {
-        self.fail_next_full_dkg_epoch.store(true, Ordering::SeqCst);
-    }
 }
 
 impl ExecutionLayer for StubExecutionProvider {
@@ -645,79 +628,78 @@ impl ExecutionLayer for StubExecutionProvider {
         self.reads.lock().unwrap().push(height);
         Ok(self.headers.lock().unwrap().get(&height).cloned())
     }
-
-    fn next_players(&self, _digest: Digest) -> eyre::Result<ordered::Set<PublicKey>> {
-        if self.fail_next_players.load(Ordering::SeqCst) {
-            eyre::bail!("next players unavailable");
-        }
-        Ok(self.next_players.lock().unwrap().clone())
-    }
-
-    fn next_full_dkg_epoch(&self, _digest: Digest) -> eyre::Result<u64> {
-        if self.fail_next_full_dkg_epoch.load(Ordering::SeqCst) {
-            eyre::bail!("full DKG schedule unavailable");
-        }
-        Ok(0)
-    }
 }
+
+type BlockSubscribers = BTreeMap<Digest, Vec<oneshot::Sender<Arc<Block>>>>;
 
 #[derive(Clone, Default)]
 pub(super) struct StubMarshal {
     blocks: Arc<Mutex<BTreeMap<Height, Block>>>,
     reads: Arc<Mutex<Vec<Height>>>,
-    ancestry_reads: Arc<Mutex<Vec<Digest>>>,
-    empty_ancestry: Arc<AtomicBool>,
+    subscriptions: Arc<Mutex<Vec<(Digest, DigestFallback)>>>,
+    pending: Arc<Mutex<BlockSubscribers>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl StubMarshal {
     pub(super) fn add_block(&self, block: Block) {
-        self.blocks.lock().unwrap().insert(block.height(), block);
+        self.blocks
+            .lock()
+            .unwrap()
+            .insert(block.height(), block.clone());
+        let block = Arc::new(block);
+        if let Some(subscribers) = self.pending.lock().unwrap().remove(&block.digest()) {
+            for subscriber in subscribers {
+                self.reads.lock().unwrap().push(block.height());
+                let _ = subscriber.send(block.clone());
+            }
+        }
     }
 
     pub(super) fn reads(&self) -> Vec<Height> {
         self.reads.lock().unwrap().clone()
     }
 
-    pub(super) fn ancestry_reads(&self) -> Vec<Digest> {
-        self.ancestry_reads.lock().unwrap().clone()
+    pub(super) fn subscriptions(&self) -> Vec<(Digest, DigestFallback)> {
+        self.subscriptions.lock().unwrap().clone()
     }
 
-    pub(super) fn return_empty_ancestry(&self) {
-        self.empty_ancestry.store(true, Ordering::SeqCst);
+    pub(super) fn close_subscriptions(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.pending.lock().unwrap().clear();
     }
 }
 
 impl Marshal for StubMarshal {
-    type Ancestry = futures::stream::Iter<std::vec::IntoIter<Arc<Block>>>;
-
     async fn get_block(&self, height: Height) -> Option<Block> {
         self.reads.lock().unwrap().push(height);
         self.blocks.lock().unwrap().get(&height).cloned()
     }
 
-    async fn ancestry<C>(
+    fn subscribe_by_digest(
         &self,
-        _clock: Arc<C>,
-        (_, digest): (DigestFallback, Digest),
-        _fetch_duration: Timed,
-    ) -> Option<Self::Ancestry>
-    where
-        C: Clock,
-    {
-        if self.empty_ancestry.load(Ordering::SeqCst) {
-            return Some(futures::stream::iter(Vec::new()));
+        digest: Digest,
+        fallback: DigestFallback,
+    ) -> oneshot::Receiver<Arc<Block>> {
+        let (sender, receiver) = oneshot::channel();
+        self.subscriptions.lock().unwrap().push((digest, fallback));
+        if self.closed.load(Ordering::SeqCst) {
+            return receiver;
         }
 
-        let block = self
-            .blocks
-            .lock()
-            .unwrap()
-            .values()
-            .find(|block| block.digest() == digest)
-            .cloned()?;
-        self.ancestry_reads.lock().unwrap().push(digest);
-        self.reads.lock().unwrap().push(block.height());
-        Some(futures::stream::iter(vec![Arc::new(block)]))
+        let blocks = self.blocks.lock().unwrap();
+        if let Some(block) = blocks.values().find(|block| block.digest() == digest) {
+            self.reads.lock().unwrap().push(block.height());
+            let _ = sender.send(Arc::new(block.clone()));
+        } else {
+            self.pending
+                .lock()
+                .unwrap()
+                .entry(digest)
+                .or_default()
+                .push(sender);
+        }
+        receiver
     }
 }
 
@@ -774,6 +756,23 @@ pub(super) fn header(height: Height) -> TempoHeader {
         },
         ..Default::default()
     }
+}
+
+/// Returns a block at `height`, proposed in `round`, whose digest differs for
+/// each `tag`. Use it for requests whose parent is not a block that the test
+/// reports.
+pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Arc<Block> {
+    let mut header = header(height);
+    header.inner.mix_hash = B256::repeat_byte(tag);
+    header.consensus_context = Some(TempoConsensusContext {
+        epoch: round.epoch().get(),
+        view: round.view().get(),
+        parent_view: round.view().get().saturating_sub(1),
+        proposer: crate::utils::public_key_to_tempo_primitive(
+            &PrivateKey::from_seed(0).public_key(),
+        ),
+    });
+    Arc::new(block(header))
 }
 
 pub(super) fn block(header: TempoHeader) -> Block {
