@@ -75,6 +75,10 @@ on:
         type: boolean
         required: false
         default: false
+      tcp-highres:
+        type: boolean
+        required: false
+        default: false
       valscope:
         type: boolean
         required: false
@@ -189,11 +193,6 @@ on:
         type: string
         required: true
         default: "5000"
-      txgen-ref:
-        description: Optional ref to pin in tempoxyz/txgen.
-        type: string
-        required: false
-        default: ""
       token-count:
         description: Number of TIP20 tokens to use in txgen presets.
         type: string
@@ -216,6 +215,11 @@ on:
         default: true
       metrics:
         description: Upload benchmark metrics to VictoriaMetrics.
+        type: boolean
+        required: true
+        default: false
+      tcp-highres:
+        description: Collect and process high-resolution validator TCP samples.
         type: boolean
         required: true
         default: false
@@ -311,6 +315,7 @@ jobs:
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
       BENCH_INPUT_METRICS: ${{ (inputs.metrics == true || inputs.metrics == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_TCP_HIGHRES: ${{ (inputs['tcp-highres'] == true || inputs['tcp-highres'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
@@ -572,6 +577,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -626,6 +632,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -673,6 +680,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -720,6 +728,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
