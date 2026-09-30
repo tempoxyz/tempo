@@ -75,6 +75,7 @@ serde = [
 	"alloy/serde",
 	"alloy-primitives/serde",
 	"bitflags/serde",
+	"evm2/serde",
 	"tempo-chainspec/serde",
 	"tempo-contracts/serde",
 	"tempo-primitives/serde",

@@ -128,6 +128,7 @@ asm-keccak = [
 	"tempo-alloy/asm-keccak",
 	"reth-ethereum/asm-keccak",
 	"reth-evm/asm-keccak",
+	"reth-execution-types/asm-keccak",
 	"reth-storage-api/asm-keccak",
 ]
 otlp = ["reth-ethereum/otlp", "reth-node-core/otlp"]
