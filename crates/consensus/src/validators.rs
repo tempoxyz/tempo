@@ -8,7 +8,7 @@ use alloy_primitives::{Address, B256};
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::Ingress;
-use commonware_utils::{TryFromIterator, ordered};
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::ConfigureEvm as _;
@@ -113,7 +113,7 @@ pub(crate) fn read_active_peers(
         }
     }
     debug!(active_validators = ?all, "read active validators from contract");
-    Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
+    Ok(ordered::Map::from_iter_dedup(all))
 }
 
 /// Reads the validator state at the given block hash.

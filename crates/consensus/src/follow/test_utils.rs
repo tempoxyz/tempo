@@ -21,6 +21,7 @@ use commonware_consensus::{
     types::{Epoch, Height, Round},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_utils::NZU64;
 use parking_lot::Mutex;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -37,7 +38,7 @@ pub(crate) use crate::test_utils::{DkgFixture, dkg_fixture};
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-pub(crate) const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
+pub(crate) const EPOCH_LENGTH: NonZeroU64 = NZU64!(10);
 
 pub(crate) fn make_block(height: u64, outcome: Option<&OnchainDkgOutcome>) -> Block {
     make_block_with_parent(height, Default::default(), outcome)
