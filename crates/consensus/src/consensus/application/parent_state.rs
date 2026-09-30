@@ -143,11 +143,9 @@ fn assemble_boundary_outcome(
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
-
     use commonware_consensus::types::Epoch;
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-    use commonware_utils::TryFromIterator as _;
+    use commonware_utils::{NZU64, TryFromIterator as _};
     use rand::{SeedableRng as _, rngs::StdRng};
 
     use super::*;
@@ -155,7 +153,7 @@ mod tests {
 
     #[test]
     fn boundary_outcome_is_for_the_next_epoch_and_uses_the_parent_state() {
-        let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
+        let epoch_strategy = FixedEpocher::new(NZU64!(10));
         let output = dkg_fixture(&mut StdRng::seed_from_u64(0), Epoch::new(2))
             .outcome
             .output;

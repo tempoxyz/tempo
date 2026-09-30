@@ -1584,7 +1584,7 @@ fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -
 #[cfg(test)]
 #[test]
 fn latest_boundary_at_or_before_height() {
-    let epoch_strategy = FixedEpocher::new(std::num::NonZeroU64::new(10).unwrap());
+    let epoch_strategy = FixedEpocher::new(commonware_utils::NZU64!(10));
 
     for (height, expected) in [(4, 0), (9, 9), (12, 9)] {
         assert_eq!(

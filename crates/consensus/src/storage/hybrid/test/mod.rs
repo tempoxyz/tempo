@@ -727,7 +727,7 @@ fn prune_respects_section_boundary() {
     executor.start(|context| async move {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
-            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            section_size: NZU64!(SECTION),
         }
         .build(&context)
         .await;
@@ -828,7 +828,7 @@ fn mid_section_prune_floor_keeps_live_tail_in_cache() {
     executor.start(|context| async move {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
-            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            section_size: NZU64!(SECTION),
         }
         .build(&context)
         .await;
@@ -890,7 +890,7 @@ fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
     executor.start(|context| async move {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
-            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            section_size: NZU64!(SECTION),
         }
         .build(&context)
         .await;
@@ -944,7 +944,7 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
     executor.start(|context| async move {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
-            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            section_size: NZU64!(SECTION),
         }
         .build(&context)
         .await;
