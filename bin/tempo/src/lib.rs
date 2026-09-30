@@ -535,12 +535,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         #[cfg(feature = "custom-pcrs")]
         if let Some(policy) = args.custom_pcrs.clone() {
-            eyre::ensure!(
-                tempo_chainspec::spec::chainspec_from_chain_id(chain_id).is_none(),
-                "--zone-verifier.custom-pcrs is not allowed on chain {chain_id}"
-            );
+            policy.validate(chain_id)?;
             warn!(?policy, "replacing compiled-in zone verifier PCRs with a custom policy");
-            tempo_precompiles::zone_verifier::set_custom_pcrs(policy)
+            tempo_precompiles::zone_verifier::CUSTOM_PCRS
+                .set(policy)
                 .map_err(|_| eyre::eyre!("zone verifier PCRs were already set"))?;
         }
 

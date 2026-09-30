@@ -7,8 +7,11 @@ use alloy::{
     primitives::{Address, B256, FixedBytes, U256, keccak256},
     sol_types::SolStruct,
 };
-use std::str::FromStr;
-use tempo_chainspec::hardfork::TempoHardfork;
+use std::{borrow::Cow, str::FromStr};
+use tempo_chainspec::{
+    constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID},
+    hardfork::TempoHardfork,
+};
 pub use tempo_contracts::precompiles::IZoneVerifier;
 use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
 use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
@@ -23,50 +26,29 @@ const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
 /// PCR0/1/2 policy changes, ordered from oldest to newest hardfork. Each entry takes effect at
 /// its hardfork and remains in effect until a newer entry replaces them.
-const APPROVED_PCRS: &[(TempoHardfork, [[u8; 48]; 3])] = &[];
+const APPROVED_PCRS: PcrPolicy = PcrPolicy(Cow::Borrowed(&[]));
 
-/// Custom PCR policy that replaces [`APPROVED_PCRS`] in [`ZoneVerifier::verify`]. Only compiled
-/// into devnet builds; release builds never enable `custom-pcrs`.
+/// Custom PCR policy that replaces [`APPROVED_PCRS`] in [`ZoneVerifier::verify`].
+/// Forbiden in production build. Can only be set once.
 #[cfg(feature = "custom-pcrs")]
-static CUSTOM_PCRS: std::sync::OnceLock<PcrPolicy> = std::sync::OnceLock::new();
-
-/// Return the measurements accepted by the native verifier at this hardfork.
-pub fn approved_pcrs(hardfork: TempoHardfork) -> Option<[[u8; 48]; 3]> {
-    select_pcrs(APPROVED_PCRS, hardfork)
-}
-
-/// Replace the compiled-in PCR policy used by [`ZoneVerifier::verify`] for this process.
-///
-/// Intended for devnets whose enclave images are built after the node binary. Can only be set
-/// once; returns the rejected policy if one was already installed.
-#[cfg(feature = "custom-pcrs")]
-pub fn set_custom_pcrs(policy: PcrPolicy) -> std::result::Result<(), PcrPolicy> {
-    CUSTOM_PCRS.set(policy)
-}
-
-/// Return the custom PCR policy installed with [`set_custom_pcrs`], if any.
-#[cfg(feature = "custom-pcrs")]
-pub fn custom_pcrs() -> Option<&'static PcrPolicy> {
-    CUSTOM_PCRS.get()
-}
+pub static CUSTOM_PCRS: std::sync::OnceLock<PcrPolicy> = std::sync::OnceLock::new();
 
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
 pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, self.active_pcrs())
-    }
-
-    /// Measurements used by [`Self::verify`]: the custom policy when one is installed in a
-    /// `custom-pcrs` build, otherwise the compiled-in [`APPROVED_PCRS`].
-    fn active_pcrs(&self) -> Option<[[u8; 48]; 3]> {
         let hardfork = self.storage.spec();
+
         #[cfg(feature = "custom-pcrs")]
-        if let Some(policy) = custom_pcrs() {
-            return policy.at(hardfork);
+        if let Some(policy) = CUSTOM_PCRS.get() {
+            policy
+                .validate(self.storage.chain_id())
+                .map_err(|e| crate::error::TempoPrecompileError::Fatal(e.to_string()))?;
+            return self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, policy.at(hardfork));
         }
-        approved_pcrs(hardfork)
+
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
     }
 
     /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
@@ -157,39 +139,40 @@ fn batch_commitment(chain_id: u64, call: &IZoneVerifier::verifyCall) -> B256 {
     .eip712_hash_struct()
 }
 
-fn select_pcrs(
-    entries: &[(TempoHardfork, [[u8; 48]; 3])],
-    hardfork: TempoHardfork,
-) -> Option<[[u8; 48]; 3]> {
-    entries
-        .iter()
-        .filter(|(fork, _)| hardfork >= *fork)
-        .max_by_key(|(fork, _)| fork.variant_index())
-        .map(|(_, pcrs)| *pcrs)
-}
-
-/// PCR0/1/2 measurements keyed by the hardfork from which they take effect.
+/// PCR0, PCR1, PCR2 measurements keyed by the hardfork from which they take effect.
 ///
-/// Parses from `PCR0,PCR1,PCR2` (effective from genesis) or `;`-separated
-/// `HARDFORK=PCR0,PCR1,PCR2` entries, e.g. `T13=0x..,0x..,0x..;T14=0x..,0x..,0x..`.
-/// Measurements must be independently pinned from the approved EIF build, never taken from a
-/// prover response.
+/// PCRs MUST be independently pinned from the approved EIF build, NEVER from a prover response.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PcrPolicy(Vec<(TempoHardfork, [[u8; 48]; 3])>);
+pub struct PcrPolicy(Cow<'static, [(TempoHardfork, [[u8; 48]; 3])]>);
 
 impl PcrPolicy {
-    /// Return the measurements in effect at this hardfork.
+    /// Validate use as a custom override. Custom PCRs are forbidden on mainnet and Moderato.
+    pub fn validate(&self, chain_id: u64) -> std::result::Result<(), PcrPolicyError> {
+        if matches!(chain_id, MAINNET_CHAIN_ID | MODERATO_CHAIN_ID) {
+            return Err(PcrPolicyError::CustomPolicyNotAllowed(chain_id));
+        }
+        Ok(())
+    }
+
+    /// Return the accepted measurements at the requested hardfork.
     pub fn at(&self, hardfork: TempoHardfork) -> Option<[[u8; 48]; 3]> {
-        select_pcrs(&self.0, hardfork)
+        self.0
+            .iter()
+            .filter(|(fork, _)| hardfork >= *fork)
+            .max_by_key(|(fork, _)| fork.variant_index())
+            .map(|(_, pcrs)| *pcrs)
     }
 }
 
 impl From<[[u8; 48]; 3]> for PcrPolicy {
     fn from(pcrs: [[u8; 48]; 3]) -> Self {
-        Self(vec![(TempoHardfork::Genesis, pcrs)])
+        Self(Cow::Owned(vec![(TempoHardfork::Genesis, pcrs)]))
     }
 }
 
+/// Parses the measurements from:
+/// - `PCR0,PCR1,PCR2` (effective from genesis)
+/// - `;`-separated `HARDFORK=PCR0,PCR1,PCR2` entries
 impl FromStr for PcrPolicy {
     type Err = PcrPolicyError;
 
@@ -217,7 +200,7 @@ impl FromStr for PcrPolicy {
         if entries.is_empty() {
             return Err(PcrPolicyError::InvalidMeasurements);
         }
-        Ok(Self(entries))
+        Ok(Self(Cow::Owned(entries)))
     }
 }
 
@@ -239,6 +222,8 @@ fn parse_pcrs(value: &str) -> std::result::Result<[[u8; 48]; 3], PcrPolicyError>
 /// Error returned when parsing a [`PcrPolicy`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PcrPolicyError {
+    #[error("custom zone verifier PCRs are not allowed on chain {0}")]
+    CustomPolicyNotAllowed(u64),
     #[error("expected three comma-separated 48-byte PCR measurements (PCR0,PCR1,PCR2)")]
     InvalidMeasurements,
     #[error("zero/debug enclave PCR measurements are not permitted")]
@@ -479,7 +464,7 @@ mod tests {
                         portal,
                         call.clone(),
                         &root,
-                        approved_pcrs(TempoHardfork::T12)
+                        APPROVED_PCRS.at(TempoHardfork::T12)
                     )
                     .unwrap()
             );
@@ -494,8 +479,13 @@ mod tests {
     }
 
     #[test]
-    fn pcr_policy_parses_bare_and_per_fork_entries() {
-        let (a, b, c) = ("11".repeat(48), "22".repeat(48), "33".repeat(48));
+    fn pcr_policy() {
+        let (a, b, c, zero) = (
+            "11".repeat(48),
+            "22".repeat(48),
+            "33".repeat(48),
+            "00".repeat(48),
+        );
         let bare = format!("{a},{b},0x{c}").parse::<PcrPolicy>().unwrap();
         assert_eq!(bare, PcrPolicy::from([[0x11; 48], [0x22; 48], [0x33; 48]]));
         assert_eq!(
@@ -506,14 +496,25 @@ mod tests {
         let per_fork = format!("T13={a},{a},{a}; T14={b},{b},{b}")
             .parse::<PcrPolicy>()
             .unwrap();
-        assert_eq!(per_fork.at(TempoHardfork::T12), None);
-        assert_eq!(per_fork.at(TempoHardfork::T13), Some([[0x11; 48]; 3]));
-        assert_eq!(per_fork.at(TempoHardfork::T14), Some([[0x22; 48]; 3]));
-    }
-
-    #[test]
-    fn pcr_policy_rejects_invalid_input() {
-        let (a, zero) = ("11".repeat(48), "00".repeat(48));
+        let borrowed = PcrPolicy(Cow::Borrowed(&[
+            (TempoHardfork::T13, [[0x11; 48]; 3]),
+            (TempoHardfork::T14, [[0x22; 48]; 3]),
+        ]));
+        assert_eq!(per_fork, borrowed);
+        for (fork, expected) in [
+            (TempoHardfork::T12, None),
+            (TempoHardfork::T13, Some([[0x11; 48]; 3])),
+            (TempoHardfork::T14, Some([[0x22; 48]; 3])),
+        ] {
+            assert_eq!(per_fork.at(fork), expected);
+        }
+        for chain_id in [MAINNET_CHAIN_ID, MODERATO_CHAIN_ID] {
+            assert_eq!(
+                bare.validate(chain_id),
+                Err(PcrPolicyError::CustomPolicyNotAllowed(chain_id))
+            );
+        }
+        assert_eq!(bare.validate(1), Ok(()));
         for (input, expected) in [
             (String::new(), PcrPolicyError::InvalidMeasurements),
             (format!("{a},{a}"), PcrPolicyError::InvalidMeasurements),
@@ -534,23 +535,11 @@ mod tests {
         ] {
             assert_eq!(input.parse::<PcrPolicy>(), Err(expected), "input: {input}");
         }
-    }
-
-    #[cfg(feature = "custom-pcrs")]
-    #[test]
-    fn custom_pcrs_replace_compiled_in_policy() {
-        let policy = PcrPolicy(vec![(TempoHardfork::T13, [[0x11; 48]; 3])]);
-        set_custom_pcrs(policy.clone()).unwrap();
-        assert_eq!(set_custom_pcrs(policy.clone()), Err(policy));
-
-        for (fork, expected) in [
-            (TempoHardfork::T12, None),
-            (TempoHardfork::T13, Some([[0x11; 48]; 3])),
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, fork);
-            StorageCtx::enter(&mut storage, || {
-                assert_eq!(ZoneVerifier::new().active_pcrs(), expected);
-            });
+        #[cfg(feature = "custom-pcrs")]
+        {
+            CUSTOM_PCRS.set(borrowed.clone()).unwrap();
+            assert_eq!(CUSTOM_PCRS.get(), Some(&borrowed));
+            assert_eq!(CUSTOM_PCRS.set(borrowed.clone()), Err(borrowed));
         }
     }
 }
