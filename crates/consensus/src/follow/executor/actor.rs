@@ -16,6 +16,7 @@
 
 use std::{collections::VecDeque, time::Duration};
 
+use alloy_consensus::BlockHeader as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Heightable as _,
@@ -202,12 +203,7 @@ where
 
     #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
-        let finalized_height = Height::new(
-            self.execution_provider
-                .finalized_header()?
-                .num_hash()
-                .number,
-        );
+        let finalized_height = Height::new(self.execution_provider.finalized_header()?.number());
         let epoch_length = self
             .epoch_strategy
             .containing(finalized_height)
