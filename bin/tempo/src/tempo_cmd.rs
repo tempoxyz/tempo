@@ -1373,7 +1373,7 @@ pub struct Info {
     #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
-    /// Chain spec (mainnet, testnet, moderato, or path to chainspec file).
+    /// Chain spec (mainnet, testnet, or path to chainspec file).
     /// Resolved automatically from the RPC chain id when omitted.
     #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Option<Arc<TempoChainSpec>>,
