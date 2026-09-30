@@ -28,8 +28,8 @@ const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 /// its hardfork and remains in effect until a newer entry replaces them.
 const APPROVED_PCRS: PcrPolicy = PcrPolicy(Cow::Borrowed(&[]));
 
-/// Custom PCR policy that replaces [`APPROVED_PCRS`] in [`ZoneVerifier::verify`].
-/// Forbiden in production build. Can only be set once.
+/// Custom PCR policy that replaces the compiled-in `APPROVED_PCRS` in [`ZoneVerifier::verify`].
+/// Forbidden in production builds. Can only be set once.
 #[cfg(feature = "custom-pcrs")]
 pub static CUSTOM_PCRS: std::sync::OnceLock<PcrPolicy> = std::sync::OnceLock::new();
 
