@@ -189,8 +189,11 @@ impl Inner {
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         // The proposal window is the target block time minus the learned
-        // network reservation. Give the builder only what remains of it when
-        // payload construction is requested.
+        // network reservation. This is the one budget read per own proposal:
+        // it moves the reservation from the previous own proposal's toward
+        // what the estimator has learned since, by at most one bounded step.
+        // Give the builder only what remains of the window when payload
+        // construction is requested.
         let proposal_budget = self.estimator.proposal_budget(Instant::now());
         let build_budget = proposal_budget
             .return_budget
@@ -578,7 +581,6 @@ where
 
         match self.executor.verify_block(context, (*block).clone()).await {
             Ok(Some(duration)) => {
-                let verified_at = Instant::now();
                 self.estimator.on_block_verified(
                     block.height().get(),
                     ValidationLatencyWorkload::new(
@@ -587,22 +589,6 @@ where
                     ),
                     duration,
                 );
-                // If this node proposed the parent, the child's timestamp is
-                // when the next leader could build on it: the network sample
-                // for that proposal. Only a child the execution layer accepted
-                // completes it, and the header check above ensured that the
-                // parent view it claims is the one consensus handed us for
-                // this round.
-                if let Some(ctx) = block.header().consensus_context {
-                    self.estimator.on_child_block_built(
-                        verified_at,
-                        (ctx.epoch, ctx.parent_view),
-                        ctx.view,
-                        block.timestamp_millis(),
-                    );
-                }
-                self.metrics
-                    .observe_estimator(&self.estimator.snapshot(verified_at));
                 // The EL has checked timestamp encoding and parent ordering.
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
@@ -618,7 +604,7 @@ where
         // Only a boundary block carries a DKG outcome. Compare it after
         // `verify_block`: our outcome reads the parent's state, which the
         // engine has only once it has executed the block.
-        match proposed_outcome {
+        let accepted = match proposed_outcome {
             None => true,
             Some(outcome) => {
                 let (parent, ceremony) =
@@ -627,7 +613,33 @@ where
                     .await
                     .is_ok()
             }
+        };
+
+        // If this node proposed the parent, the child's timestamp is when the
+        // next leader could build on it: the network sample for that
+        // proposal. The sample completes immediately before the verdict, so
+        // an execution-valid child with a rejected DKG outcome, or a
+        // verification cancelled during the timestamp wait, never becomes a
+        // sample. The DKG check matters here because a boundary block built
+        // on one of our own proposals is in the same epoch as its parent:
+        // unlike the first block of the next epoch, it does match the
+        // pending proposal. The header check above ensured that the parent
+        // view the child claims is the one consensus handed us for this
+        // round.
+        if accepted {
+            let now = Instant::now();
+            if let Some(ctx) = block.header().consensus_context {
+                self.estimator.on_child_block_built(
+                    now,
+                    (ctx.epoch, ctx.parent_view),
+                    ctx.view,
+                    block.timestamp_millis(),
+                );
+            }
+            self.metrics
+                .observe_estimator(&self.estimator.snapshot(now));
         }
+        accepted
     }
 }
 
@@ -654,12 +666,14 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
-    /// Network reservation currently subtracted from the target block time.
+    /// Network reservation the most recent own proposal subtracted from the
+    /// target block time.
     estimator_network_reserve_ms: Gauge,
     /// Learned network time before clamping, zero while the window holds no
-    /// completed proposal.
+    /// completed proposal. The reservation moves toward it, clamped, by at
+    /// most one bounded step per own proposal.
     estimator_network_observed_ms: Gauge,
-    /// Proposal return budget handed to the next proposal.
+    /// Proposal return budget of the most recent own proposal.
     estimator_proposal_return_budget_ms: Gauge,
     /// Recent P90 execution-layer validation time.
     estimator_validation_latency_p90_ms: Gauge,
@@ -686,7 +700,7 @@ impl Metrics {
             ),
             estimator_proposal_return_budget_ms: context.gauge(
                 "estimator_proposal_return_budget_ms",
-                "local proposal return budget for the next proposal, in milliseconds",
+                "local proposal return budget of the most recent own proposal, in milliseconds",
             ),
             estimator_validation_latency_p90_ms: context.gauge(
                 "estimator_validation_latency_p90_ms",

@@ -215,6 +215,8 @@ pub struct Args {
     /// return budget had left for validation, and reserves a recent
     /// percentile of the rest (`--consensus.network-reserve-percentile`):
     /// never less than `--consensus.network-budget`, never more than this.
+    /// The reservation follows that percentile by at most 100ms per own
+    /// proposal, so a single outlier cannot take it to this cap at once.
     /// Set it equal to `--consensus.network-budget` for a fixed reservation.
     /// It must stay below `--consensus.target-block-time`.
     ///
@@ -242,13 +244,15 @@ pub struct Args {
     /// The percentile over the last 16 own proposals lags a network that is
     /// getting slower, for example while blocks grow, so proposals made
     /// during the rise exceed their reservation far more often than the
-    /// percentile implies. Fast rise follows one slow proposal up for the
-    /// next one immediately, by at most 100ms above the window percentile
-    /// and still capped by `--consensus.network-budget-max`, and the next
-    /// faster proposal hands the reservation back to the window percentile.
-    /// On a 10 validator, four region benchmark it cut the share of proposals
-    /// whose network time exceeded the reservation from 43% to 37% without
-    /// costing throughput.
+    /// percentile implies. With fast rise the network time of one slow
+    /// proposal becomes what the reservation moves toward, starting with the
+    /// very next proposal: like every change of the reservation by at most
+    /// 100ms per own proposal, and still capped by
+    /// `--consensus.network-budget-max`. The next faster proposal hands the
+    /// reservation back to the window percentile, again by at most 100ms per
+    /// own proposal. On a 10 validator, four region benchmark it cut the
+    /// share of proposals whose network time exceeded the reservation from
+    /// 43% to 37% without costing throughput.
     ///
     /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
     /// reserve the window percentile alone.

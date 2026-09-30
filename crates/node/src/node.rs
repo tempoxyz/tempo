@@ -117,7 +117,8 @@ pub struct TempoNodeArgs {
     /// at transaction cutoff.
     ///
     /// The builder updates this at runtime. Higher values stop pool transaction
-    /// execution earlier to leave more room for `builder_finish`.
+    /// execution earlier to leave more room for `builder_finish`. Must be
+    /// between 1.0 and 1.7, the range the builder learns it in.
     #[arg(
         long = "builder.build-time-multiplier",
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
