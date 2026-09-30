@@ -415,24 +415,40 @@ jobs:
         run: |
           # Experiment-only harness patch against the pinned runner revision.
           # Both phases use the same node and txgen binaries. Only the feature
-          # phase replaces the implicit 50k shared pending limit with 40k/10k.
+          # phase replaces the explicit 50k shared pending limit with 40k/10k.
           git apply <<'PATCH'
-          diff --git a/scripts/run_benchmark.sh b/scripts/run_benchmark.sh
-          --- a/scripts/run_benchmark.sh
-          +++ b/scripts/run_benchmark.sh
-          @@ -3739,2 +3739,3 @@
-           ORIGINAL_TEMPO_COMMIT="$TEMPO_COMMIT"
-          +ORIGINAL_BENCH_ARGS_JSON="$BENCH_ARGS_JSON"
-           while IFS=$'\t' read -r phase_label phase_side phase_commit phase_name phase_node_args_b64 phase_hardfork_b64; do
-          @@ -3799,1 +3800,6 @@
-          +  BENCH_ARGS_JSON="$ORIGINAL_BENCH_ARGS_JSON"
-          +  if [[ "$phase_side" == "feature" ]]; then
-          +    BENCH_ARGS_JSON="$(jq -c '. + ["--max-pending-payments", "40000", "--max-pending-general", "10000"]' <<< "$BENCH_ARGS_JSON")"
+          diff --git a/scripts/txgen_workload.sh b/scripts/txgen_workload.sh
+          --- a/scripts/txgen_workload.sh
+          +++ b/scripts/txgen_workload.sh
+          @@ -430,1 +430,9 @@
+          +  local -a pending_args
+          +  case "$phase_label" in
+          +    baseline-*) pending_args=(--max-pending 50000) ;;
+          +    feature-*) pending_args=(--max-pending-payments 40000 --max-pending-general 10000) ;;
+          +    *) echo "Unexpected experiment phase: $phase_label" >&2; return 1 ;;
+          +  esac
+          +  printf '%s\n' "${pending_args[@]}" > "$DEST/experiment-send-args.txt"
+          +
+             local -a generation_limit=(-n "$max_tx" --duration "${load_duration}s")
+          @@ -449,2 +457,3 @@
+                 "${bench_setup_args[@]}" \
+          +      "${pending_args[@]}" \
+                 "${warmup_args[@]}" \
+          @@ -490,1 +499,12 @@
+          +  if ! jq -e --arg phase "$phase_label" '
+          +    .metadata | if ($phase | startswith("baseline-")) then
+          +      .max_pending == "50000" and .max_pending_payments == null and .max_pending_general == null
+          +    else
+          +      .max_pending == "0" and .max_pending_payments == "40000" and .max_pending_general == "10000"
+          +    end
+          +  ' "$txgen_report"; then
+          +    echo "Experiment pending limits did not reach bench send: $phase_label" >&2
+          +    return 1
           +  fi
-          +  printf '%s\n' "$BENCH_ARGS_JSON" > "$DEST/experiment-bench-args.json"
-             run_cloud_load_generator
+          +
+             if ! IFS=$'\t' read -r sent success failed failure_rate < <(
           PATCH
-          bash -n scripts/run_benchmark.sh
+          bash -n scripts/txgen_workload.sh
 
       - name: Resolve baseline and feature refs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
