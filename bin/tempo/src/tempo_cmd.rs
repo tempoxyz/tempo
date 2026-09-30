@@ -1369,12 +1369,12 @@ struct InfoOutput {
 
 #[derive(Debug, clap::Args)]
 pub struct Info {
-    /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
+    /// RPC URL to query when no default RPC URL is available from --chain.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
-    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
-    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    /// Chain spec (mainnet, testnet, moderato, or path to chainspec file).
+    /// Resolved automatically from the RPC chain id when omitted.
     #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Option<Arc<TempoChainSpec>>,
 }
@@ -1384,8 +1384,14 @@ impl Info {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
 
+        let rpc_url = self
+            .chain
+            .as_deref()
+            .and_then(TempoChainSpec::default_follow_url)
+            .unwrap_or(&self.rpc_url);
+
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect(&self.rpc_url)
+            .connect(rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
 
