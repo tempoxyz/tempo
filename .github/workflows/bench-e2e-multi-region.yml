@@ -58,7 +58,7 @@ on:
       general-gas-limit:
         type: string
         required: false
-        default: ""
+        default: "1500000000"
       run-pairs:
         type: string
         required: false
@@ -315,7 +315,7 @@ jobs:
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
-      BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
+      BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '1500000000' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
