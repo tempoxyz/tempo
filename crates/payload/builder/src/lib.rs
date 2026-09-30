@@ -372,8 +372,14 @@ where
         let block_gas_limit = self
             .config
             .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
-        let general_gas_limit =
-            chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
+        // Take the shared gas limit from the chain spec instead of hardcoding 0: pre-T4 the
+        // shared (subblocks) lane is `gas_limit / 10`, and validators reject any block whose
+        // header disagrees with `TempoConsensus::validate_header`. Deriving the general gas
+        // limit from the same split keeps both limits consistent with what is verified.
+        let shared_gas_limit =
+            chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
+        let general_gas_limit = chain_spec
+            .general_gas_limit_at(attributes.timestamp, block_gas_limit, shared_gas_limit);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
         let mut cumulative_gas_used = 0;
@@ -405,7 +411,7 @@ where
                 slot_number: attributes.slot_number,
             },
             general_gas_limit,
-            shared_gas_limit: 0,
+            shared_gas_limit,
             timestamp_millis_part: attributes.timestamp_millis_part(),
             consensus_context: attributes.consensus_context(),
         };
