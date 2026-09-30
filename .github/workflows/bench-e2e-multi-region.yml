@@ -261,11 +261,6 @@ on:
         type: boolean
         required: true
         default: false
-      bench-args:
-        description: Extra bench args.
-        type: string
-        required: false
-        default: ""
       run-pairs:
         description: Number of baseline/feature run pairs.
         type: string
