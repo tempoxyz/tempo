@@ -14,8 +14,7 @@ use rand::SeedableRng as _;
 use secrecy::ExposeSecret as _;
 
 use crate::{
-    MAX_SIGNING_KEY_PASSPHRASE_BYTES, SigningKey, SigningKeyPassphrase, SigningShare, read_secret,
-    read_secret_inner,
+    MAX_SIGNING_KEY_PASSPHRASE_BYTES, SigningKey, SigningShare, read_secret, read_secret_inner,
 };
 
 const SIGNING_KEY: &str = "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -27,15 +26,7 @@ fn write_tempfile(contents: &str) -> tempfile::NamedTempFile {
     file
 }
 fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
-    use std::io::Write as _;
-
-    let mut ciphertext = Vec::new();
-    let mut writer = age::Encryptor::with_user_passphrase(secrecy::SecretString::from(passphrase))
-        .wrap_output(&mut ciphertext)
-        .unwrap();
-    writer.write_all(plaintext).unwrap();
-    writer.finish().unwrap();
-    ciphertext
+    age::encrypt(&age::scrypt::Recipient::new(passphrase.into()), plaintext).unwrap()
 }
 
 fn raw_private_key_bytes() -> Vec<u8> {
@@ -44,10 +35,6 @@ fn raw_private_key_bytes() -> Vec<u8> {
         .into_inner()
         .encode()
         .to_vec()
-}
-
-fn passphrase(value: &str) -> SigningKeyPassphrase {
-    secrecy::SecretString::from(value.to_owned())
 }
 
 #[test]
@@ -95,11 +82,9 @@ fn signing_key_read_encrypted_roundtrip() {
     let ciphertext =
         encrypt_with_passphrase(&raw_private_key_bytes(), "correct horse battery staple");
 
-    let key = SigningKey::read_encrypted(
-        ciphertext.as_slice(),
-        passphrase("correct horse battery staple"),
-    )
-    .expect("decryption with the correct passphrase should succeed");
+    let key =
+        SigningKey::read_encrypted(ciphertext.as_slice(), "correct horse battery staple".into())
+            .expect("decryption with the correct passphrase should succeed");
 
     let expected = SigningKey::try_from_hex(SIGNING_KEY).unwrap();
     assert_eq!(key.public_key(), expected.public_key());
@@ -108,7 +93,7 @@ fn signing_key_read_encrypted_roundtrip() {
 #[test]
 fn signing_key_read_encrypted_wrong_passphrase_fails() {
     let ciphertext = encrypt_with_passphrase(&raw_private_key_bytes(), "right");
-    SigningKey::read_encrypted(ciphertext.as_slice(), passphrase("wrong"))
+    SigningKey::read_encrypted(ciphertext.as_slice(), "wrong".into())
         .expect_err("decryption with the wrong passphrase must fail");
 }
 
@@ -118,7 +103,7 @@ fn signing_key_read_encrypted_from_file_roundtrip() {
     let mut file = tempfile::NamedTempFile::new().unwrap();
     std::io::Write::write_all(&mut file, &ciphertext).unwrap();
 
-    let key = SigningKey::read_from_file_encrypted(file.path(), passphrase("hunter2")).unwrap();
+    let key = SigningKey::read_from_file_encrypted(file.path(), "hunter2".into()).unwrap();
     let expected = SigningKey::try_from_hex(SIGNING_KEY).unwrap();
     assert_eq!(key.public_key(), expected.public_key());
 }
@@ -139,10 +124,10 @@ fn signing_key_write_to_file_encrypted_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("signing.key");
     original
-        .write_to_file_encrypted(&path, passphrase("hunter2"))
+        .write_to_file_encrypted(&path, "hunter2".into())
         .expect("encrypted write must succeed");
 
-    let loaded = SigningKey::read_from_file_encrypted(&path, passphrase("hunter2"))
+    let loaded = SigningKey::read_from_file_encrypted(&path, "hunter2".into())
         .expect("encrypted read with the correct passphrase must succeed");
 
     assert_eq!(loaded.public_key(), original.public_key());
@@ -157,7 +142,7 @@ fn signing_key_write_to_file_encrypted_restricts_permissions() {
     let path = dir.path().join("signing.key");
 
     SigningKey::random(rand::rng())
-        .write_to_file_encrypted(&path, passphrase("hunter2"))
+        .write_to_file_encrypted(&path, "hunter2".into())
         .unwrap();
 
     assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
@@ -169,7 +154,7 @@ fn signing_key_write_to_file_encrypted_does_not_overwrite_existing_file() {
     std::fs::write(file.path(), b"existing contents").unwrap();
 
     SigningKey::random(rand::rng())
-        .write_to_file_encrypted(file.path(), passphrase("hunter2"))
+        .write_to_file_encrypted(file.path(), "hunter2".into())
         .expect_err("writing to an existing file must fail");
 
     assert_eq!(std::fs::read(file.path()).unwrap(), b"existing contents");
@@ -181,9 +166,9 @@ fn signing_key_write_encrypted_wrong_passphrase_fails() {
     let key = SigningKey::random(&mut rng);
 
     let mut buf = Vec::new();
-    key.write_encrypted(&mut buf, passphrase("right")).unwrap();
+    key.write_encrypted(&mut buf, "right".into()).unwrap();
 
-    SigningKey::read_encrypted(buf.as_slice(), passphrase("wrong"))
+    SigningKey::read_encrypted(buf.as_slice(), "wrong".into())
         .expect_err("wrong passphrase must fail to decrypt");
 }
 
