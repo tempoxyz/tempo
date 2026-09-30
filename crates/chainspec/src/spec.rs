@@ -939,10 +939,18 @@ mod tests {
             // At and after T11 activation
             assert!(cs.is_t11_active_at_timestamp(1789048800));
             assert_eq!(cs.tempo_hardfork_at(1789048800), TempoHardfork::T11);
-            assert!(!cs.is_t12_active_at_timestamp(u64::MAX));
+
+            // Before T12 activation (1791900000 = Oct 13th 2026 16:00 CEST)
+            assert!(!cs.is_t12_active_at_timestamp(1791899999));
+            assert_eq!(cs.tempo_hardfork_at(1791899999), TempoHardfork::T11);
+
+            // At and after T12 activation
+            assert!(cs.is_t12_active_at_timestamp(1791900000));
+            assert_eq!(cs.tempo_hardfork_at(1791900000), TempoHardfork::T12);
+            assert_eq!(cs.tempo_hardfork_at(1791900001), TempoHardfork::T12);
             assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
         }
 
         #[test]
@@ -1051,10 +1059,18 @@ mod tests {
             // At and after T11 activation
             assert!(cs.is_t11_active_at_timestamp(1788962400));
             assert_eq!(cs.tempo_hardfork_at(1788962400), TempoHardfork::T11);
-            assert!(!cs.is_t12_active_at_timestamp(u64::MAX));
+
+            // Before T12 activation (1791468000 = Oct 8th 2026 16:00 CEST)
+            assert!(!cs.is_t12_active_at_timestamp(1791467999));
+            assert_eq!(cs.tempo_hardfork_at(1791467999), TempoHardfork::T11);
+
+            // At and after T12 activation
+            assert!(cs.is_t12_active_at_timestamp(1791468000));
+            assert_eq!(cs.tempo_hardfork_at(1791468000), TempoHardfork::T12);
+            assert_eq!(cs.tempo_hardfork_at(1791468001), TempoHardfork::T12);
             assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
         }
 
         #[test]
