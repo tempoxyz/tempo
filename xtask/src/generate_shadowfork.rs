@@ -9,7 +9,6 @@ use std::{
 use alloy::primitives::{Address, B256};
 use alloy_consensus::Sealable as _;
 use commonware_codec::Encode as _;
-use commonware_consensus::types::Epoch;
 use commonware_cryptography::Signer as _;
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use rand_08::SeedableRng as _;
@@ -192,7 +191,7 @@ impl GenerateShadowfork {
         let shadow_chainspec_path =
             write_shadow_chainspec(&output, &source_chain, source_chain_id, shadow_epoch_length)?;
         let mut shadow_dkg_outcome = consensus_config.to_genesis_dkg_outcome();
-        shadow_dkg_outcome.epoch = Epoch::new(SHADOW_EPOCH);
+        shadow_dkg_outcome.epoch = SHADOW_EPOCH;
         let shadow_dkg_outcome = const_hex::encode_prefixed(shadow_dkg_outcome.encode());
 
         for (validator, node) in consensus_config.validators.iter().zip(node_outputs.iter()) {

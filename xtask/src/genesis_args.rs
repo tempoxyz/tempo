@@ -6,7 +6,6 @@ use alloy::{
 use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
-use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
@@ -46,7 +45,7 @@ use tempo_contracts::{
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t12_zone_factory_state,
+        t13_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -81,6 +80,10 @@ pub(crate) struct GenesisArgs {
         default_value = "test test test test test test test test test test test junk"
     )]
     mnemonic: String,
+
+    /// Read the account-generation mnemonic from a file.
+    #[arg(long, value_name = "PATH", conflicts_with = "mnemonic")]
+    mnemonic_file: Option<PathBuf>,
 
     /// Coinbase address
     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
@@ -218,6 +221,14 @@ pub(crate) struct GenesisArgs {
     /// T12 hardfork activation time.
     #[arg(long, default_value = "0")]
     t12_time: u64,
+
+    /// T13 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t13_time: u64,
+
+    /// T14 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t14_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -228,7 +239,7 @@ pub(crate) struct ConsensusConfig {
 impl ConsensusConfig {
     pub(crate) fn to_genesis_dkg_outcome(&self) -> OnchainDkgOutcome {
         OnchainDkgOutcome {
-            epoch: Epoch::zero(),
+            epoch: 0,
             output: self.output.clone(),
             next_players: ordered::Set::try_from_iter(
                 self.validators.iter().map(Validator::public_key),
@@ -280,9 +291,10 @@ impl GenesisArgs {
                 return Err(eyre!("not enough accounts created for validators"));
             }
 
+            let mnemonic = self.resolved_mnemonic()?;
             (1..=validator_count)
                 .map(|worker_id| {
-                    let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                    let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
                     Ok(secret_key_to_address(signer.credential()))
                 })
                 .collect()
@@ -300,13 +312,14 @@ impl GenesisArgs {
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
     pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, Option<ConsensusConfig>)> {
+        let mnemonic = self.resolved_mnemonic()?;
         println!("Generating {:?} accounts", self.accounts);
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
             .progress()
             .map(|worker_id| -> eyre::Result<Address> {
-                let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
                 let address = secret_key_to_address(signer.credential());
                 Ok(address)
             })
@@ -568,7 +581,7 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t10_time, self.t12_time, &mut genesis_alloc);
+        insert_zone_state_at_genesis(self.t10_time, self.t13_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -658,17 +671,19 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t12Time".to_string(), self.t12_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t13Time".to_string(), self.t13_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t14Time".to_string(), self.t14_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
             if self.no_dkg_in_genesis {
                 println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
             } else {
-                extra_data = consensus_config
-                    .to_genesis_dkg_outcome()
-                    .encode()
-                    .to_vec()
-                    .into();
+                extra_data = consensus_config.to_genesis_dkg_outcome().encode().into();
             }
         }
 
@@ -691,17 +706,30 @@ impl GenesisArgs {
 
         Ok((genesis, consensus_config))
     }
+
+    fn resolved_mnemonic(&self) -> eyre::Result<String> {
+        let Some(path) = &self.mnemonic_file else {
+            return Ok(self.mnemonic.clone());
+        };
+        let mnemonic = std::fs::read_to_string(path)
+            .wrap_err_with(|| format!("failed reading mnemonic file `{}`", path.display()))?;
+        let mnemonic = mnemonic.trim();
+        if mnemonic.is_empty() {
+            return Err(eyre!("mnemonic file `{}` is empty", path.display()));
+        }
+        Ok(mnemonic.to_owned())
+    }
 }
 
 fn insert_zone_state_at_genesis(
     t10_time: u64,
-    t12_time: u64,
+    t13_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
     if t10_time == 0 {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if t12_time == 0 {
-            t12_zone_factory_state(INITIAL_FACTORY_OWNER)
+        let accounts = if t13_time == 0 {
+            t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
         };
@@ -812,7 +840,7 @@ fn create_path_usd_token(
             // Initialize pathUSD directly (not via factory) since it's at a reserved address.
             let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
                 .expect("Could not create pathUSD token instance");
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+            token.grant_role_internal(admin, ISSUER_ROLE)?;
 
             // Mint to all recipients
             for recipient in recipients.iter().progress() {
@@ -894,7 +922,7 @@ fn create_and_mint_token(
 
             let mut token =
                 TIP20Token::from_address(token_address).expect("Could not create token instance");
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+            token.grant_role_internal(admin, ISSUER_ROLE)?;
 
             let result = token.set_supply_cap(
                 admin,
@@ -1157,7 +1185,7 @@ fn initialize_validator_config_v2(
                         ingress: config.ingress.to_string(),
                         egress: config.egress.to_string(),
                         feeRecipient: validator_address,
-                        signature: signature.encode().to_vec().into(),
+                        signature: signature.encode().into(),
                     },
                 )
                 .wrap_err("failed to add validator to V2")?;
@@ -1256,13 +1284,14 @@ fn mint_pairwise_liquidity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use tempo_contracts::{
         precompiles::{
             ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
         },
         zones::{
-            T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
             ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
@@ -1298,16 +1327,61 @@ mod tests {
     }
 
     #[test]
-    fn t12_genesis_installs_t12_shared_runtimes() {
+    fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(0, 0, &mut alloc);
 
         for (destination, expected) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, T12_ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, T12_ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, T12_ZONE_MESSENGER_RUNTIME),
+            (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
         ] {
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
+    }
+
+    #[derive(Parser)]
+    struct GenesisCli {
+        #[command(flatten)]
+        args: GenesisArgs,
+    }
+
+    #[test]
+    fn mnemonic_file_matches_inline_validator_accounts() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mnemonic");
+        std::fs::write(&path, format!("{mnemonic}\n")).unwrap();
+        let args = [
+            "genesis",
+            "--validators",
+            "127.0.0.1:8000",
+            "--accounts",
+            "2",
+        ];
+        let inline = GenesisCli::parse_from(args.into_iter().chain(["--mnemonic", mnemonic])).args;
+        let from_file = GenesisCli::parse_from(
+            args.into_iter()
+                .chain(["--mnemonic-file", path.to_str().unwrap()]),
+        )
+        .args;
+        assert_eq!(from_file.resolved_mnemonic().unwrap(), mnemonic);
+        assert_eq!(
+            from_file.validator_onchain_addresses().unwrap(),
+            inline.validator_onchain_addresses().unwrap()
+        );
+        assert!(
+            GenesisCli::try_parse_from(args.into_iter().chain([
+                "--mnemonic",
+                mnemonic,
+                "--mnemonic-file",
+                path.to_str().unwrap(),
+            ]))
+            .is_err()
+        );
+        std::fs::write(&path, " \n").unwrap();
+        assert!(from_file.resolved_mnemonic().is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(from_file.validator_onchain_addresses().is_err());
     }
 }

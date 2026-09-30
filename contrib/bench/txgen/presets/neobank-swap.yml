@@ -20,7 +20,7 @@ accounts:
     index: 100000
 
 artifacts:
-  ERC20: ../erc20.abi.json
+  ERC20: ../tip20.abi.json
   DirectSwapABI: ../directswap.abi.json
   ERC4626Vault: ../erc4626-vault.abi.json
   DirectSwap:
@@ -173,6 +173,7 @@ templates:
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
     valid_for_secs: 10
     calls: []
 
@@ -189,6 +190,7 @@ templates:
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
     valid_for_secs: 10
     calls: []
 

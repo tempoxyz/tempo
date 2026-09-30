@@ -74,7 +74,7 @@ pub trait StorageCreditsBackend {
     fn tload(&mut self, address: Address, key: U256) -> U256;
 
     /// TSTORE `address[key] = value`.
-    fn tstore(&mut self, address: Address, key: U256, value: U256);
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error>;
 
     /// Returns true when `owner[key]` is a tx-local slot whose clear must not mint a credit.
     fn is_non_creditable_slot(&mut self, _owner: Address, _key: U256) -> bool {
@@ -94,8 +94,7 @@ fn store_credit_state<B: StorageCreditsBackend>(
     key: U256,
     state: TransientState,
 ) -> Result<(), B::Error> {
-    backend.tstore(STORAGE_CREDITS_ADDRESS, key, state.into());
-    Ok(())
+    backend.tstore(STORAGE_CREDITS_ADDRESS, key, state.into())
 }
 
 /// Applies TIP-1060 storage credits after a single SSTORE has been journaled.

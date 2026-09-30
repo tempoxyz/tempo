@@ -25,6 +25,7 @@ tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
+tempo-state-bloat.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",
@@ -44,7 +45,6 @@ alloy-eips.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 bytes.workspace = true
-coins-bip32.workspace = true
 clap = { workspace = true, features = ["derive"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -71,3 +71,6 @@ secp256k1 = { workspace = true, features = ["rand"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
