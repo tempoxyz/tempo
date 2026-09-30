@@ -28,7 +28,6 @@ use opentelemetry_otlp as _;
 pub mod cli;
 mod defaults;
 mod follow;
-pub mod init_state;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
@@ -45,6 +44,7 @@ pub use crate::{
 pub use reth_cli_util as cli_util;
 pub use tempo_node;
 pub use tempo_node as node;
+pub use tempo_state_bloat as init_state;
 
 use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,

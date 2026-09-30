@@ -13455,7 +13455,6 @@ dependencies = [
  "reth-eth-wire-types",
  "reth-ethereum",
  "reth-ethereum-cli",
- "reth-etl",
  "reth-metrics",
  "reth-network-api",
  "reth-network-peers",
@@ -13489,6 +13488,7 @@ dependencies = [
  "tempo-node",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-state-bloat",
  "tempo-telemetry-util",
  "tempo-validator-config",
  "tokio",
@@ -14146,6 +14146,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-state-bloat"
+version = "1.14.0"
+dependencies = [
+ "alloy",
+ "alloy-primitives",
+ "clap",
+ "coins-bip32",
+ "eyre",
+ "indicatif",
+ "itertools 0.14.0",
+ "rayon",
+ "reth-chainspec",
+ "reth-cli",
+ "reth-cli-commands",
+ "reth-db-api",
+ "reth-etl",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-tasks",
+ "reth-trie",
+ "reth-trie-db",
+ "tempfile",
+ "tempo-chainspec",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tempo-telemetry-util"
 version = "1.14.0"
 dependencies = [
@@ -14220,7 +14250,6 @@ dependencies = [
  "alloy-primitives",
  "bytes",
  "clap",
- "coins-bip32",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
@@ -14245,6 +14274,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "tempfile",
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-contracts",
@@ -14253,6 +14283,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-state-bloat",
  "tempo-validator-config",
  "tokio",
 ]
