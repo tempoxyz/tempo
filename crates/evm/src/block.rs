@@ -1255,6 +1255,7 @@ mod tests {
                     TempoTxType::Legacy,
                     0,
                 ),
+                tx_type: TempoTxType::Legacy,
                 next_section: BlockSection::StartOfBlock,
                 is_payment: false,
                 block_gas_used: 21_000,
