@@ -77,7 +77,7 @@ use tempo_transaction_pool::{
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -1053,9 +1053,12 @@ where
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
+        let parent = Span::current();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
+            .spawn_blocking_named("builder-roots-task", move || {
+                let _span = debug_span!(target: "payload_builder", parent: parent, "builder_roots")
+                    .entered();
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 

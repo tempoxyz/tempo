@@ -28,7 +28,6 @@ use opentelemetry_otlp as _;
 pub mod cli;
 mod defaults;
 mod follow;
-pub mod init_state;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
@@ -45,6 +44,7 @@ pub use crate::{
 pub use reth_cli_util as cli_util;
 pub use tempo_node;
 pub use tempo_node as node;
+pub use tempo_state_bloat as init_state;
 
 use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
@@ -532,6 +532,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             None
         };
         let chain_id = builder.config().chain.chain().id();
+
+        #[cfg(feature = "custom-pcrs")]
+        if let Some(policy) = args.custom_pcrs.clone() {
+            policy.validate(chain_id)?;
+            warn!(?policy, "replacing compiled-in zone verifier PCRs with a custom policy");
+            tempo_precompiles::zone_verifier::CUSTOM_PCRS
+                .set(policy)
+                .map_err(|_| eyre::eyre!("zone verifier PCRs were already set"))?;
+        }
 
         // Resolve the bootnodes endpoint:
         // --tempo.bootnodes-endpoint=none -> disabled

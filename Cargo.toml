@@ -37,6 +37,7 @@ members = [
   "crates/contracts",
   "crates/telemetry-util",
   "crates/transaction-pool",
+  "crates/state-bloat",
   "xtask",
 ]
 
@@ -124,6 +125,7 @@ panic = "abort"
 incremental = false
 
 [workspace.dependencies]
+tempo-state-bloat = { path = "crates/state-bloat" }
 aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }

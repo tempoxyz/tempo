@@ -82,6 +82,8 @@ serde = [
 	"p384/serde",
 	"rand_08/serde",
 ]
+# Devnet-only: allow `ZoneVerifier::verify` to use PCRs supplied at startup.
+custom-pcrs = []
 
 [[test]]
 name = "storage"
