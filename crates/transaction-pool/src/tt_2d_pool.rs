@@ -8280,6 +8280,9 @@ mod tests {
             let payment = general_cap_tx(
                 TxBuilder::aa(Address::random())
                     .nonce_key(nonce_key)
+                    // Test signatures are fixed, so changing the recovered sender alone
+                    // does not make otherwise identical payment envelopes unique.
+                    .max_fee(30_000_000_000 + priority)
                     .max_priority_fee(0),
                 true,
             );
