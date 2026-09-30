@@ -3130,6 +3130,12 @@ fn persisted_scopes_to_call_scopes(
         };
         let entry = &mut grouped[index];
         let Some(selector) = scope.selector else {
+            // A scope without a selector is a wildcard: it allows *any* selector on this
+            // target, which is encoded downstream as an empty `selector_rules` list. Keeping
+            // rules already collected for the same target would turn the wildcard into a
+            // narrower allowlist and silently reduce the key's permissions, so the wildcard
+            // wins and discards them.
+            entry.selector_rules.clear();
             continue;
         };
         if entry
