@@ -8,7 +8,6 @@ use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post
 use alloy::{
     consensus::Transaction as _,
     primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
-    sol_types::SolCall as _,
 };
 use reth_revm::context_interface::cfg::gas::CALL_STIPEND;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -285,7 +284,7 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
-/// Treats low-headroom direct TIP-20 success-to-halt transitions as T12 SSTORE sentry failures.
+/// Treats low-headroom success-to-halt transitions as T12 SSTORE sentry failures.
 const T12_SSTORE_SENTRY: Expectation = Expectation {
     id: "t12.sstore-sentry",
     check: |ctx, field| {
@@ -302,14 +301,8 @@ const T12_SSTORE_SENTRY: Expectation = Expectation {
             return None;
         }
 
-        // This is a gas-headroom heuristic, not proof of a sentry failure. Use pre-refund gas
-        // and restrict it to one direct transfer, excluding nested calls and AA batches.
-        let mut calls = ctx.call();
-        let (kind, calldata) = calls.next()?;
-        if calls.next().is_some() || !kind.to()?.is_tip20() {
-            return None;
-        }
-        ITIP20::transferCall::abi_decode(calldata).ok()?;
+        // This is a pre-refund gas-headroom heuristic, not proof of a sentry failure.
+        // SSTORE can occur in any contract, nested call, or AA batch.
         Some(())
     },
 };
@@ -663,16 +656,11 @@ mod tests {
     }
 
     #[test]
-    fn sentry_expectation_requires_a_direct_transfer_and_low_gas_headroom() {
-        let transfer = Call {
-            to: TxKind::Call(address!("20c0000000000000000000000000000000000001")),
+    fn sentry_expectation_requires_low_gas_headroom_regardless_of_calls() {
+        let call = Call {
+            to: TxKind::Call(Address::repeat_byte(0x11)),
             value: U256::ZERO,
-            input: ITIP20::transferCall {
-                to: Address::ZERO,
-                amount: U256::ONE,
-            }
-            .abi_encode()
-            .into(),
+            input: Default::default(),
         };
         let mut real = evidence(&[32_366, 21_000]);
         let mut shadow = evidence(&[35_212, 21_000]);
@@ -687,7 +675,7 @@ mod tests {
         write_slot(tx_mut(&mut real, 0), 900);
         write_slot(tx_mut(&mut shadow, 0), 800);
 
-        let block = block(vec![signed_tx(vec![transfer.clone()])]);
+        let block = block(vec![signed_tx(vec![call.clone()])]);
         let rules = between(TempoHardfork::T11, TempoHardfork::T12);
         let report = Report::analyze(&real, &shadow, &rules, &block);
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
@@ -727,15 +715,19 @@ mod tests {
             fee_associated: false,
         };
         for calls in [
-            vec![],
-            vec![transfer.clone(), transfer.clone()],
+            vec![call.clone()],
+            vec![call.clone(), call.clone()],
             vec![Call {
-                to: TxKind::Call(LIFI_DIAMOND),
-                ..transfer.clone()
+                to: TxKind::Create,
+                ..call.clone()
             }],
             vec![Call {
-                input: Default::default(),
-                ..transfer
+                to: TxKind::Call(LIFI_DIAMOND),
+                ..call.clone()
+            }],
+            vec![Call {
+                to: TxKind::Call(address!("20c0000000000000000000000000000000000001")),
+                ..call
             }],
         ] {
             let tx = signed_tx(calls);
@@ -746,7 +738,7 @@ mod tests {
                 base_fee: None,
                 tx: Some(&tx),
             };
-            assert!((T12_SSTORE_SENTRY.check)(&ctx, &field).is_none());
+            assert!((T12_SSTORE_SENTRY.check)(&ctx, &field).is_some());
         }
 
         // No acceptance outside the activation boundary or at another transaction.
