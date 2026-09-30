@@ -11,7 +11,10 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
+    storage::{
+        ConfigCommitmentWriteGas, Handler, PrecompileStorageProvider, StorageAction,
+        StorageActions, StorageCtx,
+    },
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
@@ -396,6 +399,15 @@ where
     }
 
     // Write operations are not supported in read-only context
+    fn set_config_commitment(
+        &mut self,
+        _: Address,
+        _: B256,
+        _: ConfigCommitmentWriteGas,
+    ) -> TempoResult<()> {
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+    }
+
     fn sstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
         unreachable!("'sstore' not supported in read-only context")
     }
