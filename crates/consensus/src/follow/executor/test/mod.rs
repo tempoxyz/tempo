@@ -2,7 +2,7 @@
 
 mod utils;
 
-use std::{num::NonZeroU64, time::Duration};
+use std::time::Duration;
 
 use alloy_primitives::B256;
 use commonware_consensus::{
@@ -15,10 +15,9 @@ use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 
 use super::{Config, init};
-use crate::consensus::Digest;
+use crate::{consensus::Digest, follow::test_utils::EPOCH_LENGTH};
 use utils::{StubExecutionProvider, StubMarshal, make_block, make_block_at_round};
 
-const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(5);
 const WAIT_ATTEMPTS: usize = 100;
 
@@ -74,7 +73,7 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
                     .report(Update::Tip(
                         Round::zero(),
                         Height::new(height),
-                        Digest(B256::with_last_byte(height as u8)),
+                        digest(height as u8),
                     ))
                     .accepted()
             );
@@ -129,7 +128,7 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
                     .report(Update::Tip(
                         Round::zero(),
                         Height::new(height),
-                        Digest(B256::with_last_byte(height as u8)),
+                        digest(height as u8),
                     ))
                     .accepted()
             );
@@ -165,11 +164,7 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
         provider.set_durable(29, B256::with_last_byte(29));
         assert!(
             mailbox
-                .report(Update::Tip(
-                    round(3),
-                    Height::new(29),
-                    Digest(B256::with_last_byte(29)),
-                ))
+                .report(Update::Tip(round(3), Height::new(29), digest(29)))
                 .accepted()
         );
         wait_until(&context, || marshal.floor() == Height::new(29)).await;
@@ -236,7 +231,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
                 .report(Update::Tip(
                     Round::zero(),
                     Height::new(floor_candidate),
-                    Digest(B256::with_last_byte(floor_candidate as u8)),
+                    digest(floor_candidate as u8),
                 ))
                 .accepted()
         );
@@ -245,7 +240,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
                 .report(Update::Tip(
                     Round::zero(),
                     Height::new(finalized_height),
-                    Digest(B256::with_last_byte(finalized_height as u8)),
+                    digest(finalized_height as u8),
                 ))
                 .accepted()
         );
@@ -347,16 +342,16 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
 
         actor.start();
 
-        let first_digest = Digest(B256::with_last_byte(1));
+        let first_digest = digest(1);
         let first_tip = Update::Tip(round(1), Height::new(1), first_digest);
         assert!(mailbox.report(first_tip).accepted());
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
-        let highest_digest = Digest(B256::with_last_byte(4));
-        let higher_tip = Update::Tip(round(3), Height::new(3), Digest(B256::with_last_byte(3)));
+        let highest_digest = digest(4);
+        let higher_tip = Update::Tip(round(3), Height::new(3), digest(3));
         assert!(mailbox.report(higher_tip).accepted());
 
-        let lower_tip = Update::Tip(round(2), Height::new(2), Digest(B256::with_last_byte(2)));
+        let lower_tip = Update::Tip(round(2), Height::new(2), digest(2));
         assert!(mailbox.report(lower_tip).accepted());
 
         let highest_tip = Update::Tip(round(4), Height::new(4), highest_digest);
@@ -399,19 +394,15 @@ fn tip_drives_forkchoice_by_round() {
         );
         actor.start();
 
-        let first = Digest(B256::with_last_byte(1));
+        let first = digest(1);
         let _ = mailbox.report(Update::Tip(round(1), Height::new(1), first));
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
-        let finalized = Digest(B256::with_last_byte(9));
+        let finalized = digest(9);
         let _ = mailbox.report(Update::Tip(round(2), Height::new(9), finalized));
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
-        let _ = mailbox.report(Update::Tip(
-            round(1),
-            Height::new(2),
-            Digest(B256::with_last_byte(2)),
-        ));
+        let _ = mailbox.report(Update::Tip(round(1), Height::new(2), digest(2)));
         context.sleep(Duration::from_millis(5)).await;
 
         let forkchoices = provider.forkchoices();
@@ -427,7 +418,7 @@ fn tip_drives_forkchoice_by_round() {
 #[test_traced]
 fn delayed_tip_does_not_regress_newer_block_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
-        let current = Digest(B256::with_last_byte(10));
+        let current = digest(10);
         let provider = StubExecutionProvider::default();
         provider.set_finalized(100, current.0, round(10));
         let release_block_forkchoice = provider.pause_next_forkchoice();
@@ -454,7 +445,7 @@ fn delayed_tip_does_not_regress_newer_block_forkchoice() {
         })
         .await;
 
-        let delayed = Digest(B256::with_last_byte(12));
+        let delayed = digest(12);
         let _ = mailbox.report(Update::Tip(round(12), Height::new(101), delayed));
         context.sleep(Duration::from_millis(1)).await;
 
@@ -550,7 +541,7 @@ fn tip_is_driven_to_from_genesis() {
         );
         actor.start();
 
-        let finalized = Digest(B256::with_last_byte(9));
+        let finalized = digest(9);
         let _ = mailbox.report(Update::Tip(round(5), Height::new(9), finalized));
 
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
