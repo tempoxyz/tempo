@@ -109,6 +109,13 @@ For local development and CI, run the [bootstrapped localnet container](./docs/l
 docker run --rm -p 127.0.0.1:8545:8545 ghcr.io/tempoxyz/tempo-localnet:latest
 ```
 
+For prover E2E devnets, `ghcr.io/tempoxyz/tempo-devnet` (also on Docker Hub)
+contains the Tempo L1 binary built with `custom-pcrs`. It is published alongside
+the regular images with matching tags, including `sha-<short-sha>` and `nightly`.
+Pass the prover measurements using `--zone-verifier.custom-pcrs` or
+`TEMPO_ZONE_VERIFIER_CUSTOM_PCRS`; this variant refuses to start on mainnet and
+Moderato. The regular images keep the compiled-in PCR policy.
+
 Want to contribute?
 
 First, clone the repository:

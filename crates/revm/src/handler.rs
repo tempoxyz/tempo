@@ -2226,7 +2226,8 @@ pub struct ValidationContext {
 /// This includes:
 /// - Base 21k stipend (once for the transaction)
 /// - Signature verification gas (P256: 5k, WebAuthn: 5k + webauthn_data)
-/// - Per-call account access cost (COLD_ACCOUNT_ACCESS_COST * calls.len())
+/// - Per-call account access cost (`COLD_ACCOUNT_ACCESS_COST * (calls.len() - 1)`); the 21k
+///   stipend above already covers the first call's target access
 /// - Per-call input data gas (calldata tokens * 4 gas)
 /// - Per-call CREATE costs (if applicable):
 ///   - Additional 32k base (CREATE constant)
@@ -2258,8 +2259,8 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let cold_account_cost =
         gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
 
-    // 3. Per-call overhead: cold account access
-    // if the `to` address has not appeared in the call batch before.
+    // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
+    // already covers the first call's target access.
     gas.initial_regular_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)

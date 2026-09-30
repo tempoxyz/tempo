@@ -96,6 +96,23 @@ pub struct TempoTxResult {
     validator_fee: U256,
 }
 
+impl Clone for TempoTxResult {
+    fn clone(&self) -> Self {
+        Self {
+            inner: EthTxResult {
+                result: self.inner.result.clone(),
+                blob_gas_used: self.inner.blob_gas_used,
+                tx_type: self.inner.tx_type,
+            },
+            execution_context: self.execution_context,
+            next_section: self.next_section,
+            is_payment: self.is_payment,
+            block_gas_used: self.block_gas_used,
+            validator_fee: self.validator_fee,
+        }
+    }
+}
+
 impl TempoTxResult {
     /// Creates a new [`TempoTxResult`] from a precomputed result and state.
     #[expect(
