@@ -151,6 +151,7 @@ jobs:
           chmod +x /usr/local/bin/amp-run
 
       # ── update reth rev ─────────────────────────────────────────
+      # When already on the latest rev, all later steps are skipped.
       - name: Update reth rev in Cargo.toml
         id: update
         env:
@@ -196,6 +197,7 @@ jobs:
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
         id: check-loop
+        if: steps.update.outputs.bumped == 'true'
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
@@ -264,6 +266,7 @@ jobs:
       # ── test compilation check + Amp fix loop ─────────────────
       - name: Fix test compilation errors
         id: test-loop
+        if: steps.update.outputs.bumped == 'true'
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
@@ -333,6 +336,7 @@ jobs:
 
       # ── commit source fixes ─────────────────────────────────────
       - name: Commit source fixes
+        if: steps.update.outputs.bumped == 'true'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
@@ -343,9 +347,11 @@ jobs:
 
       # ── zepter feature lint ─────────────────────────────────────
       - uses: tempoxyz/gh-actions/actions/cargo-install@ab45d76f6e7420a094281a22aee1973ecc0754f8
+        if: steps.update.outputs.bumped == 'true'
         with:
           tool: zepter
       - name: Fix zepter lint
+        if: steps.update.outputs.bumped == 'true'
         run: |
           if ! zepter run check; then
             echo "Zepter check failed — running auto-fix..."
@@ -360,11 +366,13 @@ jobs:
 
       # ── push ───────────────────────────────────────────────────
       - name: Push working branch
+        if: steps.update.outputs.bumped == 'true'
         run: |
           git push --force-with-lease origin reth-auto-bump
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
+        if: steps.update.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
@@ -502,6 +510,7 @@ jobs:
 
       # ── wait for CI and fix failures ─────────────────────────
       - name: Wait for CI and fix failures
+        if: steps.update.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
@@ -659,7 +668,7 @@ jobs:
 
       # ── Slack notification ─────────────────────────────────────
       - name: Notify Slack
-        if: always() && job.status != 'success'
+        if: always() && job.status != 'success' && steps.update.outputs.bumped != 'false'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
@@ -706,8 +715,6 @@ jobs:
           DETAILS=""
           if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
             DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/commit/${OLD_REV}|${OLD_REV:0:7}> → <https://github.com/paradigmxyz/reth/commit/${NEW_REV}|${NEW_REV:0:7}> (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
-          elif [ "$BUMPED" = "false" ]; then
-            DETAILS="${DETAILS}\n• Already on latest reth rev"
           fi
 
           if [ "$CLIPPY_PASSED" = "false" ]; then
