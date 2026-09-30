@@ -132,6 +132,8 @@ required-features = ["localnet"]
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
+state-trie-rocksdb = ["reth-node-builder/state-trie-rocksdb"]
+
 localnet = ["dep:nix"]
 
 bal = ["tempo-consensus/bal", "tempo-node/bal"]
