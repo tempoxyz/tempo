@@ -5,8 +5,11 @@ use std::sync::{
 };
 
 use alloy_primitives::B256;
-use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
+use reth_engine_tree::tree::{
+    CachedStateProvider, SavedCache, precompile_cache::wrap_with_shared_precompile_cache,
+};
 use reth_evm::{Evm, EvmEnvFor};
+use reth_payload_builder::SharedPrecompileCache;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
@@ -341,6 +344,8 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     executor: TaskExecutor,
     parent_hash: B256,
     cache: Option<SavedCache>,
+    /// Precompile cache shared with the engine and the payload builder's own EVM.
+    precompile_cache: Option<SharedPrecompileCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
@@ -354,6 +359,7 @@ where
         provider: Provider,
         executor: TaskExecutor,
         cache: Option<SavedCache>,
+        precompile_cache: Option<SharedPrecompileCache>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
@@ -363,6 +369,7 @@ where
             executor,
             parent_hash,
             cache,
+            precompile_cache,
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
@@ -406,6 +413,13 @@ where
         // Record storage actions for future replay
         if self.parallel {
             evm = evm.with_actions();
+        }
+
+        // Share precompile results with the builder's EVM, so transactions executed here don't
+        // run the same precompiles again when the builder includes them. A spec type mismatch is
+        // logged by the builder.
+        if let Some(precompile_cache) = &self.precompile_cache {
+            wrap_with_shared_precompile_cache(&mut evm, precompile_cache);
         }
 
         Some(evm)
@@ -720,6 +734,7 @@ mod tests {
             executor,
             parent_hash: parent_header.hash(),
             cache: None,
+            precompile_cache: None,
             evm_env,
             stop: Arc::default(),
             parallel,

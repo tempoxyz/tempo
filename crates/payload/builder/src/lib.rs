@@ -38,6 +38,7 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
     instrumented_state::InstrumentedStateProvider,
+    precompile_cache::wrap_with_shared_precompile_cache,
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
@@ -303,6 +304,7 @@ where
             cached_reads,
             execution_cache,
             mut state_root_handle,
+            precompile_cache,
             config,
             cancel,
             best_payload,
@@ -421,6 +423,15 @@ where
         let evm = self.evm_config.evm_with_env(&mut db, evm_env);
         let mut executor = self.evm_config.create_executor(evm, ctx.clone());
 
+        if let Some(precompile_cache) = &precompile_cache
+            && !wrap_with_shared_precompile_cache(executor.evm_mut(), precompile_cache)
+        {
+            debug!(
+                target: "payload_builder",
+                "shared precompile cache has a different spec type, building without it"
+            );
+        }
+
         check_cancel!();
 
         // Override the fee recipient with the on-chain value from the V2
@@ -482,6 +493,7 @@ where
             self.provider.clone(),
             self.executor.clone(),
             execution_cache,
+            precompile_cache,
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
