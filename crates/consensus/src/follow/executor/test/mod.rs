@@ -5,6 +5,7 @@ mod utils;
 use std::{num::NonZeroU64, time::Duration};
 
 use alloy_primitives::B256;
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Reporter as _,
     marshal::Update,
@@ -92,11 +93,7 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
         assert_eq!(provider.payload_count(), 1);
         assert_eq!(
             provider.forkchoices(),
-            vec![alloy_rpc_types_engine::ForkchoiceState {
-                head_block_hash: block_hash,
-                safe_block_hash: block_hash,
-                finalized_block_hash: block_hash,
-            }]
+            vec![ForkchoiceState::same_hash(block_hash)]
         );
     });
 }
@@ -373,9 +370,7 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
 
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices[0].head_block_hash, first_digest.0);
-        assert_eq!(forkchoices[1].head_block_hash, highest_digest.0);
-        assert_eq!(forkchoices[1].safe_block_hash, highest_digest.0);
-        assert_eq!(forkchoices[1].finalized_block_hash, highest_digest.0);
+        assert_eq!(forkchoices[1], ForkchoiceState::same_hash(highest_digest.0));
     });
 }
 
@@ -416,9 +411,7 @@ fn tip_drives_forkchoice_by_round() {
 
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices.len(), 2);
-        assert_eq!(forkchoices[1].head_block_hash, finalized.0);
-        assert_eq!(forkchoices[1].safe_block_hash, finalized.0);
-        assert_eq!(forkchoices[1].finalized_block_hash, finalized.0);
+        assert_eq!(forkchoices[1], ForkchoiceState::same_hash(finalized.0));
     });
 }
 
@@ -706,8 +699,6 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
 
         let forkchoice = provider.forkchoices()[0];
-        assert_eq!(forkchoice.head_block_hash, finalized_hash);
-        assert_eq!(forkchoice.safe_block_hash, finalized_hash);
-        assert_eq!(forkchoice.finalized_block_hash, finalized_hash);
+        assert_eq!(forkchoice, ForkchoiceState::same_hash(finalized_hash));
     });
 }
