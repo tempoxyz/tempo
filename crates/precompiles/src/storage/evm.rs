@@ -1177,7 +1177,7 @@ mod tests {
     fn test_sstore_reentrancy_sentry_blocks_dirty_write() -> eyre::Result<()> {
         for spec in [TempoHardfork::T11, TempoHardfork::T12] {
             let mut evm = TestEvm::new(spec);
-            let gas_params = evm.version.gas_params.clone();
+            let gas_params = evm.version.gas_params;
             let address = Address::random();
             let key = U256::from(42);
 

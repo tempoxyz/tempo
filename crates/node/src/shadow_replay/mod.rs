@@ -833,7 +833,7 @@ mod tests {
         let db = executor.evm_mut().overlay_db_mut();
         let saved = save_pre_block_info(&db.cache, &pre_block, &state);
         let old_code = Bytecode::new_raw(ZONE_PORTAL_RUNTIME);
-        let original = evm2::evm::AccountInfo::default().with_code(old_code.clone());
+        let original = evm2::evm::AccountInfo::default().with_code(old_code);
         let current = evm2::evm::AccountInfo {
             balance: U256::from(9),
             ..original.clone()
