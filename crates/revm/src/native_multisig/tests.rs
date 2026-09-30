@@ -122,7 +122,7 @@ fn native_authorization_roles_preserve_order_and_duplicate_accounts() {
             .iter()
             .all(Option::is_none)
     );
-    let (mut tx, _) = fixture();
+    let (mut tx, block) = fixture();
     assert!(authorizations(&tx)[0].is_some());
     assert!(authorizations(&tx)[1].is_none());
     let caller = tx.caller;
@@ -139,6 +139,17 @@ fn native_authorization_roles_preserve_order_and_duplicate_accounts() {
     assert_eq!(outer.inner_digest, outer_digest);
     assert_eq!(grant.inner_digest, grant_digest);
     assert_ne!(outer.inner_digest, grant.inner_digest);
+    tx.tempo_tx_env.as_mut().unwrap().nonce_key =
+        tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+    let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(CacheDB::new(EmptyDB::default()));
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    assert_eq!(
+        validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas)
+            .unwrap()
+            .1,
+        gas.new_account_state_gas(),
+        "two roles for one account create only one leaf"
+    );
 
     tx.tempo_tx_env.as_mut().unwrap().signature = TempoSignature::Keychain(KeychainSignature::new(
         tx.caller,
@@ -163,7 +174,7 @@ fn native_state_registration_gas_and_registered_v0() {
     let gas = tempo_gas_params(TempoHardfork::T14);
     assert_eq!(
         validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas).unwrap(),
-        20_000 + keccak_cost(77) + keccak_cost(85)
+        (20_000 + keccak_cost(77) + keccak_cost(85), 0)
     );
     verify(&tx).unwrap();
     let hash = authorizations(&tx)[0]
@@ -175,7 +186,7 @@ fn native_state_registration_gas_and_registered_v0() {
         encode_config_commitment(hash).into();
     assert_eq!(
         validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas).unwrap(),
-        0
+        (0, 0)
     );
     journal.state.get_mut(&tx.caller).unwrap().info.extension =
         encode_config_commitment(B256::repeat_byte(0x99)).into();

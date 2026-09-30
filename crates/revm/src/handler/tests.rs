@@ -100,17 +100,80 @@ fn native_fixture() -> TestHandlerEvm {
     test
 }
 
+#[test]
+fn native_registration_charges_empty_sender_creation_once() {
+    let gas_params = tempo_gas_params(TempoHardfork::T14);
+    for (nonce_key, funded) in [
+        (U256::ZERO, false),
+        (U256::from(1), false),
+        (TEMPO_EXPIRING_NONCE_KEY, false),
+        (TEMPO_EXPIRING_NONCE_KEY, true),
+    ] {
+        let mut test = native_fixture();
+        let account = test.evm.ctx.tx.caller;
+        test.evm.ctx.tx.nonce = 0;
+        test.evm.ctx.tx.tempo_tx_env.as_mut().unwrap().nonce_key = nonce_key;
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            test.evm.ctx.tx.fee_payer = Some(Some(Address::repeat_byte(0x45)));
+        }
+        if funded {
+            test.evm.ctx.journaled_state.database.insert_account_info(
+                account,
+                revm::state::AccountInfo {
+                    balance: U256::from(1),
+                    ..Default::default()
+                },
+            );
+        }
+        let base = validate_aa_initial_tx_gas(&test.evm).unwrap();
+        let config = crate::native_multisig::authorizations(&test.evm.ctx.tx)[0]
+            .as_ref()
+            .unwrap()
+            .signature
+            .config();
+        let proof_and_write =
+            tempo_precompiles::native_multisig::initial_account_proof_gas(config) + 20_000;
+        let creates_account = nonce_key == TEMPO_EXPIRING_NONCE_KEY && !funded;
+        let actual = test.validate_initial_tx_gas();
+        assert_eq!(
+            actual.initial_regular_gas - base.initial_regular_gas,
+            proof_and_write
+                + if creates_account {
+                    gas_params.get(GasId::new_account_cost())
+                } else {
+                    0
+                },
+            "nonce_key={nonce_key}, funded={funded}"
+        );
+        assert_eq!(
+            actual.initial_state_gas - base.initial_state_gas,
+            if creates_account {
+                gas_params.new_account_state_gas()
+            } else {
+                0
+            },
+            "nonce_key={nonce_key}, funded={funded}"
+        );
+    }
+}
+
 #[test_case::test_case(InstructionResult::Revert; "revert")]
 #[test_case::test_case(InstructionResult::OutOfGas; "halt")]
 fn native_registration_first_call_failure_and_retry(failure: InstructionResult) {
     let mut test = native_fixture();
+    test.evm.ctx.tx.tempo_tx_env.as_mut().unwrap().nonce_key = TEMPO_EXPIRING_NONCE_KEY;
     let account = test.evm.ctx.tx.caller;
     let expected = crate::native_multisig::authorizations(&test.evm.ctx.tx)[0]
         .as_ref()
         .unwrap()
         .signature
         .config_commitment();
-    test.validate_initial_tx_gas();
+    let base = validate_aa_initial_tx_gas(&test.evm).unwrap();
+    let initial = test.validate_initial_tx_gas();
+    assert_eq!(
+        initial.initial_state_gas - base.initial_state_gas,
+        test.gas_params().new_account_state_gas()
+    );
     for succeed in [false, true] {
         let calls = test
             .evm
