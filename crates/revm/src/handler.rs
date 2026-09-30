@@ -2149,7 +2149,7 @@ where
             // correctly. Upstream repeats this idempotent setup before applying authorizations.
             self.load_accounts(evm)?;
         }
-        let native_gas = {
+        let (native_regular_gas, native_state_gas) = {
             let ctx = evm.ctx_mut();
             crate::native_multisig::validate_state(
                 &mut ctx.journaled_state,
@@ -2233,10 +2233,13 @@ where
             init_gas
         };
 
-        init_gas.initial_regular_gas += native_gas;
+        init_gas.initial_regular_gas += native_regular_gas;
+        init_gas.initial_state_gas += native_state_gas;
         // Recheck only newly added native costs: the AA helper deliberately adds
         // Genesis 2D nonce gas after its historical sufficiency validation.
-        if native_gas != 0 && gas_limit < init_gas.initial_total_gas() {
+        if (native_regular_gas != 0 || native_state_gas != 0)
+            && gas_limit < init_gas.initial_total_gas()
+        {
             return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                 gas_limit,
                 initial_gas: init_gas.initial_total_gas(),
@@ -2436,11 +2439,20 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     Ok(gas)
 }
 
-/// Validates and calculates initial transaction gas for AA transactions.
-///
-/// Calculates intrinsic gas based on:
-/// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
-/// - Batch call costs (per-call overhead, calldata, CREATE, value transfers)
+/// Whether the AA intrinsic charge already covers creation of the sender account.
+pub(crate) fn pays_nonce_zero_account_gas(
+    tx: &crate::TempoTxEnv,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> bool {
+    spec.is_t1()
+        && tx.nonce == 0
+        && tx
+            .tempo_tx_env
+            .as_ref()
+            .is_some_and(|aa| aa.nonce_key != TEMPO_EXPIRING_NONCE_KEY)
+}
+
+/// Validates and calculates intrinsic gas for AA signatures and batch calls.
 fn validate_aa_initial_tx_gas<DB, I>(
     evm: &TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
@@ -2483,7 +2495,7 @@ where
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
             // - Regular nonce (nonce_key == 0): no additional gas
             batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
-        } else if tx.nonce == 0 {
+        } else if pays_nonce_zero_account_gas(tx, spec) {
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
             batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());

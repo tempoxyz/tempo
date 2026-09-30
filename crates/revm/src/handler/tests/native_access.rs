@@ -76,6 +76,17 @@ impl NativeAccessFixture {
     }
 
     fn evm(&self, case: GrantCase, warmth: Warmth, gas_limit: u64) -> TestHandlerEvm {
+        self.evm_with_nonce(case, warmth, gas_limit, U256::ZERO, 3)
+    }
+
+    fn evm_with_nonce(
+        &self,
+        case: GrantCase,
+        warmth: Warmth,
+        gas_limit: u64,
+        nonce_key: U256,
+        nonce: u64,
+    ) -> TestHandlerEvm {
         let native_parent = matches!(case, GrantCase::NativeGrant | GrantCase::NativeGrantAndUse);
         let parent_config = native_parent.then_some(&self.parent_config);
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Multisig, self.delegate());
@@ -85,6 +96,8 @@ impl NativeAccessFixture {
             warmth,
             gas_limit,
             grant.into_signed(AccountSignature::try_from(grant_signature).unwrap()),
+            nonce_key,
+            nonce,
         )
     }
 
@@ -94,6 +107,8 @@ impl NativeAccessFixture {
         warmth: Warmth,
         gas_limit: u64,
         authorization: SignedKeyAuthorization,
+        nonce_key: U256,
+        nonce: u64,
     ) -> TestHandlerEvm {
         let native_parent = matches!(
             case,
@@ -109,7 +124,8 @@ impl NativeAccessFixture {
         });
         let tx = TempoTransaction {
             chain_id: 1,
-            nonce: 3,
+            nonce,
+            nonce_key,
             gas_limit,
             fee_token: Some(PATH_USD_ADDRESS),
             calls: vec![Call {
@@ -147,7 +163,7 @@ impl NativeAccessFixture {
         let mut test = TestHandlerEvm::new(TempoHardfork::T14, env);
         test.evm.ctx.block.multisig_recovery_factory = Some(Self::FACTORY);
         let mut parent_info = AccountInfo {
-            nonce: 3,
+            nonce: if nonce_key.is_zero() { nonce } else { 0 },
             ..Default::default()
         };
         if native_parent && admin_delegate {
@@ -331,6 +347,8 @@ fn native_handler_binds_grant_roles(case: GrantBindingCase) {
         Warmth::Cold,
         1_000_000,
         authorization,
+        U256::ZERO,
+        3,
     );
     // All quorums are genuinely signed over this transaction, including the
     // changed grant. Failures below must be role binding, not bad cryptography.
@@ -390,7 +408,8 @@ fn multisig_admin_can_sign_inline_grant(case: GrantCase) {
         grant.signature_hash(),
     );
     let authorization = grant.into_signed(AccountSignature::try_from(signature).unwrap());
-    let mut test = fixture.evm_with_authorization(case, Warmth::Cold, 1_000_000, authorization);
+    let mut test =
+        fixture.evm_with_authorization(case, Warmth::Cold, 1_000_000, authorization, U256::ZERO, 3);
 
     assert!(test.handler.run(&mut test.evm).unwrap().is_success());
     StorageCtx::enter_ctx(test.evm.ctx_mut(), StorageActions::disabled(), || {
@@ -430,10 +449,27 @@ fn native_delegate_access_is_intrinsic_once(case: GrantCase) {
                 registered.push(role.signature.account());
             }
         }
+        let creates_delegate = matches!(
+            case,
+            GrantCase::PrimitiveGrantAndUse | GrantCase::NativeGrantAndUse
+        );
+        if creates_delegate {
+            expected +=
+                gas_params.get(GasId::new_account_cost()) + gas_params.new_account_state_gas();
+        }
         let actual = test.validate_initial_tx_gas();
         assert_eq!(
             actual.initial_total_gas() - base.initial_total_gas(),
             expected,
+            "{case:?}, {warmth:?}"
+        );
+        assert_eq!(
+            actual.initial_state_gas - base.initial_state_gas,
+            if creates_delegate {
+                gas_params.new_account_state_gas()
+            } else {
+                0
+            },
             "{case:?}, {warmth:?}"
         );
         assert!(
@@ -482,4 +518,129 @@ fn native_delegate_access_is_intrinsic_once(case: GrantCase) {
             "only an authorizing delegate is registered: {case:?}, {warmth:?}",
         );
     }
+}
+
+#[test]
+fn native_delegate_creation_gas_covers_all_nonce_types() {
+    let fixture = NativeAccessFixture::new();
+    let gas_params = tempo_gas_params(TempoHardfork::T14);
+    for nonce_key in [U256::ZERO, U256::from(1), TEMPO_EXPIRING_NONCE_KEY] {
+        for funded in [false, true] {
+            let mut test = fixture.evm_with_nonce(
+                GrantCase::PrimitiveGrantAndUse,
+                Warmth::Cold,
+                1_500_000,
+                nonce_key,
+                0,
+            );
+            if funded {
+                test.evm.ctx.journaled_state.database.insert_account_info(
+                    fixture.delegate(),
+                    AccountInfo {
+                        balance: U256::from(1),
+                        ..Default::default()
+                    },
+                );
+            }
+            let base = validate_aa_initial_tx_gas(&test.evm).unwrap();
+            let actual = test.validate_initial_tx_gas();
+            let proof_and_access = tempo_precompiles::native_multisig::initial_account_proof_gas(
+                &fixture.delegate_config,
+            ) + 20_000
+                + gas_params.warm_storage_read_cost()
+                + gas_params.cold_account_additional_cost();
+            assert_eq!(
+                actual.initial_regular_gas - base.initial_regular_gas,
+                proof_and_access
+                    + if funded {
+                        0
+                    } else {
+                        gas_params.get(GasId::new_account_cost())
+                    },
+                "nonce_key={nonce_key}, funded={funded}"
+            );
+            assert_eq!(
+                actual.initial_state_gas - base.initial_state_gas,
+                if funded {
+                    0
+                } else {
+                    gas_params.new_account_state_gas()
+                },
+                "nonce_key={nonce_key}, funded={funded}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_delegate_creation_gas_survives_revert() {
+    let fixture = NativeAccessFixture::new();
+    let mut used = [0; 2];
+    for (index, funded) in [true, false].into_iter().enumerate() {
+        let mut test = fixture.evm(GrantCase::PrimitiveGrantAndUse, Warmth::Cold, 1_000_000);
+        if funded {
+            test.evm.ctx.journaled_state.database.insert_account_info(
+                fixture.delegate(),
+                AccountInfo {
+                    balance: U256::from(1),
+                    ..Default::default()
+                },
+            );
+        }
+        let code = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0, 0x60, 0, 0xfd]));
+        test.evm.ctx.journaled_state.database.insert_account_info(
+            Address::repeat_byte(0x44),
+            AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+        let result = test.handler.run(&mut test.evm).unwrap();
+        assert!(!result.is_success());
+        assert!(
+            !test.evm.ctx.journaled_state.state[&fixture.delegate()]
+                .info
+                .extension
+                .is_empty()
+        );
+        used[index] = result.tx_gas_used();
+    }
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    assert_eq!(
+        used[1] - used[0],
+        gas.get(GasId::new_account_cost()) + gas.new_account_state_gas()
+    );
+}
+
+#[test]
+fn native_sender_and_delegate_creation_are_charged_separately() {
+    let fixture = NativeAccessFixture::new();
+    let gas_params = tempo_gas_params(TempoHardfork::T14);
+    let mut test = fixture.evm_with_nonce(
+        GrantCase::NativeGrantAndUse,
+        Warmth::Cold,
+        1_500_000,
+        TEMPO_EXPIRING_NONCE_KEY,
+        0,
+    );
+    let base = validate_aa_initial_tx_gas(&test.evm).unwrap();
+    let actual = test.validate_initial_tx_gas();
+    let proof_and_writes = [&fixture.parent_config, &fixture.delegate_config]
+        .iter()
+        .map(|config| {
+            tempo_precompiles::native_multisig::initial_account_proof_gas(config) + 20_000
+        })
+        .sum::<u64>();
+    assert_eq!(
+        actual.initial_regular_gas - base.initial_regular_gas,
+        proof_and_writes
+            + gas_params.warm_storage_read_cost()
+            + gas_params.cold_account_additional_cost()
+            + 2 * gas_params.get(GasId::new_account_cost())
+    );
+    assert_eq!(
+        actual.initial_state_gas - base.initial_state_gas,
+        2 * gas_params.new_account_state_gas()
+    );
 }
