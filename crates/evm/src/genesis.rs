@@ -5,67 +5,85 @@
 //! holds the pieces they share; chain-specific accounts, anchors and policies remain with each
 //! generator.
 
-use crate::evm::{TempoEvm, TempoEvmFactory};
+use crate::{SYSTEM_CALL_GAS_LIMIT, TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
 use alloy_genesis::{ChainConfig, GenesisAccount};
 use alloy_primitives::{Address, Bytes, U256};
-use reth_evm::{
-    Evm as _, EvmEnv, EvmFactory as _,
-    revm::{
-        DatabaseCommit as _,
-        database::{CacheDB, EmptyDB},
-        state::{AccountInfo, Bytecode},
-    },
+use evm2::{
+    bytecode::Bytecode,
+    evm::{AccountInfo, InMemoryDB, SystemTx, precompile::NoPrecompiles},
+    interpreter::GasTracker,
 };
 use tempo_chainspec::TempoHardfork;
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, PERMIT2_ADDRESS, PERMIT2_SALT,
     contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
 };
-use tempo_precompiles::storage::{StorageActions, StorageCtx};
-use tempo_revm::TempoBlockEnv;
+use tempo_precompiles::storage::{StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider};
 
 /// In-memory EVM used to build genesis state.
-pub type GenesisEvm = TempoEvm<CacheDB<EmptyDB>>;
+pub type GenesisEvm = TempoEvm<'static>;
+
+/// Fully resolved configuration for an in-memory genesis EVM.
+#[derive(Debug)]
+pub struct GenesisEvmEnv {
+    /// Tempo hardfork active while constructing genesis state.
+    pub spec: TempoHardfork,
+    /// Chain ID exposed to EVM execution.
+    pub chain_id: u64,
+    /// Block environment used by genesis system calls.
+    pub block_env: TempoBlockEnv,
+}
 
 /// Returns the EVM environment used for genesis initialization: timestamp zero and `chain_id`.
 ///
 /// Callers may adjust limits before [`create_genesis_evm`].
-pub fn genesis_evm_env(chain_id: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
-    // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
-    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
-    env.cfg_env.chain_id = chain_id;
-    env
+pub fn genesis_evm_env(chain_id: u64) -> GenesisEvmEnv {
+    let block_env = TempoBlockEnv {
+        timestamp: U256::ZERO,
+        ..Default::default()
+    };
+    GenesisEvmEnv {
+        spec: TempoHardfork::T0,
+        chain_id,
+        block_env,
+    }
 }
 
 /// Creates an empty in-memory genesis EVM.
-pub fn create_genesis_evm(env: EvmEnv<TempoHardfork, TempoBlockEnv>) -> GenesisEvm {
-    TempoEvmFactory::default().create_evm(CacheDB::default(), env)
+pub fn create_genesis_evm(env: GenesisEvmEnv) -> GenesisEvm {
+    build_tempo_evm(
+        env.spec,
+        env.chain_id,
+        env.block_env,
+        InMemoryDB::default(),
+        NoPrecompiles::default(),
+        TempoEvmExt::default(),
+    )
 }
 
 /// Runs `f` with precompile storage bound to the genesis EVM, with storage actions disabled.
 pub fn with_genesis_storage<R>(evm: &mut GenesisEvm, f: impl FnOnce() -> R) -> R {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        f,
-    )
+    let spec = evm.config_spec_id();
+    let non_creditable_slots = evm.ext().non_creditable_slots.clone();
+    let mut gas = GasTracker::new(u64::MAX);
+    let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
+        .with_actions(StorageActions::disabled())
+        .with_non_creditable_slots(non_creditable_slots);
+    let result = StorageCtx::enter(&mut storage, f);
+    drop(storage);
+
+    evm.state_mut().commit_transaction();
+    evm.state_mut().clear_transaction_state();
+    result
 }
 
 /// Deploys the Arachnid CREATE2 factory by directly inserting it into the EVM state.
 pub fn deploy_arachnid_create2_factory(evm: &mut GenesisEvm) {
     println!("Deploying Arachnid CREATE2 factory at {ARACHNID_CREATE2_FACTORY_ADDRESS}");
 
-    evm.db_mut().insert_account_info(
-        ARACHNID_CREATE2_FACTORY_ADDRESS,
-        AccountInfo {
-            code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
-            nonce: 0,
-            ..Default::default()
-        },
+    evm.overlay_db_mut().insert_account_info(
+        &ARACHNID_CREATE2_FACTORY_ADDRESS,
+        AccountInfo::default().with_code(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
     );
 }
 
@@ -83,12 +101,15 @@ pub fn deploy_permit2(evm: &mut GenesisEvm) -> eyre::Result<()> {
 
     println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
 
-    let result =
-        evm.transact_system_call(Address::ZERO, ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)?;
-    if !result.result.is_success() {
-        eyre::bail!("Permit2 deployment failed: {result:?}");
+    let result = evm.system_call(
+        SystemTx::new(ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)
+            .with_caller(Address::ZERO)
+            .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
+    )?;
+    if !result.result().status {
+        eyre::bail!("Permit2 deployment failed: {:?}", result.result());
     }
-    evm.db_mut().commit(result.state);
+    let _ = result.commit();
 
     println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
     Ok(())
@@ -105,7 +126,8 @@ pub fn genesis_account(
         .collect::<std::collections::BTreeMap<_, _>>();
     GenesisAccount {
         nonce: Some(info.nonce),
-        code: info.code.as_ref().map(|code| code.original_bytes()),
+        balance: info.balance,
+        code: info.code.as_ref().map(Bytecode::original_bytes),
         storage: (!storage.is_empty()).then_some(storage),
         ..Default::default()
     }
@@ -159,14 +181,11 @@ mod tests {
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm).unwrap();
 
-        let permit2 = &evm.db_mut().cache.accounts[&PERMIT2_ADDRESS];
-        assert!(
-            permit2
-                .info
-                .code
-                .as_ref()
-                .is_some_and(|code| !code.is_empty())
-        );
+        let state = &evm.overlay_db().cache;
+        let permit2 = state.accounts[&PERMIT2_ADDRESS]
+            .as_ref()
+            .expect("Permit2 account must exist");
+        assert!(!state.contracts[&permit2.code_hash].is_empty());
     }
 
     #[test]

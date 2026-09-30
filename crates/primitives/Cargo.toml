@@ -26,12 +26,9 @@ reth-primitives-traits = { workspace = true, optional = true }
 reth-codecs = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
-# revm
-revm = { workspace = true, optional = true }
-
 # Alloy
 alloy-consensus = { workspace = true, features = ["k256"] }
-alloy-evm = { workspace = true, optional = true }
+evm2 = { workspace = true, optional = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -83,9 +80,9 @@ test-utils = [
 	"reth-primitives-traits?/test-utils",
 ]
 std = [
+	"evm2?/std",
 	"alloy-consensus/secp256k1",
 	"alloy-consensus/std",
-	"alloy-evm?/std",
 	"alloy-eips/std",
 	"alloy-primitives/std",
 	"alloy-rlp/std",
@@ -98,9 +95,6 @@ std = [
 	"p256/std",
 	"reth-ethereum-primitives?/std",
 	"reth-primitives-traits?/std",
-	"revm?/std",
-	"revm?/blst",
-	"revm?/c-kzg",
 	"serde/std",
 	"serde_json/std",
 	"sha2/std",
@@ -111,6 +105,7 @@ std = [
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [
 	"dep:alloy-serde",
+	"evm2?/serde",
 	"alloy-consensus/serde",
 	"reth-primitives-traits?/serde",
 	"reth-ethereum-primitives?/serde",
@@ -120,10 +115,9 @@ serde = [
 	"p256/serde",
 	"rand/serde",
 	"tracing-subscriber/serde",
-	"revm?/serde",
 	"tempo-contracts/serde",
 ]
-evm = ["dep:alloy-evm", "dep:revm"]
+evm = ["dep:evm2"]
 reth-codec = [
 	"reth",
 	"serde",
@@ -149,13 +143,13 @@ arbitrary = [
 	"alloy-primitives/arbitrary",
 	"alloy-eips/arbitrary",
 	"commonware-cryptography/arbitrary",
+	"evm2?/arbitrary",
 	"reth-codecs?/arbitrary",
 	"alloy-serde?/arbitrary",
 	"reth-ethereum-primitives?/arbitrary",
 	"reth-primitives-traits?/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
-	"revm?/arbitrary",
 	"alloy-sol-types/arbitrary",
 ]
 rpc = [

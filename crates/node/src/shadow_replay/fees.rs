@@ -4,13 +4,13 @@
 //! and fee paths outside these hooks are not tracked.
 
 use alloy_primitives::{Address, U256};
-use reth_revm::context::JournalTr as _;
-use std::{cell::RefCell, collections::HashSet, ops::Range, rc::Rc};
+use parking_lot::Mutex;
+use std::{collections::HashSet, ops::Range, sync::Arc};
+use tempo_evm::{ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 use tempo_precompiles::{
     storage::{StorageAction, StorageActions},
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
-use tempo_revm::{ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 
 /// Storage slots and log ranges produced by protocol fee hooks during one transaction.
 #[derive(Debug, Default)]
@@ -27,35 +27,23 @@ pub(super) struct FeeWrites {
 
 /// Delegates protocol fee collection while recording hook-local storage writes and emitted logs.
 #[derive(Debug, Clone)]
-pub(super) struct RecordingFeeManager(pub(super) Rc<RefCell<FeeWrites>>);
+pub(super) struct RecordingFeeManager(pub(super) Arc<Mutex<FeeWrites>>);
 
 impl RecordingFeeManager {
     /// Runs one fee hook with an isolated recorder and returns its ordered storage writes.
-    fn record<DB: alloy_evm::Database, R>(
+    fn record<R>(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
-        collect: impl FnOnce(ProtocolFeeContext<'_, DB>) -> R,
+        ctx: ProtocolFeeContext<'_, '_>,
+        collect: impl FnOnce(ProtocolFeeContext<'_, '_>) -> R,
     ) -> (R, Vec<StorageAction>) {
-        let ProtocolFeeContext {
-            journal,
-            block_env,
-            cfg,
-            tx_env,
-            ..
-        } = ctx;
-        let before = journal.logs().len();
+        let host = ctx.host;
+        let before = host.logs().len();
         let actions = StorageActions::enabled();
-        let result = collect(ProtocolFeeContext {
-            journal: &mut *journal,
-            block_env,
-            cfg,
-            tx_env,
-            actions: actions.clone(),
-        });
-        let writes = self.consolidate(
-            actions.take().unwrap_or_default(),
-            before..journal.logs().len(),
-        );
+        let previous = std::mem::replace(&mut host.ext_mut().actions, actions.clone());
+        let result = collect(ProtocolFeeContext { host: &mut *host });
+        let after = host.logs().len();
+        host.ext_mut().actions = previous;
+        let writes = self.consolidate(actions.take().unwrap_or_default(), before..after);
         (result, writes)
     }
 
@@ -65,7 +53,7 @@ impl RecordingFeeManager {
         mut actions: Vec<StorageAction>,
         range: Range<usize>,
     ) -> Vec<StorageAction> {
-        let mut writes = self.0.borrow_mut();
+        let mut writes = self.0.lock();
         actions.retain(|action| {
             let slot = match action {
                 StorageAction::Sstore(_, key, ..)
@@ -125,10 +113,10 @@ pub(super) fn post_fee_slot_change(
     change
 }
 
-impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for RecordingFeeManager {
+impl ProtocolFeeManager for RecordingFeeManager {
     fn collect_fee_pre_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         user_token: Address,
         max_amount: U256,
@@ -146,21 +134,21 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for RecordingFeeManager {
             )
         });
         if result.is_ok() {
-            self.0.borrow_mut().pre_tx_max = Some(max_amount);
+            self.0.lock().pre_tx_max = Some(max_amount);
         }
         result
     }
 
     fn collect_fee_post_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,
         fee_token: Address,
         beneficiary: Address,
     ) -> tempo_precompiles::error::Result<U256> {
-        let log_index = ctx.journal.logs().len();
+        let log_index = ctx.host.logs().len();
         let (result, actions) = self.record(ctx, |ctx| {
             TempoFeeManager::new().collect_fee_post_tx(
                 ctx,
@@ -172,7 +160,7 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for RecordingFeeManager {
             )
         });
         if result.is_ok() {
-            let mut writes = self.0.borrow_mut();
+            let mut writes = self.0.lock();
             writes.post_tx_actions = actions;
             writes.post_tx_transfer = Some((
                 log_index,

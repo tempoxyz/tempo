@@ -1,47 +1,19 @@
 use std::{num::NonZeroU64, sync::Arc};
 
-use alloy_evm::{Database, EvmEnv};
-use alloy_primitives::{B256, Bytes};
+use crate::{
+    TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvmConfig,
+    TempoEvmEnv, block::BlockSection,
+};
+use alloy_primitives::{B256, Bytes, U256};
+use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
-use reth_evm::block::StateDB;
-use reth_revm::context::BlockEnv;
-use revm::inspector::NoOpInspector;
+use reth_evm::BlockExecutorFactory;
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::MODERATO};
-use tempo_revm::TempoBlockEnv;
-
-use crate::{TempoBlockExecutionCtx, block::TempoBlockExecutor, evm::TempoEvm};
-use alloy_evm::eth::EthBlockExecutionCtx;
-use alloy_primitives::U256;
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
     Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
 }
-
-pub(crate) fn test_evm<DB: Database>(db: DB) -> TempoEvm<DB, NoOpInspector> {
-    test_evm_with_basefee(db, 1)
-}
-
-pub(crate) fn test_evm_with_basefee<DB: Database>(
-    db: DB,
-    basefee: u64,
-) -> TempoEvm<DB, NoOpInspector> {
-    TempoEvm::new(
-        db,
-        EvmEnv {
-            block_env: TempoBlockEnv {
-                inner: BlockEnv {
-                    basefee,
-                    gas_limit: 30_000_000,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    )
-}
-
-use crate::block::BlockSection;
 
 pub(crate) struct TestExecutorBuilder {
     pub(crate) block_number: u64,
@@ -50,7 +22,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
     pub(crate) parent_beacon_block_root: Option<B256>,
-    /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
+    /// Enables the Amsterdam EIP-8037 feature to gate TIP-1016 behavior in tests.
     pub(crate) amsterdam_eip8037_enabled: bool,
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
@@ -106,7 +78,7 @@ impl TestExecutorBuilder {
         self
     }
 
-    /// Toggles `cfg_env.enable_amsterdam_eip8037`, which gates TIP-1016 (state gas split)
+    /// Toggles the Amsterdam EIP-8037 feature, which gates TIP-1016 (state gas split)
     /// behavior independently of the T4 hardfork.
     pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
@@ -119,27 +91,30 @@ impl TestExecutorBuilder {
         self
     }
 
-    pub(crate) fn build<'a, DB: StateDB>(
+    pub(crate) fn build<'a>(
         self,
-        db: DB,
+        database: impl DynDatabase + 'a,
         chainspec: &'a Arc<TempoChainSpec>,
-    ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
-        let mut cfg_env = revm::context::CfgEnv::default();
-        cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
-        cfg_env.spec = self.spec;
-
-        let evm = TempoEvm::new(
-            db,
-            EvmEnv {
-                cfg_env,
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        number: U256::from(self.block_number),
-                        basefee: 1,
-                        gas_limit: 30_000_000,
+    ) -> TempoBlockExecutor<'a> {
+        let spec = SpecId::OSAKA;
+        let mut version =
+            tempo_chainspec::gas_params::version(spec, self.spec, self.amsterdam_eip8037_enabled);
+        version.chain_id = chainspec.chain().id();
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+        let evm = TempoEvmConfig::new(chainspec.clone()).evm_with_env(
+            database,
+            TempoEvmEnv {
+                spec: self.spec,
+                version,
+                block: TempoBlockEnv {
+                    number: U256::from(self.block_number),
+                    gas_limit: U256::from(30_000_000),
+                    basefee: U256::ONE,
+                    ext: TempoBlockExt {
+                        epoch_length: self.epoch_length,
                         ..Default::default()
                     },
-                    epoch_length: self.epoch_length,
                     ..Default::default()
                 },
             },

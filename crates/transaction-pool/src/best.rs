@@ -5,17 +5,52 @@ use crate::{
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
-use reth_evm::block::TxResult;
+use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
+use reth_evm::BlockTransactionResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
+use tempo_evm::TempoEvmTypes;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
+
+struct DecreasedBalancesSink<'a>(&'a mut HashMap<(Address, U256), U256>);
+
+impl StateChangeSink for DecreasedBalancesSink<'_> {
+    type Error = core::convert::Infallible;
+
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        if !is_tip20_prefix(change.address) {
+            return Ok(());
+        }
+
+        if change.current < change.original {
+            self.0.insert((change.address, change.key), change.current);
+        } else if let Some(balance) = self.0.get_mut(&(change.address, change.key)) {
+            *balance = change.current;
+        }
+        Ok(())
+    }
+
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), Self::Error> {
+        if is_tip20_prefix(address)
+            && let Some(balance) = self.0.get_mut(&(address, key))
+        {
+            *balance = value;
+        }
+        Ok(())
+    }
+}
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
@@ -158,21 +193,12 @@ where
 
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
-    pub fn on_new_result(&mut self, result: &impl TxResult) {
-        for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
-                continue;
-            }
-
-            for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
-                    self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = storage_slot.present_value;
-                }
-            }
-        }
+    pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
+        result
+            .result()
+            .pending_state
+            .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
+            .unwrap();
     }
 }
 

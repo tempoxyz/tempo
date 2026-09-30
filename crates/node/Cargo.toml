@@ -25,12 +25,12 @@ tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, features = ["default"] }
-tempo-revm.workspace = true
 
 thiserror.workspace = true
 
 reth-chainspec.workspace = true
 reth-errors.workspace = true
+reth-execution-types.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
@@ -54,7 +54,7 @@ reth-storage-api.workspace = true
 reth-storage-overlay.workspace = true
 
 alloy-serde.workspace = true
-alloy-evm.workspace = true
+evm2.workspace = true
 alloy-eips.workspace = true
 alloy-rlp.workspace = true
 alloy-rpc-types-admin.workspace = true
@@ -106,7 +106,7 @@ alloy-rlp.workspace = true
 rand_09.workspace = true
 futures.workspace = true
 test-case.workspace = true
-indexmap.workspace = true
+indexmap = { workspace = true, features = ["serde"] }
 insta.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true }
@@ -121,11 +121,15 @@ default = []
 bal = ["tempo-payload-builder/bal"]
 asm-keccak = [
 	"alloy/asm-keccak",
-	"alloy-evm/asm-keccak",
+	"evm2/asm-keccak",
 	"alloy-primitives/asm-keccak",
 	"reth-node-core/asm-keccak",
 	"reth-node-ethereum/asm-keccak",
 	"tempo-alloy/asm-keccak",
+	"reth-ethereum/asm-keccak",
+	"reth-evm/asm-keccak",
+	"reth-execution-types/asm-keccak",
+	"reth-storage-api/asm-keccak",
 ]
 otlp = ["reth-ethereum/otlp", "reth-node-core/otlp"]
 js-tracer = [
