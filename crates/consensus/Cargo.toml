@@ -61,7 +61,6 @@ jsonrpsee = { workspace = true, features = ["http-client", "ws-client"] }
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 pin-project = "1.1.10"
-prometheus-client.workspace = true
 rand.workspace = true
 rand_08.workspace = true
 

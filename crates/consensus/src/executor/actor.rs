@@ -90,6 +90,7 @@ use commonware_consensus::{
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Spawner, spawn_cell,
+    telemetry::metrics::{Counter, Gauge, MetricsExt as _},
 };
 use commonware_utils::{
     Acknowledgement,
@@ -106,7 +107,6 @@ use futures::{
     future::{BoxFuture, poll_fn},
     stream::FuturesUnordered,
 };
-use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
@@ -256,15 +256,15 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 #[derive(Clone)]
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
-    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
+    finalized_blocks_proposed_by_self: Counter,
     /// Height distance from the locally canonicalized finalized tip up to
     /// the network's finalized tip: the undelivered finalized backlog.
-    finalization_lag: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    finalization_lag: Gauge,
     /// Height distance from the execution layer's head to the pending head:
     /// the convergence backlog. Negative when consensus re-anchored below
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
-    convergence_depth: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    convergence_depth: Gauge,
 }
 
 impl Metrics {
@@ -272,22 +272,19 @@ impl Metrics {
     where
         TContext: RuntimeMetrics,
     {
-        let finalized_blocks_proposed_by_self = context.register(
+        let finalized_blocks_proposed_by_self = context.counter(
             "finalized_blocks_proposed_by_self",
             "number of finalized blocks whose proposer matches this node's public key",
-            Counter::default(),
         );
-        let finalization_lag = context.register(
+        let finalization_lag = context.gauge(
             "finalization_lag",
             "height distance from the locally canonicalized finalized tip up to the \
             network's finalized tip",
-            Gauge::default(),
         );
-        let convergence_depth = context.register(
+        let convergence_depth = context.gauge(
             "convergence_depth",
             "height distance from the execution layer's head to the pending head \
             (negative after a re-anchor below the head)",
-            Gauge::default(),
         );
         Self {
             finalized_blocks_proposed_by_self,
