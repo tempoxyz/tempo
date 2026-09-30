@@ -58,7 +58,7 @@ on:
       general-gas-limit:
         type: string
         required: false
-        default: ""
+        default: "1500000000"
       run-pairs:
         type: string
         required: false
@@ -67,11 +67,23 @@ on:
         type: string
         required: false
         default: "feature-1"
+      txgen-ref:
+        type: string
+        required: false
+        default: ""
+      token-count:
+        type: string
+        required: false
+        default: "4"
       otlp:
         type: boolean
         required: false
         default: true
       metrics:
+        type: boolean
+        required: false
+        default: false
+      tcp-highres:
         type: boolean
         required: false
         default: false
@@ -194,11 +206,6 @@ on:
         type: string
         required: false
         default: ""
-      token-count:
-        description: Number of TIP20 tokens to use in txgen presets.
-        type: string
-        required: true
-        default: "4"
       profiling:
         description: Profiling.
         type: choice
@@ -216,6 +223,11 @@ on:
         default: true
       metrics:
         description: Upload benchmark metrics to VictoriaMetrics.
+        type: boolean
+        required: true
+        default: false
+      tcp-highres:
+        description: Collect and process high-resolution validator TCP samples.
         type: boolean
         required: true
         default: false
@@ -307,15 +319,16 @@ jobs:
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
-      BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
+      BENCH_INPUT_TOKEN_COUNT: ${{ fromJSON(toJSON(inputs))['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
       BENCH_INPUT_METRICS: ${{ (inputs.metrics == true || inputs.metrics == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_TCP_HIGHRES: ${{ (inputs['tcp-highres'] == true || inputs['tcp-highres'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
-      BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
+      BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '1500000000' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
@@ -572,6 +585,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -626,6 +640,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -673,6 +688,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
@@ -720,6 +736,7 @@ jobs:
             --token-count "$BENCH_INPUT_TOKEN_COUNT" \
             --profiling "$BENCH_INPUT_PROFILING" \
             --otlp "$BENCH_INPUT_OTLP" \
+            --tcp-highres "$BENCH_INPUT_TCP_HIGHRES" \
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \

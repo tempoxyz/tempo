@@ -6597,10 +6597,11 @@ dependencies = [
 
 [[package]]
 name = "keccak-asm"
-version = "0.1.7"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1766b89733097006f3a1388a02849865d6bc98c89273cb622e29fdd209922183"
+checksum = "f32890f646914a263e39064295005972f0e95b928254061b2aca98445f304ee9"
 dependencies = [
+ "cfg-if",
  "digest 0.10.7",
  "sha3-asm",
 ]
@@ -12938,9 +12939,9 @@ dependencies = [
 
 [[package]]
 name = "sha3-asm"
-version = "0.1.7"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f3f15d4e239ebe08413eed880e0f9b5af4b40ee0472543320efa91d488e96a7"
+checksum = "471668161349031e3d415412f996b030c477488eec267cc3cadae3d06c0a367f"
 dependencies = [
  "cc",
  "cfg-if",
@@ -13454,7 +13455,6 @@ dependencies = [
  "reth-eth-wire-types",
  "reth-ethereum",
  "reth-ethereum-cli",
- "reth-etl",
  "reth-metrics",
  "reth-network-api",
  "reth-network-peers",
@@ -13488,6 +13488,7 @@ dependencies = [
  "tempo-node",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-state-bloat",
  "tempo-telemetry-util",
  "tempo-validator-config",
  "tokio",
@@ -13555,6 +13556,7 @@ dependencies = [
  "alloy-evm",
  "alloy-genesis",
  "alloy-primitives",
+ "clap",
  "commonware-codec",
  "commonware-cryptography",
  "eyre",
@@ -14145,6 +14147,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-state-bloat"
+version = "1.14.0"
+dependencies = [
+ "alloy",
+ "alloy-primitives",
+ "clap",
+ "coins-bip32",
+ "eyre",
+ "indicatif",
+ "itertools 0.14.0",
+ "rayon",
+ "reth-chainspec",
+ "reth-cli",
+ "reth-cli-commands",
+ "reth-db-api",
+ "reth-etl",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-tasks",
+ "reth-trie",
+ "reth-trie-db",
+ "tempfile",
+ "tempo-chainspec",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tempo-telemetry-util"
 version = "1.14.0"
 dependencies = [
@@ -14219,7 +14251,6 @@ dependencies = [
  "alloy-primitives",
  "bytes",
  "clap",
- "coins-bip32",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
@@ -14244,6 +14275,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "tempfile",
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-contracts",
@@ -14252,6 +14284,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-state-bloat",
  "tempo-validator-config",
  "tokio",
 ]
