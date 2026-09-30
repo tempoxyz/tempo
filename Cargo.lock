@@ -13815,6 +13815,8 @@ dependencies = [
  "alloy-rlp",
  "crossbeam-channel",
  "metrics",
+ "metrics-exporter-prometheus",
+ "metrics-util",
  "proptest",
  "reth-basic-payload-builder",
  "reth-chainspec",

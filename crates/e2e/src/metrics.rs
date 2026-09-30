@@ -110,6 +110,11 @@ impl Metrics {
             .map(Sample::value)
     }
 
+    /// Returns whether a sample named exactly `name` exists.
+    pub fn contains(&self, name: &str) -> bool {
+        self.samples.iter().any(|s| s.name == name)
+    }
+
     /// Returns metrics for a metric-emitting runtime scope.
     pub fn for_scope(&self, scope: &impl MetricScope) -> Self {
         let prefix = format!("{}_", scope.metric_prefix());

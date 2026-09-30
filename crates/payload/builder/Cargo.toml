@@ -52,6 +52,8 @@ crossbeam-channel.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+metrics-exporter-prometheus.workspace = true
+metrics-util.workspace = true
 proptest.workspace = true
 
 [features]

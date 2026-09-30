@@ -265,3 +265,38 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         self.inner.state_root_from_nodes_with_updates(input)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use metrics_exporter_prometheus::PrometheusBuilder;
+    use metrics_util::layers::{Layer, PrefixLayer};
+
+    /// Metric names referenced by production alerts. Renaming any of these silently breaks
+    /// alerting, so the exported Prometheus names and quantile labels are pinned here.
+    ///
+    /// The node exports metrics through reth's recorder, which prefixes every name with `reth`.
+    #[test]
+    fn alerted_metric_names() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&PrefixLayer::new("reth").layer(recorder), || {
+            let metrics = TempoPayloadBuilderMetrics::default();
+            metrics.block_time_millis.record(500.0);
+            metrics.payload_build_duration_seconds.record(0.1);
+        });
+        let rendered = handle.render();
+
+        for sample in [
+            r#"reth_tempo_payload_builder_block_time_millis{quantile="0.99"}"#,
+            r#"reth_tempo_payload_builder_payload_build_duration_seconds{quantile="0.99"}"#,
+        ] {
+            assert!(
+                rendered
+                    .lines()
+                    .any(|line| line.split(' ').next() == Some(sample)),
+                "missing `{sample}` in:\n{rendered}"
+            );
+        }
+    }
+}
