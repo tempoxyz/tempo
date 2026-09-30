@@ -54,7 +54,6 @@ use tempo_chainspec::{
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoEvmConfig, TempoTxResult};
-use tempo_precompiles::storage::StorageActions;
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -384,13 +383,11 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .with_bundle_update()
             .build();
         let writes = Rc::new(RefCell::new(FeeWrites::default()));
-        let sentry = StorageActions::sentry_only();
         let evm = self
             .shadow_config
             .evm_for_block(&mut db, block.header())
             .map_err(|e| format!("failed to configure shadow EVM: {e}"))?
-            .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)))
-            .with_storage_actions(sentry.clone());
+            .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
         let context = self
             .shadow_config
             .context_for_block(block.sealed_block())
@@ -405,12 +402,10 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         executor.evm_mut().db_mut().bal_state = canonical_bal;
 
         for tx in block.transactions_recovered() {
-            sentry.take_sstore_sentry();
             match executor.execute_transaction_without_commit(tx) {
                 Ok(result) => {
-                    let mut observed =
+                    let observed =
                         ObservedTx::from_result(&result, std::mem::take(&mut *writes.borrow_mut()));
-                    observed.sstore_sentry = sentry.take_sstore_sentry();
                     shadow.txs.push(Ok(
                         observed.with_state(transition(result.into_result().state))
                     ));
@@ -561,6 +556,8 @@ struct ObservedTx {
     outcome: TxOutcome,
     /// Gas consumed by the transaction for its receipt and fee charge.
     gas_used: u64,
+    /// Gas consumed before refunds, used to estimate execution headroom.
+    gas_spent: u64,
     /// Hash of the unmodified ordered logs, used to validate canonical receipts.
     receipt_logs_hash: B256,
     /// Hash of the transaction's output bytes (empty when there is no output).
@@ -571,8 +568,6 @@ struct ObservedTx {
     fee: FeeWrites,
     /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
-    /// A precompile SSTORE hit the sentry during this transaction, including reverted calls.
-    sstore_sentry: bool,
 }
 
 impl ObservedTx {
@@ -587,12 +582,12 @@ impl ObservedTx {
                 reth_revm::context::result::ExecutionResult::Halt { .. } => TxOutcome::Halt,
             },
             gas_used: execution.tx_gas_used(),
+            gas_spent: execution.gas().total_gas_spent(),
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
             fee_normalized,
             fee: writes,
             state: TransitionState::default(),
-            sstore_sentry: false,
         }
     }
 

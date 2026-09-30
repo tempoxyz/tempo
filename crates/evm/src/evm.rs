@@ -24,10 +24,7 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{
-    storage::{StorageAction, StorageActions},
-    storage_credits::NonCreditableSlots,
-};
+use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
     ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -195,12 +192,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.inner.actions().replace(actions)
-    }
-
-    /// Uses the supplied recorder for precompile storage diagnostics.
-    pub fn with_storage_actions(mut self, actions: StorageActions) -> Self {
-        self.inner = self.inner.with_actions(actions);
-        self
     }
 }
 
@@ -1740,88 +1731,6 @@ mod tests {
                 snapshot
             );
         }
-    }
-
-    #[test]
-    fn self_transfer_sentry_evidence_survives_evm_rollback() {
-        let sender = Address::repeat_byte(0x11);
-        let make_evm = |spec| {
-            let mut env = evm_env_with_spec(spec);
-            env.block_env.basefee = 0;
-            let mut db = CacheDB::new(EmptyDB::default());
-            db.insert_account_info(
-                sender,
-                AccountInfo {
-                    nonce: 1,
-                    ..Default::default()
-                },
-            );
-            let mut evm = TempoEvm::new(db, env);
-            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
-                TIP20Setup::path_usd(sender)
-                    .with_issuer(sender)
-                    .with_mint(sender, U256::from(1_000_000))
-                    .apply()
-            })
-            .unwrap();
-            let state = evm.ctx_mut().journaled_state.finalize();
-            evm.db_mut().commit(state);
-            evm
-        };
-        let tx = |gas_limit| TempoTxEnv {
-            inner: TxEnv {
-                caller: sender,
-                nonce: 1,
-                gas_price: 0,
-                gas_limit,
-                kind: TxKind::Call(PATH_USD_ADDRESS),
-                data: ITIP20::transferCall {
-                    to: sender,
-                    amount: U256::ONE,
-                }
-                .abi_encode()
-                .into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut real = make_evm(TempoHardfork::T11);
-        let (mut low, mut high) = (21_000, 100_000);
-        assert!(real.transact_raw(tx(high)).unwrap().result.is_success());
-        while low < high {
-            let mid = (low + high) / 2;
-            if real
-                .transact_raw(tx(mid))
-                .is_ok_and(|r| r.result.is_success())
-            {
-                high = mid;
-            } else {
-                low = mid + 1;
-            }
-        }
-        assert!(real.transact_raw(tx(high)).unwrap().result.is_success());
-
-        let sentry = StorageActions::sentry_only();
-        let mut shadow = make_evm(TempoHardfork::T12).with_storage_actions(sentry.clone());
-        let result = shadow.transact_raw(tx(high)).unwrap();
-        assert_matches!(
-            result.result,
-            ExecutionResult::Halt {
-                reason: HaltReason::OutOfGas(_),
-                ..
-            }
-        );
-        assert!(sentry.take_sstore_sentry());
-        assert!(!sentry.take_sstore_sentry());
-        assert_eq!(shadow.take_actions(), Some(vec![]));
-        assert!(
-            shadow
-                .transact_raw(tx(100_000))
-                .unwrap()
-                .result
-                .is_success()
-        );
-        assert!(!sentry.take_sstore_sentry());
     }
 
     // ==================== TIP-1000 EVM Configuration Tests ====================

@@ -10,6 +10,7 @@ use alloy::{
     primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
     sol_types::SolCall as _,
 };
+use reth_revm::context_interface::cfg::gas::CALL_STIPEND;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::*,
@@ -284,22 +285,21 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
-/// Accepts rollback and fee effects of a direct TIP-20 transfer halted by T12's SSTORE sentry.
+/// Treats low-headroom direct TIP-20 success-to-halt transitions as T12 SSTORE sentry failures.
 const T12_SSTORE_SENTRY: Expectation = Expectation {
     id: "t12.sstore-sentry",
     check: |ctx, field| {
         let (real, shadow) = ctx.observed_txs()?;
         if real.outcome != TxOutcome::Success
             || shadow.outcome != TxOutcome::Halt
-            || !shadow.sstore_sentry
+            || ctx.tx?.gas_limit().checked_sub(real.gas_spent)? > CALL_STIPEND
             || field.name == "execution"
         {
             return None;
         }
 
-        // A contract can catch a sentry failure and later halt for an unrelated reason. Restrict
-        // this rule to one direct transfer, whose storage errors propagate to the tx outcome.
-        // In particular, a marker from an earlier AA subcall must not excuse a later halt.
+        // This is a gas-headroom heuristic, not proof of a sentry failure. Use pre-refund gas
+        // and restrict it to one direct transfer, excluding nested calls and AA batches.
         let mut calls = ctx.call();
         let (kind, calldata) = calls.next()?;
         if calls.next().is_some() || !kind.to()?.is_tip20() {
@@ -442,6 +442,7 @@ mod tests {
                     Ok(ObservedTx {
                         outcome: TxOutcome::Success,
                         gas_used,
+                        gas_spent: gas_used,
                         ..Default::default()
                     })
                 })
@@ -510,6 +511,7 @@ mod tests {
             TempoTransaction {
                 max_priority_fee_per_gas: 1_000_000_000_000,
                 max_fee_per_gas: 1_000_000_000_000,
+                gas_limit: 35_212,
                 calls,
                 ..Default::default()
             },
@@ -657,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn sentry_expectation_requires_a_direct_transfer_and_recorded_failure() {
+    fn sentry_expectation_requires_a_direct_transfer_and_low_gas_headroom() {
         let transfer = Call {
             to: TxKind::Call(address!("20c0000000000000000000000000000000000001")),
             value: U256::ZERO,
@@ -670,9 +672,10 @@ mod tests {
         };
         let mut real = evidence(&[32_366, 21_000]);
         let mut shadow = evidence(&[35_212, 21_000]);
+        // Refunds lower receipt gas used, but do not increase gas available during execution.
+        tx_mut(&mut real, 0).gas_spent = 35_166;
         let halted = tx_mut(&mut shadow, 0);
         halted.outcome = TxOutcome::Halt;
-        halted.sstore_sentry = true;
         halted.receipt_logs_hash = B256::repeat_byte(1);
         halted.output_hash = KECCAK256_EMPTY;
         write_slot(tx_mut(&mut real, 0), 900);
@@ -684,12 +687,21 @@ mod tests {
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
         assert_eq!(report.expected, [(T12_SSTORE_SENTRY.id, 4)].into());
 
-        tx_mut(&mut shadow, 0).sstore_sentry = false;
-        assert_eq!(
-            Report::analyze(&real, &shadow, &rules, &block).unexplained,
-            4
-        );
-        tx_mut(&mut shadow, 0).sstore_sentry = true;
+        for gas_spent in [35_212 - CALL_STIPEND, 35_212] {
+            tx_mut(&mut real, 0).gas_spent = gas_spent;
+            assert_eq!(
+                Report::analyze(&real, &shadow, &rules, &block).outcome(&shadow),
+                ReplayOutcome::Expected
+            );
+        }
+        for gas_spent in [35_212 - CALL_STIPEND - 1, 35_213] {
+            tx_mut(&mut real, 0).gas_spent = gas_spent;
+            assert_eq!(
+                Report::analyze(&real, &shadow, &rules, &block).unexplained,
+                4
+            );
+        }
+        tx_mut(&mut real, 0).gas_spent = 35_166;
         for outcome in [TxOutcome::Success, TxOutcome::Revert] {
             tx_mut(&mut shadow, 0).outcome = outcome;
             assert!(Report::analyze(&real, &shadow, &rules, &block).unexplained > 0);
