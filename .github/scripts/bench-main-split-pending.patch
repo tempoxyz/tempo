@@ -1,0 +1,89 @@
+--- a/scripts/txgen_workload.sh
++++ b/scripts/txgen_workload.sh
+@@ -328,10 +328,7 @@
+   local -a metrics_args=()
+   local -a report_args=()
+   rpc_urls="$(jq -r 'map(.rpc_url) | join(",")' "$VALIDATOR_ENDPOINTS_FILE")"
+-  while IFS= read -r metrics_url; do
+-    [[ -n "$metrics_url" ]] || continue
+-    metrics_args+=(--metrics-url "$metrics_url")
+-  done < <(validator_metrics_urls)
++  # Throughput-only experiment: do not scrape validator or TCP metrics.
+   txgen_out="$DEST/txgen.out"
+   txgen_generate_err="$DEST/txgen-generate.err"
+   txgen_send_err="$DEST/txgen-send.err"
+@@ -427,6 +424,14 @@
+   if [[ "$TXGEN_REQUIRES_KEYCHAIN_SETUP" == "true" ]]; then
+     bench_setup_args+=(--skip-setup)
+   fi
++  local -a pending_args
++  case "$phase_label" in
++    baseline-*) pending_args=(--max-pending 50000) ;;
++    feature-*) pending_args=(--max-pending-payments 40000 --max-pending-general 10000) ;;
++    *) echo "Unexpected experiment phase: $phase_label" >&2; return 1 ;;
++  esac
++  printf '%s\n' "${pending_args[@]}" > "$DEST/experiment-send-args.txt"
++
+   local -a generation_limit=(-n "$max_tx" --duration "${load_duration}s")
+   if ((BENCH_WARMUP_TIMEOUT_SECONDS > 0)); then
+     # The consumer owns the measurement clock. Cooldown backpressure must not
+@@ -447,6 +452,7 @@
+       --max-concurrent "$BENCH_MAX_CONCURRENT" \
+       --retries "${TEMPO_BENCH_SEND_RETRIES:-3}" \
+       "${bench_setup_args[@]}" \
++      "${pending_args[@]}" \
+       "${warmup_args[@]}" \
+       "${metrics_args[@]}" \
+       --scrape-interval-ms "${TEMPO_BENCH_SCRAPE_INTERVAL_MS:-1000}" \
+@@ -488,6 +494,17 @@
+     return 1
+   fi
+ 
++  if ! jq -e --arg phase "$phase_label" '
++    .metadata | if ($phase | startswith("baseline-")) then
++      .max_pending == "50000" and .max_pending_payments == null and .max_pending_general == null
++    else
++      .max_pending == "0" and .max_pending_payments == "40000" and .max_pending_general == "10000"
++    end
++  ' "$txgen_report"; then
++    echo "Experiment pending limits did not reach bench send: $phase_label" >&2
++    return 1
++  fi
++
+   if ! IFS=$'\t' read -r sent success failed failure_rate < <(
+     jq -er '
+       [
+@@ -790,7 +807,7 @@
+ 
+ bundle_dir="$1"
+ source "$bundle_dir/config.sh"
+-export TEMPO_BENCH_COLLECT_LATENCIES=true
++export TEMPO_BENCH_COLLECT_LATENCIES=false
+ export PATH="$bundle_dir/bin:$PATH"
+ DEST="$bundle_dir/results"
+ WORK_DIR="$bundle_dir/work"
+--- a/scripts/run_comparison.sh
++++ b/scripts/run_comparison.sh
+@@ -1279,6 +1279,11 @@
+   local collect_rc=0
+   local -a collect_args=()
+ 
++  if [[ "$benchmark_rc" -eq 0 ]]; then
++    echo "Throughput-only experiment: skipping optional cloud artifacts."
++    return 0
++  fi
++
+   if [[ "$SKIP_AWS_ARTIFACTS" == "true" ]]; then
+     echo "Skipping AWS artifact collection in run_comparison.sh"
+     return 0
+--- a/scripts/run_benchmark.sh
++++ b/scripts/run_benchmark.sh
+@@ -3972,7 +3972,7 @@
+ TEMPO_TAG="$ORIGINAL_TEMPO_TAG"
+ TEMPO_COMMIT="$ORIGINAL_TEMPO_COMMIT"
+ 
+-upload_final_validator_artifacts
++# Throughput-only success path: retain runner reports, skip validator archives.
+ 
+ start_phase "upload_runner_artifacts"
+ upload_runner_artifacts

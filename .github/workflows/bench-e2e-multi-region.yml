@@ -333,7 +333,7 @@ jobs:
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
       BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
-      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_URL: ''
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
@@ -387,7 +387,7 @@ jobs:
             fi
           done
 
-      - name: Fetch ClickHouse metric allowlist
+      - name: Fetch benchmark inputs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -408,15 +408,31 @@ jobs:
             fs.mkdirSync('contrib/bench', { recursive: true });
             fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
 
+            const patchPath = '.github/scripts/bench-main-split-pending.patch';
+            const { data: patch } = await github.rest.repos.getContent({
+              owner: 'tempoxyz', repo: 'tempo', path: patchPath, ref: context.sha,
+            });
+            if (Array.isArray(patch) || patch.type !== 'file' || !patch.content) {
+              throw new Error(`Expected ${patchPath} at ${context.sha}`);
+            }
+            fs.mkdirSync('.github/scripts', { recursive: true });
+            fs.writeFileSync(patchPath, Buffer.from(patch.content, 'base64'));
+
       - name: Checkout benchmark repo
         id: checkout_benchmark_repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: cfb8dec7e1c5950c7f059aa4c21bd7478cc2faff
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
+
+      - name: Configure throughput-only split-pending experiment
+        working-directory: ${{ env.BENCH_REPO_DIR }}
+        run: |
+          git apply "$GITHUB_WORKSPACE/.github/scripts/bench-main-split-pending.patch"
+          bash -n scripts/txgen_workload.sh scripts/run_comparison.sh scripts/run_benchmark.sh
 
       - name: Resolve baseline and feature refs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -602,8 +618,8 @@ jobs:
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
-            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
-            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --logs-push-url "" \
+            --victoriametrics-url "" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
       - name: Install txgen
@@ -657,8 +673,8 @@ jobs:
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
-            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
-            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --logs-push-url "" \
+            --victoriametrics-url "" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
       - name: Initialize ${{ env.BENCH_INPUT_VALIDATOR_COUNT }} validators with ${{ env.BENCH_INPUT_BLOAT }}GiB bloat file
@@ -705,8 +721,8 @@ jobs:
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
-            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
-            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --logs-push-url "" \
+            --victoriametrics-url "" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
       - name: Run benchmarks (${{ env.BENCH_INPUT_RUN_PAIRS }} run-pairs)
@@ -753,8 +769,8 @@ jobs:
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
-            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
-            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --logs-push-url "" \
+            --victoriametrics-url "" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
       - name: Start infrastructure teardown
@@ -765,7 +781,7 @@ jobs:
             --state-dir "$RUNNER_TEMP/terraform-destroy"
 
       - name: Collect cloud artifacts
-        if: always() && steps.checkout_benchmark_repo.outcome == 'success'
+        if: failure() && steps.checkout_benchmark_repo.outcome == 'success'
         run: |
           if [ -d "$BENCH_RESULTS_DIR/cloud-artifacts" ] && [ -n "$(find "$BENCH_RESULTS_DIR/cloud-artifacts" -type f -print -quit 2>/dev/null)" ]; then
             echo "Cloud artifacts already collected; skipping duplicate collection."
