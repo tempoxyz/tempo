@@ -110,6 +110,9 @@ pub struct AA2dPool {
     pending_eviction_order: BTreeSet<EvictionKey>,
     /// Queued regular 2D transactions ordered by eviction priority.
     queued_eviction_order: BTreeSet<EvictionKey>,
+    /// Non-payment transactions, queued first, then lowest priority/newest first.
+    /// Covers regular 2D and expiring nonces without scanning the payment backlog.
+    general_transactions: GeneralTransactions,
     /// Base fee used for transaction insertion and eviction-order priorities.
     base_fee: u64,
     /// Tracks the number of transactions per sender for DoS protection.
@@ -155,6 +158,7 @@ impl AA2dPool {
             metrics: AA2dPoolMetrics::default(),
             pending_eviction_order: Default::default(),
             queued_eviction_order: Default::default(),
+            general_transactions: Default::default(),
             base_fee: 0,
             txs_by_sender: Default::default(),
             txs_by_lane: Default::default(),
@@ -178,6 +182,9 @@ impl AA2dPool {
         let (pending, queued) = self.pending_and_queued_txn_count();
         let total = self.by_id.len() + self.expiring_nonce_txs.len();
         self.metrics.set_transaction_counts(total, pending, queued);
+        self.metrics
+            .general_transactions
+            .set(self.general_transactions.len() as f64);
     }
 
     pub(crate) fn set_base_fee(&mut self, base_fee: u64) {
@@ -193,7 +200,10 @@ impl AA2dPool {
     fn rebuild_eviction_order(&mut self) {
         self.pending_eviction_order.clear();
         self.queued_eviction_order.clear();
+        self.general_transactions = GeneralTransactions::default();
         for (id, tx) in &self.by_id {
+            self.general_transactions
+                .insert(&tx.inner, tx.is_pending(), self.base_fee);
             let key = EvictionKey::with_base_fee(&tx.inner, *id, self.base_fee);
             if tx.is_pending() {
                 self.pending_eviction_order.insert(key);
@@ -204,6 +214,7 @@ impl AA2dPool {
 
         self.expiring_nonce_eviction_order.clear();
         for tx in self.expiring_nonce_txs.values() {
+            self.general_transactions.insert(tx, true, self.base_fee);
             self.expiring_nonce_eviction_order.insert(
                 ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, self.base_fee),
             );
@@ -418,8 +429,12 @@ impl AA2dPool {
             let key = EvictionKey::with_base_fee(promoted_tx, promoted_id, self.base_fee);
             self.queued_eviction_order.remove(&key);
             self.pending_eviction_order.insert(key);
+            self.general_transactions
+                .insert(promoted_tx, true, self.base_fee);
         }
 
+        self.general_transactions
+            .insert(&tx.inner, inserted_as_pending, self.base_fee);
         let key = EvictionKey::with_base_fee(&tx.inner, tx_id, self.base_fee);
         if inserted_as_pending {
             self.pending_eviction_order.insert(key);
@@ -522,6 +537,8 @@ impl AA2dPool {
         };
 
         // Insert into expiring nonce map and by_hash
+        self.general_transactions
+            .insert(&pending_tx, true, self.base_fee);
         expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
@@ -922,6 +939,8 @@ impl AA2dPool {
     }
 
     fn remove_eviction_key(&mut self, tx: &Arc<AA2dInternalTransaction>) {
+        self.general_transactions
+            .remove(&tx.inner, tx.is_pending(), self.base_fee);
         let order = tx.inner.eviction_key(self.base_fee);
         if tx.is_pending() {
             self.pending_eviction_order.remove(&order);
@@ -1042,6 +1061,8 @@ impl AA2dPool {
                 let key = EvictionKey::with_base_fee(&tx.inner, *id, self.base_fee);
                 self.pending_eviction_order.remove(&key);
                 self.queued_eviction_order.insert(key);
+                self.general_transactions
+                    .insert(&tx.inner, false, self.base_fee);
             }
         }
     }
@@ -1186,6 +1207,8 @@ impl AA2dPool {
                         );
                         self.queued_eviction_order.remove(&key);
                         self.pending_eviction_order.insert(key);
+                        self.general_transactions
+                            .insert(&existing_tx.inner, true, self.base_fee);
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -1208,6 +1231,8 @@ impl AA2dPool {
                         );
                         self.pending_eviction_order.remove(&key);
                         self.queued_eviction_order.insert(key);
+                        self.general_transactions
+                            .insert(&existing_tx.inner, false, self.base_fee);
                     }
                 }
             }
@@ -1251,6 +1276,22 @@ impl AA2dPool {
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
+        // Enforce the shared non-payment budget before the overall subpool limits.
+        // Queued transactions go first, so queued admission cannot evict pending work.
+        while self.general_transactions.len() > self.config.max_general_txs {
+            let Some((_, hash)) = self.general_transactions.by_priority.first_key_value() else {
+                break;
+            };
+            let hash = *hash;
+            let Some(tx) = self.remove_transaction_by_hash(&hash) else {
+                break;
+            };
+            removed.push(tx);
+        }
+        self.metrics
+            .general_capacity_evictions
+            .increment(removed.len() as u64);
+
         if self
             .config
             .queued_limit
@@ -1279,6 +1320,7 @@ impl AA2dPool {
             self.metrics.inc_removed(removed.len());
         }
 
+        self.update_metrics();
         removed
     }
 
@@ -1403,6 +1445,8 @@ impl AA2dPool {
         &mut self,
         pending_tx: AA2dStoredTransaction,
     ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+        self.general_transactions
+            .remove(&pending_tx, true, self.base_fee);
         self.by_hash.remove(pending_tx.transaction.hash());
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             let expiring_hash = pending_tx
@@ -1558,6 +1602,16 @@ impl AA2dPool {
     /// Asserts that all assumptions are valid.
     #[cfg(test)]
     pub(crate) fn assert_invariants(&self) {
+        let mut general = GeneralTransactions::default();
+        for tx in self.by_id.values() {
+            general.insert(&tx.inner, tx.is_pending(), self.base_fee);
+        }
+        for tx in self.expiring_nonce_txs.values() {
+            general.insert(tx, true, self.base_fee);
+        }
+        assert_eq!(self.general_transactions.by_priority, general.by_priority);
+        assert!(general.len() <= self.config.max_general_txs);
+
         let mut lane_counts = HashMap::default();
         for id in self.by_id.keys() {
             *lane_counts.entry(id.seq_id).or_insert(0usize) += 1;
@@ -2001,6 +2055,9 @@ pub const DEFAULT_MAX_TXS_PER_SENDER: usize = 16;
 /// Default maximum number of pending and queued transactions in one regular 2D nonce lane.
 pub const DEFAULT_MAX_TXS_PER_LANE: usize = 1024;
 
+/// Default maximum number of pending plus queued non-payment transactions in the AA pool.
+pub const DEFAULT_MAX_GENERAL_TXS: usize = 10_000;
+
 /// Settings for the [`AA2dPoolConfig`]
 #[derive(Debug, Clone)]
 pub struct AA2dPoolConfig {
@@ -2018,6 +2075,9 @@ pub struct AA2dPoolConfig {
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
     /// Expiring nonce transactions are independent and do not use this limit.
     pub max_txs_per_lane: usize,
+    /// Maximum pending plus queued non-payment transactions across all AA nonce lanes.
+    /// Payments still count towards the overall subpool limits, but not this budget.
+    pub max_general_txs: usize,
 }
 
 impl Default for AA2dPoolConfig {
@@ -2028,6 +2088,36 @@ impl Default for AA2dPoolConfig {
             queued_limit: SubPoolLimit::default(),
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
+        }
+    }
+}
+
+/// A separate eviction index for the AA pool's non-payment capacity.
+#[derive(Debug, Default)]
+struct GeneralTransactions {
+    by_priority: BTreeMap<(bool, EvictionOrderKey), B256>,
+}
+
+impl GeneralTransactions {
+    fn len(&self) -> usize {
+        self.by_priority.len()
+    }
+
+    /// Inserts or moves a transaction between queued and pending eviction order.
+    fn insert(&mut self, tx: &AA2dStoredTransaction, pending: bool, base_fee: u64) {
+        if !tx.transaction.transaction.is_payment() {
+            let order = tx.eviction_key(base_fee);
+            self.by_priority.remove(&(!pending, order.clone()));
+            self.by_priority
+                .insert((pending, order), *tx.transaction.hash());
+        }
+    }
+
+    fn remove(&mut self, tx: &AA2dStoredTransaction, pending: bool, base_fee: u64) {
+        if !tx.transaction.transaction.is_payment() {
+            self.by_priority
+                .remove(&(pending, tx.eviction_key(base_fee)));
         }
     }
 }
@@ -5039,6 +5129,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5247,6 +5338,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5316,6 +5408,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5359,6 +5452,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5397,6 +5491,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5433,6 +5528,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
         let max_fee = 30_000_000_000u128;
@@ -5525,6 +5621,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5586,6 +5683,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5690,6 +5788,7 @@ mod tests {
             },
             max_txs_per_sender: 3,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5751,6 +5850,7 @@ mod tests {
             },
             max_txs_per_sender: 2,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5804,6 +5904,7 @@ mod tests {
             },
             max_txs_per_sender: 2,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5975,6 +6076,7 @@ mod tests {
             },
             max_txs_per_sender: 2,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -7844,6 +7946,7 @@ mod tests {
             },
             max_txs_per_sender: 1,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            max_general_txs: DEFAULT_MAX_GENERAL_TXS,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -8143,5 +8246,250 @@ mod tests {
         assert!(first.is_some(), "should yield the expiring nonce tx");
         assert_eq!(*first.unwrap().hash(), tx_hash);
         assert!(best.next().is_none());
+    }
+
+    fn general_cap_tx(
+        mut builder: TxBuilder,
+        payment: bool,
+    ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+        if payment {
+            let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
+            input.resize(68, 0);
+            builder = builder.calls(vec![Call {
+                to: TxKind::Call(tempo_precompiles::PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: input.into(),
+            }]);
+        }
+        let tx = builder.build();
+        assert_eq!(tx.is_payment(), payment);
+        Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
+    }
+
+    #[test_case::test_case(U256::ONE)]
+    #[test_case::test_case(U256::MAX)]
+    fn general_cap_preserves_payments_and_evicts_worst(nonce_key: U256) {
+        assert_eq!(AA2dPoolConfig::default().max_general_txs, 10_000);
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_general_txs: 2,
+            ..Default::default()
+        });
+        let mut general = Vec::new();
+        let mut payments = Vec::new();
+        for priority in [1, 2, 3] {
+            let payment = general_cap_tx(
+                TxBuilder::aa(Address::random())
+                    .nonce_key(nonce_key)
+                    // Test signatures are fixed, so changing the recovered sender alone
+                    // does not make otherwise identical payment envelopes unique.
+                    .max_fee(30_000_000_000 + priority)
+                    .max_priority_fee(0),
+                true,
+            );
+            pool.add_transaction(payment.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+            payments.push(payment);
+            let tx = general_cap_tx(
+                TxBuilder::aa(Address::random())
+                    .nonce_key(nonce_key)
+                    .max_priority_fee(priority),
+                false,
+            );
+            let AddedTransaction::Pending(added) = pool
+                .add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap()
+            else {
+                panic!("expected pending transaction");
+            };
+            if priority == 3 {
+                assert_eq!(added.discarded.len(), 1);
+                assert_eq!(added.discarded[0].hash(), &general[0]);
+            } else {
+                assert!(added.discarded.is_empty());
+            }
+            general.push(*tx.hash());
+            pool.assert_invariants();
+        }
+        assert!(!pool.contains(&general[0]));
+        assert!(pool.contains(&general[1]));
+        assert!(pool.contains(&general[2]));
+        assert!(payments.iter().all(|tx| pool.contains(tx.hash())));
+        assert_eq!(pool.pending_count, 5);
+    }
+
+    #[test]
+    fn general_cap_is_shared_between_regular_and_expiring_nonces() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_general_txs: 1,
+            ..Default::default()
+        });
+        let regular = general_cap_tx(TxBuilder::aa(Address::random()).nonce_key(U256::ONE), false);
+        let expiring = general_cap_tx(TxBuilder::aa(Address::random()).nonce_key(U256::MAX), false);
+        pool.add_transaction(regular.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        // Equal priority: the newest transaction loses, regardless of nonce type.
+        pool.add_transaction(expiring.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        assert!(pool.contains(regular.hash()));
+        assert!(!pool.contains(expiring.hash()));
+        pool.assert_invariants();
+        pool.remove_transactions(std::iter::once(regular.hash()));
+        pool.add_transaction(expiring.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        assert!(pool.contains(expiring.hash()));
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn general_cap_evicts_queued_before_pending() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_general_txs: 1,
+            ..Default::default()
+        });
+        let pending = general_cap_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::MAX)
+                .max_priority_fee(1),
+            false,
+        );
+        let queued = general_cap_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::ONE)
+                .nonce(1)
+                .max_priority_fee(100),
+            false,
+        );
+        for tx in [&queued, &pending, &queued] {
+            pool.add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+            pool.assert_invariants();
+        }
+        assert!(pool.contains(pending.hash()));
+        assert!(!pool.contains(queued.hash()));
+    }
+
+    #[test]
+    fn general_cap_demotion_preserves_dependent_payment() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_general_txs: 1,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let parent = general_cap_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::ONE)
+                .max_priority_fee(1),
+            false,
+        );
+        let payment = general_cap_tx(TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1), true);
+        let better = general_cap_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::MAX)
+                .max_priority_fee(2),
+            false,
+        );
+        for tx in [&parent, &payment, &better] {
+            pool.add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+            pool.assert_invariants();
+        }
+        assert!(!pool.contains(parent.hash()));
+        assert!(pool.contains(payment.hash()));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 1));
+        // A payment replacement fills the gap without consuming the general budget.
+        let filler = general_cap_tx(TxBuilder::aa(sender).nonce_key(U256::ONE), true);
+        pool.add_transaction(filler, 0, TempoHardfork::T1).unwrap();
+        assert_eq!(pool.pending_and_queued_txn_count(), (3, 0));
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn general_cap_tracks_replacement_class_changes() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_general_txs: 1,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        for (payment, fee) in [
+            (false, 30_000_000_000),
+            (true, 60_000_000_000),
+            (false, 120_000_000_000),
+        ] {
+            let tx = general_cap_tx(
+                TxBuilder::aa(sender)
+                    .nonce_key(U256::ONE)
+                    .max_fee(fee)
+                    .max_priority_fee(fee / 2),
+                payment,
+            );
+            pool.add_transaction(tx, 0, TempoHardfork::T1).unwrap();
+            assert_eq!(pool.general_transactions.len(), usize::from(!payment));
+            pool.assert_invariants();
+        }
+        pool.on_nonce_changes(HashMap::from_iter([(
+            AASequenceId::new(sender, U256::ONE),
+            1,
+        )]));
+        assert_eq!(pool.general_transactions.len(), 0);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn general_cap_reprices_with_base_fee() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_general_txs: 2,
+            ..Default::default()
+        });
+        let capped = general_cap_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::MAX)
+                .max_fee(10)
+                .max_priority_fee(10),
+            false,
+        );
+        let uncapped = general_cap_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::ONE)
+                .max_fee(100)
+                .max_priority_fee(5),
+            false,
+        );
+        for tx in [&capped, &uncapped] {
+            pool.add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+        }
+        pool.set_base_fee(9);
+        let next = general_cap_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::MAX)
+                .max_fee(100)
+                .max_priority_fee(4),
+            false,
+        );
+        pool.add_transaction(next.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        assert!(!pool.contains(capped.hash()));
+        assert!(pool.contains(uncapped.hash()));
+        assert!(pool.contains(next.hash()));
+        pool.assert_invariants();
+    }
+
+    #[test_case::test_case(U256::ONE)]
+    #[test_case::test_case(U256::MAX)]
+    fn general_cap_zero_still_admits_payments(nonce_key: U256) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_general_txs: 0,
+            ..Default::default()
+        });
+        for payment in [false, true] {
+            let tx = general_cap_tx(
+                TxBuilder::aa(Address::random()).nonce_key(nonce_key),
+                payment,
+            );
+            pool.add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+            assert_eq!(pool.contains(tx.hash()), payment);
+            pool.assert_invariants();
+        }
     }
 }

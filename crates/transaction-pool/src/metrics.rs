@@ -18,6 +18,9 @@ pub struct AA2dPoolMetrics {
     /// Number of queued (non-executable) transactions in the AA2D pool
     pub queued_transactions: Gauge,
 
+    /// Number of pending and queued non-payment transactions in the AA2D pool.
+    pub general_transactions: Gauge,
+
     /// Total number of tracked (address, nonce_key) pairs
     pub tracked_nonce_keys: Gauge,
 
@@ -32,6 +35,9 @@ pub struct AA2dPoolMetrics {
 
     /// Number of transactions demoted from pending to queued
     pub demoted_transactions: Counter,
+
+    /// Number of non-payment transactions evicted by the general transaction limit.
+    pub general_capacity_evictions: Counter,
 }
 
 impl AA2dPoolMetrics {
