@@ -7,10 +7,9 @@ use commonware_codec::Encode as _;
 use commonware_consensus::{marshal::resolver::handler, types::Height};
 use commonware_macros::test_traced;
 use commonware_resolver::opaque::Fetcher as _;
-use commonware_runtime::{Metrics as _, Runner as _, deterministic};
+use commonware_runtime::{Runner as _, deterministic, telemetry::metrics::MetricsExt as _};
 use futures::executor::block_on;
 use parking_lot::Mutex;
-use prometheus_client::metrics::counter::Counter;
 use reth_node_core::primitives::SealedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody};
 
@@ -183,10 +182,9 @@ fn timed_out_upstream_request_is_retried_with_backoff() {
     deterministic::Runner::default().start(|context| async move {
         let upstream = StubUpstream::default();
         upstream.hang_block_reads();
-        let timeouts = context.register(
+        let timeouts = context.counter(
             "upstream_request_timeouts",
             "number of upstream requests that exceeded their deadline",
-            Counter::default(),
         );
         let fetcher = Fetcher {
             context: Arc::new(context),

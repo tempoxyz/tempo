@@ -28,10 +28,7 @@ use commonware_p2p::{
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, IoBuf, Spawner, Storage, spawn_cell,
-    telemetry::metrics::{
-        Counter, Gauge, MetricsExt as _,
-        histogram::{Buckets, Timed},
-    },
+    telemetry::metrics::{Counter, Gauge, MetricsExt as _, histogram::Timed},
 };
 use commonware_utils::{
     Acknowledgement, N3f1, NZU32,
@@ -1729,11 +1726,11 @@ impl Metrics {
             "the number of blocks where decoding and verifying dealings failed in the current ceremony",
         );
 
-        let ancestor_fetch_duration = Timed::new(context.histogram(
+        let ancestor_fetch_duration = Timed::register(
+            context,
             "ancestor_fetch_duration",
             "Histogram of time taken to fetch a block for a DKG outcome, in seconds",
-            Buckets::LOCAL,
-        ));
+        );
 
         Self {
             shares_distributed,
