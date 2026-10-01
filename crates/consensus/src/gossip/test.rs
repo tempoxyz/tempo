@@ -18,7 +18,7 @@ use commonware_consensus::{
 };
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
-use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
+use commonware_utils::{Acknowledgement as _, NZU32, acknowledgement::Exact};
 use parking_lot::Mutex;
 use tempo_node::gossip::{self, Frame, PeerControl, PeerEvent, TransportSender};
 use tokio::sync::{mpsc, oneshot};
@@ -262,20 +262,13 @@ impl Rig {
 }
 
 /// A rate high enough that tests do not reach the verify limit.
-const UNLIMITED_VERIFY_RATE: NonZeroU32 = NonZeroU32::new(1_000).expect("test rate is non-zero");
+const UNLIMITED_VERIFY_RATE: NonZeroU32 = NZU32!(1_000);
 
 fn start(context: &mut deterministic::Context) -> Rig {
-    start_with(context, UNLIMITED_VERIFY_RATE)
+    start_with_verify_rate(context, UNLIMITED_VERIFY_RATE)
 }
 
-fn start_with_verify_rate(context: &mut deterministic::Context, verify_rate: u32) -> Rig {
-    start_with(
-        context,
-        NonZeroU32::new(verify_rate).expect("test rate is non-zero"),
-    )
-}
-
-fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> Rig {
+fn start_with_verify_rate(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> Rig {
     let fixture = dkg_fixture(context, Epoch::zero());
 
     let (control_tx, control_rx) = mpsc::unbounded_channel();
@@ -374,7 +367,7 @@ fn scheduling_is_fair_across_peers() {
 #[test_traced]
 fn rate_limited_churn_preserves_admission_order() {
     deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start_with_verify_rate(&mut context, 1);
+        let mut rig = start_with_verify_rate(&mut context, NZU32!(1));
         rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
         rig.connect(peer(2));
@@ -677,7 +670,7 @@ fn higher_round_cannot_replace_a_slot_being_judged() {
 #[test_traced]
 fn higher_round_replaces_a_ready_slot() {
     deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start_with_verify_rate(&mut context, 1);
+        let mut rig = start_with_verify_rate(&mut context, NZU32!(1));
         rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
 
@@ -847,7 +840,7 @@ fn disconnect_discards_quarantine() {
 #[test_traced]
 fn released_quarantines_share_the_global_verify_limit() {
     deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start_with_verify_rate(&mut context, 1);
+        let mut rig = start_with_verify_rate(&mut context, NZU32!(1));
         rig.connect(peer(1));
         rig.connect(peer(2));
         rig.sink.answer(Err(CertificateError::NeedsScheme {
@@ -883,7 +876,7 @@ fn released_quarantines_share_the_global_verify_limit() {
 #[test_traced]
 fn released_quarantine_rejoins_behind_ready_slot() {
     deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start_with_verify_rate(&mut context, 1);
+        let mut rig = start_with_verify_rate(&mut context, NZU32!(1));
         rig.connect(peer(1));
         rig.connect(peer(2));
         rig.sink.answer(Err(CertificateError::NeedsScheme {
@@ -913,7 +906,7 @@ fn released_quarantine_rejoins_behind_ready_slot() {
 fn shed_candidate_is_retried_when_budget_replenishes() {
     deterministic::Runner::default().start(|mut context| async move {
         // One judgement per second, and the first frame consumes the burst.
-        let mut rig = start_with_verify_rate(&mut context, 1);
+        let mut rig = start_with_verify_rate(&mut context, NZU32!(1));
         rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
 

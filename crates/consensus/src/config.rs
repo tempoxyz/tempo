@@ -9,9 +9,9 @@
 //! by the execution client/reth. This genesis block is entirely the domain
 //! of the chainspec, which is separate from the config.
 
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroUsize;
 
-use commonware_utils::NZUsize;
+use commonware_utils::{NZU32, NZUsize};
 use governor::Quota;
 
 // Hardcoded values to configure commonware's alto toy chain. These could be made into
@@ -34,13 +34,10 @@ pub(crate) const PEERSETS_TO_TRACK: NonZeroUsize = NZUsize!(1);
 
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 
-pub const BROADCASTER_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
-pub const DKG_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub const MARSHAL_LIMIT: Quota = Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
-pub const VOTES_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub const CERTIFICATES_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub const RESOLVER_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
+pub const BROADCASTER_LIMIT: Quota = Quota::per_second(NZU32!(8));
+pub const DKG_LIMIT: Quota = Quota::per_second(NZU32!(128));
+pub const MARSHAL_LIMIT: Quota = Quota::per_second(NZU32!(8));
+pub const VOTES_LIMIT: Quota = Quota::per_second(NZU32!(128));
+pub const CERTIFICATES_LIMIT: Quota = Quota::per_second(NZU32!(128));
+pub const RESOLVER_LIMIT: Quota = Quota::per_second(NZU32!(128));
 pub const NAMESPACE: &[u8] = b"TEMPO";
