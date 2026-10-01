@@ -60,7 +60,7 @@ fn execution_fallback_rejects_bal_when_feature_is_disabled() {
 fn execution_fallback_restores_bal_before_encoding() {
     use crate::consensus::block::{BlockAccessListError, Error as BlockError};
     use alloy_primitives::{Bytes, keccak256};
-    use commonware_codec::{Encode, Read};
+    use commonware_codec::{Encode, ReadExt};
     use reth_provider::{InMemoryBalStore, RawBal};
 
     let bal = Bytes::from_static(&[0xc0]);
@@ -102,10 +102,7 @@ fn execution_fallback_restores_bal_before_encoding() {
     let expected = Block::try_from_execution_block(block.clone(), Some(bal)).unwrap();
     assert_eq!(restored, expected);
     let encoded = restored.encode();
-    assert_eq!(
-        Block::read_cfg(&mut encoded.as_ref(), &()).unwrap(),
-        expected
-    );
+    assert_eq!(Block::read(&mut encoded.as_ref()).unwrap(), expected);
 
     store
         .insert(block.num_hash(), RawBal::from(Bytes::from_static(&[0xc1])))

@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
+use commonware_codec::{EncodeSize, Read, ReadExt, ReadRangeExt, Write, varint::UInt};
 #[cfg(feature = "commonware-consensus")]
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -87,10 +87,7 @@ impl Read for OnchainDkgOutcome {
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let epoch = UInt::<u64>::read(buf)?.into();
         let output = Read::read_cfg(buf, &(MAX_VALIDATORS, ModeVersion::v0()))?;
-        let next_players = Read::read_cfg(
-            buf,
-            &(RangeCfg::from(1..=(MAX_VALIDATORS.get() as usize)), ()),
-        )?;
+        let next_players = ReadRangeExt::read_range(buf, 1..=(MAX_VALIDATORS.get() as usize))?;
         let is_next_full_dkg = ReadExt::read(buf)?;
         Ok(Self {
             epoch,
