@@ -494,14 +494,12 @@ mod tests {
     };
     use tempo_node::evm::{TempoEvmConfig, evm::TempoEvm};
     use tempo_precompiles::{
+        VALIDATOR_CONFIG_V2_ADDRESS,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
     };
 
     use super::*;
-
-    const VALIDATOR_CONFIG_V2_ADDRESS: AlloyAddress =
-        alloy_primitives::address!("0xCCCCCCCC00000000000000000000000000000001");
 
     struct TestExecutionNode {
         hash: B256,

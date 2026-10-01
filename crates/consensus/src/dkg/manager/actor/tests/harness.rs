@@ -596,7 +596,7 @@ impl StubExecutionProvider {
                 genesis
                     .config
                     .extra_fields
-                    .remove(&format!("{}Time", fork.name().to_lowercase()));
+                    .remove(fork.genesis_key().unwrap());
             }
         }
         genesis
@@ -768,9 +768,7 @@ pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Ar
         epoch: round.epoch().get(),
         view: round.view().get(),
         parent_view: round.view().get().saturating_sub(1),
-        proposer: crate::utils::public_key_to_tempo_primitive(
-            &PrivateKey::from_seed(0).public_key(),
-        ),
+        proposer: tempo_primitives::ed25519::PublicKey::from_seed(0),
     });
     Arc::new(block(header))
 }

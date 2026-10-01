@@ -160,16 +160,9 @@ where
         .evm_for_block(db, header)
         .wrap_err("failed instantiating evm for block")?;
 
-    let ctx = evm.ctx_mut();
-    let res = StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || read_fn(&C::default()),
-    )?;
-    Ok(res)
+    StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        read_fn(&C::default())
+    })
 }
 
 /// An entry in the validator config v2 contract with all its fields decoded
