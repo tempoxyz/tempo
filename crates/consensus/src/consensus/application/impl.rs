@@ -189,12 +189,13 @@ impl Inner {
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         // The proposal window is the target block time minus the learned
-        // network reservation. This is the one budget read per own proposal:
-        // it moves the reservation from the previous own proposal's toward
-        // what the estimator has learned since, by at most one bounded step.
-        // Give the builder only what remains of the window when payload
-        // construction is requested.
-        let proposal_budget = self.estimator.proposal_budget(Instant::now());
+        // network reservation. Starting the proposal is the one estimator
+        // call per own proposal that moves the reservation: from the previous
+        // own proposal's toward what the estimator has learned since, by at
+        // most one bounded step. A build that fails after this point has
+        // still stepped the reservation. Give the builder only what remains
+        // of the window when payload construction is requested.
+        let proposal_budget = self.estimator.start_proposal(Instant::now());
         let build_budget = proposal_budget
             .return_budget
             .saturating_sub(propose_start.elapsed());
@@ -264,6 +265,16 @@ impl Inner {
             .return_budget
             .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed);
+        // Decide from the plan, before the sleep, whether the proposal met
+        // its return budget and what the budget leaves for the validators'
+        // replay. When the build already ran past the budget the delay is
+        // zero, so this is decided by what the build spent. The sleep's timer
+        // overshoot must neither decide the overrun nor shrink the unspent
+        // budget: in production it is sub-millisecond and the sleep rarely
+        // fires at all, and in the deterministic e2e runtime the sleep runs
+        // on simulated time while `propose_start` is a real `Instant`.
+        let spent = proposal_elapsed + return_delay;
+        let unspent_return_budget = proposal_budget.unspent(spent);
         debug!(
             proposal.digest = %proposal.digest(),
             return_budget = %display_duration(proposal_budget.return_budget),
@@ -278,15 +289,20 @@ impl Inner {
         runtime.sleep_until(runtime.current() + return_delay).await;
 
         // The proposal leaves this node now. What the return budget has left
-        // at this point is what it reserved for the validators' replay, so
-        // the chain's wait beyond it is the network sample that the block
-        // built on top of this proposal completes; record the return on the
-        // clock header timestamps use. A proposal that overran its budget
-        // takes no sample: its gap would contain the successor's whole
-        // execution, and the overrun is the build time multiplier's to absorb.
+        // is what it reserved for the validators' replay, so the chain's wait
+        // beyond it is the network sample that the block built on top of this
+        // proposal completes; record the return on the clock header
+        // timestamps use. A proposal that overran its budget by more than the
+        // builder's pacing precision takes no sample: its gap lacks the
+        // unspent replay reserve that normal samples subtract, so it would
+        // sit above its neighbours by that reserve, and the overrun is the
+        // build time multiplier's to absorb. Overruns within the tolerance
+        // still count, with nothing unspent: they are idle builds that
+        // reserved next to nothing for replay and returned a millisecond or
+        // two late, and dropping them would drop nearly every sample taken
+        // while the pool is dry.
         let returned_at = Instant::now();
-        let spent = propose_start.elapsed();
-        match proposal_budget.return_budget.checked_sub(spent) {
+        match unspent_return_budget {
             Some(unspent_return_budget) => self.estimator.on_proposal_returned(
                 returned_at,
                 runtime.current().epoch_millis(),
@@ -295,7 +311,7 @@ impl Inner {
             ),
             None => debug!(
                 proposal.digest = %proposal.digest(),
-                overrun = %display_duration(spent - proposal_budget.return_budget),
+                overrun = %display_duration(spent.saturating_sub(proposal_budget.return_budget)),
                 "proposal overran its return budget; taking no network sample"
             ),
         }

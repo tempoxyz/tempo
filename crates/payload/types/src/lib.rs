@@ -16,7 +16,7 @@ pub use estimator::{
     BUILD_TIME_MULTIPLIER_SCALE, BuildPlan, DEFAULT_BUILD_TIME_MULTIPLIER, DEFAULT_NETWORK_BUDGET,
     DEFAULT_NETWORK_BUDGET_MAX, DEFAULT_NETWORK_RESERVE_PERCENTILE, DEFAULT_TARGET_BLOCK_TIME,
     Estimator, EstimatorConfig, EstimatorSnapshot, FinishedBuild, PayloadBudgetDecision,
-    ProposalBudget, ProposalKey, scaled_build_time_multiplier,
+    ProposalBudget, ProposalKey, RETURN_BUDGET_OVERRUN_TOLERANCE, scaled_build_time_multiplier,
 };
 use std::{
     sync::{Arc, OnceLock},

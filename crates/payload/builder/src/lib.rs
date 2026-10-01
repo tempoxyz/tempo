@@ -141,7 +141,9 @@ pub struct TempoPayloadBuilder<Provider> {
     ///
     /// Consensus feeds it validation and network observations;
     /// the builder reads one [`tempo_payload_types::BuildPlan`] per paced build
-    /// from it and reports the finished build's replayable work back.
+    /// from it and reports the finished build's replayable work back. The
+    /// network reservation is not read here: the proposal window reaches the
+    /// builder as `payload_build_budget` in the attributes.
     estimator: Estimator,
 }
 
@@ -167,6 +169,11 @@ pub struct TempoPayloadBuilderConfig {
     /// `1.0` means no finish-work headroom beyond observed work so far. Values
     /// above `1.0` stop transaction execution earlier to leave room for
     /// `builder_finish`, which validators also repeat.
+    ///
+    /// This only seeds the builder-local estimator that
+    /// [`TempoPayloadBuilder::new`] creates; it has no effect once
+    /// [`TempoPayloadBuilder::with_estimator`] injects a shared one, which
+    /// carries its own initial multiplier.
     pub build_time_multiplier: f64,
 }
 
@@ -215,7 +222,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
     /// Shares a proposal budget estimator with consensus.
     ///
     /// Without this the builder learns from its own builds only and never
-    /// sees validation or network feedback.
+    /// sees the validation times consensus observes.
     pub fn with_estimator(mut self, estimator: Estimator) -> Self {
         self.estimator = estimator;
         self
