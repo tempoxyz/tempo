@@ -342,6 +342,12 @@ jobs:
             exit 0
           fi
 
+          # Backport releases from release/vX.Y.Z branches are older than main.
+          if [ "$(printf '%s\n%s\n' "$current_version" "$cargo_version" | sort -V | tail -n 1)" != "$cargo_version" ]; then
+            echo "main has newer tempo version $current_version; not bumping to $cargo_version"
+            exit 0
+          fi
+
           git config user.name "tempo-github-sts[bot]"
           git config user.email "312736176+tempo-github-sts[bot]@users.noreply.github.com"
           git checkout -B "$branch"
