@@ -20,7 +20,10 @@ use reth_revm::{
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
-    nonce::{NonceManager, encode_primary, primary_available, primary_index, primary_matches},
+    nonce::{
+        NonceManager, encode_primary, extend_primary_guard, primary_available, primary_eligible,
+        primary_index, primary_matches,
+    },
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
@@ -244,7 +247,7 @@ where
         let nonce_manager = NonceManager::new();
         let now = U256::from(block_timestamp);
 
-        let primary = if spec.is_t12() {
+        let primary = if spec.is_t12() && primary_eligible(expiring_nonce.hash) {
             let slot =
                 nonce_manager.expiring_nonce_primary[primary_index(expiring_nonce.hash)].slot();
             let value = db
@@ -257,6 +260,15 @@ where
             if primary_matches(expiring_nonce.hash, value) {
                 return Err(StorageActionReplayError::ActionConflict.into());
             }
+            if primary_available(value, block_timestamp, max_expiry_secs) {
+                self.replay_state.record_sstore(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    slot,
+                    value,
+                    encode_primary(expiring_nonce.hash, expiring_nonce.valid_before),
+                );
+                return Ok(());
+            }
             Some((slot, value))
         } else {
             None
@@ -268,17 +280,6 @@ where
             .map_err(BlockExecutionError::other)?;
         if !seen_expiry.is_zero() && seen_expiry > now {
             return Err(StorageActionReplayError::ActionConflict.into());
-        }
-
-        if let Some((slot, value)) = primary {
-            self.replay_state
-                .sload_exact(db, NONCE_PRECOMPILE_ADDRESS, seen_slot, seen_expiry)?;
-            let encoded = encode_primary(expiring_nonce.hash, expiring_nonce.valid_before);
-            if !encoded.is_zero() && primary_available(value, block_timestamp, max_expiry_secs) {
-                self.replay_state
-                    .record_sstore(NONCE_PRECOMPILE_ADDRESS, slot, value, encoded);
-                return Ok(());
-            }
         }
 
         let ptr = self.replay_state.expiring_nonce.ring_ptr(db)?;
@@ -329,6 +330,16 @@ where
             next,
         );
         self.replay_state.expiring_nonce.set_next_ring_ptr(next);
+
+        // Keep the primary bucket occupied until every fallback nonce in this bucket
+        // expires, so an available primary never needs to read the seen mapping.
+        if let Some((slot, value)) = primary {
+            let guarded = extend_primary_guard(value, block_timestamp, expiring_nonce.valid_before);
+            if guarded != value {
+                self.replay_state
+                    .record_sstore(NONCE_PRECOMPILE_ADDRESS, slot, value, guarded);
+            }
+        }
 
         Ok(())
     }
@@ -649,7 +660,7 @@ mod tests {
     fn assert_nonce_replay_matches_execution(
         initial: &[(U256, U256)],
         transactions: &[(u64, B256, u64, bool)],
-    ) {
+    ) -> U256Map<U256> {
         let mut canonical = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         canonical.set_tip1060_storage_credits(false);
         for &(slot, value) in initial {
@@ -698,6 +709,19 @@ mod tests {
             );
             assert_eq!(replayed.is_ok(), succeeds, "semantic nonce replay");
             if let Ok(state) = replayed {
+                let storage = &state[&NONCE_PRECOMPILE_ADDRESS].storage;
+                if primary_eligible(hash) {
+                    assert!(storage.contains_key(&primary_slot));
+                } else {
+                    assert!(!storage.contains_key(&primary_slot));
+                }
+                if !storage.contains_key(&NonceManager::new().expiring_nonce_ring_ptr.slot()) {
+                    assert_eq!(
+                        storage.len(),
+                        1,
+                        "primary replay must witness only its cell"
+                    );
+                }
                 executor.inner.evm.db_mut().commit(state);
                 executor.replay_state.commit_tx_changes();
             }
@@ -725,41 +749,120 @@ mod tests {
             .map(|(&slot, &value)| (slot, value))
             .collect();
         assert_eq!(actual, expected);
+        actual
+    }
+
+    fn colliding_primary_hash(quotient: u64) -> B256 {
+        B256::from(
+            ((U256::from(quotient) << EXPIRING_NONCE_PRIMARY_BITS) | U256::from(17))
+                .to_be_bytes::<32>(),
+        )
     }
 
     #[test]
     fn primary_nonce_replay_matches_execution_and_rebases_collisions() {
-        let first = B256::from(U256::from(17).to_be_bytes::<32>());
-        let collision = B256::from(
-            (U256::from(17) + (U256::ONE << EXPIRING_NONCE_PRIMARY_BITS)).to_be_bytes::<32>(),
-        );
-        let replacement = B256::from(
-            (U256::from(17) + (U256::from(2) << EXPIRING_NONCE_PRIMARY_BITS)).to_be_bytes::<32>(),
-        );
+        let first = colliding_primary_hash(1);
+        let collision = colliding_primary_hash(2);
+        let shorter_collision = colliding_primary_hash(3);
+        let replacement = colliding_primary_hash(4);
         assert_eq!(primary_index(first), primary_index(collision));
         assert_eq!(primary_index(first), primary_index(replacement));
-        assert_nonce_replay_matches_execution(
+        let state = assert_nonce_replay_matches_execution(
             &[],
             &[
                 (1_000, first, 1_010, true),
                 (1_000, collision, 1_100, true),
+                (1_000, shorter_collision, 1_050, true),
                 (1_000, first, 1_010, false),
                 (1_000, collision, 1_100, false),
-                // An available primary must not permit replay of a fallback entry.
+                // The fallback guard outlives the original primary transaction.
                 (1_010, collision, 1_100, false),
                 (1_010, replacement, 1_110, true),
+                (1_050, replacement, 1_110, false),
             ],
         );
+        let nonce = NonceManager::new();
+        assert_eq!(
+            state[&nonce.expiring_nonce_primary[primary_index(first)].slot()],
+            encode_primary(first, 1_110),
+            "fallbacks extend the deadline without replacing the primary fingerprint",
+        );
+        assert_eq!(state[&nonce.expiring_nonce_ring_ptr.slot()], U256::from(3));
     }
 
     #[test]
-    fn primary_nonce_replay_checks_legacy_seen_before_writing_primary() {
+    fn primary_nonce_replay_does_not_read_legacy_seen_when_primary_available() {
         let hash = B256::repeat_byte(0x42);
         let nonce = NonceManager::new();
         assert_nonce_replay_matches_execution(
             &[(nonce.expiring_nonce_seen[hash].slot(), U256::from(1_100))],
-            &[(1_000, hash, 1_100, false)],
+            &[(1_000, hash, 1_100, true)],
         );
+    }
+
+    #[test]
+    fn primary_nonce_replay_reuses_primary_after_fallback_guard_expires() {
+        let first = colliding_primary_hash(1);
+        let collision = colliding_primary_hash(2);
+        let replacement = colliding_primary_hash(3);
+        let state = assert_nonce_replay_matches_execution(
+            &[],
+            &[
+                (1_000, first, 1_010, true),
+                (1_000, collision, 1_100, true),
+                (1_100, replacement, 1_200, true),
+            ],
+        );
+        let nonce = NonceManager::new();
+        assert_eq!(
+            state[&nonce.expiring_nonce_primary[primary_index(first)].slot()],
+            encode_primary(replacement, 1_200),
+        );
+        assert_eq!(state[&nonce.expiring_nonce_ring_ptr.slot()], U256::ONE);
+    }
+
+    #[test]
+    fn primary_nonce_replay_keeps_zero_quotient_hashes_in_fallback() {
+        let hash = colliding_primary_hash(0);
+        let period = 1u64 << EXPIRING_NONCE_PRIMARY_BITS;
+        let state = assert_nonce_replay_matches_execution(
+            &[],
+            &[
+                (period - 10, hash, period, true),
+                (period - 1, hash, period, false),
+            ],
+        );
+        let nonce = NonceManager::new();
+        assert!(!state.contains_key(&nonce.expiring_nonce_primary[primary_index(hash)].slot()));
+        assert_eq!(
+            state[&nonce.expiring_nonce_seen[hash].slot()],
+            U256::from(period)
+        );
+    }
+
+    #[test]
+    fn primary_nonce_replay_failed_fallback_does_not_extend_guard() {
+        let first = colliding_primary_hash(1);
+        let collision = colliding_primary_hash(2);
+        let old_hash = B256::repeat_byte(0x42);
+        let nonce = NonceManager::new();
+        let primary_slot = nonce.expiring_nonce_primary[primary_index(first)].slot();
+        let state = assert_nonce_replay_matches_execution(
+            &[
+                (primary_slot, encode_primary(first, 1_010)),
+                (
+                    nonce.expiring_nonce_ring[0].slot(),
+                    U256::from_be_bytes(old_hash.0),
+                ),
+                (
+                    nonce.expiring_nonce_seen[old_hash].slot(),
+                    U256::from(1_100),
+                ),
+            ],
+            &[(1_000, collision, 1_200, false)],
+        );
+        assert_eq!(state[&primary_slot], encode_primary(first, 1_010));
+        assert!(!state.contains_key(&nonce.expiring_nonce_ring_ptr.slot()));
     }
 
     #[test]
