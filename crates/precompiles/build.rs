@@ -1,7 +1,16 @@
 #![allow(missing_docs)]
 
-use serde::Deserialize;
-use std::{env, error::Error, fmt::Write, fs, path::PathBuf};
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, MapAccess, Visitor},
+};
+use std::{
+    env,
+    error::Error,
+    fmt::{self, Write},
+    fs,
+    path::PathBuf,
+};
 
 #[path = "src/zone_verifier/pcr.rs"]
 #[allow(unreachable_pub)]
@@ -15,11 +24,41 @@ const IMAGE_PREFIX: &str = "ghcr.io/tempoxyz/tempo-zone-prover@sha256:";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
-    hardfork: String,
     commit: String,
     image: String,
     /// PCR0, PCR1 and PCR2.
     pcrs: [String; 3],
+}
+
+/// Entries keyed by hardfork, kept in file order so the ordering test in `mod.rs` sees them as
+/// written. Duplicate hardforks are rejected.
+struct Entries(Vec<(String, Entry)>);
+
+impl<'de> Deserialize<'de> for Entries {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EntriesVisitor;
+
+        impl<'de> Visitor<'de> for EntriesVisitor {
+            type Value = Entries;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map from hardfork to PCR entry")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Entries, A::Error> {
+                let mut entries = Vec::new();
+                while let Some((fork, entry)) = map.next_entry()? {
+                    if entries.iter().any(|(seen, _)| *seen == fork) {
+                        return Err(de::Error::custom(format!("duplicate hardfork `{fork}`")));
+                    }
+                    entries.push((fork, entry));
+                }
+                Ok(Entries(entries))
+            }
+        }
+
+        deserializer.deserialize_map(EntriesVisitor)
+    }
 }
 
 /// Generates `APPROVED_PCRS` from `pcrs.json` so measurements are reviewed as data and checked
@@ -27,12 +66,11 @@ struct Entry {
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed={PCRS_PATH}");
 
-    let entries: Vec<Entry> = serde_json::from_str(&fs::read_to_string(PCRS_PATH)?)
+    let Entries(entries) = serde_json::from_str(&fs::read_to_string(PCRS_PATH)?)
         .map_err(|e| format!("{PCRS_PATH}: {e}"))?;
 
     let mut out = String::from("&[\n");
-    for entry in &entries {
-        let fork = &entry.hardfork;
+    for (fork, entry) in &entries {
         if fork.is_empty() || !fork.chars().all(|c| c.is_ascii_alphanumeric()) {
             return Err(format!("{PCRS_PATH}: invalid hardfork `{fork}`").into());
         }

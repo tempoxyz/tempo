@@ -15,10 +15,9 @@ count=$(jq -er 'length' "$pcrs")
 echo "Verifying $count PCR entries from $pcrs"
 failed=0
 
-for ((i = 0; i < count; i++)); do
-  entry=$(jq -c ".[$i]" "$pcrs")
+while read -r -u 3 fork; do
+  entry=$(jq -c --arg fork "$fork" '.[$fork]' "$pcrs")
   field() { jq -er --arg key "$1" '.[$key]' <<<"$entry"; }
-  fork=$(field hardfork)
   image=$(field image)
   sha=$(field commit)
   sha=${sha##*/}
@@ -52,6 +51,6 @@ for ((i = 0; i < count; i++)); do
   [[ "$label_pcrs" == "$measured" ]] || fail "image PCR labels $label_pcrs differ from EIF measurements $measured"
 
   echo "::endgroup::"
-done
+done 3< <(jq -r 'keys_unsorted[]' "$pcrs")
 
 exit "$failed"
