@@ -28,7 +28,7 @@ for ((i = 0; i < count; i++)); do
   image=$(field image)
   sha=$(field commit)
   sha=${sha##*/}
-  expected=$(jq -c '[.pcr0, .pcr1, .pcr2]' <<<"$entry")
+  expected=$(jq -c '.pcrs' <<<"$entry")
   fail() { echo "::error title=$fork PCRs::$*"; failed=1; }
   echo "::group::$fork: $image"
 

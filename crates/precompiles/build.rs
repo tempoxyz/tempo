@@ -14,9 +14,8 @@ struct Entry {
     hardfork: String,
     commit: String,
     image: String,
-    pcr0: String,
-    pcr1: String,
-    pcr2: String,
+    /// PCR0, PCR1 and PCR2.
+    pcrs: [String; 3],
 }
 
 /// Generates `APPROVED_PCRS` from `pcrs.json` so measurements are reviewed as data and checked
@@ -37,7 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         check_hex(&entry.image, IMAGE_PREFIX, 64, "image")?;
 
         writeln!(out, "    (TempoHardfork::{fork}, [")?;
-        for pcr in [&entry.pcr0, &entry.pcr1, &entry.pcr2] {
+        for pcr in &entry.pcrs {
             writeln!(out, "        {:?},", decode_pcr(fork, pcr)?)?;
         }
         writeln!(out, "    ]),")?;
