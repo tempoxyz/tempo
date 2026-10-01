@@ -54,18 +54,46 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
   check-version:
-    name: check version
+    name: Check Release Ref and Version
     runs-on: ubuntu-latest
     needs: get-version
-    if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && github.event.inputs.dry_run != 'true' }}
     permissions:
       contents: read
+    outputs:
+      sha: ${{ steps.check_ref.outputs.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', needs.get-version.outputs.version) || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Verify tag matches release branch head
+        id: check_ref
+        env:
+          TAG: ${{ needs.get-version.outputs.version }}
+          IS_RC_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/') }}
+        run: |
+          set -euo pipefail
+
+          sha=$(git rev-parse HEAD)
+          if [[ "$IS_RC_PUSH" != "true" ]]; then
+            git check-ref-format "refs/tags/$TAG"
+            tag_sha=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+            branch="release/$TAG"
+            if ! branch_sha=$(git rev-parse --verify "refs/remotes/origin/$branch^{commit}"); then
+              echo "::error::Required release branch $branch does not exist"
+              exit 1
+            fi
+            if [[ "$tag_sha" != "$branch_sha" || "$tag_sha" != "$sha" ]]; then
+              echo "::error::Tag $TAG ($tag_sha) must match $branch head ($branch_sha) and checked-out commit ($sha)"
+              exit 1
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/')) && inputs.dry_run != true }}
       - name: Verify crate version matches tag
+        if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/')) && inputs.dry_run != true }}
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
         env:
@@ -78,7 +106,7 @@ jobs:
 
   build-release:
     name: Build Release Binaries
-    needs: get-version
+    needs: [get-version, check-version]
     environment: release
     runs-on: ${{ matrix.platform.os }}
     permissions:
@@ -108,6 +136,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.check-version.outputs.sha }}
           persist-credentials: false
 
       - name: Install Rust toolchain
@@ -241,7 +270,7 @@ jobs:
 
   create-release:
     name: Create Release
-    needs: [get-version, build-release]
+    needs: [get-version, check-version, build-release]
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
     permissions:
@@ -253,6 +282,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.check-version.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -381,7 +411,7 @@ jobs:
             --body-file "$body_file"
   upload-cloudflare:
     name: Upload to R2 bucket
-    needs: [get-version, build-release]
+    needs: [get-version, check-version, build-release]
     environment: upload-binaries
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
@@ -392,6 +422,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.check-version.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -411,7 +442,7 @@ jobs:
         id: dest
         env:
           VERSION: ${{ needs.get-version.outputs.version }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.check-version.outputs.sha }}
         run: |
           if [[ "${{ github.repository }}" == "tempoxyz/tempo-private-fork" ]]; then
             echo "dir=${SHA}/${VERSION}" >> "$GITHUB_OUTPUT"
