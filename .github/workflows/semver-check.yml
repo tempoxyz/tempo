@@ -6,6 +6,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - .github/workflows/semver-check.yml
       - crates/hardfork/**
       - crates/contracts/**
       - crates/primitives/**
@@ -39,6 +40,8 @@ jobs:
           persist-credentials: false
 
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@62de042f2251366d3fedbba7b7920b4f90fab588 # 2026-10-01T19-42-00Z-62de042f
+        with:
+          toolchain: 1.98.1
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@62de042f2251366d3fedbba7b7920b4f90fab588 # 2026-10-01T19-42-00Z-62de042f
 
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@62de042f2251366d3fedbba7b7920b4f90fab588 # 2026-10-01T19-42-00Z-62de042f
