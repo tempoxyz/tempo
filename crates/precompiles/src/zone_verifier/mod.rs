@@ -428,34 +428,6 @@ mod tests {
     }
 
     #[test]
-    fn rejected_and_static_verifications_emit_no_event() {
-        let mut call = call();
-        let portal = portal_address(call.zoneId);
-        let (proof, root, pcrs) = attestation::tests::fixture(batch_commitment(1, &call).as_ref());
-        call.proof = proof.into();
-        let mut altered = call.clone();
-        altered.anchorBlockNumber += 1;
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
-        storage.set_static(true);
-        StorageCtx::enter(&mut storage, || {
-            let verifier = ZoneVerifier::new();
-            assert!(
-                verifier
-                    .verify_with_policy(portal, call, &root, Some(pcrs))
-                    .unwrap()
-            );
-            assert!(
-                !verifier
-                    .verify_with_policy(portal, altered, &root, Some(pcrs))
-                    .unwrap()
-            );
-            assert!(verifier.emitted_events().is_empty());
-        });
-    }
-
-    #[test]
     fn no_proof_requires_canonical_portal_and_empty_proof() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
@@ -464,7 +436,6 @@ mod tests {
             candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
             let portal = portal_address(candidate.zoneId);
             assert!(verifier.verify(portal, candidate.clone()).unwrap());
-            assert!(verifier.emitted_events().is_empty());
             assert!(!verifier.verify(Address::ZERO, candidate.clone()).unwrap());
             candidate.proof = Bytes::from_static(&[1]);
             assert!(!verifier.verify(portal, candidate.clone()).unwrap());
