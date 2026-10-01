@@ -23,10 +23,10 @@ use tempo_contracts::{
     TempoHardfork,
     precompiles::{
         AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
-        NonceError, ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError,
-        StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError,
-        TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
-        ValidatorConfigV2Error, ZoneFactoryError,
+        NativeMultisigError, NonceError, ReceivePolicyGuardError, RolesAuthError,
+        SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
+        TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
     },
 };
 
@@ -35,6 +35,8 @@ use tempo_contracts::{
     Debug, Clone, PartialEq, Eq, thiserror::Error, derive_more::From, derive_more::TryInto,
 )]
 pub enum TempoPrecompileError {
+    #[error("native multisig error: {0:?}")]
+    NativeMultisigError(NativeMultisigError),
     /// Stablecoin DEX error
     #[error("Stablecoin DEX error: {0:?}")]
     StablecoinDEX(StablecoinDEXError),
@@ -123,7 +125,7 @@ pub enum TempoPrecompileError {
     #[error("State change during static call")]
     StaticCallNotAllowed,
 
-    /// A commitment write is zero, predates T12, or occurs in a read-only context.
+    /// A commitment write is zero, predates T14, or occurs in a read-only context.
     #[error("invalid account commitment write")]
     InvalidConfigCommitmentWrite,
     /// The calldata's 4-byte selector does not match any known precompile function.
@@ -174,6 +176,7 @@ impl TempoPrecompileError {
             Self::TIP20ChannelReserveError(e) => e.selector(),
             Self::NonceError(e) => e.selector(),
             Self::TIP20Factory(e) => e.selector(),
+            Self::NativeMultisigError(e) => e.selector(),
             Self::RolesAuthError(e) => e.selector(),
             Self::AddrRegistryError(e) => e.selector(),
             Self::TIPFeeAMMError(e) => e.selector(),
@@ -206,7 +209,8 @@ impl TempoPrecompileError {
             | Self::Fatal(_)
             | Self::Panic(_)
             | Self::StorageDeltaUnderflow(_) => true,
-            Self::StablecoinDEX(_)
+            Self::NativeMultisigError(_)
+            | Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
             | Self::NonceError(_)
@@ -256,6 +260,7 @@ impl TempoPrecompileError {
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
     pub fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
         let bytes = match self {
+            Self::NativeMultisigError(e) => e.abi_encode().into(),
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
@@ -351,6 +356,7 @@ pub type TempoPrecompileErrorRegistry = HashMap<
 /// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
+    add_errors_to_registry(&mut registry, TempoPrecompileError::NativeMultisigError);
 
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
