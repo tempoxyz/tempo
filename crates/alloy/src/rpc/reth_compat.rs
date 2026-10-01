@@ -45,6 +45,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     valid_before,
                     valid_after,
                     fee_payer_signature,
+                    fee_payer_override,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -64,6 +65,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
+                            fee_payer_override,
                         }));
                     }
                 };
@@ -83,6 +85,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
+                            fee_payer_override,
                         })
                     },
                 )?)
@@ -123,12 +126,15 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
         let key_data = self.key_data.clone();
         let key_id = self.key_id;
         let has_fee_payer_signature = self.fee_payer_signature.is_some();
+        let fee_payer_override = self.fee_payer_override;
         let tx = self
             .build_aa()
             .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
-        let fee_payer = has_fee_payer_signature
-            .then(|| tx.recover_fee_payer(caller_addr).ok())
-            .flatten();
+        let fee_payer = fee_payer_override.or_else(|| {
+            has_fee_payer_signature
+                .then(|| tx.recover_fee_payer(caller_addr).ok())
+                .flatten()
+        });
         let signature = create_mock_tempo_sig(
             &key_type,
             key_data.as_ref(),

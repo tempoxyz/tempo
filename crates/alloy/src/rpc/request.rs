@@ -103,6 +103,11 @@ pub struct TempoTransactionRequest {
     /// The sponsor signs fee_payer_signature_hash(sender) to commit to paying gas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_payer_signature: Option<alloy_primitives::Signature>,
+
+    /// Fee payer recovered from the original request before gas estimation changes signed fields.
+    /// Internal simulation metadata; RPC clients cannot supply this override.
+    #[serde(skip)]
+    pub fee_payer_override: Option<Address>,
 }
 
 impl TempoTransactionRequest {
@@ -461,6 +466,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
+            fee_payer_override: None,
         }
     }
 }
