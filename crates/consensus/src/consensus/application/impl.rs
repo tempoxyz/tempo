@@ -27,7 +27,6 @@ use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
-use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
@@ -538,7 +537,7 @@ where
                         block.height().get(),
                         ValidationLatencyWorkload::new(
                             block.block().gas_used(),
-                            block.block().body().transaction_count(),
+                            block.block().transaction_count(),
                         ),
                         duration,
                     );

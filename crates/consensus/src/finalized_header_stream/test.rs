@@ -22,12 +22,7 @@ fn mock_provider(asserter: Asserter) -> impl Provider<TempoNetwork> {
 
 fn push_header(asserter: &Asserter, block: &Block) {
     asserter.push_success(&Some(TempoHeaderResponse {
-        inner: Header {
-            hash: block.digest().0,
-            inner: block.header().clone(),
-            total_difficulty: None,
-            size: None,
-        },
+        inner: Header::from_sealed(block.clone_sealed_header().into()),
         timestamp_millis: block.header().timestamp_millis(),
     }));
 }
