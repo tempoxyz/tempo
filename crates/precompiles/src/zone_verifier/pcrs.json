@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "hardfork": "T13",
+    "commit": "https://github.com/tempoxyz/zones/commit/cc82e02428a748e1c80816bae23846e60fd1303d",
+    "image": "ghcr.io/tempoxyz/tempo-zone-prover@sha256:97c54b38ae9ed8d219750c344f0c5008f26c639d3baf4dc3fe4a2d77dd30f977",
+    "pcrs": [
+      "9fc1f1de72e6a3f81b2cf25d89dc1715533ceed30cff2bb930b59757793a7dc9664533e43cb98bea7826b26c01164bbb",
+      "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81",
+      "7c303d97348240a2f12d91ecec5b1e8aa9b95f47e0d2e3bc1779e14650ca4b080e41312c0132cf8baf9219bce3f298f2"
+    ]
+  }
+]
