@@ -1,5 +1,7 @@
 //! ABI for the TIP-1098 native Zone verifier.
 
+pub use IZoneVerifier::IZoneVerifierErrors as ZoneVerifierError;
+
 crate::sol! {
     /// Proof-agnostic Zone verifier ABI retained by TIP-1098.
     #[derive(Debug, PartialEq, Eq)]
@@ -22,6 +24,19 @@ crate::sol! {
             uint64 nextProcessedTokenCount;
         }
 
+        /// Approved PCR0/1/2 measurements recorded when a policy entry became active.
+        struct PcrEntry {
+            uint8 hardfork;
+            uint64 activationBlock;
+            bytes pcr0;
+            bytes pcr1;
+            bytes pcr2;
+        }
+
+        error Unauthorized();
+        error PcrHistoryMismatch(uint256 index);
+        error PcrHistoryIndexOutOfBounds(uint256 index);
+
         function verify(
             uint32 zoneId,
             uint64 tempoBlockNumber,
@@ -36,6 +51,13 @@ crate::sol! {
             bytes calldata verifierConfig,
             bytes calldata proof
         ) external view returns (bool);
+
+        function pcrHistoryLength() external view returns (uint256);
+
+        function pcrHistory(uint256 index) external view returns (PcrEntry memory);
+
+        /// System call that appends newly active PCR policy entries and checks recorded ones.
+        function syncPcrHistory() external;
     }
 
     /// EIP-712 statement committed to a Nitro attestation's `user_data`.

@@ -41,3 +41,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/verify-zone-verifier-pcrs.sh
+
+      # Recorded entries are checked against on-chain PCR history, so they can only be appended.
+      - name: Require existing entries to be unchanged
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          pcrs=crates/precompiles/src/zone_verifier/pcrs.json
+          git fetch --depth=1 origin "$BASE_REF"
+          git show FETCH_HEAD:"$pcrs" > "$RUNNER_TEMP/base-pcrs.json"
+          jq -e --slurpfile base "$RUNNER_TEMP/base-pcrs.json" \
+            '.[:($base[0] | length)] == $base[0]' "$pcrs" > /dev/null || {
+            echo "::error file=$pcrs::existing PCR entries must not be edited, removed or reordered"
+            exit 1
+          }

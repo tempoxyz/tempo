@@ -13,12 +13,14 @@ use tempo_chainspec::{
     hardfork::TempoHardfork,
 };
 pub use tempo_contracts::precompiles::IZoneVerifier;
-use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
+use tempo_contracts::precompiles::{
+    NitroBatchAttestation, ZONE_VERIFIER_ADDRESS, ZoneVerifierError,
+};
 use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
-use tempo_precompiles_macros::contract;
+use tempo_precompiles_macros::{Storable, contract};
 
 use self::attestation::verify_attestation_with_root;
-use crate::{error::Result, zone_factory::portal_address};
+use crate::{error::Result, storage::Handler, zone_factory::portal_address};
 
 const MODE_NITRO_V1: &[u8] = &[1];
 const MODE_NO_PROOF: &[u8] = &[2];
@@ -39,22 +41,146 @@ const APPROVED_PCRS: PcrPolicy = PcrPolicy(Cow::Borrowed(include!(concat!(
 #[cfg(feature = "custom-pcrs")]
 pub static CUSTOM_PCRS: std::sync::OnceLock<PcrPolicy> = std::sync::OnceLock::new();
 
+/// A 48-byte PCR measurement, split across two storage slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
+struct Pcr {
+    hi: B256,
+    lo: FixedBytes<16>,
+}
+
+impl From<[u8; 48]> for Pcr {
+    fn from(pcr: [u8; 48]) -> Self {
+        Self {
+            hi: B256::from_slice(&pcr[..32]),
+            lo: FixedBytes::from_slice(&pcr[32..]),
+        }
+    }
+}
+
+impl From<Pcr> for [u8; 48] {
+    fn from(pcr: Pcr) -> Self {
+        let mut out = [0; 48];
+        out[..32].copy_from_slice(pcr.hi.as_slice());
+        out[32..].copy_from_slice(pcr.lo.as_slice());
+        out
+    }
+}
+
+/// PCR0/1/2 measurements recorded when a policy entry first became active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
+struct PcrEntry {
+    hardfork: u8,
+    activation_block: u64,
+    pcr0: Pcr,
+    pcr1: Pcr,
+    pcr2: Pcr,
+}
+
+impl PcrEntry {
+    fn new(
+        hardfork: TempoHardfork,
+        activation_block: u64,
+        [pcr0, pcr1, pcr2]: [[u8; 48]; 3],
+    ) -> Self {
+        Self {
+            hardfork: hardfork.variant_index(),
+            activation_block,
+            pcr0: pcr0.into(),
+            pcr1: pcr1.into(),
+            pcr2: pcr2.into(),
+        }
+    }
+
+    /// Whether this entry records `pcrs` for `hardfork`.
+    fn matches(&self, hardfork: TempoHardfork, pcrs: [[u8; 48]; 3]) -> bool {
+        self.hardfork == hardfork.variant_index()
+            && [self.pcr0, self.pcr1, self.pcr2].map(<[u8; 48]>::from) == pcrs
+    }
+}
+
 #[contract(addr = ZONE_VERIFIER_ADDRESS)]
-pub struct ZoneVerifier {}
+pub struct ZoneVerifier {
+    /// Append-only record of every PCR policy entry that has been active on this chain.
+    pcr_history: Vec<PcrEntry>,
+}
 
 impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
-        let hardfork = self.storage.spec();
+        let approved_pcrs = self.policy()?.at(self.storage.spec());
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, approved_pcrs)
+    }
 
+    pub fn pcr_history_length(&self) -> Result<U256> {
+        Ok(U256::from(self.pcr_history.len()?))
+    }
+
+    pub fn pcr_history(
+        &self,
+        call: IZoneVerifier::pcrHistoryCall,
+    ) -> Result<IZoneVerifier::PcrEntry> {
+        let index = usize::try_from(call.index)
+            .ok()
+            .filter(|index| self.pcr_history.len().is_ok_and(|len| *index < len))
+            .ok_or_else(|| ZoneVerifierError::pcr_history_index_out_of_bounds(call.index))?;
+        let entry = self.pcr_history[index].read()?;
+        let [pcr0, pcr1, pcr2] =
+            [entry.pcr0, entry.pcr1, entry.pcr2].map(|pcr| <[u8; 48]>::from(pcr).to_vec().into());
+        Ok(IZoneVerifier::PcrEntry {
+            hardfork: entry.hardfork,
+            activationBlock: entry.activation_block,
+            pcr0,
+            pcr1,
+            pcr2,
+        })
+    }
+
+    /// Appends newly active policy entries and checks that recorded ones still match the compiled
+    /// policy, so a binary with different measurements fails instead of verifying against them.
+    ///
+    /// Only callable by the block executor through a system call from the zero address.
+    pub fn sync_pcr_history(&mut self, msg_sender: Address) -> Result<()> {
+        if msg_sender != Address::ZERO {
+            return Err(ZoneVerifierError::unauthorized().into());
+        }
+
+        // System writes are free and must not mint or consume TIP-1060 storage credits.
+        self.storage.set_tip1060_storage_credits(false);
+        self.sync_pcr_history_with_policy(self.policy()?)
+    }
+
+    fn sync_pcr_history_with_policy(&mut self, policy: &PcrPolicy) -> Result<()> {
+        let hardfork = self.storage.spec();
+        let block_number = self.storage.block_number();
+        let recorded = self.pcr_history.len()?;
+        let mut active = 0;
+        for (index, (fork, pcrs)) in policy.active(hardfork).into_iter().enumerate() {
+            if index < recorded {
+                if !self.pcr_history[index].read()?.matches(fork, pcrs) {
+                    return Err(ZoneVerifierError::pcr_history_mismatch(U256::from(index)).into());
+                }
+            } else {
+                self.pcr_history
+                    .push(PcrEntry::new(fork, block_number, pcrs))?;
+            }
+            active = index + 1;
+        }
+        if recorded > active {
+            return Err(ZoneVerifierError::pcr_history_mismatch(U256::from(active)).into());
+        }
+        Ok(())
+    }
+
+    /// The PCR policy used by both `verify` and the recorded history.
+    fn policy(&self) -> Result<&'static PcrPolicy> {
         #[cfg(feature = "custom-pcrs")]
         if let Some(policy) = CUSTOM_PCRS.get() {
             policy
                 .validate(self.storage.chain_id())
                 .map_err(|e| crate::error::TempoPrecompileError::Fatal(e.to_string()))?;
-            return self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, policy.at(hardfork));
+            return Ok(policy);
         }
 
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
+        Ok(&APPROVED_PCRS)
     }
 
     /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
@@ -160,6 +286,18 @@ impl PcrPolicy {
         Ok(())
     }
 
+    /// Return every entry in effect at or before the requested hardfork, oldest first.
+    pub fn active(&self, hardfork: TempoHardfork) -> Vec<(TempoHardfork, [[u8; 48]; 3])> {
+        let mut entries = self
+            .0
+            .iter()
+            .filter(|(fork, _)| hardfork >= *fork)
+            .copied()
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(fork, _)| fork.variant_index());
+        entries
+    }
+
     /// Return the accepted measurements at the requested hardfork.
     pub fn at(&self, hardfork: TempoHardfork) -> Option<[[u8; 48]; 3]> {
         self.0
@@ -242,7 +380,7 @@ pub enum PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::storage::{StorableType, StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{primitives::Bytes, sol_types::SolCall};
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
@@ -538,6 +676,60 @@ mod tests {
             assert_eq!(CUSTOM_PCRS.get(), Some(&borrowed));
             assert_eq!(CUSTOM_PCRS.set(borrowed.clone()), Err(borrowed));
         }
+    }
+
+    #[test]
+    fn pcr_history_records_active_entries_once() {
+        let policy = PcrPolicy(Cow::Borrowed(&[
+            (TempoHardfork::T13, [[0x11; 48], [0x12; 48], [0x13; 48]]),
+            (TempoHardfork::T14, [[0x21; 48], [0x22; 48], [0x23; 48]]),
+        ]));
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        storage.set_block_number(7);
+        StorageCtx::enter(&mut storage, || {
+            let mut verifier = ZoneVerifier::new();
+            verifier.sync_pcr_history_with_policy(&policy).unwrap();
+            verifier.sync_pcr_history_with_policy(&policy).unwrap();
+            assert_eq!(verifier.pcr_history_length().unwrap(), U256::ONE);
+            assert_eq!(
+                verifier
+                    .pcr_history(IZoneVerifier::pcrHistoryCall { index: U256::ZERO })
+                    .unwrap(),
+                IZoneVerifier::PcrEntry {
+                    hardfork: TempoHardfork::T13.variant_index(),
+                    activationBlock: 7,
+                    pcr0: Bytes::from([0x11; 48]),
+                    pcr1: Bytes::from([0x12; 48]),
+                    pcr2: Bytes::from([0x13; 48]),
+                }
+            );
+            assert!(
+                verifier
+                    .pcr_history(IZoneVerifier::pcrHistoryCall { index: U256::ONE })
+                    .is_err()
+            );
+            assert!(verifier.sync_pcr_history(Address::repeat_byte(1)).is_err());
+        });
+        assert_eq!((Pcr::SLOTS, PcrEntry::SLOTS), (2, 7));
+    }
+
+    #[test]
+    fn pcr_history_rejects_divergent_policy() {
+        let recorded = PcrPolicy::from([[0x11; 48], [0x12; 48], [0x13; 48]]);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let mut verifier = ZoneVerifier::new();
+            verifier.sync_pcr_history_with_policy(&recorded).unwrap();
+            for policy in [
+                PcrPolicy::from([[0x11; 48], [0x12; 48], [0x14; 48]]),
+                PcrPolicy(Cow::Borrowed(&[])),
+            ] {
+                assert_eq!(
+                    verifier.sync_pcr_history_with_policy(&policy),
+                    Err(ZoneVerifierError::pcr_history_mismatch(U256::ZERO).into())
+                );
+            }
+        });
     }
 
     #[test]

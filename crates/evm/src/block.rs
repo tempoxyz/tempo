@@ -25,9 +25,10 @@ use reth_revm::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    IZoneVerifier, InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_VERIFIER_ADDRESS, initial_zone_factory_state,
+    t13_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -354,6 +355,30 @@ where
         Ok(())
     }
 
+    /// Records newly active zone verifier PCRs in state and checks the recorded history against
+    /// this binary's policy.
+    fn apply_pcr_history_system_call(&mut self) -> Result<(), BlockExecutionError> {
+        if !self.evm().cfg.spec.is_t13() {
+            return Ok(());
+        }
+
+        let calldata = IZoneVerifier::syncPcrHistoryCall {}.abi_encode().into();
+        let result = self
+            .evm_mut()
+            .transact_system_call(Address::ZERO, ZONE_VERIFIER_ADDRESS, calldata)
+            .map_err(BlockExecutionError::other)?;
+
+        if !result.result.is_success() {
+            return Err(BlockValidationError::msg(
+                "zone verifier PCR history does not match this binary's policy",
+            )
+            .into());
+        }
+
+        self.evm_mut().db_mut().commit(result.state);
+        Ok(())
+    }
+
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
         &self,
@@ -547,6 +572,7 @@ where
         {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
+        self.apply_pcr_history_system_call()?;
 
         Ok(())
     }

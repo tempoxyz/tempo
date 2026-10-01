@@ -2,7 +2,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IZoneVerifier;
 
-use crate::{Precompile, charge_input_cost, dispatch, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 
 use super::ZoneVerifier;
 
@@ -28,6 +28,11 @@ impl Precompile for ZoneVerifier {
             |call| match call {
                 IZoneVerifier::IZoneVerifierCalls {
                     verify(call) => view(call, |call| self.verify(msg_sender, call)),
+                    pcrHistoryLength(call) => view(call, |_| self.pcr_history_length()),
+                    pcrHistory(call) => view(call, |call| self.pcr_history(call)),
+                    syncPcrHistory(call) => {
+                        mutate(call, msg_sender, |sender, _| self.sync_pcr_history(sender))
+                    }
                 }
             }
         )
