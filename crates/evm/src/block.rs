@@ -439,13 +439,18 @@ where
 
     /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
     ///
+    /// T13+: TIP-1045 classification with bounded trailing calldata ([`is_payment_v3`]).
     /// T5+: TIP-1045 classification ([`is_payment_v2`]).
     /// Pre-T5: legacy TIP-20 prefix-only check ([`is_payment_v1`]).
     ///
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
+    /// [`is_payment_v3`]: TempoTxEnvelope::is_payment_v3
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        if self.evm().cfg.spec.is_t5() {
+        let spec = self.evm().cfg.spec;
+        if spec.is_t13() {
+            tx.is_payment_v3()
+        } else if spec.is_t5() {
             tx.is_payment_v2()
         } else {
             tx.is_payment_v1()
@@ -724,8 +729,9 @@ mod tests {
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
     use tempo_contracts::{
         precompiles::{
-            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
-            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, ITIP20, PATH_USD_ADDRESS,
+            ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS, tip20::MAX_PAYMENT_TRAILING_BYTES,
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
@@ -1025,6 +1031,37 @@ mod tests {
         let mut t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
         t5_executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T5;
         assert!(!t5_executor.is_payment(&tx));
+    }
+
+    #[test]
+    fn test_is_payment_uses_v3_from_t13() {
+        let mut input = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::ONE,
+        }
+        .abi_encode();
+        input.extend([0xab; MAX_PAYMENT_TRAILING_BYTES]);
+        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                input: input.into(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        ));
+        assert!(!tx.is_payment_v2(), "T5 classifier rejects trailing bytes");
+        assert!(
+            tx.is_payment_v3(),
+            "T13 classifier accepts bounded trailing bytes"
+        );
+
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        executor.inner.evm.cfg.spec = TempoHardfork::T12;
+        assert!(!executor.is_payment(&tx));
+        executor.inner.evm.cfg.spec = TempoHardfork::T13;
+        assert!(executor.is_payment(&tx));
     }
 
     #[test]

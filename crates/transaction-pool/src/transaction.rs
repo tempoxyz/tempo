@@ -47,8 +47,10 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached T5+ payment classification for efficient block building.
-    is_payment: bool,
+    /// Cached T5-T12 payment classification for efficient block building.
+    is_payment_v2: bool,
+    /// Cached T13+ payment classification for efficient block building.
+    is_payment_v3: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
@@ -102,7 +104,9 @@ impl TempoPooledTransaction {
         expiring_nonce_hash: Option<B256>,
         encoded_length: usize,
     ) -> Self {
-        let is_payment = transaction.is_payment_v2();
+        // V2 is strictly narrower than V3, so it only needs checking for V3 payments.
+        let is_payment_v3 = transaction.is_payment_v3();
+        let is_payment_v2 = is_payment_v3 && transaction.is_payment_v2();
         let value = transaction.value();
         let cost =
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
@@ -119,7 +123,8 @@ impl TempoPooledTransaction {
                 blob_cell_availability: None,
             },
             fee_token_cost,
-            is_payment,
+            is_payment_v2,
+            is_payment_v3,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -180,9 +185,14 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the T5+ builder criteria.
-    pub fn is_payment(&self) -> bool {
-        self.is_payment
+    /// Returns whether this is a payment transaction according to the T5-T12 builder criteria.
+    pub fn is_payment_v2(&self) -> bool {
+        self.is_payment_v2
+    }
+
+    /// Returns whether this is a payment transaction according to the T13+ builder criteria.
+    pub fn is_payment_v3(&self) -> bool {
+        self.is_payment_v3
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
@@ -392,7 +402,8 @@ impl TempoPooledTransaction {
         Self {
             inner: self.inner.clone(),
             fee_token_cost: self.fee_token_cost,
-            is_payment: self.is_payment,
+            is_payment_v2: self.is_payment_v2,
+            is_payment_v3: self.is_payment_v3,
             expiring_nonce_hash: self.expiring_nonce_hash,
             nonce_key_slot: self.nonce_key_slot.clone(),
             expiring_nonce_slot: self.expiring_nonce_slot.clone(),
@@ -488,7 +499,7 @@ impl TempoPooledTransaction {
     ///
     /// See `warm_payment_keccak_slots` for the exact set of slots this warms.
     pub fn precalculate_keccak_slots(&self) {
-        if !self.is_payment {
+        if !self.is_payment_v3 {
             return;
         }
 
@@ -1073,7 +1084,37 @@ mod tests {
         );
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(pooled_tx.is_payment());
+        assert!(pooled_tx.is_payment_v2());
+    }
+
+    #[test]
+    fn test_payment_classification_trailing_bytes() {
+        let mut calldata = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::random(),
+        }
+        .abi_encode();
+        calldata.extend([0xab; 32]);
+
+        let tx = TxEip1559 {
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            gas_limit: 21000,
+            input: Bytes::from(calldata),
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        let recovered = Recovered::new_unchecked(
+            envelope,
+            address!("0000000000000000000000000000000000000001"),
+        );
+
+        let pooled_tx = TempoPooledTransaction::new(recovered);
+        assert!(!pooled_tx.is_payment_v2());
+        assert!(pooled_tx.is_payment_v3());
     }
 
     #[test]
@@ -1098,7 +1139,7 @@ mod tests {
         );
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment_v2());
     }
 
     #[test]
@@ -1108,7 +1149,7 @@ mod tests {
         let pooled_tx = TxBuilder::eip1559(non_payment_addr)
             .gas_limit(21000)
             .build_eip1559();
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment_v2());
     }
 
     #[test]
