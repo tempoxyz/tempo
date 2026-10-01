@@ -15,6 +15,7 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
 pub mod zone_factory;
+pub mod zone_portal;
 pub mod zone_verifier;
 
 pub use account_keychain::*;
