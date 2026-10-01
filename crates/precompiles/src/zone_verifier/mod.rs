@@ -115,7 +115,7 @@ impl ZoneVerifier {
             return Ok(false);
         }
 
-        // Logs are forbidden in static calls, which callers like the T13 portal runtime use.
+        // Logs are forbidden in static calls, such as `eth_call` simulations.
         if !self.storage.is_static() {
             let [pcr0, pcr1, pcr2] = approved_pcrs.map(|pcr| pcr.to_vec().into());
             // `verify` is dispatched as a view call, so emit through a fresh storage handle.
