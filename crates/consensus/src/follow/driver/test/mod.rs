@@ -174,7 +174,7 @@ fn valid_finalization_is_certified_and_reported() {
             .expect("the marker update should be acknowledged");
 
         let certified = marshal.certified();
-        assert_eq!(certified[0].0, finalization.proposal.round);
+        assert_eq!(certified[0].0, finalization.round());
         assert_eq!(certified[0].1, block);
         assert_eq!(marshal.report_count(), 1);
         assert!(marshal.hints().is_empty());
@@ -419,7 +419,7 @@ fn marshal_tip_advances_latest_verified_round() {
         let block = make_block(1, None);
         let digest = block.digest();
         let certificate = make_finalization(&block, Epoch::zero(), &rig.fixture.schemes);
-        let round = certificate.proposal.round;
+        let round = certificate.round();
 
         let _ =
             rig.mailbox

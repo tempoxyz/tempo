@@ -407,8 +407,8 @@ impl commonware_consensus::CertifiableBlock for Block {
                 let leader = PublicKey::from(PrivateKey::from_seed(0));
                 Context {
                     leader,
-                    round: Round::new(Epoch::new(0), View::new(0)),
-                    parent: (View::new(0), Digest(B256::ZERO)),
+                    round: Round::zero(),
+                    parent: (View::zero(), Digest(B256::ZERO)),
                 }
             }
         }

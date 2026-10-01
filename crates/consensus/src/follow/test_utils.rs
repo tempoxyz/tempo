@@ -87,8 +87,8 @@ pub(crate) fn make_certified_block(
     finalization: &Finalization<Scheme<PublicKey, MinSig>, Digest>,
 ) -> CertifiedBlock {
     CertifiedBlock {
-        epoch: finalization.proposal.round.epoch().get(),
-        view: finalization.proposal.round.view().get(),
+        epoch: finalization.round().epoch().get(),
+        view: finalization.round().view().get(),
         digest: block.digest().0,
         certificate: alloy_primitives::hex::encode(finalization.encode()),
         block: block.into_execution_block(),
