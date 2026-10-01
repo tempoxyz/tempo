@@ -3,6 +3,10 @@
 use serde::Deserialize;
 use std::{env, error::Error, fmt::Write, fs, path::PathBuf};
 
+#[path = "src/zone_verifier/pcr.rs"]
+#[allow(unreachable_pub)]
+mod pcr;
+
 const PCRS_PATH: &str = "src/zone_verifier/pcrs.json";
 const COMMIT_PREFIX: &str = "https://github.com/tempoxyz/zones/commit/";
 const IMAGE_PREFIX: &str = "ghcr.io/tempoxyz/tempo-zone-prover@sha256:";
@@ -35,9 +39,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         check_hex(&entry.commit, COMMIT_PREFIX, 40, "commit")?;
         check_hex(&entry.image, IMAGE_PREFIX, 64, "image")?;
 
+        let pcrs = pcr::parse_pcrs(entry.pcrs.iter().map(String::as_str))
+            .map_err(|e| format!("{PCRS_PATH}: {fork}: {e}"))?;
         writeln!(out, "    (TempoHardfork::{fork}, [")?;
-        for pcr in &entry.pcrs {
-            writeln!(out, "        {:?},", decode_pcr(fork, pcr)?)?;
+        for pcr in pcrs {
+            writeln!(out, "        {pcr:?},")?;
         }
         writeln!(out, "    ]),")?;
     }
@@ -57,17 +63,4 @@ fn check_hex(value: &str, prefix: &str, len: usize, field: &str) -> Result<(), B
         return Ok(());
     }
     Err(format!("{PCRS_PATH}: {field} `{value}` must be `{prefix}<{len} lowercase hex>`").into())
-}
-
-/// Decodes a 48-byte measurement, rejecting zero (debug enclave) values.
-fn decode_pcr(fork: &str, pcr: &str) -> Result<[u8; 48], Box<dyn Error>> {
-    check_hex(pcr, "", 96, &format!("{fork} PCR"))?;
-    let mut bytes = [0; 48];
-    for (byte, chunk) in bytes.iter_mut().zip(pcr.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(chunk)?, 16)?;
-    }
-    if bytes == [0; 48] {
-        return Err(format!("{PCRS_PATH}: {fork} has zero/debug PCR measurements").into());
-    }
-    Ok(bytes)
 }

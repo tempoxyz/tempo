@@ -2,9 +2,10 @@
 
 mod attestation;
 pub mod dispatch;
+mod pcr;
 
 use alloy::{
-    primitives::{Address, B256, FixedBytes, U256, keccak256},
+    primitives::{Address, B256, U256, keccak256},
     sol_types::SolStruct,
 };
 use std::{borrow::Cow, str::FromStr};
@@ -17,7 +18,8 @@ use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS}
 use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::contract;
 
-use self::attestation::verify_attestation_with_root;
+pub use self::pcr::PcrError;
+use self::{attestation::verify_attestation_with_root, pcr::parse_pcrs};
 use crate::{error::Result, zone_factory::portal_address};
 
 const MODE_NITRO_V1: &[u8] = &[1];
@@ -201,27 +203,13 @@ impl FromStr for PcrPolicy {
             if entries.iter().any(|(existing, _)| *existing == fork) {
                 return Err(PolicyError::DuplicateHardfork(fork));
             }
-            entries.push((fork, parse_pcrs(pcrs)?));
+            entries.push((fork, parse_pcrs(pcrs.split(',').map(str::trim))?));
         }
         if entries.is_empty() {
-            return Err(PolicyError::InvalidMeasurements);
+            return Err(PcrError::Invalid.into());
         }
         Ok(Self(Cow::Owned(entries)))
     }
-}
-
-fn parse_pcrs(value: &str) -> std::result::Result<[[u8; 48]; 3], PolicyError> {
-    let values: [FixedBytes<48>; 3] = value
-        .split(',')
-        .map(|part| part.trim().parse())
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| PolicyError::InvalidMeasurements)?
-        .try_into()
-        .map_err(|_| PolicyError::InvalidMeasurements)?;
-    if values.iter().any(FixedBytes::is_zero) {
-        return Err(PolicyError::DebugMeasurements);
-    }
-    Ok(values.map(|value| value.0))
 }
 
 /// Error returned when parsing a [`PcrPolicy`].
@@ -229,10 +217,8 @@ fn parse_pcrs(value: &str) -> std::result::Result<[[u8; 48]; 3], PolicyError> {
 pub enum PolicyError {
     #[error("custom zone verifier PCRs are not allowed on chain {0}")]
     CustomPolicyNotAllowed(u64),
-    #[error("expected three comma-separated 48-byte PCR measurements (PCR0,PCR1,PCR2)")]
-    InvalidMeasurements,
-    #[error("zero/debug enclave PCR measurements are not permitted")]
-    DebugMeasurements,
+    #[error(transparent)]
+    Measurements(#[from] PcrError),
     #[error("unknown hardfork: {0}")]
     InvalidHardfork(String),
     #[error("duplicate PCR entry for hardfork {0}")]
@@ -516,11 +502,27 @@ mod tests {
         }
         assert_eq!(bare.validate(1), Ok(()));
         for (input, expected) in [
-            (String::new(), PolicyError::InvalidMeasurements),
-            (format!("{a},{a}"), PolicyError::InvalidMeasurements),
-            (format!("{a},{a},{a},{a}"), PolicyError::InvalidMeasurements),
-            (format!("{a},{a},11"), PolicyError::InvalidMeasurements),
-            (format!("{a},{a},{zero}"), PolicyError::DebugMeasurements),
+            (String::new(), PolicyError::Measurements(PcrError::Invalid)),
+            (
+                format!("{a},{a}"),
+                PolicyError::Measurements(PcrError::Invalid),
+            ),
+            (
+                format!("{a},{a},{a},{a}"),
+                PolicyError::Measurements(PcrError::Invalid),
+            ),
+            (
+                format!("{a},{a},11"),
+                PolicyError::Measurements(PcrError::Invalid),
+            ),
+            (
+                format!("{a},{a},+{}", "1".repeat(95)),
+                PolicyError::Measurements(PcrError::Invalid),
+            ),
+            (
+                format!("{a},{a},{zero}"),
+                PolicyError::Measurements(PcrError::Debug),
+            ),
             (
                 format!("T99={a},{a},{a}"),
                 PolicyError::InvalidHardfork("T99".to_string()),
