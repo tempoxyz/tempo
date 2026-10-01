@@ -10,11 +10,17 @@ use reth_rpc_convert::{
 use reth_rpc_eth_types::EthApiError;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
 use tempo_revm::TempoTxEnv;
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
+        if self.has_configurable_simulation() {
+            return Err(ValueError::new(
+                self,
+                "configurable roles are unsupported in simulateV1 until evolving-position state validation is available",
+            ));
+        }
         match self.output_tx_type() {
             TempoTxType::AA => {
                 let tx = self.build_aa()?;
@@ -38,6 +44,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
+                    multisig_simulation,
+                    key_authorization_simulation,
+                    multisig_simulation_signature,
+                    multisig_simulation_prepared,
                     valid_before,
                     valid_after,
                     fee_payer_signature,
@@ -57,6 +67,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_simulation,
+                            key_authorization_simulation,
+                            multisig_simulation_signature,
+                            multisig_simulation_prepared,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -76,6 +90,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_simulation,
+                            key_authorization_simulation,
+                            multisig_simulation_signature,
+                            multisig_simulation_prepared,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -105,6 +123,14 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
+        if self.multisig_simulation.is_some()
+            || self.key_authorization_simulation.is_some()
+            || self.multisig_simulation_signature.is_some()
+            || self.multisig_simulation_prepared
+            || self.key_type == Some(SignatureType::Multisig)
+        {
+            return Err(SignTxRequestError::InvalidTransactionRequest);
+        }
         if self.output_tx_type() == TempoTxType::AA {
             let mut tx = self
                 .build_aa()
