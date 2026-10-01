@@ -36,6 +36,8 @@ pub enum NativeMultisigError {
     Quorum(MultisigQuorumError),
 }
 
+type NativeValidationResult<T, DbError> = Result<T, EVMError<DbError, TempoInvalidTransaction>>;
+
 /// An independently signed role. Repeated accounts still require both role digests.
 pub struct NativeAuthorization<'a> {
     pub signature: &'a MultisigSignature,
@@ -129,7 +131,7 @@ fn grant_delegate_access_gas<J: JournalTr>(
     spec: TempoHardfork,
     gas: &GasParams,
     signers: &[Address],
-) -> Result<u64, EVMError<<J::Database as revm::Database>::Error, TempoInvalidTransaction>> {
+) -> NativeValidationResult<u64, <J::Database as revm::Database>::Error> {
     if spec.is_t14()
         && let Some(delegate) = grant_delegate(tx)
         && delegate != tx.caller
@@ -151,7 +153,7 @@ pub fn validate_state<J: JournalTr>(
     block: &TempoBlockEnv,
     spec: TempoHardfork,
     gas: &GasParams,
-) -> Result<(u64, u64), EVMError<<J::Database as revm::Database>::Error, TempoInvalidTransaction>> {
+) -> NativeValidationResult<(u64, u64), <J::Database as revm::Database>::Error> {
     let roles = authorizations(tx);
     let invalid = |error| EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(error));
     // Context rejection must not depend on factory configuration or account reads.
