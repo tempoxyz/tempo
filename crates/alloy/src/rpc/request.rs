@@ -4,8 +4,12 @@ use alloy_eips::Typed2718;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
-use core::num::NonZeroU64;
+use core::{
+    hash::{Hash, Hasher},
+    num::NonZeroU64,
+};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
@@ -104,10 +108,37 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_payer_signature: Option<alloy_primitives::Signature>,
 
-    /// Fee payer recovered from the original request before gas estimation changes signed fields.
-    /// Internal simulation metadata; RPC clients cannot supply this override.
+    /// Request-scoped fee payer cache shared by gas estimation probes.
+    /// Internal simulation metadata; RPC clients cannot supply this cache.
     #[serde(skip)]
-    pub fee_payer_override: Option<Address>,
+    pub gas_estimation_fee_payer: Option<GasEstimationFeePayer>,
+}
+
+/// Shares the initial environment's fee payer across clones of one gas estimation request.
+///
+/// Equality and hashing use cache identity so filling the cache cannot change a request's hash.
+#[derive(Clone, Debug, Default)]
+pub struct GasEstimationFeePayer(Arc<OnceLock<Option<Address>>>);
+
+impl GasEstimationFeePayer {
+    #[cfg(feature = "reth")]
+    pub(crate) fn get_or_init(&self, recover: impl FnOnce() -> Option<Address>) -> Option<Address> {
+        *self.0.get_or_init(recover)
+    }
+}
+
+impl PartialEq for GasEstimationFeePayer {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for GasEstimationFeePayer {}
+
+impl Hash for GasEstimationFeePayer {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
 }
 
 impl TempoTransactionRequest {
@@ -466,7 +497,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
-            fee_payer_override: None,
+            gas_estimation_fee_payer: None,
         }
     }
 }

@@ -45,7 +45,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     valid_before,
                     valid_after,
                     fee_payer_signature,
-                    fee_payer_override,
+                    gas_estimation_fee_payer,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -65,7 +65,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
-                            fee_payer_override,
+                            gas_estimation_fee_payer,
                         }));
                     }
                 };
@@ -85,7 +85,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
-                            fee_payer_override,
+                            gas_estimation_fee_payer,
                         })
                     },
                 )?)
@@ -126,15 +126,21 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
         let key_data = self.key_data.clone();
         let key_id = self.key_id;
         let has_fee_payer_signature = self.fee_payer_signature.is_some();
-        let fee_payer_override = self.fee_payer_override;
+        let gas_estimation_fee_payer = self.gas_estimation_fee_payer.take();
         let tx = self
             .build_aa()
             .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
-        let fee_payer = fee_payer_override.or_else(|| {
+        let recover_fee_payer = || {
             has_fee_payer_signature
                 .then(|| tx.recover_fee_payer(caller_addr).ok())
                 .flatten()
-        });
+        };
+        // The estimator first converts the normalized request after applying overrides, then
+        // clones that request for probes. Preserve the initial recovery across gas-limit changes.
+        let fee_payer = match gas_estimation_fee_payer {
+            Some(cache) => cache.get_or_init(recover_fee_payer),
+            None => recover_fee_payer(),
+        };
         let signature = create_mock_tempo_sig(
             &key_type,
             key_data.as_ref(),

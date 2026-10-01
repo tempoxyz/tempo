@@ -36,7 +36,7 @@ use reth_ethereum::tasks::{
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
-use reth_provider::{ChainSpecProvider, ProviderError, StateProvider};
+use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConvert, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
@@ -337,7 +337,22 @@ impl<N> EthFees for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> Trace for TempoEthApi<N> where N: TempoEthApiBounds {}
 
-impl<N> EthCall for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> EthCall for TempoEthApi<N>
+where
+    N: TempoEthApiBounds,
+{
+    fn estimate_gas_at(
+        &self,
+        mut request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
+        at: BlockId,
+        overrides: EvmOverrides,
+    ) -> impl Future<Output = Result<U256, Self::Error>> + Send {
+        // The initial conversion fills this cache after normalization and overrides. Probes
+        // reuse that fee payer as if they cloned the initial transaction environment.
+        request.gas_estimation_fee_payer = request.fee_payer_signature.map(|_| Default::default());
+        EstimateCall::estimate_gas_at(self, request, at, overrides)
+    }
+}
 
 impl<N> GetBlockAccessList for TempoEthApi<N> where N: TempoEthApiBounds {}
 
@@ -431,34 +446,7 @@ where
     }
 }
 
-impl<N> EstimateCall for TempoEthApi<N>
-where
-    N: TempoEthApiBounds,
-{
-    async fn estimate_gas_at(
-        &self,
-        mut request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
-        at: BlockId,
-        overrides: EvmOverrides,
-    ) -> Result<U256, Self::Error> {
-        let (evm_env, at) = self.evm_env_at(at).await?;
-
-        self.spawn_blocking_io_fut(async move |this| {
-            // Fee payer signatures commit to gas limit and nonce. Recover from the original
-            // request so every estimation probe uses the same sponsor after changing these fields.
-            if request.fee_payer_signature.is_some() {
-                let tx_env = this.converter().tx_env(request.clone(), &evm_env)?;
-                request.fee_payer_override = Some(tx_env.fee_payer().map_err(|_| {
-                    Self::Error::from_eth_err(EthApiError::InvalidTransactionSignature)
-                })?);
-            }
-
-            let state = this.state_at_block_id(at).await?;
-            this.estimate_gas_with(evm_env, request, state.into_evm_state_provider(), overrides)
-        })
-        .await
-    }
-}
+impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
