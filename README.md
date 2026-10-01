@@ -154,6 +154,24 @@ just localnet
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
 
+## Network identities
+
+These BLS threshold public keys are built into Tempo nodes and used by both follow/RPC nodes and validators to verify consensus finalisation certificates, including those used to authenticate snapshots.
+
+**Mainnet — from epoch 0**
+
+```text
+0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193
+```
+
+**Testnet (Moderato) — from epoch 1747**
+
+```text
+0x967ae1a6d3ddbe5cb0fe5e6fc58e74249787b4a277619b549fed6609d04660540dd2449cd7174def35e40f544e5ad72d15d064191a205ed6e0c49619c68f975108b614d0d51def9a8416a10a07c4193bea0cbbc4252ec1b33f21095a5d7aa590
+```
+
+See the [compiled network identities](./crates/chainspec/src/network_identity.rs) for the built-in values. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/docs/guide/node/validator-troubleshooting#my-node-fails-to-start-finalized-tip-certificate-failed-verification-against-the-trusted-network-identity).
+
 ## Security
 
 See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
