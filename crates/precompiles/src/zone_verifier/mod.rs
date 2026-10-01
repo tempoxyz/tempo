@@ -111,27 +111,26 @@ impl ZoneVerifier {
         }
 
         let commitment = batch_commitment(self.storage.chain_id(), &call);
-        if attestation.user_data.as_slice() != commitment.as_slice() {
-            return Ok(false);
+        if attestation.user_data.as_slice() == commitment.as_slice() {
+            // Logs are forbidden in static calls, such as `eth_call` simulations.
+            if !self.storage.is_static() {
+                let [pcr0, pcr1, pcr2] = approved_pcrs.map(|pcr| pcr.to_vec().into());
+                // `verify` is dispatched as a view call, so emit through a fresh storage handle.
+                StorageCtx.emit_event(
+                    ZONE_VERIFIER_ADDRESS,
+                    IZoneVerifier::ProofVerified {
+                        zoneId: call.zoneId,
+                        pcr0,
+                        pcr1,
+                        pcr2,
+                    }
+                    .encode_log_data(),
+                )?;
+            }
+            return Ok(true);
         }
 
-        // Logs are forbidden in static calls, such as `eth_call` simulations.
-        if !self.storage.is_static() {
-            let [pcr0, pcr1, pcr2] = approved_pcrs.map(|pcr| pcr.to_vec().into());
-            // `verify` is dispatched as a view call, so emit through a fresh storage handle.
-            StorageCtx.emit_event(
-                ZONE_VERIFIER_ADDRESS,
-                IZoneVerifier::ProofVerified {
-                    zoneId: call.zoneId,
-                    withdrawalBatchIndex: call.expectedWithdrawalBatchIndex,
-                    pcr0,
-                    pcr1,
-                    pcr2,
-                }
-                .encode_log_data(),
-            )?;
-        }
-        Ok(true)
+        Ok(false)
     }
 }
 
@@ -366,7 +365,6 @@ mod tests {
                 &vec![
                     IZoneVerifier::ProofVerified {
                         zoneId: call.zoneId,
-                        withdrawalBatchIndex: call.expectedWithdrawalBatchIndex,
                         pcr0: pcrs[0].to_vec().into(),
                         pcr1: pcrs[1].to_vec().into(),
                         pcr2: pcrs[2].to_vec().into(),

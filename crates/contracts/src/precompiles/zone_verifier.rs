@@ -26,7 +26,6 @@ crate::sol! {
         /// against. Not emitted in static calls or in `NoProof` mode.
         event ProofVerified(
             uint32 indexed zoneId,
-            uint64 indexed withdrawalBatchIndex,
             bytes pcr0,
             bytes pcr1,
             bytes pcr2
