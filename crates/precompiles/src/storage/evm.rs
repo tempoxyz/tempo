@@ -914,8 +914,7 @@ mod tests {
         /// Constructs a [`TestEvm`] with TIP-1016 (EIP-8037) manually enabled.
         ///
         /// Used by tests that exercise TIP-1016 behavior (state gas split, reservoir
-        /// accounting). TIP-1016 is otherwise opt-in through EVM2's feature set and
-        /// defaults to `false` in production.
+        /// accounting) before its automatic T14 activation.
         fn new_with_tip1016(spec: TempoHardfork) -> Self {
             Self::with_amsterdam(spec, true)
         }
@@ -1601,22 +1600,22 @@ mod tests {
     }
 
     #[test]
-    fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
-        let mut provider = evm.provider_with_reservoir(460_000);
+    fn test_t14_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut provider = evm.provider_with_reservoir(490_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
 
         provider.sstore(address, cold_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used(),
-            22_200,
-            "TIP-1016 cold SSTORE should consume 22,200 regular gas including the retained Berlin cold-slot access charge"
+            9_300,
+            "TIP-1016 cold SSTORE should consume 9,300 regular gas (100 static + 5,000 write + 2,100 Berlin cold-slot access + 2,100 cold credits-slot load)"
         );
         assert_eq!(
             provider.state_gas_used(),
-            230_000,
-            "TIP-1016 cold SSTORE should consume 230,000 state gas"
+            245_000,
+            "TIP-1016 cold SSTORE should consume the 245,000 creditable portion as state gas"
         );
 
         provider.sload(address, warm_slot)?;
@@ -1626,29 +1625,29 @@ mod tests {
         provider.sstore(address, warm_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used() - gas_before_warm_sstore,
-            20_100,
-            "TIP-1016 warm zero-to-non-zero SSTORE should consume 20,100 regular gas after the slot is warmed by SLOAD"
+            5_200,
+            "TIP-1016 warm zero-to-non-zero SSTORE should consume 5,200 regular gas (100 static + 5,000 write + 100 warm credits-slot load) after the slot is warmed by SLOAD"
         );
         assert_eq!(
             provider.state_gas_used() - state_gas_before_warm_sstore,
-            230_000,
-            "TIP-1016 warm zero-to-non-zero SSTORE should still consume 230,000 state gas"
+            245_000,
+            "TIP-1016 warm zero-to-non-zero SSTORE should still consume 245,000 state gas"
         );
 
         Ok(())
     }
 
     #[test]
-    fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_t14_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
 
         let code = Bytes::from(vec![0xef]);
         let expected_state_gas =
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
-        let expected_regular_gas = u64::from(gas_params.get(GasId::Create))
-            + u64::from(gas_params.get(GasId::CodeDepositCost)) * code.len() as u64
-            + gas_params.keccak256_word_cost(code.len().div_ceil(32));
+        let expected_regular_gas = u64::from(gas_params[GasId::Create])
+            + (u64::from(gas_params[GasId::CodeDepositCost]) * code.len() as u64)
+            + gas_params.keccak256_word_cost(code.len());
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
         provider.set_code(Address::random(), code)?;
@@ -1911,20 +1910,118 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TIP-1016 mismatch: 0->X->0 refund math does not net to GAS_WARM_ACCESS (100 gas) yet"]
-    fn test_t4_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
-        let mut provider = evm.provider_with_reservoir(230_000);
+    fn test_t14_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let reservoir = 245_000;
+        let mut provider = evm.provider_with_reservoir(reservoir);
 
         let (address, slot) = (Address::random(), U256::ONE);
         provider.sstore(address, slot, U256::ONE)?;
         provider.sstore(address, slot, U256::ZERO)?;
-        assert_eq!(provider.gas_refunded(), 247_800);
-        let net_gas_after_refund =
-            provider.gas_used() + provider.state_gas_used() - provider.gas_refunded() as u64;
+
+        // 0→x→0 restoration under the storage-credit hook: only the 5,000
+        // write portion goes through the execution refund counter. The 245k
+        // creditable portion is NOT returned — the x→0 clear mints a storage
+        // credit for the contract instead of refilling the reservoir.
         assert_eq!(
-            net_gas_after_refund, 100,
-            "TIP-1016 says 0->X->0 should net to GAS_WARM_ACCESS (100)"
+            provider.gas_refunded(),
+            5_000,
+            "refund counter must carry only the regular portion of the restoration"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            245_000,
+            "the creditable portion stays consumed; the clear mints a credit instead"
+        );
+        assert_eq!(
+            provider.reservoir(),
+            0,
+            "no reservoir refill under the storage-credit hook"
+        );
+        assert_eq!(
+            provider.sload(
+                crate::STORAGE_CREDITS_ADDRESS,
+                crate::storage_credits::StorageCredits::slot(address)
+            )?,
+            U256::ONE,
+            "the x→0 clear must mint exactly one storage credit for the contract"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_set_code_charges_hash_cost_per_word_of_code_bytes() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let gas_params = evm.gas_params();
+
+        let code_len = 45usize; // 2 words, e.g. the zone portal proxy runtime
+        let code = Bytes::from(vec![0x00; code_len]);
+        let expected_hash_cost = 6 * code_len.div_ceil(32) as u64;
+        let expected_regular_gas = u64::from(gas_params[GasId::Create])
+            + (u64::from(gas_params[GasId::CodeDepositCost]) * code_len as u64)
+            + expected_hash_cost;
+        let expected_state_gas =
+            gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code_len);
+        let mut provider = evm.provider_with_reservoir(expected_state_gas);
+
+        provider.set_code(Address::random(), code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "set_code should charge HASH_COST over code bytes, not words"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let gas_params = evm.gas_params();
+
+        let address = Address::random();
+        evm.evm.overlay_db_mut().insert_account_info(
+            &address,
+            evm2::evm::AccountInfo {
+                balance: U256::ONE,
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let code = Bytes::from(vec![0xef]);
+        let expected_state_gas = gas_params.code_deposit_state_gas(code.len());
+        let expected_regular_gas = (u64::from(gas_params[GasId::CodeDepositCost])
+            * code.len() as u64)
+            + gas_params.keccak256_word_cost(code.len());
+        // Reservoir also covers the second deployment below so no state gas
+        // spills into regular gas and skews the assertions.
+        let mut provider =
+            evm.provider_with_reservoir(expected_state_gas + gas_params.code_deposit_state_gas(2));
+
+        provider.set_code(address, code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "a pre-touched destination is not empty, so only code deposit + hash cost are charged"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            expected_state_gas,
+            "a pre-touched destination should pay only code deposit state gas"
+        );
+
+        // Re-deploying over existing code is not a fresh deployment either,
+        // but it still pays the deposit and hash costs.
+        let code = Bytes::from(vec![0xef, 0xef]);
+        provider.set_code(address, code.clone())?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas
+                + (u64::from(gas_params[GasId::CodeDepositCost]) * code.len() as u64)
+                + gas_params.keccak256_word_cost(code.len()),
+            "set_code over existing code must not charge CREATE"
         );
 
         Ok(())
