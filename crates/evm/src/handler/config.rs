@@ -97,6 +97,8 @@ pub struct TempoEvmExt {
     pub actions: StorageActions,
     /// Transaction-local slots whose clears must not create storage credits.
     pub non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    /// Non-refundable native dependency reservations shared across this transaction.
+    pub native_call_context: tempo_precompiles::native_call::NativeCallContext,
     /// Whether transaction-pool execution may skip the lower validity bound.
     pub skip_valid_after_check: bool,
     /// Whether transaction-pool execution may skip the fee AMM liquidity check.
@@ -113,6 +115,7 @@ impl Default for TempoEvmExt {
             fee_manager: Arc::new(TempoFeeManager::new()),
             actions: StorageActions::disabled(),
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            native_call_context: Default::default(),
             skip_valid_after_check: false,
             skip_liquidity_check: false,
             resolved_fee_token: None,
@@ -126,6 +129,12 @@ impl TempoEvmExt {
     pub fn with_fee_manager(mut self, fee_manager: impl ProtocolFeeManager + 'static) -> Self {
         self.fee_manager = Arc::new(fee_manager);
         self
+    }
+}
+
+impl tempo_precompiles::native_call::NativeCallExt for TempoEvmExt {
+    fn native_call_context(&self) -> &tempo_precompiles::native_call::NativeCallContext {
+        &self.native_call_context
     }
 }
 
@@ -286,6 +295,7 @@ impl TempoHandlerHooks {
         host: &mut Evm<'_, TempoEvmTypes>,
         envelope: &TempoTxEnv,
     ) -> HandlerResult<TempoFeeContext> {
+        host.ext_mut().native_call_context.reset();
         host.ext_mut().resolved_fee_token = None;
         host.ext_mut().key_expiry = None;
         host.ext().non_creditable_slots.borrow_mut().clear();

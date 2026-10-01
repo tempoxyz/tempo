@@ -6,7 +6,7 @@
 //! not register an entrypoint or change payment-lane admission.
 
 use alloy::primitives::{Address, Bytes, U256};
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use evm2::{
     Evm, EvmFeatures, EvmTypes,
     env::TxEnv,
@@ -15,6 +15,7 @@ use evm2::{
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
     version::GasId,
 };
+use std::rc::Rc;
 
 /// Non-refundable work reservation shared by a native operation's child calls.
 ///
@@ -47,6 +48,49 @@ impl NativeCallBudget {
         self.remaining_work.set(self.remaining_work.get() - work);
         Ok(())
     }
+}
+
+/// Runtime-owned transaction scope for native dependency work.
+///
+/// Each root handler obtains the same reservation object, including handlers
+/// invoked through contract reentry and subsequent calls in an AA batch. Once
+/// initialized, requesting another profile cannot replenish or enlarge it.
+#[derive(Debug, Default)]
+pub struct NativeCallContext {
+    budget: RefCell<Option<Rc<NativeCallBudget>>>,
+}
+
+impl Clone for NativeCallContext {
+    fn clone(&self) -> Self {
+        // Cloning EVM configuration creates an independent execution scope.
+        // Reentry shares an Rc returned by `budget`, rather than cloning context.
+        Self::default()
+    }
+}
+
+impl NativeCallContext {
+    /// Returns the transaction budget, initializing it once with protocol limits.
+    ///
+    /// Handlers must pass the transaction-wide limits selected by the protocol,
+    /// rather than calldata-derived limits or a fresh per-handler allowance.
+    pub fn budget(&self, max_calls: u32, max_work: u64) -> Rc<NativeCallBudget> {
+        self.budget
+            .borrow_mut()
+            .get_or_insert_with(|| Rc::new(NativeCallBudget::new(max_calls, max_work)))
+            .clone()
+    }
+
+    /// Clears the scope at the start of an independent transaction or simulation.
+    /// This is a runtime hook and must never be called by a native handler.
+    pub fn reset(&mut self) {
+        *self.budget.get_mut() = None;
+    }
+}
+
+/// Runtime extension exposing the transaction-owned native work scope.
+pub trait NativeCallExt {
+    /// Returns the scope shared by every native handler in the current transaction.
+    fn native_call_context(&self) -> &NativeCallContext;
 }
 
 /// Protocol-selected bounds on one contract call. They are not caller privileges.
@@ -342,6 +386,43 @@ mod tests {
             false,
             limits,
         )
+    }
+
+    #[test]
+    fn transaction_scope_cannot_be_replenished_by_another_root_or_reentry() {
+        let mut context = NativeCallContext::default();
+        let root = context.budget(2, 100_000);
+        root.reserve(40_000, 10_000).unwrap();
+        let reentry = context.budget(u32::MAX, u64::MAX);
+        assert!(Rc::ptr_eq(&root, &reentry));
+        reentry.reserve(50_000, 0).unwrap();
+        let next_root = context.budget(2, 100_000);
+        assert!(matches!(
+            next_root.reserve(1, 0),
+            Err(PrecompileError::Halt(_))
+        ));
+        assert_eq!(root.remaining_calls.get(), 0);
+        assert_eq!(root.remaining_work.get(), 0);
+
+        context.reset();
+        let next_transaction = context.budget(2, 100_000);
+        assert!(!Rc::ptr_eq(&root, &next_transaction));
+        next_transaction.reserve(100_000, 0).unwrap();
+        assert_eq!(root.remaining_work.get(), 0);
+    }
+
+    #[test]
+    fn cloned_runtime_context_starts_with_an_independent_budget() {
+        let context = NativeCallContext::default();
+        let budget = context.budget(1, 1);
+        budget.reserve(1, 0).unwrap();
+        let mut cloned = context.clone();
+        let independent = cloned.budget(1, 1);
+        assert!(!Rc::ptr_eq(&budget, &independent));
+        independent.reserve(1, 0).unwrap();
+        cloned.reset();
+        assert!(Rc::ptr_eq(&budget, &context.budget(1, 1)));
+        assert!(context.budget(1, 1).reserve(1, 0).is_err());
     }
 
     #[test]

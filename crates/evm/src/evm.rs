@@ -283,6 +283,107 @@ mod runtime_tests {
     }
 
     #[test]
+    fn contract_reentry_cannot_reset_native_dependency_budget() {
+        use evm2::{
+            interpreter::Host,
+            precompiles::{Precompile, PrecompileId},
+        };
+        use tempo_precompiles::native_call::{NativeCallLimits, native_call};
+
+        let native = Address::with_last_byte(0x99);
+        let target = Address::with_last_byte(0xaa);
+        let mut db = InMemoryDB::default();
+        // CALL the native account again and return the CALL success flag.
+        db.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(Bytecode::new_legacy(alloy_primitives::bytes!(
+                "5f5f5f5f5f60995af15f5260205ff3"
+            ))),
+        );
+        let mut evm = configured_evm(TempoHardfork::Genesis, 0, false, db);
+        let mut precompiles = evm2::Precompiles::<TempoEvmTypes>::base(evm.spec_id());
+        precompiles.as_map_mut().insert(Precompile::new(
+            native,
+            PrecompileId::custom("native-reentry-test"),
+            |evm, message, gas| {
+                let budget = evm.ext().native_call_context.budget(1, 50_000);
+                native_call(
+                    evm,
+                    message,
+                    gas,
+                    &budget,
+                    Address::with_last_byte(0xaa),
+                    Bytes::new(),
+                    false,
+                    NativeCallLimits {
+                        execution_gas: 50_000,
+                        state_gas: 0,
+                        input_bytes: 0,
+                        output_bytes: 32,
+                    },
+                )
+            },
+        ));
+        evm.set_precompiles(precompiles);
+        let budget = evm.ext().native_call_context.budget(1, 50_000);
+        let tx_env = evm2::env::TxEnv::<TempoEvmTypes>::default();
+        let mut message = evm2::interpreter::Message::<TempoEvmTypes> {
+            destination: native,
+            call_target: native,
+            code_address: native,
+            gas_limit: 100_000,
+            ..Default::default()
+        };
+        let first = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
+        assert!(first.stop.is_success());
+        assert_eq!(first.output.len(), 32);
+        assert_eq!(
+            U256::from_be_slice(&first.output),
+            U256::ZERO,
+            "reentered native call must fail after the root reserves the only call"
+        );
+        assert!(std::rc::Rc::ptr_eq(
+            &budget,
+            &evm.ext().native_call_context.budget(100, u64::MAX)
+        ));
+        let second = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
+        assert!(
+            second.stop.is_out_of_gas(),
+            "another root cannot replenish the budget"
+        );
+    }
+
+    #[test]
+    fn independent_transactions_reset_native_dependency_scope_after_revert() {
+        let caller = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[
+                0x60, 0x00, 0x60, 0x00, 0xfd,
+            ]))),
+        );
+        let mut evm = configured_evm(TempoHardfork::Genesis, 0, false, db);
+        let mut previous = evm.ext().native_call_context.budget(1, 1);
+        for nonce in 0..2 {
+            let result = evm
+                .transact_commit(legacy_tx_env(
+                    caller,
+                    nonce,
+                    TxKind::Call(target),
+                    Bytes::new(),
+                    50_000,
+                ))
+                .unwrap();
+            assert!(result.stop.is_revert());
+            let current = evm.ext().native_call_context.budget(1, 1);
+            assert!(!std::rc::Rc::ptr_eq(&previous, &current));
+            previous = current;
+        }
+    }
+
+    #[test]
     fn test_transact_raw_system_tx() {
         let mut evm = create_evm();
 
