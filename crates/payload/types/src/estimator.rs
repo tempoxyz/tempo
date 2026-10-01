@@ -114,7 +114,8 @@ pub const DEFAULT_NETWORK_RESERVE_PERCENTILE: u8 = 75;
 /// 15% of every block's transactions before the first observation.
 pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.15;
 /// How far a proposal may run past its return budget and still count as
-/// having met it, see [`ProposalBudget::unspent`].
+/// having met it when no tolerance is configured, see
+/// [`EstimatorConfig::return_budget_overrun_tolerance`].
 ///
 /// This is the builder's pacing precision rather than a slow build: a build
 /// whose pool runs dry idles until its budget in 1 ms polling steps and then
@@ -122,7 +123,7 @@ pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.15;
 /// after the budget. On a 10 validator benchmark 99.4% of the overruns
 /// measured were at or below 5 ms, while real overruns under load were tens
 /// of milliseconds.
-pub const RETURN_BUDGET_OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
+pub const DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
 
 /// Fixed-point scale for build time multipliers.
 pub const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
@@ -271,6 +272,16 @@ pub struct EstimatorConfig {
     ///
     /// Between 1.0 and 1.7, the range the multiplier is learned in.
     pub build_time_multiplier: f64,
+    /// How far an own proposal may run past its return budget and still take
+    /// a network sample, see [`ProposalBudget::unspent`].
+    ///
+    /// The default, [`DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE`], is the
+    /// builder's pacing precision on an idle build. A slower machine, whose
+    /// idle builds finish later after waiting out their budget, needs more:
+    /// otherwise every proposal made while the pool is dry overruns, no
+    /// sample is taken until load returns, and the window ages out to the
+    /// floor. `Duration::MAX` records every proposal.
+    pub return_budget_overrun_tolerance: Duration,
 }
 
 impl Default for EstimatorConfig {
@@ -282,6 +293,7 @@ impl Default for EstimatorConfig {
             network_reserve_percentile: DEFAULT_NETWORK_RESERVE_PERCENTILE,
             network_reserve_fast_rise: true,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            return_budget_overrun_tolerance: DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
         }
     }
 }
@@ -323,11 +335,19 @@ impl EstimatorConfig {
     ///
     /// The network reservation is pinned to `network_budget`, so the return
     /// budget is exactly `proposal_return_budget` for the lifetime of the node.
+    ///
+    /// Every own proposal takes a network sample, however far it overran its
+    /// return budget: a pinned reservation never learns from the samples, so
+    /// excluding overruns would only hide them. This keeps the samples
+    /// observable where builds are slow relative to the budget, such as the
+    /// deterministic e2e harness, whose consensus runs on simulated time while
+    /// its builds take real time on a possibly contended machine.
     pub fn fixed(proposal_return_budget: Duration, network_budget: Duration) -> Self {
         Self {
             target_block_time: proposal_return_budget.saturating_add(network_budget),
             network_budget,
             network_budget_max: network_budget,
+            return_budget_overrun_tolerance: Duration::MAX,
             ..Self::default()
         }
     }
@@ -354,6 +374,16 @@ impl EstimatorConfig {
     /// Sets the initial build time multiplier.
     pub fn with_build_time_multiplier(mut self, build_time_multiplier: f64) -> Self {
         self.build_time_multiplier = build_time_multiplier;
+        self
+    }
+
+    /// Sets how far an own proposal may run past its return budget and still
+    /// take a network sample.
+    pub fn with_return_budget_overrun_tolerance(
+        mut self,
+        return_budget_overrun_tolerance: Duration,
+    ) -> Self {
+        self.return_budget_overrun_tolerance = return_budget_overrun_tolerance;
         self
     }
 
@@ -597,6 +627,7 @@ impl Estimator {
     pub fn start_proposal(&self, now: Instant) -> ProposalBudget {
         let network_reserve = self.state().network.reserve_for_proposal(now);
         ProposalBudget::new(self.inner.config.target_block_time, network_reserve)
+            .with_overrun_tolerance(self.inner.config.return_budget_overrun_tolerance)
     }
 
     // --- reads ------------------------------------------------------------
@@ -698,30 +729,40 @@ pub struct ProposalBudget {
     pub network_reserve: Duration,
     /// Local proposal return budget: `target_block_time - network_reserve`.
     pub return_budget: Duration,
+    /// How far the proposal may run past `return_budget` and still take a
+    /// network sample, see [`EstimatorConfig::return_budget_overrun_tolerance`].
+    pub overrun_tolerance: Duration,
 }
 
 impl ProposalBudget {
-    /// The proposal window that `network_reserve` leaves of `target_block_time`.
+    /// The proposal window that `network_reserve` leaves of `target_block_time`,
+    /// with the default overrun tolerance.
     pub fn new(target_block_time: Duration, network_reserve: Duration) -> Self {
         Self {
             target_block_time,
             network_reserve,
             return_budget: target_block_time.saturating_sub(network_reserve),
+            overrun_tolerance: DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
         }
+    }
+
+    /// Sets how far the proposal may run past its return budget and still
+    /// take a network sample.
+    pub fn with_overrun_tolerance(mut self, overrun_tolerance: Duration) -> Self {
+        self.overrun_tolerance = overrun_tolerance;
+        self
     }
 
     /// What the return budget has left for the validators' replay when the
     /// proposal returns `spent` after its start, or `None` if it overran the
     /// budget.
     ///
-    /// A proposal that spent at most [`RETURN_BUDGET_OVERRUN_TOLERANCE`] more
-    /// than its return budget counts as having met it, with nothing left. A
-    /// proposal that spent more overran it and takes no network sample, see
+    /// A proposal that spent at most `overrun_tolerance` more than its return
+    /// budget counts as having met it, with nothing left. A proposal that
+    /// spent more overran it and takes no network sample, see
     /// [`Estimator::on_proposal_returned`].
     pub fn unspent(&self, spent: Duration) -> Option<Duration> {
-        let tolerated = self
-            .return_budget
-            .saturating_add(RETURN_BUDGET_OVERRUN_TOLERANCE);
+        let tolerated = self.return_budget.saturating_add(self.overrun_tolerance);
         (spent <= tolerated).then(|| self.return_budget.saturating_sub(spent))
     }
 }
@@ -1096,7 +1137,8 @@ impl BuildTimeTracker {
 /// - A child more than [`MAX_NETWORK_SAMPLE`] after the return, which is
 ///   clock skew or a stall unrelated to propagation.
 /// - A proposal that overran its return budget by more than
-///   [`RETURN_BUDGET_OVERRUN_TOLERANCE`], which the caller does not record,
+///   the configured [`EstimatorConfig::return_budget_overrun_tolerance`],
+///   which the caller does not record,
 ///   see [`ProposalBudget::unspent`]. Its gap lacks the unspent replay
 ///   reserve that normal samples subtract, so its sample would sit above its
 ///   neighbours by that reserve; the overrun is the build time multiplier's
@@ -1462,15 +1504,45 @@ mod tests {
         // with nothing left.
         assert_eq!(budget.unspent(ms(402)), Some(Duration::ZERO));
         assert_eq!(
-            budget.unspent(ms(400) + RETURN_BUDGET_OVERRUN_TOLERANCE),
+            budget.unspent(ms(400) + DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE),
             Some(Duration::ZERO)
         );
         // Beyond the tolerance the proposal overran its budget.
         assert_eq!(
-            budget.unspent(ms(400) + RETURN_BUDGET_OVERRUN_TOLERANCE + Duration::from_micros(1)),
+            budget.unspent(
+                ms(400) + DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE + Duration::from_micros(1)
+            ),
             None
         );
         assert_eq!(budget.unspent(ms(459)), None);
+    }
+
+    #[test]
+    fn the_overrun_tolerance_follows_the_configuration() {
+        let now = Instant::now();
+        // A configured tolerance reaches the budget of every own proposal.
+        let estimator = Estimator::new(config().with_return_budget_overrun_tolerance(ms(40)));
+        let budget = estimator.start_proposal(now);
+        assert_eq!(budget.overrun_tolerance, ms(40));
+        assert_eq!(
+            budget.unspent(budget.return_budget + ms(40)),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(budget.unspent(budget.return_budget + ms(41)), None);
+        // A fixed reservation records every proposal, however late.
+        let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50)));
+        let budget = estimator.start_proposal(now);
+        assert_eq!(
+            budget.unspent(ms(300) + Duration::from_secs(10)),
+            Some(Duration::ZERO)
+        );
+        // The default is the builder's pacing precision.
+        assert_eq!(
+            Estimator::new(config())
+                .start_proposal(now)
+                .overrun_tolerance,
+            DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE
+        );
     }
 
     #[test]

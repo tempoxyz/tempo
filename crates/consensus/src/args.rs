@@ -549,6 +549,8 @@ impl Args {
             network_reserve_percentile: self.network_reserve_percentile,
             network_reserve_fast_rise: self.network_reserve_fast_rise,
             build_time_multiplier,
+            return_budget_overrun_tolerance:
+                tempo_payload_types::DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
         }
     }
 

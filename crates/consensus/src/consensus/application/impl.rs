@@ -293,7 +293,8 @@ impl Inner {
         // beyond it is the network sample that the block built on top of this
         // proposal completes; record the return on the clock header
         // timestamps use. A proposal that overran its budget by more than the
-        // builder's pacing precision takes no sample: its gap lacks the
+        // configured tolerance, by default the builder's pacing precision,
+        // takes no sample: its gap lacks the
         // unspent replay reserve that normal samples subtract, so it would
         // sit above its neighbours by that reserve, and the overrun is the
         // build time multiplier's to absorb. Overruns within the tolerance
