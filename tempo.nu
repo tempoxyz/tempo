@@ -2351,6 +2351,10 @@ def apply-system-tuning [] {
     # Print environment info for reproducibility
     print $"  Kernel: (^uname -r | str trim)"
     print $"  CPU: (open /proc/cpuinfo | lines | find 'model name' | first | split row ':' | last | str trim)"
+    print "  NVMe devices:"
+    ^lsblk --nodeps --output NAME,MODEL,REV,SIZE | lines | where { |line|
+        ($line | str trim | str starts-with "nvme") or ($line | str starts-with "NAME")
+    } | each { |line| print $"    ($line)" }
     print $"  Port range: (sysctl -n net.ipv4.ip_local_port_range | str trim)"
     print ""
 
