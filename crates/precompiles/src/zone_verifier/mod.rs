@@ -5,7 +5,7 @@ pub mod dispatch;
 
 use alloy::{
     primitives::{Address, B256, FixedBytes, U256, keccak256},
-    sol_types::{SolEvent, SolStruct},
+    sol_types::SolStruct,
 };
 use std::{borrow::Cow, str::FromStr};
 use tempo_chainspec::{
@@ -18,7 +18,7 @@ use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::contract;
 
 use self::attestation::verify_attestation_with_root;
-use crate::{error::Result, storage::StorageCtx, zone_factory::portal_address};
+use crate::{error::Result, zone_factory::portal_address};
 
 const MODE_NITRO_V1: &[u8] = &[1];
 const MODE_NO_PROOF: &[u8] = &[2];
@@ -37,7 +37,7 @@ pub static CUSTOM_PCRS: std::sync::OnceLock<PcrPolicy> = std::sync::OnceLock::ne
 pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
-    pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
+    pub fn verify(&mut self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
         let hardfork = self.storage.spec();
 
         #[cfg(feature = "custom-pcrs")]
@@ -57,7 +57,7 @@ impl ZoneVerifier {
     /// supplying the trusted parent-chain ID, current timestamp and gas budget. It does not
     /// activate T13 or change the measurements used by the on-chain entry point.
     pub fn verify_with_pcrs(
-        &self,
+        &mut self,
         portal: Address,
         call: IZoneVerifier::verifyCall,
         approved_pcrs: [[u8; 48]; 3],
@@ -66,7 +66,7 @@ impl ZoneVerifier {
     }
 
     fn verify_with_policy(
-        &self,
+        &mut self,
         portal: Address,
         call: IZoneVerifier::verifyCall,
         root_der: &[u8],
@@ -115,17 +115,12 @@ impl ZoneVerifier {
             // Logs are forbidden in static calls, such as `eth_call` simulations.
             if !self.storage.is_static() {
                 let [pcr0, pcr1, pcr2] = approved_pcrs.map(|pcr| pcr.to_vec().into());
-                // `verify` is dispatched as a view call, so emit through a fresh storage handle.
-                StorageCtx.emit_event(
-                    ZONE_VERIFIER_ADDRESS,
-                    IZoneVerifier::ProofVerified {
-                        zoneId: call.zoneId,
-                        pcr0,
-                        pcr1,
-                        pcr2,
-                    }
-                    .encode_log_data(),
-                )?;
+                self.emit_event(IZoneVerifier::ProofVerified {
+                    zoneId: call.zoneId,
+                    pcr0,
+                    pcr1,
+                    pcr2,
+                })?;
             }
             return Ok(true);
         }
@@ -255,8 +250,11 @@ pub enum PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
-    use alloy::{primitives::Bytes, sol_types::SolCall};
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use alloy::{
+        primitives::Bytes,
+        sol_types::{SolCall, SolEvent},
+    };
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -354,7 +352,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
-            let verifier = ZoneVerifier::new();
+            let mut verifier = ZoneVerifier::new();
             assert!(
                 verifier
                     .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
@@ -429,7 +427,7 @@ mod tests {
     fn no_proof_requires_canonical_portal_and_empty_proof() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
-            let verifier = ZoneVerifier::new();
+            let mut verifier = ZoneVerifier::new();
             let mut candidate = call();
             candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
             let portal = portal_address(candidate.zoneId);
@@ -482,7 +480,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
-            let verifier = ZoneVerifier::new();
+            let mut verifier = ZoneVerifier::new();
             assert!(
                 verifier
                     .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
