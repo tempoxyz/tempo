@@ -11,7 +11,7 @@ use evm2::{
     Evm, EvmFeatures, EvmTypes,
     env::TxEnv,
     evm::precompile::PrecompileOutput,
-    interpreter::{GasTracker, Host, Message, MessageKind},
+    interpreter::{GasTracker, Host, InstrStop, Message, MessageKind},
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
     version::GasId,
 };
@@ -62,6 +62,34 @@ pub struct NativeCallLimits {
     pub output_bytes: usize,
 }
 
+/// Result of an executed dependency frame, after its gas and journal have settled.
+///
+/// A native withdrawal may recover from a child revert or halt with a protocol
+/// bounce. Adapter limit violations and fatal execution errors are returned
+/// separately and must abort the native operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeCallOutcome {
+    /// The dependency committed its child journal.
+    Success(Bytes),
+    /// The dependency reverted its child journal and returned bounded bytes.
+    Revert(Bytes),
+    /// The dependency halted; its child journal was reverted.
+    Halt(InstrStop),
+}
+
+impl NativeCallOutcome {
+    /// Propagates a dependency failure to the enclosing native frame.
+    pub fn into_result(self) -> PrecompileResult {
+        match self {
+            Self::Success(output) => Ok(PrecompileOutput::new(output)),
+            Self::Revert(output) => Err(PrecompileError::Revert(output)),
+            Self::Halt(stop) => {
+                Err(PrecompileHalt::Other(format!("native child halted: {stop:?}").into()).into())
+            }
+        }
+    }
+}
+
 /// Calls `target` as the native account using the existing EVM journal.
 ///
 /// Only zero-value CALL/STATICCALL is supported. Inherited static context always
@@ -80,14 +108,34 @@ pub fn native_call<T: EvmTypes>(
     read_only: bool,
     limits: NativeCallLimits,
 ) -> PrecompileResult {
+    native_call_outcome(evm, parent, gas, budget, target, input, read_only, limits)?.into_result()
+}
+
+/// Executes a bounded dependency frame with recoverable child failure results.
+///
+/// Only the outcome of an executed child is recoverable. An `Err` here includes
+/// adapter budget/size failures and host errors, which the native handler must
+/// propagate instead of translating into a successful bounce.
+#[allow(clippy::too_many_arguments)]
+pub fn native_call_outcome<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    parent: &Message<T>,
+    gas: &mut GasTracker,
+    budget: &NativeCallBudget,
+    target: Address,
+    input: Bytes,
+    read_only: bool,
+    limits: NativeCallLimits,
+) -> Result<NativeCallOutcome, PrecompileError> {
     let tx_env = evm.precompile_tx_env().cloned().ok_or_else(|| {
         PrecompileError::Fatal("native call requires an active transaction context".into())
     })?;
-    native_call_with_env(
+    native_call_outcome_with_env(
         evm, &tx_env, parent, gas, budget, target, input, read_only, limits,
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn native_call_with_env<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
@@ -100,6 +148,24 @@ fn native_call_with_env<T: EvmTypes>(
     read_only: bool,
     limits: NativeCallLimits,
 ) -> PrecompileResult {
+    native_call_outcome_with_env(
+        evm, tx_env, parent, gas, budget, target, input, read_only, limits,
+    )?
+    .into_result()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_call_outcome_with_env<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    tx_env: &TxEnv<T>,
+    parent: &Message<T>,
+    gas: &mut GasTracker,
+    budget: &NativeCallBudget,
+    target: Address,
+    input: Bytes,
+    read_only: bool,
+    limits: NativeCallLimits,
+) -> Result<NativeCallOutcome, PrecompileError> {
     if input.len() > limits.input_bytes {
         return Err(PrecompileHalt::OutOfGas.into());
     }
@@ -196,9 +262,9 @@ fn native_call_with_env<T: EvmTypes>(
         return Err(error.into());
     }
     match result.stop {
-        stop if stop.is_success() => Ok(PrecompileOutput::new(result.output)),
-        stop if stop.is_revert() => Err(PrecompileError::Revert(result.output)),
-        stop => Err(PrecompileHalt::Other(format!("native child halted: {stop:?}").into()).into()),
+        stop if stop.is_success() => Ok(NativeCallOutcome::Success(result.output)),
+        stop if stop.is_revert() => Ok(NativeCallOutcome::Revert(result.output)),
+        stop => Ok(NativeCallOutcome::Halt(stop)),
     }
 }
 
@@ -361,6 +427,52 @@ mod tests {
             U256::ZERO
         );
         assert!(gas.spent() > 24_700);
+    }
+
+    #[test]
+    fn recoverable_child_failure_is_distinct_from_adapter_limit_failure() {
+        for (code, expected) in [
+            (bytes!("00"), NativeCallOutcome::Success(Bytes::new())),
+            (bytes!("5f5ffd"), NativeCallOutcome::Revert(Bytes::new())),
+            (
+                bytes!("fe"),
+                NativeCallOutcome::Halt(InstrStop::InvalidFEOpcode),
+            ),
+        ] {
+            let mut evm = evm(code, SpecId::OSAKA);
+            let mut gas = GasTracker::new(200_000);
+            let budget = NativeCallBudget::new(1, 70_000);
+            let outcome = native_call_outcome_with_env(
+                &mut evm,
+                &tx_env(),
+                &parent(),
+                &mut gas,
+                &budget,
+                TARGET,
+                Bytes::new(),
+                false,
+                LIMITS,
+            )
+            .unwrap();
+            assert_eq!(outcome, expected);
+            assert_eq!(budget.remaining_calls.get(), 0);
+            // An exhausted native budget must abort the operation rather than
+            // producing a recoverable dependency failure for a bounce handler.
+            assert!(matches!(
+                native_call_outcome_with_env(
+                    &mut evm,
+                    &tx_env(),
+                    &parent(),
+                    &mut gas,
+                    &budget,
+                    TARGET,
+                    Bytes::new(),
+                    false,
+                    LIMITS,
+                ),
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
+            ));
+        }
     }
 
     #[test]
