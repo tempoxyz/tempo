@@ -140,6 +140,9 @@ where
             .evm_config()
             .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
+        if evm_env.version.feature(EvmFeatures::EIP8037) {
+            inner.on_new_head_block(&state_gas_validation_head(latest_header.header()));
+        }
         let active_hardfork = AtomicU8::new(evm_env.spec.variant_index());
         Self {
             inner,
@@ -767,14 +770,18 @@ where
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
-        self.inner.on_new_head_block(new_tip_block);
-
         // Cache the EVM environment for the new tip block.
         let evm_env = self
             .inner
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
+        if evm_env.version.feature(EvmFeatures::EIP8037) {
+            self.inner
+                .on_new_head_block(&state_gas_validation_head(new_tip_block.header()));
+        } else {
+            self.inner.on_new_head_block(new_tip_block);
+        }
         self.active_hardfork
             .store(evm_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;
@@ -782,6 +789,20 @@ where
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
     }
+}
+
+/// Reth's inner validator unconditionally compares the total transaction gas
+/// limit to its head's gas limit. Give only that validator an unbounded limit
+/// under TIP-1016; Tempo's cached environment and state cache retain the real
+/// header, and its EVM validation enforces the execution cap. The inner
+/// validator still enforces any operator-configured maximum transaction gas.
+fn state_gas_validation_head(header: &TempoHeader) -> SealedBlock<Block> {
+    let mut header = header.clone();
+    header.inner.gas_limit = u64::MAX;
+    SealedBlock::seal_slow(Block {
+        header,
+        body: Default::default(),
+    })
 }
 
 /// Adapts an EVM2 database back into the account info reader interface

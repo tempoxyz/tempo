@@ -82,10 +82,12 @@ where
         mut aa_2d_pool: AA2dPool,
     ) -> Self {
         aa_2d_pool.set_base_fee(protocol_pool.inner().block_info().pending_basefee);
-        Self {
+        let pool = Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
-        }
+        };
+        pool.set_block_info(pool.protocol_pool.inner().block_info());
+        pool
     }
 }
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -1314,13 +1316,26 @@ where
 {
     type Block = Block;
 
-    fn set_block_info(&self, info: BlockInfo) {
+    fn set_block_info(&self, mut info: BlockInfo) {
+        if self
+            .protocol_pool
+            .validator()
+            .validator()
+            .active_hardfork()
+            .is_t14()
+        {
+            // Reth also checks total gas when inserting an already validated
+            // transaction. TIP-1016 only limits its execution component.
+            info.block_gas_limit = u64::MAX;
+        }
         self.protocol_pool.set_block_info(info);
         self.aa_2d_pool.write().set_base_fee(info.pending_basefee);
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        self.protocol_pool.on_canonical_state_change(update)
+        let info = update.block_info();
+        self.protocol_pool.on_canonical_state_change(update);
+        self.set_block_info(info);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {

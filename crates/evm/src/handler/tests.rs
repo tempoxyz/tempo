@@ -1398,6 +1398,22 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
 }
 
 #[test]
+fn tip1016_key_authorization_moves_creditable_cost_to_state_gas() {
+    let old = test_evm(TempoHardfork::T7);
+    let enabled = test_evm_with_amsterdam(TempoHardfork::T7, true);
+    for limits in [0, 1, 3] {
+        let authorization = key_authorization(limits);
+        let (old_execution, old_state) =
+            key_authorization_gas(&authorization, &old, TempoHardfork::T7);
+        let (execution, state) = key_authorization_gas(&authorization, &enabled, TempoHardfork::T7);
+        assert_eq!(old_state, 0);
+        // Periodic limits use two slots each on T3+.
+        assert_eq!(state, (1 + 2 * limits as u64) * STORAGE_CREDIT_VALUE);
+        assert_eq!(execution + state, old_execution);
+    }
+}
+
+#[test]
 fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_lists() {
     let empty_selectors =
         KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::ZERO)
@@ -4432,9 +4448,11 @@ fn test_state_gas_batch_create_accounting() {
         assert_eq!(result.gas.state_gas_spent(), state_spent as i64);
         assert_eq!(
             result.gas.remaining(),
-            TX_GAS_LIMIT - regular_spent - create_state_gas
+            TX_GAS_LIMIT - regular_spent - state_spent
         );
-        assert_eq!(result.gas.reservoir(), create_state_gas - state_spent);
+        // The CREATE charge spilled from execution gas; a batch revert must
+        // return it there rather than manufacture a reservoir.
+        assert_eq!(result.gas.reservoir(), 0);
 
         evm.ext_mut().resolved_fee_token = Some(DEFAULT_FEE_TOKEN);
         let settled = TempoHandlerHooks::settle_transaction(
