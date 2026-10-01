@@ -6,12 +6,19 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full commit SHA from the protected main branch
+        description: Full commit SHA from the protected base branch
         required: true
         type: string
       version:
         description: Release version without the v prefix (for example, 1.9.0)
         required: true
+        type: string
+      base_ref:
+        description: >-
+          Protected branch the release is cut from and the preparation PR targets.
+          Use main, or a release/vX.Y.Z maintenance branch for backport releases.
+        required: false
+        default: main
         type: string
 
 # Each job grants only the permissions it needs.
@@ -38,6 +45,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
+          BASE_REF: ${{ inputs.base_ref || 'main' }}
         run: |
           set -euo pipefail
 
@@ -56,7 +64,16 @@ jobs:
             exit 1
           fi
 
+          # Backport releases are cut from release maintenance branches, which
+          # carry fixes that never land on main.
+          if [[ "$BASE_REF" != "main" ]] &&
+             [[ ! "$BASE_REF" =~ ^release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::base_ref must be main or a release/vX.Y.Z branch"
+            exit 1
+          fi
+
           echo "release_branch=pre-release/v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "base_ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
 
       - name: Check out the requested source commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -72,6 +89,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
           RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          BASE_REF: ${{ steps.release.outputs.base_ref }}
         run: |
           set -euo pipefail
 
@@ -81,11 +99,14 @@ jobs:
           fi
 
           # A valid Git commit is not necessarily an approved release source.
-          # Require it to be part of the protected main branch's history.
-          git fetch --no-tags origin \
-            "+refs/heads/main:refs/remotes/origin/main"
-          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
-            echo "::error::source_sha must be an ancestor of origin/main"
+          # Require it to be part of the protected base branch's history.
+          if ! git fetch --no-tags origin \
+            "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"; then
+            echo "::error::Could not fetch base branch ${BASE_REF}"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" "refs/remotes/origin/${BASE_REF}"; then
+            echo "::error::source_sha must be an ancestor of origin/${BASE_REF}"
             exit 1
           fi
 
@@ -296,6 +317,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
+          BASE_REF: ${{ steps.release.outputs.base_ref }}
           RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
           RELEASE_COMMIT: ${{ steps.publish.outputs.release_commit }}
           IMAGE_TAG: ${{ steps.publish.outputs.image_tag }}
@@ -307,6 +329,7 @@ jobs:
             echo "| Field | Value |"
             echo "| --- | --- |"
             echo "| Source commit | \`${SOURCE_SHA}\` |"
+            echo "| Base branch | \`${BASE_REF}\` |"
             echo "| Release branch | \`${RELEASE_BRANCH}\` |"
             echo "| Release commit | \`${RELEASE_COMMIT}\` |"
             echo "| Expected image tag | \`${IMAGE_TAG}\` |"
@@ -324,6 +347,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          BASE_REF: ${{ steps.release.outputs.base_ref }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
         run: |
@@ -332,7 +356,7 @@ jobs:
           pr_url="$(
             gh pr list \
               --repo "$GITHUB_REPOSITORY" \
-              --base main \
+              --base "$BASE_REF" \
               --head "$RELEASE_BRANCH" \
               --state open \
               --json url \
@@ -343,7 +367,7 @@ jobs:
             pr_url="$(
               gh pr create \
                 --repo "$GITHUB_REPOSITORY" \
-                --base main \
+                --base "$BASE_REF" \
                 --head "$RELEASE_BRANCH" \
                 --draft \
                 --title "chore(release): prepare v${VERSION}" \
