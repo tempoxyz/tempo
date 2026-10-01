@@ -37,7 +37,9 @@ pub static CUSTOM_PCRS: std::sync::OnceLock<PcrPolicy> = std::sync::OnceLock::ne
 pub struct ZoneVerifier {}
 
 impl ZoneVerifier {
-    pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
+    /// Verifies a batch proof, emitting [`IZoneVerifier::BatchVerified`] with the approved PCRs
+    /// when a Nitro attestation is accepted.
+    pub fn verify(&mut self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
         let hardfork = self.storage.spec();
 
         #[cfg(feature = "custom-pcrs")]
@@ -45,10 +47,10 @@ impl ZoneVerifier {
             policy
                 .validate(self.storage.chain_id())
                 .map_err(|e| crate::error::TempoPrecompileError::Fatal(e.to_string()))?;
-            return self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, policy.at(hardfork));
+            return self.verify_and_emit(portal, call, AWS_NITRO_ROOT_DER, policy.at(hardfork));
         }
 
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
+        self.verify_and_emit(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
     }
 
     /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
@@ -63,6 +65,33 @@ impl ZoneVerifier {
         approved_pcrs: [[u8; 48]; 3],
     ) -> Result<bool> {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, Some(approved_pcrs))
+    }
+
+    fn verify_and_emit(
+        &mut self,
+        portal: Address,
+        call: IZoneVerifier::verifyCall,
+        root_der: &[u8],
+        approved_pcrs: Option<[[u8; 48]; 3]>,
+    ) -> Result<bool> {
+        let zone_id = call.zoneId;
+        let withdrawal_batch_index = call.expectedWithdrawalBatchIndex;
+        let is_nitro = call.verifierConfig.as_ref() == MODE_NITRO_V1;
+        if !self.verify_with_policy(portal, call, root_der, approved_pcrs)? {
+            return Ok(false);
+        }
+
+        // An accepted Nitro attestation matched exactly these measurements.
+        if is_nitro && let Some([pcr0, pcr1, pcr2]) = approved_pcrs {
+            self.emit_event(IZoneVerifier::BatchVerified {
+                zoneId: zone_id,
+                withdrawalBatchIndex: withdrawal_batch_index,
+                pcr0: pcr0.into(),
+                pcr1: pcr1.into(),
+                pcr2: pcr2.into(),
+            })?;
+        }
+        Ok(true)
     }
 
     fn verify_with_policy(
@@ -237,7 +266,10 @@ pub enum PolicyError {
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::{primitives::Bytes, sol_types::SolCall};
+    use alloy::{
+        primitives::Bytes,
+        sol_types::{SolCall, SolEvent},
+    };
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -398,7 +430,7 @@ mod tests {
     fn no_proof_requires_canonical_portal_and_empty_proof() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
-            let verifier = ZoneVerifier::new();
+            let mut verifier = ZoneVerifier::new();
             let mut candidate = call();
             candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
             let portal = portal_address(candidate.zoneId);
@@ -451,7 +483,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
-            let verifier = ZoneVerifier::new();
+            let mut verifier = ZoneVerifier::new();
             assert!(
                 verifier
                     .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
@@ -532,5 +564,53 @@ mod tests {
             assert_eq!(CUSTOM_PCRS.get(), Some(&borrowed));
             assert_eq!(CUSTOM_PCRS.set(borrowed.clone()), Err(borrowed));
         }
+    }
+
+    #[test]
+    fn accepted_attestation_emits_approved_pcrs() {
+        let mut call = call();
+        let portal = portal_address(call.zoneId);
+        let (proof, root, pcrs) = attestation::tests::fixture(batch_commitment(1, &call).as_ref());
+        call.proof = proof.into();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
+        StorageCtx::enter(&mut storage, || {
+            let mut verifier = ZoneVerifier::new();
+
+            // Rejected proofs and `NoProof` batches do not emit.
+            let mut rejected = call.clone();
+            rejected.anchorBlockNumber += 1;
+            assert!(
+                !verifier
+                    .verify_and_emit(portal, rejected, &root, Some(pcrs))
+                    .unwrap()
+            );
+            let mut no_proof = call.clone();
+            no_proof.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
+            no_proof.proof = Bytes::new();
+            assert!(verifier.verify(portal, no_proof).unwrap());
+            assert!(verifier.emitted_events().is_empty());
+
+            assert!(
+                verifier
+                    .verify_and_emit(portal, call.clone(), &root, Some(pcrs))
+                    .unwrap()
+            );
+            let [pcr0, pcr1, pcr2] = pcrs;
+            assert_eq!(
+                verifier.emitted_events(),
+                &vec![
+                    IZoneVerifier::BatchVerified {
+                        zoneId: call.zoneId,
+                        withdrawalBatchIndex: call.expectedWithdrawalBatchIndex,
+                        pcr0: pcr0.into(),
+                        pcr1: pcr1.into(),
+                        pcr2: pcr2.into(),
+                    }
+                    .encode_log_data()
+                ]
+            );
+        });
     }
 }

@@ -22,6 +22,16 @@ crate::sol! {
             uint64 nextProcessedTokenCount;
         }
 
+        /// Emitted when a Nitro attestation is accepted, recording the PCR0, PCR1 and PCR2
+        /// measurements it was validated against.
+        event BatchVerified(
+            uint32 indexed zoneId,
+            uint64 indexed withdrawalBatchIndex,
+            bytes pcr0,
+            bytes pcr1,
+            bytes pcr2
+        );
+
         function verify(
             uint32 zoneId,
             uint64 tempoBlockNumber,
@@ -35,7 +45,7 @@ crate::sol! {
             bytes32 withdrawalQueueHash,
             bytes calldata verifierConfig,
             bytes calldata proof
-        ) external view returns (bool);
+        ) external returns (bool);
     }
 
     /// EIP-712 statement committed to a Nitro attestation's `user_data`.
