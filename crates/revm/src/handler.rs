@@ -1111,7 +1111,10 @@ where
                 || {
                     let mut nonce_manager = NonceManager::new();
 
-                    let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
+                    // From T12, only primary-table collisions consume a ring entry. A
+                    // transaction's index among all expiring nonces is no longer a ring offset.
+                    let prev_ptr = if let Some(expiring_nonce_idx) =
+                        tempo_tx_env.expiring_nonce_idx.filter(|_| !spec.is_t12())
                     {
                         let ptr = nonce_manager
                             .expiring_nonce_ring_ptr

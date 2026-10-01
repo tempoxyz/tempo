@@ -16,6 +16,49 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, U256};
 
+/// Number of replay-hash bits supplied by the primary table's slot index.
+pub const EXPIRING_NONCE_PRIMARY_BITS: u32 = 22;
+
+/// Fixed number of primary replay-protection slots. Collisions use the existing ring.
+pub const EXPIRING_NONCE_PRIMARY_CAPACITY: u32 = 1 << EXPIRING_NONCE_PRIMARY_BITS;
+
+const PRIMARY_MASK: u64 = EXPIRING_NONCE_PRIMARY_CAPACITY as u64 - 1;
+
+/// Selects the primary slot from the low bits of the complete replay hash.
+pub fn primary_index(hash: B256) -> u32 {
+    (U256::from_be_bytes(hash.0) & U256::from(PRIMARY_MASK)).to::<u32>()
+}
+
+/// Packs the remaining replay-hash bits and a modular expiry into one storage word.
+/// A zero result must use the fallback ring, because zero denotes an empty primary slot.
+pub fn encode_primary(hash: B256, valid_before: u64) -> U256 {
+    (U256::from_be_bytes(hash.0) & !U256::from(PRIMARY_MASK))
+        | U256::from(valid_before & PRIMARY_MASK)
+}
+
+/// Reconstructs the complete replay hash from an occupied primary slot and its index.
+pub fn decode_primary(index: u32, value: U256) -> B256 {
+    B256::from(((value & !U256::from(PRIMARY_MASK)) | U256::from(index)).to_be_bytes::<32>())
+}
+
+/// Checks a primary value at `primary_index(hash)` for an exact replay-hash match.
+pub fn primary_matches(hash: B256, value: U256) -> bool {
+    !value.is_zero()
+        && (value & !U256::from(PRIMARY_MASK))
+            == (U256::from_be_bytes(hash.0) & !U256::from(PRIMARY_MASK))
+}
+
+/// Returns whether a primary cell can be overwritten without evicting a live entry.
+///
+/// The maximum expiry window must be shorter than the timestamp modulus. An ancient
+/// entry can appear live after a wrap, but this only sends new transactions to the
+/// fallback ring; a genuinely live entry can never appear expired.
+pub fn primary_available(value: U256, now: u64, max_expiry_secs: u64) -> bool {
+    let expiry = (value & U256::from(PRIMARY_MASK)).to::<u64>();
+    let delta = expiry.wrapping_sub(now) & PRIMARY_MASK;
+    value.is_zero() || delta == 0 || delta > max_expiry_secs
+}
+
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
 /// Storage Layout (similar to Solidity contract):
@@ -27,6 +70,7 @@ use alloy::primitives::{Address, B256, U256};
 ///     mapping(bytes32 => uint64) public expiringNonceSeen;               // slot 1: txHash => expiry
 ///     mapping(uint32 => bytes32) public expiringNonceRing;               // slot 2: circular buffer of tx hashes
 ///     uint32 public expiringNonceRingPtr;                                // slot 3: current position (wraps at CAPACITY)
+///     mapping(uint32 => uint256) public expiringNoncePrimary;              // slot 4: packed replay hash quotient and expiry
 /// }
 /// ```
 ///
@@ -34,6 +78,7 @@ use alloy::primitives::{Address, B256, U256};
 /// - Slot 1: Expiring nonce seen set - txHash => expiry timestamp
 /// - Slot 2: Expiring nonce circular buffer - index => txHash
 /// - Slot 3: Circular buffer pointer (current position, wraps at CAPACITY)
+/// - Slot 4: T12 primary table; collisions fall back to slots 1-3
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
@@ -46,6 +91,7 @@ pub struct NonceManager {
     expiring_nonce_seen: Mapping<B256, u64>,
     expiring_nonce_ring: Mapping<u32, B256>,
     expiring_nonce_ring_ptr: u32,
+    expiring_nonce_primary: Mapping<u32, U256>,
 }
 
 impl NonceManager {
@@ -95,7 +141,18 @@ impl NonceManager {
 
     /// Checks if a hash has been seen and is still valid (not expired).
     /// NOTE: internally used by the transaction pool.
+    /// Callers must validate the transaction's absolute expiry first: the primary
+    /// table's modular timestamp can conservatively retain ancient entries.
     pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
+        let spec = self.storage.spec();
+        if spec.is_t12() {
+            let primary = self.expiring_nonce_primary[primary_index(hash)].read()?;
+            if primary_matches(hash, primary)
+                && !primary_available(primary, now, spec.expiring_nonce_max_expiry_secs())
+            {
+                return Ok(true);
+            }
+        }
         let expiry = self.expiring_nonce_seen[hash].read()?;
         Ok(expiry != 0 && expiry > now)
     }
@@ -105,7 +162,8 @@ impl NonceManager {
     /// advances. The hash is `keccak256(encode_for_signing || sender)`,
     /// invariant to fee payer changes.
     ///
-    /// Uses a circular buffer that overwrites expired entries as the pointer advances.
+    /// At T12, a fixed primary table handles noncolliding hashes with one storage
+    /// write. The circular buffer remains the fallback for occupied primary cells.
     ///
     /// The `expiring_nonce_hash` parameter is
     /// (`keccak256(encode_for_signing || sender)`), which is invariant to fee payer changes.
@@ -135,10 +193,29 @@ impl NonceManager {
             return Err(NonceError::invalid_expiring_nonce_expiry().into());
         }
 
+        let primary = if spec.is_t12() {
+            let value = self.expiring_nonce_primary[primary_index(expiring_nonce_hash)].read()?;
+            if primary_matches(expiring_nonce_hash, value) {
+                // The replay hash commits to the absolute expiry, which was validated above.
+                return Err(NonceError::expiring_nonce_replay().into());
+            }
+            Some(value)
+        } else {
+            None
+        };
+
         // 2. Replay check: reject if hash is already seen and not expired
         let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
         if seen_expiry != 0 && seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
+        }
+
+        if let Some(primary) = primary {
+            let packed = encode_primary(expiring_nonce_hash, valid_before);
+            if !packed.is_zero() && primary_available(primary, now, max_expiry_secs) {
+                self.expiring_nonce_primary[primary_index(expiring_nonce_hash)].write(packed)?;
+                return Ok(());
+            }
         }
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
@@ -295,6 +372,225 @@ mod tests {
 
     // ========== Expiring Nonce Tests ==========
 
+    fn primary_test_hash(index: u32, quotient: u64) -> B256 {
+        B256::from(
+            ((U256::from(quotient) << EXPIRING_NONCE_PRIMARY_BITS) | U256::from(index))
+                .to_be_bytes::<32>(),
+        )
+    }
+
+    #[test]
+    fn test_primary_preserves_complete_hash() {
+        let hash = B256::repeat_byte(0xab);
+        let expiry = u64::from(EXPIRING_NONCE_PRIMARY_CAPACITY) + 123;
+        let value = encode_primary(hash, expiry);
+
+        assert_eq!(decode_primary(primary_index(hash), value), hash);
+        assert!(primary_matches(hash, value));
+        assert!(!primary_matches(hash, U256::ZERO));
+        assert!(!primary_matches(B256::repeat_byte(0xcd), value));
+        assert_eq!((value & U256::from(PRIMARY_MASK)).to::<u64>(), 123);
+    }
+
+    #[test]
+    fn test_primary_mapping_preserves_legacy_storage_layout() {
+        fn mapping_slot(key: U256, base: u64) -> U256 {
+            let mut input = [0u8; 64];
+            input[..32].copy_from_slice(&key.to_be_bytes::<32>());
+            input[32..].copy_from_slice(&U256::from(base).to_be_bytes::<32>());
+            U256::from_be_bytes(alloy::primitives::keccak256(input).0)
+        }
+
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mgr = NonceManager::new();
+            let hash = B256::repeat_byte(0xab);
+            assert_eq!(
+                mgr.expiring_nonce_seen[hash].slot(),
+                mapping_slot(U256::from_be_bytes(hash.0), 1)
+            );
+            assert_eq!(
+                mgr.expiring_nonce_ring[7].slot(),
+                mapping_slot(U256::from(7), 2)
+            );
+            assert_eq!(mgr.expiring_nonce_ring_ptr.slot(), U256::from(3));
+            assert_eq!(
+                mgr.expiring_nonce_primary[7].slot(),
+                mapping_slot(U256::from(7), 4)
+            );
+        });
+    }
+
+    #[test]
+    fn test_primary_modular_expiry() {
+        let period = u64::from(EXPIRING_NONCE_PRIMARY_CAPACITY);
+        let hash = primary_test_hash(7, 1);
+        let value = encode_primary(hash, period + 10);
+        assert!(!primary_available(value, period - 10, 300));
+        assert!(!primary_available(value, period + 9, 300));
+        assert!(primary_available(value, period + 10, 300));
+        assert!(primary_available(value, period + 11, 300));
+        // Ancient entries may conservatively appear occupied after a timestamp wrap.
+        assert!(!primary_available(value, 2 * period, 300));
+        assert!(primary_available(U256::ZERO, 2 * period, 300));
+    }
+
+    #[test]
+    fn test_t12_primary_does_not_touch_full_ring() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let now = 1000;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            let old = primary_test_hash(1, 1);
+            mgr.expiring_nonce_ring[0].write(old)?;
+            mgr.expiring_nonce_seen[old].write(now + 300)?;
+
+            let hash = primary_test_hash(2, 2);
+            mgr.check_and_mark_expiring_nonce(hash, now + 300)?;
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 0);
+            assert_eq!(mgr.expiring_nonce_ring[0].read()?, old);
+            assert_eq!(mgr.expiring_nonce_seen[hash].read()?, 0);
+            assert_eq!(
+                decode_primary(2, mgr.expiring_nonce_primary[2].read()?),
+                hash
+            );
+            assert!(mgr.is_expiring_nonce_seen(hash, now)?);
+            assert_eq!(
+                mgr.check_and_mark_expiring_nonce(hash, now + 300)
+                    .unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+            assert_eq!(
+                mgr.check_and_mark_expiring_nonce(primary_test_hash(2, 3), now + 300)
+                    .unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_set_full())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t12_collision_fallback_replay_after_primary_overwrite() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let now = 1000;
+        let first = primary_test_hash(7, 1);
+        let fallback = primary_test_hash(7, 2);
+        let replacement = primary_test_hash(7, 3);
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            mgr.check_and_mark_expiring_nonce(first, now + 10)?;
+            mgr.check_and_mark_expiring_nonce(fallback, now + 100)?;
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 1);
+            assert_eq!(mgr.expiring_nonce_ring[0].read()?, fallback);
+            assert_eq!(
+                decode_primary(7, mgr.expiring_nonce_primary[7].read()?),
+                first
+            );
+            Ok::<_, eyre::Report>(())
+        })?;
+        storage.set_timestamp(U256::from(now + 10));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            // Checking the fallback remains necessary even when the primary cell is free.
+            assert_eq!(
+                mgr.check_and_mark_expiring_nonce(fallback, now + 100)
+                    .unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+            mgr.check_and_mark_expiring_nonce(replacement, now + 50)?;
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 1);
+            assert_eq!(
+                decode_primary(7, mgr.expiring_nonce_primary[7].read()?),
+                replacement
+            );
+            assert!(mgr.is_expiring_nonce_seen(fallback, now + 10)?);
+            assert_eq!(
+                mgr.check_and_mark_expiring_nonce(fallback, now + 100)
+                    .unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t12_zero_primary_encoding_uses_fallback() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let expiry = u64::from(EXPIRING_NONCE_PRIMARY_CAPACITY);
+        let hash = primary_test_hash(7, 0);
+        assert_eq!(encode_primary(hash, expiry), U256::ZERO);
+        storage.set_timestamp(U256::from(expiry - 1));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            mgr.check_and_mark_expiring_nonce(hash, expiry)?;
+            assert_eq!(mgr.expiring_nonce_primary[7].read()?, U256::ZERO);
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 1);
+            assert_eq!(mgr.expiring_nonce_seen[hash].read()?, expiry);
+            assert!(mgr.is_expiring_nonce_seen(hash, expiry - 1)?);
+            assert_eq!(
+                mgr.check_and_mark_expiring_nonce(hash, expiry).unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t12_timestamp_wrap_only_forces_fallback() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let period = u64::from(EXPIRING_NONCE_PRIMARY_CAPACITY);
+        let first = primary_test_hash(7, 1);
+        let second = primary_test_hash(7, 2);
+        storage.set_timestamp(U256::from(10));
+        StorageCtx::enter(&mut storage, || {
+            NonceManager::new().check_and_mark_expiring_nonce(first, 20)
+        })?;
+        storage.set_timestamp(U256::from(period + 10));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            mgr.check_and_mark_expiring_nonce(second, period + 30)?;
+            assert_eq!(mgr.expiring_nonce_ring[0].read()?, second);
+            assert_eq!(
+                decode_primary(7, mgr.expiring_nonce_primary[7].read()?),
+                first
+            );
+            assert_eq!(
+                mgr.check_and_mark_expiring_nonce(first, 20).unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t12_keeps_pre_fork_replay_protection() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let now = 1000;
+        let hash = primary_test_hash(7, 1);
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            mgr.check_and_mark_expiring_nonce(hash, now + 300)?;
+            assert_eq!(mgr.expiring_nonce_primary[7].read()?, U256::ZERO);
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 1);
+            Ok::<_, eyre::Report>(())
+        })?;
+        storage.set_spec(TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            assert!(mgr.is_expiring_nonce_seen(hash, now)?);
+            assert_eq!(
+                mgr.check_and_mark_expiring_nonce(hash, now + 300)
+                    .unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+            assert_eq!(mgr.expiring_nonce_primary[7].read()?, U256::ZERO);
+            Ok(())
+        })
+    }
+
     #[test]
     fn test_expiring_nonce_basic_flow() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -432,6 +728,14 @@ mod tests {
             // Insert a tx - pointer should wrap to 0
             let tx_hash = B256::repeat_byte(0x77);
             let valid_before = now + 20;
+            if spec.is_t12() {
+                let collision = B256::from(
+                    (U256::from_be_bytes(tx_hash.0) ^ (U256::ONE << EXPIRING_NONCE_PRIMARY_BITS))
+                        .to_be_bytes::<32>(),
+                );
+                mgr.expiring_nonce_primary[primary_index(tx_hash)]
+                    .write(encode_primary(collision, valid_before))?;
+            }
             mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
 
             // Pointer should now be 0 (wrapped at capacity)
@@ -440,6 +744,14 @@ mod tests {
 
             // Insert another tx - pointer should be 1
             let tx_hash2 = B256::repeat_byte(0x88);
+            if spec.is_t12() {
+                let collision = B256::from(
+                    (U256::from_be_bytes(tx_hash2.0) ^ (U256::ONE << EXPIRING_NONCE_PRIMARY_BITS))
+                        .to_be_bytes::<32>(),
+                );
+                mgr.expiring_nonce_primary[primary_index(tx_hash2)]
+                    .write(encode_primary(collision, valid_before))?;
+            }
             mgr.check_and_mark_expiring_nonce(tx_hash2, valid_before)?;
 
             let ptr = mgr.expiring_nonce_ring_ptr.read()?;
@@ -457,6 +769,11 @@ mod tests {
     #[test]
     fn test_ring_buffer_pointer_wraps_at_t11_capacity() -> eyre::Result<()> {
         assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T11)
+    }
+
+    #[test]
+    fn test_t12_fallback_ring_pointer_wraps_at_capacity() -> eyre::Result<()> {
+        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T12)
     }
 
     #[test]

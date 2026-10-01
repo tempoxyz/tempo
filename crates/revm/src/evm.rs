@@ -3816,6 +3816,82 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_t12_expiring_nonce_ignores_indexed_ring_offset() -> eyre::Result<()> {
+        use alloy_primitives::B256;
+        use tempo_precompiles::nonce::{
+            EXPIRING_NONCE_PRIMARY_BITS, encode_primary, primary_index,
+        };
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let timestamp = 1_000;
+        let valid_before = timestamp + 30;
+        let signed_tx = key_pair.sign_tx(
+            TxBuilder::new()
+                .call_identity(&[])
+                .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+                .valid_before(Some(valid_before))
+                .gas_limit(500_000)
+                .build(),
+        )?;
+        let mut tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let hash = tx_env.unique_tx_identifier().unwrap();
+        tx_env.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(10);
+        let nonce = NonceManager::new();
+        let primary_slot = nonce.expiring_nonce_primary[primary_index(hash)].slot();
+
+        for occupied in [false, true] {
+            let mut evm =
+                create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T12);
+            evm.ctx.db_mut().insert_account_storage(
+                NONCE_PRECOMPILE_ADDRESS,
+                nonce.expiring_nonce_ring_ptr.slot(),
+                U256::from(7),
+            )?;
+            if occupied {
+                let collision = B256::from(
+                    (U256::from_be_bytes(hash.0) ^ (U256::ONE << EXPIRING_NONCE_PRIMARY_BITS))
+                        .to_be_bytes::<32>(),
+                );
+                evm.ctx.db_mut().insert_account_storage(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    primary_slot,
+                    encode_primary(collision, valid_before),
+                )?;
+            }
+            assert!(evm.transact_commit(tx_env.clone())?.is_success());
+            assert_eq!(
+                evm.ctx.db().storage_ref(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    nonce.expiring_nonce_ring_ptr.slot()
+                )?,
+                U256::from(if occupied { 8 } else { 7 }),
+            );
+            assert_eq!(
+                evm.ctx.db().storage_ref(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    nonce.expiring_nonce_ring[7].slot()
+                )?,
+                if occupied {
+                    U256::from_be_bytes(hash.0)
+                } else {
+                    U256::ZERO
+                },
+            );
+            assert_eq!(
+                evm.ctx.db().storage_ref(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    nonce.expiring_nonce_ring[17].slot()
+                )?,
+                U256::ZERO,
+                "prewarming offsets must not choose the fallback ring slot at T12",
+            );
+        }
+        Ok(())
+    }
+
     /// TIP-1106: expiring nonces become opaque discriminators at T12.
     #[test]
     fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {

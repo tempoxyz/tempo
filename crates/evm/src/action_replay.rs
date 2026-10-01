@@ -20,7 +20,7 @@ use reth_revm::{
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
-    nonce::NonceManager,
+    nonce::{NonceManager, encode_primary, primary_available, primary_index, primary_matches},
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
@@ -243,7 +243,24 @@ where
 
         let nonce_manager = NonceManager::new();
         let now = U256::from(block_timestamp);
-        let ptr = self.replay_state.expiring_nonce.ring_ptr(db)?;
+
+        let primary = if spec.is_t12() {
+            let slot =
+                nonce_manager.expiring_nonce_primary[primary_index(expiring_nonce.hash)].slot();
+            let value = db
+                .storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                .map_err(BlockExecutionError::other)?;
+            // Keep validation reads in the replay state even when the primary is occupied
+            // and the transaction falls back to the ring.
+            self.replay_state
+                .sload_exact(db, NONCE_PRECOMPILE_ADDRESS, slot, value)?;
+            if primary_matches(expiring_nonce.hash, value) {
+                return Err(StorageActionReplayError::ActionConflict.into());
+            }
+            Some((slot, value))
+        } else {
+            None
+        };
 
         let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
         let seen_expiry = db
@@ -253,6 +270,18 @@ where
             return Err(StorageActionReplayError::ActionConflict.into());
         }
 
+        if let Some((slot, value)) = primary {
+            self.replay_state
+                .sload_exact(db, NONCE_PRECOMPILE_ADDRESS, seen_slot, seen_expiry)?;
+            let encoded = encode_primary(expiring_nonce.hash, expiring_nonce.valid_before);
+            if !encoded.is_zero() && primary_available(value, block_timestamp, max_expiry_secs) {
+                self.replay_state
+                    .record_sstore(NONCE_PRECOMPILE_ADDRESS, slot, value, encoded);
+                return Ok(());
+            }
+        }
+
+        let ptr = self.replay_state.expiring_nonce.ring_ptr(db)?;
         let ptr_u32 = ptr
             .try_into()
             .map_err(|_| StorageActionReplayError::ActionConflict)?;
@@ -605,10 +634,153 @@ impl ExpiringNonceReplayState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use revm::{
+        DatabaseCommit,
         database::{CacheDB, EmptyDB},
         state::AccountInfo,
     };
+    use tempo_chainspec::TempoHardfork;
+    use tempo_precompiles::{
+        nonce::EXPIRING_NONCE_PRIMARY_BITS,
+        storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
+    };
+
+    fn assert_nonce_replay_matches_execution(
+        initial: &[(U256, U256)],
+        transactions: &[(u64, B256, u64, bool)],
+    ) {
+        let mut canonical = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        canonical.set_tip1060_storage_credits(false);
+        for &(slot, value) in initial {
+            canonical
+                .sstore(NONCE_PRECOMPILE_ADDRESS, slot, value)
+                .unwrap();
+        }
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_database(EmptyDB::default()).build();
+        db.insert_account_with_storage(
+            NONCE_PRECOMPILE_ADDRESS,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+            initial.iter().copied().collect(),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T12)
+            .build(&mut db, &chainspec);
+
+        for &(now, hash, valid_before, succeeds) in transactions {
+            canonical.set_timestamp(U256::from(now));
+            let executed = StorageCtx::enter(&mut canonical, || {
+                NonceManager::new().check_and_mark_expiring_nonce(hash, valid_before)
+            });
+            assert_eq!(executed.is_ok(), succeeds, "canonical nonce execution");
+
+            executor.inner.evm.ctx_mut().block.timestamp = U256::from(now);
+            executor.replay_state.reset_tx_changes();
+            let primary_slot =
+                NonceManager::new().expiring_nonce_primary[primary_index(hash)].slot();
+            // Model independent workers that both observed an empty primary cell.
+            // Replay must recompute collision/fallback behavior from committed state.
+            let stale_actions = [StorageAction::Sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                primary_slot,
+                U256::ZERO,
+                encode_primary(hash, valid_before),
+            )];
+            let replayed = executor.replay_actions(
+                Address::ZERO,
+                stale_actions,
+                true,
+                Some(ExpiringNonceReplay { hash, valid_before }),
+            );
+            assert_eq!(replayed.is_ok(), succeeds, "semantic nonce replay");
+            if let Ok(state) = replayed {
+                executor.inner.evm.db_mut().commit(state);
+                executor.replay_state.commit_tx_changes();
+            }
+        }
+
+        let expected: U256Map<U256> = canonical
+            .into_storage()
+            .filter(|(address, _, value)| *address == NONCE_PRECOMPILE_ADDRESS && !value.is_zero())
+            .map(|(_, slot, value)| (slot, value))
+            .collect();
+        let actual: U256Map<U256> = executor
+            .inner
+            .evm
+            .db_mut()
+            .cache
+            .accounts
+            .get(&NONCE_PRECOMPILE_ADDRESS)
+            .unwrap()
+            .account
+            .as_ref()
+            .unwrap()
+            .storage
+            .iter()
+            .filter(|(_, value)| !value.is_zero())
+            .map(|(&slot, &value)| (slot, value))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn primary_nonce_replay_matches_execution_and_rebases_collisions() {
+        let first = B256::from(U256::from(17).to_be_bytes::<32>());
+        let collision = B256::from(
+            (U256::from(17) + (U256::ONE << EXPIRING_NONCE_PRIMARY_BITS)).to_be_bytes::<32>(),
+        );
+        let replacement = B256::from(
+            (U256::from(17) + (U256::from(2) << EXPIRING_NONCE_PRIMARY_BITS)).to_be_bytes::<32>(),
+        );
+        assert_eq!(primary_index(first), primary_index(collision));
+        assert_eq!(primary_index(first), primary_index(replacement));
+        assert_nonce_replay_matches_execution(
+            &[],
+            &[
+                (1_000, first, 1_010, true),
+                (1_000, collision, 1_100, true),
+                (1_000, first, 1_010, false),
+                (1_000, collision, 1_100, false),
+                // An available primary must not permit replay of a fallback entry.
+                (1_010, collision, 1_100, false),
+                (1_010, replacement, 1_110, true),
+            ],
+        );
+    }
+
+    #[test]
+    fn primary_nonce_replay_checks_legacy_seen_before_writing_primary() {
+        let hash = B256::repeat_byte(0x42);
+        let nonce = NonceManager::new();
+        assert_nonce_replay_matches_execution(
+            &[(nonce.expiring_nonce_seen[hash].slot(), U256::from(1_100))],
+            &[(1_000, hash, 1_100, false)],
+        );
+    }
+
+    #[test]
+    fn primary_nonce_replay_can_bypass_a_full_fallback_ring() {
+        let hash = B256::repeat_byte(0x41);
+        let old_hash = B256::repeat_byte(0x42);
+        let nonce = NonceManager::new();
+        assert_nonce_replay_matches_execution(
+            &[
+                (
+                    nonce.expiring_nonce_ring[0].slot(),
+                    U256::from_be_bytes(old_hash.0),
+                ),
+                (
+                    nonce.expiring_nonce_seen[old_hash].slot(),
+                    U256::from(1_100),
+                ),
+            ],
+            &[(1_000, hash, 1_100, true)],
+        );
+    }
 
     fn state_with_storage(address: Address, slot: U256, value: U256) -> State<EmptyDB> {
         let mut db = State::builder().with_database(EmptyDB::default()).build();

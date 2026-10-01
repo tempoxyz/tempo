@@ -28,7 +28,7 @@ use std::{
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
-    nonce::NonceManager,
+    nonce::{NonceManager, primary_index},
     storage::StorageKey,
     tip20::{TIP20Token, tip20_slots},
     tip403_registry::tip403_registry_slots,
@@ -56,6 +56,8 @@ pub struct TempoPooledTransaction {
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
     expiring_nonce_slot: OnceLock<Option<U256>>,
+    /// Cached primary-cell storage slot for expiring nonce transactions.
+    expiring_nonce_primary_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
     /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
@@ -124,6 +126,7 @@ impl TempoPooledTransaction {
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
+            expiring_nonce_primary_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
@@ -392,6 +395,7 @@ impl TempoPooledTransaction {
             expiring_nonce_hash: self.expiring_nonce_hash,
             nonce_key_slot: self.nonce_key_slot.clone(),
             expiring_nonce_slot: self.expiring_nonce_slot.clone(),
+            expiring_nonce_primary_slot: self.expiring_nonce_primary_slot.clone(),
             tx_env: self.tx_env.clone(),
             key_authorization_target_subject: self.key_authorization_target_subject.clone(),
             // Discard state-dependent caches before revalidation.
@@ -471,6 +475,14 @@ impl TempoPooledTransaction {
         *self.expiring_nonce_slot.get_or_init(|| {
             let hash = self.expiring_nonce_hash()?;
             Some(NonceManager::new().expiring_nonce_seen[hash].slot())
+        })
+    }
+
+    /// Returns the cached T12 primary-cell storage slot for this transaction.
+    pub(crate) fn expiring_nonce_primary_slot(&self) -> Option<U256> {
+        *self.expiring_nonce_primary_slot.get_or_init(|| {
+            let hash = self.expiring_nonce_hash?;
+            Some(NonceManager::new().expiring_nonce_primary[primary_index(hash)].slot())
         })
     }
 

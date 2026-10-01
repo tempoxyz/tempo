@@ -105,8 +105,10 @@ where
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
         state: &AddressMap<BundleAccount>,
+        hardfork: TempoHardfork,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
+        let (promoted, mined, discarded) =
+            self.aa_2d_pool.write().on_state_updates(state, hardfork);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()

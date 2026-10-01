@@ -1,11 +1,12 @@
 use crate::TempoEvmConfig;
-use alloy_consensus::crypto::RecoveryError;
+use alloy_consensus::{BlockHeader as _, crypto::RecoveryError};
 use alloy_primitives::Address;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, SenderRecoveryCache, ToTxEnv, block::ExecutableTxParts,
 };
 use reth_primitives_traits::{SealedOrRecoveredBlock, SignedTransaction};
+use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoTxEnvelope};
 use tempo_revm::TempoTxEnv;
@@ -37,9 +38,13 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         let sender_recovery_cache = self.inner.sender_recovery_cache.clone();
         let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
+        let indexed_ring = !self
+            .chain_spec()
+            .tempo_hardfork_at(block.header().timestamp())
+            .is_t12();
 
         for (idx, tx) in block.body().transactions.iter().enumerate() {
-            if tx.is_expiring_nonce() {
+            if indexed_ring && tx.is_expiring_nonce() {
                 transactions.push((idx, Some(expiring_nonce_idx)));
                 expiring_nonce_idx += 1;
             } else {

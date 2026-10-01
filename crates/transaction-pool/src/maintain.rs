@@ -520,7 +520,8 @@ where
         // This removes mined 2D nonce transactions and promotes newly
         // unblocked transactions before later pool scans.
         let nonce_pool_start = Instant::now();
-        removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+        let hardfork = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+        removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state, hardfork));
         metrics
             .nonce_pool_update_duration_seconds
             .record(nonce_pool_start.elapsed());

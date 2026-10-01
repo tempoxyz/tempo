@@ -190,7 +190,10 @@ impl BestTransactionsPrewarming {
 
             let mut tx_env = tx.transaction.clone_tx_env();
             if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+                // T12 consumes ring entries only for primary-table collisions, which
+                // semantic replay resolves against the canonical transaction order.
+                tempo_tx_env.expiring_nonce_idx =
+                    expiring_nonce_offset.filter(|_| !evm.ctx().cfg.spec.is_t12());
             }
 
             let result = match evm.transact_raw(tx_env) {

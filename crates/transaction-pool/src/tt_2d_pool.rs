@@ -32,7 +32,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS,
+    nonce::{decode_primary, primary_index},
+};
 use tokio::sync::broadcast;
 
 type TxOrdering = TempoTipOrdering<TempoPooledTransaction>;
@@ -45,6 +49,13 @@ type StateUpdateResult = (
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 );
+
+/// A primary cell shared by one or more pending expiring nonce transactions.
+#[derive(Debug)]
+struct ExpiringNoncePrimarySlot {
+    index: u32,
+    pending_txs: usize,
+}
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -92,6 +103,10 @@ pub struct AA2dPool {
     ///
     /// Used to track inclusion of expiring nonce transactions.
     slot_to_expiring_nonce_hash: U256Map<B256>,
+    /// Primary-cell slots used by pending transactions, with their reversible hash index.
+    ///
+    /// The count keeps a cell tracked when one of several colliding transactions leaves.
+    slot_to_expiring_nonce_primary: U256Map<ExpiringNoncePrimarySlot>,
     /// Scratch buffer reused while processing nonce state updates.
     state_update_nonce_changes: HashMap<AASequenceId, u64>,
     /// Scratch buffer reused while processing included expiring nonce transactions.
@@ -149,6 +164,7 @@ impl AA2dPool {
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
             slot_to_expiring_nonce_hash: Default::default(),
+            slot_to_expiring_nonce_primary: Default::default(),
             state_update_nonce_changes: Default::default(),
             state_update_included_expiring_nonce_hashes: Default::default(),
             slot_to_seq_id: Default::default(),
@@ -513,6 +529,17 @@ impl AA2dPool {
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash
                 .insert(slot, expiring_nonce_hash);
+        }
+        // Track primary cells even before activation, so already-pooled transactions are
+        // recognized when the first T12 block uses the new layout.
+        if let Some(slot) = transaction.transaction.expiring_nonce_primary_slot() {
+            self.slot_to_expiring_nonce_primary
+                .entry(slot)
+                .or_insert(ExpiringNoncePrimarySlot {
+                    index: primary_index(expiring_nonce_hash),
+                    pending_txs: 0,
+                })
+                .pending_txs += 1;
         }
         self.by_hash.insert(tx_hash, transaction.clone());
 
@@ -1369,6 +1396,18 @@ impl AA2dPool {
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash.remove(&slot);
         }
+        if let Some(slot) = pending_tx
+            .transaction
+            .transaction
+            .expiring_nonce_primary_slot()
+            && let hash_map::Entry::Occupied(mut entry) =
+                self.slot_to_expiring_nonce_primary.entry(slot)
+        {
+            entry.get_mut().pending_txs -= 1;
+            if entry.get().pending_txs == 0 {
+                entry.remove();
+            }
+        }
         self.decrement_sender_count(pending_tx.transaction.sender());
         self.remove_from_subpool(true, pending_tx.size());
         pending_tx.transaction
@@ -1436,6 +1475,7 @@ impl AA2dPool {
     pub(crate) fn on_state_updates(
         &mut self,
         state: &AddressMap<BundleAccount>,
+        hardfork: TempoHardfork,
     ) -> StateUpdateResult {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
@@ -1459,6 +1499,15 @@ impl AA2dPool {
                 && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
             {
                 included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+            }
+            // A primary cell can be shared by multiple pending hashes. Its value identifies
+            // only the included hash; the other transactions remain eligible for fallback.
+            if hardfork.is_t12()
+                && !value.present_value.is_zero()
+                && let Some(primary) = self.slot_to_expiring_nonce_primary.get(slot)
+            {
+                included_expiring_nonce_hashes
+                    .push(decode_primary(primary.index, value.present_value));
             }
         }
 
@@ -1790,6 +1839,7 @@ impl AA2dPool {
         );
 
         // Verify expiring nonce txs integrity
+        let mut primary_counts = U256Map::<usize>::default();
         for (hash, pending_tx) in &self.expiring_nonce_txs {
             let tx_hash = *pending_tx.transaction.hash();
             assert!(
@@ -1806,6 +1856,27 @@ impl AA2dPool {
             assert!(
                 pending_tx.transaction.transaction.is_expiring_nonce(),
                 "Transaction in expiring_nonce_txs is not an expiring nonce tx"
+            );
+            let slot = pending_tx
+                .transaction
+                .transaction
+                .expiring_nonce_primary_slot()
+                .expect("expiring nonce transaction has a primary slot");
+            let primary = self
+                .slot_to_expiring_nonce_primary
+                .get(&slot)
+                .expect("expiring nonce primary slot is tracked");
+            assert_eq!(primary.index, primary_index(*hash));
+            *primary_counts.entry(slot).or_default() += 1;
+        }
+        assert_eq!(
+            primary_counts.len(),
+            self.slot_to_expiring_nonce_primary.len()
+        );
+        for (slot, count) in primary_counts {
+            assert_eq!(
+                self.slot_to_expiring_nonce_primary[&slot].pending_txs,
+                count
             );
         }
 
@@ -6219,7 +6290,7 @@ mod tests {
             .push(B256::random());
 
         let state = AddressMap::default();
-        let (promoted, mined, discarded) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state, TempoHardfork::T1);
 
         assert!(promoted.is_empty());
         assert!(mined.is_empty());
@@ -6277,7 +6348,7 @@ mod tests {
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 
-        let (promoted, mined, discarded) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state, TempoHardfork::T1);
 
         assert!(promoted.is_empty(), "tx2 was already pending");
         assert_eq!(mined.len(), 2, "tx0 and tx1 should be mined");
@@ -6341,7 +6412,7 @@ mod tests {
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 
-        let (promoted, mined, discarded) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state, TempoHardfork::T1);
 
         assert_eq!(mined.len(), 2, "tx0 and tx1 should be mined");
         assert!(promoted.is_empty());
@@ -6404,7 +6475,7 @@ mod tests {
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 
-        let (promoted, mined, discarded) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state, TempoHardfork::T1);
 
         assert_eq!(promoted.len(), 2);
         assert!(promoted.iter().any(|tx| tx.hash() == &tx2_hash));
@@ -7023,8 +7094,11 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn on_state_updates_removes_included_expiring_nonce_from_eviction_index() {
+    #[test_case::test_case(TempoHardfork::T1)]
+    #[test_case::test_case(TempoHardfork::T12)]
+    fn on_state_updates_removes_included_expiring_nonce_from_eviction_index(
+        hardfork: TempoHardfork,
+    ) {
         use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
 
         let mut pool = AA2dPool::default();
@@ -7046,7 +7120,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
             0,
-            TempoHardfork::T1,
+            hardfork,
         )
         .unwrap();
 
@@ -7064,7 +7138,7 @@ mod tests {
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 
-        let (promoted, mined, discarded) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state, hardfork);
 
         assert!(promoted.is_empty());
         assert_eq!(mined.len(), 1);
@@ -7073,10 +7147,180 @@ mod tests {
         assert!(!pool.contains(&tx_hash));
         assert!(pool.expiring_nonce_txs.is_empty());
         assert!(pool.slot_to_expiring_nonce_hash.is_empty());
+        assert!(pool.slot_to_expiring_nonce_primary.is_empty());
         assert_expiring_eviction_index_len(&pool, 0);
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
         assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
+    }
+
+    /// Finds a deterministic pair of real transactions sharing a primary cell.
+    fn colliding_expiring_nonce_txs() -> (TempoPooledTransaction, TempoPooledTransaction) {
+        static COLLISION: std::sync::OnceLock<(TempoPooledTransaction, TempoPooledTransaction)> =
+            std::sync::OnceLock::new();
+        COLLISION
+            .get_or_init(|| {
+                let mut by_index = HashMap::<u32, TempoPooledTransaction>::default();
+                for nonce in 0..100_000 {
+                    let tx = TxBuilder::aa(Address::repeat_byte(0x11))
+                        .nonce_key(U256::MAX)
+                        .nonce(nonce)
+                        .valid_before(123)
+                        .calls(vec![Call {
+                            to: TxKind::Call(Address::repeat_byte(0x22)),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }])
+                        .build();
+                    let index = primary_index(tx.precomputed_expiring_nonce_hash());
+                    if let Some(previous) = by_index.insert(index, tx.clone()) {
+                        return (previous, tx);
+                    }
+                }
+                panic!("deterministic transaction fixture must contain a primary collision")
+            })
+            .clone()
+    }
+
+    fn primary_nonce_update(slot: U256, value: U256) -> AddressMap<BundleAccount> {
+        use revm::database::{AccountStatus, states::StorageSlot};
+
+        AddressMap::from_iter([(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(
+                None,
+                None,
+                HashMap::from_iter([(slot, StorageSlot::new_changed(U256::ZERO, value))]),
+                AccountStatus::Changed,
+            ),
+        )])
+    }
+
+    #[test]
+    fn on_state_updates_primary_collision_removes_only_matching_hash() {
+        use tempo_precompiles::nonce::encode_primary;
+
+        let mut pool = AA2dPool::default();
+        let (first, second) = colliding_expiring_nonce_txs();
+        let first_hash = *first.hash();
+        let second_hash = *second.hash();
+        let first_replay_hash = first.precomputed_expiring_nonce_hash();
+        let primary_slot = first.expiring_nonce_primary_slot().unwrap();
+        let fallback_slot = second.expiring_nonce_slot().unwrap();
+        assert_eq!(second.expiring_nonce_primary_slot(), Some(primary_slot));
+
+        for tx in [first, second] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T12,
+            )
+            .unwrap();
+        }
+        pool.assert_invariants();
+        assert_eq!(pool.slot_to_expiring_nonce_primary.len(), 1);
+
+        let state = primary_nonce_update(primary_slot, encode_primary(first_replay_hash, 123));
+        let (promoted, mined, discarded) = pool.on_state_updates(&state, TempoHardfork::T12);
+        assert!(promoted.is_empty());
+        assert!(discarded.is_empty());
+        assert_eq!(mined.len(), 1);
+        assert_eq!(mined[0].hash(), &first_hash);
+        assert!(pool.contains(&second_hash));
+        assert_eq!(
+            pool.slot_to_expiring_nonce_primary[&primary_slot].pending_txs,
+            1
+        );
+        pool.assert_invariants();
+
+        // The colliding transaction is subsequently included through the fallback ring.
+        let state = primary_nonce_update(fallback_slot, U256::from(123));
+        let (_, mined, _) = pool.on_state_updates(&state, TempoHardfork::T12);
+        assert_eq!(mined.len(), 1);
+        assert_eq!(mined[0].hash(), &second_hash);
+        assert!(pool.slot_to_expiring_nonce_primary.is_empty());
+        assert!(pool.slot_to_expiring_nonce_hash.is_empty());
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn on_state_updates_primary_overwrite_preserves_other_pending_hashes() {
+        use tempo_precompiles::nonce::encode_primary;
+
+        let mut pool = AA2dPool::default();
+        let (first, second) = colliding_expiring_nonce_txs();
+        let first_hash = *first.hash();
+        let second_hash = *second.hash();
+        let second_replay_hash = second.precomputed_expiring_nonce_hash();
+        let mut unrelated_hash = first.precomputed_expiring_nonce_hash();
+        unrelated_hash.0[0] ^= 0x80;
+        let slot = first.expiring_nonce_primary_slot().unwrap();
+        assert_ne!(unrelated_hash, second_replay_hash);
+
+        for tx in [first, second] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T12,
+            )
+            .unwrap();
+        }
+
+        // Neither clearing the cell nor writing another hash proves either pending tx included.
+        for value in [U256::ZERO, encode_primary(unrelated_hash, 123)] {
+            let state = primary_nonce_update(slot, value);
+            let (_, mined, _) = pool.on_state_updates(&state, TempoHardfork::T12);
+            assert!(mined.is_empty());
+            assert!(pool.contains(&first_hash));
+            assert!(pool.contains(&second_hash));
+            pool.assert_invariants();
+        }
+
+        // Removing one collision through another path must preserve the cell's reverse index.
+        assert_eq!(
+            pool.remove_transactions(std::iter::once(&first_hash)).len(),
+            1
+        );
+        pool.assert_invariants();
+        let state = primary_nonce_update(slot, encode_primary(second_replay_hash, 123));
+        let (_, mined, _) = pool.on_state_updates(&state, TempoHardfork::T12);
+        assert_eq!(mined.len(), 1);
+        assert_eq!(mined[0].hash(), &second_hash);
+        assert!(pool.slot_to_expiring_nonce_primary.is_empty());
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn on_state_updates_primary_activation_preserves_pending_transactions() {
+        use tempo_precompiles::nonce::encode_primary;
+
+        let mut pool = AA2dPool::default();
+        let tx = TxBuilder::aa(Address::repeat_byte(0x33))
+            .nonce_key(U256::MAX)
+            .valid_before(123)
+            .build();
+        let tx_hash = *tx.hash();
+        let slot = tx.expiring_nonce_primary_slot().unwrap();
+        let value = encode_primary(tx.precomputed_expiring_nonce_hash(), 123);
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T11,
+        )
+        .unwrap();
+
+        let state = primary_nonce_update(slot, value);
+        assert!(
+            pool.on_state_updates(&state, TempoHardfork::T11)
+                .1
+                .is_empty()
+        );
+        assert!(pool.contains(&tx_hash));
+        let (_, mined, _) = pool.on_state_updates(&state, TempoHardfork::T12);
+        assert_eq!(mined.len(), 1);
+        assert_eq!(mined[0].hash(), &tx_hash);
+        assert!(pool.slot_to_expiring_nonce_primary.is_empty());
+        pool.assert_invariants();
     }
 
     /// Pool with pending limit of 2 for eviction tests.
