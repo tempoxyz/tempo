@@ -1,11 +1,12 @@
 //! Bounded EVM2 calls for native protocol handlers.
 //!
-//! The caller supplies the original transaction environment and a budget shared
+//! EVM2 supplies the original transaction environment; a budget is shared
 //! across the entire native operation. Invoke this outside `StorageCtx::enter`:
 //! child contracts may enter another native storage context. This module does
 //! not register an entrypoint or change payment-lane admission.
 
 use alloy::primitives::{Address, Bytes, U256};
+use core::cell::Cell;
 use evm2::{
     Evm, EvmFeatures, EvmTypes,
     env::TxEnv,
@@ -22,28 +23,28 @@ use evm2::{
 /// work bound. Fee charging still uses the actual EVM gas tracker.
 #[derive(Debug)]
 pub struct NativeCallBudget {
-    remaining_calls: u32,
-    remaining_work: u64,
+    remaining_calls: Cell<u32>,
+    remaining_work: Cell<u64>,
 }
 
 impl NativeCallBudget {
     /// Creates the operation budget from protocol-selected limits.
     pub const fn new(max_calls: u32, max_work: u64) -> Self {
         Self {
-            remaining_calls: max_calls,
-            remaining_work: max_work,
+            remaining_calls: Cell::new(max_calls),
+            remaining_work: Cell::new(max_work),
         }
     }
 
-    fn reserve(&mut self, execution_gas: u64, state_gas: u64) -> Result<(), PrecompileError> {
+    fn reserve(&self, execution_gas: u64, state_gas: u64) -> Result<(), PrecompileError> {
         let work = execution_gas
             .checked_add(state_gas)
             .ok_or(PrecompileHalt::OutOfGas)?;
-        if self.remaining_calls == 0 || work > self.remaining_work {
+        if self.remaining_calls.get() == 0 || work > self.remaining_work.get() {
             return Err(PrecompileHalt::OutOfGas.into());
         }
-        self.remaining_calls -= 1;
-        self.remaining_work -= work;
+        self.remaining_calls.set(self.remaining_calls.get() - 1);
+        self.remaining_work.set(self.remaining_work.get() - work);
         Ok(())
     }
 }
@@ -71,10 +72,29 @@ pub struct NativeCallLimits {
 #[allow(clippy::too_many_arguments)]
 pub fn native_call<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
+    parent: &Message<T>,
+    gas: &mut GasTracker,
+    budget: &NativeCallBudget,
+    target: Address,
+    input: Bytes,
+    read_only: bool,
+    limits: NativeCallLimits,
+) -> PrecompileResult {
+    let tx_env = evm.precompile_tx_env().cloned().ok_or_else(|| {
+        PrecompileError::Fatal("native call requires an active transaction context".into())
+    })?;
+    native_call_with_env(
+        evm, &tx_env, parent, gas, budget, target, input, read_only, limits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_call_with_env<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
     tx_env: &TxEnv<T>,
     parent: &Message<T>,
     gas: &mut GasTracker,
-    budget: &mut NativeCallBudget,
+    budget: &NativeCallBudget,
     target: Address,
     input: Bytes,
     read_only: bool,
@@ -191,6 +211,7 @@ mod tests {
         bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
+        precompiles::{Precompile, PrecompileId},
         registry::TxRegistry,
     };
 
@@ -241,10 +262,10 @@ mod tests {
         evm: &mut Evm<'_, BaseEvmTypes>,
         parent: &Message,
         gas: &mut GasTracker,
-        budget: &mut NativeCallBudget,
+        budget: &NativeCallBudget,
         limits: NativeCallLimits,
     ) -> PrecompileResult {
-        native_call(
+        native_call_with_env(
             evm,
             &tx_env(),
             parent,
@@ -269,7 +290,7 @@ mod tests {
             &mut evm,
             &parent(),
             &mut gas,
-            &mut NativeCallBudget::new(1, 70_000),
+            &NativeCallBudget::new(1, 70_000),
             LIMITS,
         )
         .unwrap();
@@ -304,7 +325,7 @@ mod tests {
             &mut evm,
             &parent,
             &mut gas,
-            &mut NativeCallBudget::new(1, 70_000),
+            &NativeCallBudget::new(1, 70_000),
             LIMITS,
         );
         assert!(matches!(result, Err(PrecompileError::Halt(_))));
@@ -326,7 +347,7 @@ mod tests {
             &mut evm,
             &parent(),
             &mut gas,
-            &mut NativeCallBudget::new(1, 70_000),
+            &NativeCallBudget::new(1, 70_000),
             LIMITS,
         );
         let Err(PrecompileError::Revert(output)) = result else {
@@ -354,7 +375,7 @@ mod tests {
             &mut evm,
             &parent(),
             &mut gas,
-            &mut NativeCallBudget::new(1, 70_000),
+            &NativeCallBudget::new(1, 70_000),
             limits,
         );
         assert!(matches!(
@@ -373,12 +394,12 @@ mod tests {
     fn input_bound_rejects_before_work_and_account_load() {
         let mut evm = evm(bytes!("00"), SpecId::OSAKA);
         let mut gas = GasTracker::new(100_000);
-        let result = native_call(
+        let result = native_call_with_env(
             &mut evm,
             &tx_env(),
             &parent(),
             &mut gas,
-            &mut NativeCallBudget::new(1, 70_000),
+            &NativeCallBudget::new(1, 70_000),
             TARGET,
             Bytes::from(vec![0; 257]),
             false,
@@ -396,12 +417,12 @@ mod tests {
         for code in [bytes!("00"), bytes!("5f5ffd")] {
             let mut evm = evm(code, SpecId::OSAKA);
             let mut gas = GasTracker::new(200_000);
-            let mut budget = NativeCallBudget::new(2, 50_000);
-            let _ = invoke(&mut evm, &parent(), &mut gas, &mut budget, LIMITS);
-            assert_eq!(budget.remaining_work, 0);
-            assert_eq!(budget.remaining_calls, 1);
+            let budget = NativeCallBudget::new(2, 50_000);
+            let _ = invoke(&mut evm, &parent(), &mut gas, &budget, LIMITS);
+            assert_eq!(budget.remaining_work.get(), 0);
+            assert_eq!(budget.remaining_calls.get(), 1);
             assert!(matches!(
-                invoke(&mut evm, &parent(), &mut gas, &mut budget, LIMITS),
+                invoke(&mut evm, &parent(), &mut gas, &budget, LIMITS),
                 Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
             ));
         }
@@ -421,7 +442,7 @@ mod tests {
             &mut evm,
             &parent(),
             &mut gas,
-            &mut NativeCallBudget::new(1, 201_000),
+            &NativeCallBudget::new(1, 201_000),
             limits,
         );
         assert!(
@@ -454,7 +475,7 @@ mod tests {
             &mut evm,
             &parent(),
             &mut gas,
-            &mut NativeCallBudget::new(1, 70_000),
+            &NativeCallBudget::new(1, 70_000),
             LIMITS,
         );
         assert!(matches!(result, Err(PrecompileError::Halt(_))));
@@ -486,7 +507,7 @@ mod tests {
             &mut evm,
             &parent(),
             &mut gas,
-            &mut NativeCallBudget::new(1, 70_000),
+            &NativeCallBudget::new(1, 70_000),
             LIMITS,
         )
         .unwrap()
@@ -504,10 +525,83 @@ mod tests {
 
     #[test]
     fn reservations_cannot_overflow() {
-        let mut budget = NativeCallBudget::new(1, u64::MAX);
+        let budget = NativeCallBudget::new(1, u64::MAX);
         assert!(budget.reserve(u64::MAX, 1).is_err());
-        assert_eq!(budget.remaining_calls, 1);
-        assert_eq!(budget.remaining_work, u64::MAX);
+        assert_eq!(budget.remaining_calls.get(), 1);
+        assert_eq!(budget.remaining_work.get(), u64::MAX);
         assert!(NativeCallBudget::new(0, u64::MAX).reserve(0, 0).is_err());
+    }
+
+    #[test]
+    fn native_entrypoint_uses_evm_transaction_context_for_contract_call() {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &TARGET,
+            AccountInfo::default().with_code(Bytecode::new_legacy(bytes!(
+                "335f52326020523a6040524660605260805ff3"
+            ))),
+        );
+        let mut precompiles = Precompiles::<BaseEvmTypes>::base(SpecId::OSAKA);
+        precompiles.as_map_mut().insert(Precompile::new(
+            NATIVE,
+            PrecompileId::custom("native-context-test"),
+            |evm, message, gas| {
+                native_call(
+                    evm,
+                    message,
+                    gas,
+                    &NativeCallBudget::new(1, 70_000),
+                    TARGET,
+                    Bytes::new(),
+                    false,
+                    LIMITS,
+                )
+            },
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            db,
+            precompiles,
+        );
+        let mut message = parent();
+        message.gas_limit = 100_000;
+        let result = Host::execute_message(&mut evm, &tx_env(), &mut message).unwrap();
+        assert!(result.stop.is_success());
+        let words = result
+            .output
+            .chunks_exact(32)
+            .map(U256::from_be_slice)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            words,
+            vec![
+                U256::from_be_slice(NATIVE.as_slice()),
+                U256::from_be_slice(ORIGIN.as_slice()),
+                U256::from(17),
+                U256::from(42431),
+            ]
+        );
+        assert!(result.gas.spent() > 2600);
+        assert!(evm.precompile_tx_env().is_none());
+    }
+
+    #[test]
+    fn missing_runtime_context_is_fatal_instead_of_fabricating_origin() {
+        let mut evm = evm(bytes!("00"), SpecId::OSAKA);
+        let mut gas = GasTracker::new(100_000);
+        let result = native_call(
+            &mut evm,
+            &parent(),
+            &mut gas,
+            &NativeCallBudget::new(1, 70_000),
+            TARGET,
+            Bytes::new(),
+            false,
+            LIMITS,
+        );
+        assert!(matches!(result, Err(PrecompileError::Fatal(_))));
+        assert_eq!(gas.spent(), 0);
     }
 }
