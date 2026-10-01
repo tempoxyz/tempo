@@ -670,6 +670,16 @@ where
                         ..
                     }) => {
                         invalid_pool_transaction_execution_attempts += 1;
+                        info!(
+                            target: "replay_bench_rejection",
+                            error = ?error,
+                            error_message = %error,
+                            tx_hash = %tx.hash(),
+                            expiring_nonce = tx.transaction.is_expiring_nonce(),
+                            valid_before = ?tx.transaction.inner().valid_before(),
+                            block_timestamp = %executor.evm().block().timestamp,
+                            "Replay-table benchmark validation rejection"
+                        );
 
                         if error.is_nonce_too_low() {
                             // if the nonce is too low, we can skip this transaction
@@ -701,8 +711,8 @@ where
                                 ),
                             );
                             self.metrics.inc_pool_tx_skipped("invalid_replay");
-                            trace!(
-                                target: "payload_builder",
+                            info!(
+                                target: "replay_bench_rejection",
                                 tx_hash = ?tx.hash(),
                                 ?err,
                                 "Skipping invalid replay transaction"
