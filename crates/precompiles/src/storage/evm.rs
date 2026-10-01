@@ -28,6 +28,9 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     version: Version,
     block: TempoBlockEnv,
     gas_tracker: GasTrackerStorage<'gas>,
+    /// Gas snapshots for native atomic operations whose errors may be caught
+    /// without reverting the enclosing EVM frame.
+    gas_checkpoints: Vec<(StateCheckpoint, GasTracker)>,
     spec: TempoHardfork,
     is_static: bool,
     tip1060_storage_credits_enabled: bool,
@@ -87,6 +90,7 @@ where
             version,
             block,
             gas_tracker,
+            gas_checkpoints: Vec::new(),
             spec,
             is_static,
             tip1060_storage_credits_enabled: spec.is_t7(),
@@ -266,17 +270,28 @@ where
             self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
         }
 
+        let state_gas = self.version.feature(EvmFeatures::EIP8037);
+        if state_gas {
+            self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
+        }
+
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         if self.tip1060_storage_credits_enabled {
             sstore_storage_credits(self, address, Some(key), &result)?
         }
 
-        // dynamic gas
-        self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
+        if !state_gas {
+            self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
+        }
 
-        // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.version.gas_params.sstore_state_gas(&result))?;
+        // TIP-1060 owns creation charges and credits, including dirty writes.
+        // Its settlement replaces EIP-8037's immediate slot-restoration refill.
+        if state_gas && !self.tip1060_storage_credits_enabled && !self.spec.is_t7() {
+            self.deduct_state_gas(self.version.gas_params.sstore_state_gas(&result))?;
+            self.gas_tracker
+                .refill_reservoir(self.version.gas_params.sstore_state_gas_refill(&result));
+        }
 
         // Native precompile storage did not surface SSTORE refunds before TIP-1016.
         if self.spec.is_t4() {
@@ -415,31 +430,35 @@ where
         self.ensure_not_static()?;
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
+        let state_gas = self.version.feature(EvmFeatures::EIP8037);
+        let was_empty = if state_gas {
+            self.evm
+                .state_mut()
+                .account(&address)?
+                .get()
+                .is_none_or(AccountInfo::is_empty)
+        } else {
+            false
+        };
+        // Charge all execution work before drawing on the state reservoir.
+        if state_gas {
+            self.deduct_gas(self.version.gas_params.keccak256_word_cost(code_len))?;
+            if was_empty {
+                self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
+            }
+        }
         self.deduct_gas(
             u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
                 .saturating_mul(code_len as u64),
         )?;
 
-        // Track state gas for code deposit
-        self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
-
-        let was_empty = {
-            let mut account = self.evm.state_mut().account(&address)?;
-            let was_empty = account.get().is_none_or(AccountInfo::is_empty);
-            account.set_code_slow(code);
-            was_empty
-        };
-
-        // TIP-1016: charge TIP20 deployments as CREATE.
-        if self.version.feature(EvmFeatures::EIP8037) && was_empty {
-            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
-            self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
-            self.deduct_gas(
-                self.version
-                    .gas_params
-                    .keccak256_word_cost(code_len.div_ceil(32)),
-            )?;
+        if state_gas {
+            if was_empty {
+                self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
+            }
+            self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
         }
+        self.evm.state_mut().account(&address)?.set_code_slow(code);
 
         Ok(())
     }
@@ -641,14 +660,32 @@ where
 
     #[inline]
     fn checkpoint(&mut self) -> StateCheckpoint {
-        self.evm.state_mut().checkpoint()
+        let checkpoint = self.evm.state_mut().checkpoint();
+        if self.spec.is_t7() && self.version.feature(EvmFeatures::EIP8037) {
+            self.gas_checkpoints
+                .push((checkpoint.clone(), *self.gas_tracker));
+        }
+        checkpoint
     }
 
     #[inline]
-    fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {}
+    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
+        if let Some((expected, _)) = self.gas_checkpoints.pop() {
+            assert_eq!(expected, checkpoint, "out-of-order gas checkpoint commit");
+        }
+    }
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+        if let Some((expected, gas)) = self.gas_checkpoints.pop() {
+            assert_eq!(expected, checkpoint, "out-of-order gas checkpoint revert");
+            // TIP-1060 only refills state gas at transaction settlement, so
+            // state spending within a native checkpoint is nonnegative.
+            let state = u64::try_from(self.gas_tracker.state_gas_spent() - gas.state_gas_spent())
+                .expect("native checkpoint cannot settle storage credits");
+            self.gas_tracker.refill_reservoir(state);
+            self.gas_tracker.set_refunded(gas.refunded());
+        }
         self.evm
             .state_mut()
             .rollback(checkpoint, self.version.features);

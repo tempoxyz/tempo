@@ -2,7 +2,7 @@
 
 use crate::{
     TempoHardfork,
-    constants::gas::{SSTORE_CREATE_COST, SSTORE_SET_COST},
+    constants::gas::{SSTORE_CREATE_COST, SSTORE_SET_COST, STORAGE_CREDIT_VALUE},
 };
 use evm2::{EvmFeatures, SpecId, Version, version::GasId};
 
@@ -28,25 +28,28 @@ pub fn configure_version(
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
 ) -> Version {
-    debug_assert!(
-        !(spec.is_t7() && amsterdam_eip8037_enabled),
-        "TIP-1060 and TIP-1016 do not yet have a combined gas schedule"
-    );
-
+    // T14 activates TIP-1016. The explicit switch also allows exercising the
+    // reservoir model on earlier forks in tests.
+    let amsterdam_eip8037_enabled = amsterdam_eip8037_enabled || spec.is_t14();
     if amsterdam_eip8037_enabled {
         version.features.insert(EvmFeatures::EIP8037);
+        // TIP-1016 limits execution gas, not the user's execution + state budget.
+        version.features.remove(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
         apply_amsterdam(&mut version);
     } else {
         version.features.remove(EvmFeatures::EIP8037);
         if spec.is_t1() {
             apply_t1(&mut version);
         }
-        if spec.is_t7() {
-            apply_t7(&mut version);
-        }
     }
 
     if spec.is_t7() {
+        apply_t7(&mut version);
+        if amsterdam_eip8037_enabled {
+            // The credit hook owns charging and settlement; do not also apply
+            // EIP-8037's slot-restoration accounting to these writes.
+            version.gas_params[GasId::SstoreSetState] = STORAGE_CREDIT_VALUE as u32;
+        }
         version.gas_params[GasId::MaxRefundQuotient] = 1;
     }
     version
@@ -97,6 +100,44 @@ fn apply_amsterdam(version: &mut Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1016_activates_at_t14() {
+        for &spec in TempoHardfork::VARIANTS {
+            let version = version(SpecId::OSAKA, spec, false);
+            assert_eq!(
+                version.feature(EvmFeatures::EIP8037),
+                spec.is_t14(),
+                "{spec:?}"
+            );
+            if spec.is_t14() {
+                assert_eq!(version.gas_params[GasId::SstoreSetState], 245_000);
+                assert_eq!(version.gas_params[GasId::CodeDepositState], 2_300);
+            }
+        }
+    }
+
+    #[test]
+    fn tip1016_preserves_tip1060_credits_and_execution_refunds() {
+        let version = version(SpecId::OSAKA, TempoHardfork::T7, true);
+        let gas = version.gas_params;
+        assert!(version.feature(EvmFeatures::EIP8037));
+        assert!(!version.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert_eq!(gas[GasId::SstoreSetWithoutLoadCost], 5_000);
+        assert_eq!(gas[GasId::SstoreSetState], 245_000);
+        assert_eq!(gas[GasId::SstoreSetRefund], 5_000);
+        assert_eq!(gas[GasId::SstoreClearingSlotRefund], 0);
+        assert_eq!(gas[GasId::MaxRefundQuotient], 1);
+        assert_eq!(
+            gas[GasId::CodeDepositCost] + gas[GasId::CodeDepositState],
+            2_500
+        );
+        assert_eq!(
+            gas[GasId::NewAccountCost] + gas[GasId::NewAccountState],
+            250_000
+        );
+        assert_eq!(gas[GasId::Create] + gas[GasId::CreateState], 500_000);
+    }
 
     #[test]
     fn test_tempo_override_gas_params_match_across_forks() {

@@ -9,8 +9,7 @@
 //! 2. Receipt gas_used includes ALL gas (execution + storage creation)
 //! 3. Therefore: sum of receipt gas_used > block header gas_used when storage is created
 //! 4. Transactions that only touch existing storage have no difference
-//! 5. Reverted txs still have state gas exempted from protocol limits (CPU time is bounded
-//!    regardless of whether state was committed)
+//! 5. Reverted storage creation refills its state gas, leaving execution gas charged
 //! 6. Multiple storage-creating operations in a single tx are additive
 //! 7. Multiple storage-creating txs in a single block correctly accumulate exemptions
 //! 8. Reverted inner CALLs do NOT contribute state gas to the parent frame's exemption
@@ -29,7 +28,41 @@ use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
 
-use crate::utils::{TestNodeBuilder, t1_account};
+use super::helpers::{build_call_tx, test_signer};
+use crate::utils::{ForkSchedule, TestNodeBuilder, t1_account};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1016_pool_accepts_total_gas_limit_above_block_limit() -> eyre::Result<()> {
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access()
+        .await?;
+    let provider = setup.node.rpc_provider();
+    let signer = test_signer(0)?;
+    let chain_id = provider.get_chain_id().await?;
+    // Check admission both at startup and after a canonical head update.
+    for nonce in 0..2 {
+        let raw = build_call_tx(
+            &signer,
+            chain_id,
+            nonce,
+            700_000_000,
+            Address::with_last_byte(4),
+            Bytes::new(),
+        );
+        let payload = setup.node.mine([raw]).await?;
+        assert!(
+            payload
+                .block()
+                .body()
+                .transactions()
+                .any(|tx| tx.gas_limit() == 700_000_000)
+        );
+        assert!(payload.block().header().inner.gas_limit < 700_000_000);
+        assert!(payload.block().header().inner.gas_used < 100_000);
+    }
+    Ok(())
+}
 
 /// Returns the address of the contract deployed by a successful CreateX deployment, from its
 /// ContractCreation event.
@@ -47,12 +80,13 @@ fn total_receipt_gas(receipts: &[TempoTransactionReceipt]) -> u64 {
 /// code storage), so block header gas_used should be less than the sum of receipt gas_used.
 ///
 /// The difference is the storage creation gas that TIP-1016 exempts from protocol limits.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -89,12 +123,13 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
 /// triggers the storage creation gas exemption.
 ///
 /// SSTORE zero->non-zero costs 250,000 gas total (5,000 exec + 245,000 storage).
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -140,13 +175,13 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     let receipts_total_gas = total_receipt_gas(&call.receipts);
 
     // TIP-1016: block gas_used should be less than receipt gas because
-    // the SSTORE zero->non-zero has 230,000 storage creation gas exempted.
+    // the SSTORE zero->non-zero has 245,000 storage creation gas exempted.
     //
-    // sstore_set_state_gas = 250,000 - 20,000 = 230,000 per TIP-1016 spec
+    // sstore_set_state_gas = 250,000 - 20,000 = 245,000 per TIP-1016 spec
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
-        storage_creation_gas, 230_000,
-        "storage creation gas should be exactly 230,000 (sstore_set_state_gas), \
+        storage_creation_gas, 245_000,
+        "storage creation gas should be exactly 245,000 (sstore_set_state_gas), \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -156,12 +191,13 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
 /// Happy path: a SSTORE that modifies an existing slot (non-zero -> non-zero) should
 /// NOT have any storage creation gas component, so block gas_used and total receipt gas
 /// should be equal.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -213,12 +249,13 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
 
 /// Happy path: a TIP-20 transfer to an existing account (no new storage slots created)
 /// should have identical block gas_used and total receipt gas.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let wallet = Wallet::default().with_chain_id(chain_id);
@@ -277,12 +314,13 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
 /// EVM2 preserves state gas spent on all result paths (ok, revert, halt), so the block header
 /// gas_used should still exclude the 245,000
 /// storage creation gas.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<()> {
+async fn test_tip1016_reverted_sstore_refills_state_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -341,12 +379,13 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
 ///
 /// Storage creation gas should be additive: N slots x 245,000 per slot.
 /// Block header gas_used should only include the execution component (5,000 per slot).
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -394,12 +433,12 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
     let block_gas_used = call.block().header().inner.gas_used;
     let receipts_total_gas = total_receipt_gas(&call.receipts);
 
-    // 3 SSTOREs zero->non-zero: 3 x 230,000 = 690,000 storage creation gas exempted
+    // 3 SSTOREs zero->non-zero: 3 x 245,000 = 690,000 storage creation gas exempted
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
         storage_creation_gas,
-        3 * 230_000,
-        "storage creation gas should be 3 x 230,000 = 690,000, \
+        3 * 245_000,
+        "storage creation gas should be 3 x 245,000 = 690,000, \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -409,15 +448,16 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
 /// Corner case: two storage-creating transactions in the same block.
 ///
 /// Each tx does SSTORE zero->non-zero. The block's cumulative storage creation gas
-/// should be the sum of both (2 x 230,000 = 460,000). This tests that the inner
+/// should be the sum of both (2 x 245,000 = 460,000). This tests that the inner
 /// executor's `block_regular_gas_used` correctly excludes state gas across
 /// multiple transactions.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -463,12 +503,12 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     let block_gas_used = mined.block().header().inner.gas_used;
     let receipts_total_gas = total_receipt_gas(&mined.receipts);
 
-    // Two SSTOREs zero->non-zero: 2 x 230,000 = 460,000 storage creation gas
+    // Two SSTOREs zero->non-zero: 2 x 245,000 = 460,000 storage creation gas
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
         storage_creation_gas,
-        2 * 230_000,
-        "storage creation gas should be 2 x 230,000 = 460,000 for two txs in same block, \
+        2 * 245_000,
+        "storage creation gas should be 2 x 245,000 = 460,000 for two txs in same block, \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -481,12 +521,13 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
 /// the failure and STOPs successfully. Since B's frame reverted, `handle_reservoir_remaining_gas`
 /// does NOT propagate B's state_gas_spent to A. The overall tx has state_gas_spent == 0,
 /// so block gas_used should equal total receipt gas_used (no exemption).
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -582,7 +623,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 /// transfers to fresh addresses via Multicall3, each creating a new balance storage slot.
 ///
 /// Under TIP-1016, each transfer to a new address creates a SSTORE zero->non-zero
-/// (230,000 state gas) that is exempted from block gas accounting. The tx gas_limit
+/// (245,000 state gas) that is exempted from block gas accounting. The tx gas_limit
 /// covers both regular and state gas, so 150M is needed to accommodate state gas
 /// from many transfers even though regular gas usage is much lower.
 ///
@@ -591,7 +632,6 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 /// 2. The receipt gas_used includes all gas (execution + state creation).
 /// 3. The block header gas_used excludes state gas (TIP-1016 exemption).
 /// 4. The state gas from many TIP-20 balance slot creations is correctly exempted.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()> {
     use alloy::signers::SignerSync;
@@ -602,7 +642,9 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
 
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .build_with_node_access().await?;
     let provider = setup.node.rpc_provider_for::<TempoNetwork>();
     let chain_id = provider.get_chain_id().await?;
     let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
@@ -673,13 +715,13 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
     let receipt_gas = receipt.gas_used;
 
     // Receipt gas includes state gas; block header excludes it.
-    // Each transfer to a fresh address: 230,000 state gas per new balance slot.
-    let expected_state_gas = num_transfers * 230_000;
+    // Each transfer to a fresh address: 245,000 state gas per new balance slot.
+    let expected_state_gas = num_transfers * 245_000;
     let state_gas = receipt_gas.saturating_sub(block_gas_used);
     assert_eq!(
         state_gas, expected_state_gas,
         "state gas ({state_gas}) should {expected_state_gas} \
-         ({num_transfers} transfers × 230,000), \
+         ({num_transfers} transfers × 245,000), \
          block_gas_used={block_gas_used}, receipt_gas={receipt_gas}"
     );
 
