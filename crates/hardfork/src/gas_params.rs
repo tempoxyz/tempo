@@ -101,6 +101,26 @@ fn apply_amsterdam(version: &mut Version) {
 mod tests {
     use super::*;
 
+    /// Ported from origin/tip1016: uncapped refunds may only reverse execution
+    /// charges, and each restore pair must retain both warm accesses.
+    #[test]
+    fn test_t14_restore_refunds_net_warm_access_costs() {
+        let gas = version(SpecId::OSAKA, TempoHardfork::T14, false).gas_params;
+        let warm = gas[GasId::SstoreStatic];
+        for (write, refund) in [
+            (GasId::SstoreSetWithoutLoadCost, GasId::SstoreSetRefund),
+            (
+                GasId::SstoreResetWithoutColdLoadCost,
+                GasId::SstoreResetRefund,
+            ),
+        ] {
+            assert_eq!(warm + gas[write] + warm - gas[refund], 2 * warm);
+        }
+        assert_eq!(gas[GasId::SstoreClearingSlotRefund], 0);
+        assert_eq!(gas[GasId::SelfdestructRefund], 0);
+        assert_eq!(gas[GasId::TxEip7702AuthRefund], 0);
+    }
+
     #[test]
     fn tip1016_activates_at_t14() {
         for &spec in TempoHardfork::VARIANTS {
@@ -230,31 +250,19 @@ mod tests {
         assert_eq!(gas[GasId::CreateState], upstream[GasId::CreateState]);
     }
 
-    /// TIP-1016 spec table: regular/state gas splits must match the spec exactly.
-    ///
-    /// | Operation                      | Execution Gas | Storage Gas | Total   |
-    /// |--------------------------------|---------------|-------------|---------|
-    /// | Cold SSTORE (zero → non-zero)  | 22,200        | 230,000     | 252,200 |
-    /// | Account creation (nonce 0 → 1) | 25,000        | 225,000     | 250,000 |
-    /// | Contract metadata (CREATE)     | 32,000        | 468,000     | 500,000 |
-    /// | Contract code storage (/byte)  | 200           | 2,300       | 2,500   |
-    /// | EIP-7702 delegation (per auth) | 25,000        | 225,000     | 250,000 |
-    ///
-    /// Note: The cold SSTORE total keeps Berlin's access charging. In EVM2 terms the
-    /// zero->non-zero write path is: warm read (100) + `SstoreSetWithoutLoadCost` (20,000)
-    /// + cold slot surcharge (2,100) + state gas (230,000) = 252,200.
+    /// TIP-1016 production prices inherit TIP-1060's SSTORE decomposition.
     #[test]
-    fn test_t4_gas_params_splits_storage_costs() {
-        let version = version(SpecId::OSAKA, TempoHardfork::T4, true);
+    fn test_t14_gas_params_splits_storage_costs() {
+        let version = version(SpecId::OSAKA, TempoHardfork::T14, false);
         let gas = version.gas_params;
         assert!(version.feature(EvmFeatures::EIP8037));
 
-        // T4 execution gas (regular/computational overhead)
-        // SSTORE keeps the decomposed accounting: static(100) + set_without_load(20,000),
+        // T14 execution gas (regular/computational overhead)
+        // SSTORE keeps the decomposed accounting: static(100) + set_without_load(5,000),
         // with cold slot access (2,100) retained separately through `ColdStorageCost`.
         assert_eq!(
             gas[GasId::SstoreSetWithoutLoadCost],
-            20_000,
+            5_000,
             "SSTORE set_without_load matches the retained zero->non-zero write component"
         );
         assert_eq!(
@@ -275,10 +283,10 @@ mod tests {
         );
         assert_eq!(gas[GasId::CodeDepositCost], 200);
 
-        // T4 state gas (permanent storage burden)
+        // T14 state gas (permanent storage burden)
         assert_eq!(
             gas[GasId::SstoreSetState],
-            230_000,
+            245_000,
             "SSTORE state gas per spec"
         );
         assert_eq!(
@@ -312,26 +320,23 @@ mod tests {
             "TIP-1000: no refund for existing accounts on T1+"
         );
 
-        // SSTORE set refund for 0→X→0 restoration (combined state + regular)
-        // Spec: state_gas(230,000) + regular(20,000 - 2,100 - 100 = 17,800) = 247,800
-        assert_eq!(
-            gas[GasId::SstoreSetRefund],
-            247_800,
-            "SSTORE set refund = state(230k) + regular(17.8k) per spec"
-        );
+        // Restoration refunds execution only; the credit-backed state gas
+        // is settled through TIP-1060 storage credits.
+        assert_eq!(gas[GasId::SstoreSetRefund], 5_000);
+        assert_eq!(gas[GasId::SstoreClearingSlotRefund], 0);
     }
 
     /// TIP-1016: Verify totals (regular + state) match the clarified spec table.
     /// Note: SSTORE total comparison needs to account for decomposed gas and the cold-slot charge.
     ///
     /// T1 SstoreSetWithoutLoadCost = 250,000 (full TIP-1000 cost as override).
-    /// T4 warm SSTORE = set_without_load(20,000) + warm_read(100) + state(230,000) = 250,100.
-    /// T4 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
+    /// T14 warm SSTORE = set_without_load(5,000) + warm_read(100) + state(245,000) = 250,100.
+    /// T14 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
     #[test]
-    fn test_t4_totals_match_spec() {
-        let gas = version(SpecId::OSAKA, TempoHardfork::T4, true).gas_params;
+    fn test_t14_totals_match_spec() {
+        let gas = version(SpecId::OSAKA, TempoHardfork::T14, false).gas_params;
 
-        // Warm SSTORE total: write component(20,000) + warm read(100) + state(230,000)
+        // Warm SSTORE total: write component(5,000) + warm read(100) + state(245,000)
         let warm_sstore_regular = u64::from(gas[GasId::SstoreSetWithoutLoadCost])
             + u64::from(gas[GasId::WarmStorageReadCost]);
         assert_eq!(

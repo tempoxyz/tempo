@@ -6,6 +6,56 @@ use reth_evm::BlockExecutorFactory;
 const CALLER: Address = Address::repeat_byte(0x71);
 const CONTRACT: Address = Address::repeat_byte(0x72);
 
+/// Ported from the revm TIP-1016 branch. Calling the just-deployed contract
+/// proves CREATE succeeded before the later call rolls the entire batch back.
+#[test]
+fn test_t14_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Result<()> {
+    let signer = P256KeyPair::random();
+    let created = signer.address.create(1);
+    let batch = signer.sign_tx(
+        TxBuilder::new()
+            .nonce(1)
+            .create(&bytes!("600580600b6000396000f360006000fd"))
+            .call(created, &[])
+            .gas_limit(5_000_000)
+            .build(),
+    )?;
+    for cap in [100_000, 16_777_216] {
+        let run = |zero_create_state_gas| -> eyre::Result<u64> {
+            let mut evm = evm(cap);
+            fund_account_with_nonce(&mut evm, signer.address, 1);
+            if zero_create_state_gas {
+                let mut version = *evm.version();
+                version.gas_params[evm2::version::GasId::CreateState] = 0;
+                let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+                    TempoHardfork::T14,
+                    evm.ext().actions.clone(),
+                    evm.ext().non_creditable_slots.clone(),
+                );
+                evm.set_execution_config(
+                    ExecutionConfig::for_spec_and_version(TempoHardfork::T14, version),
+                    TempoHardfork::T14,
+                    tempo_tx_registry(SpecId::OSAKA),
+                    precompiles,
+                );
+            }
+            let result = evm.transact_commit(
+                Recovered::new_unchecked(TempoTxEnvelope::AA(batch.clone()), signer.address).into(),
+            )?;
+            assert_eq!(result.stop, evm2::interpreter::InstrStop::Revert);
+            assert_eq!(result.state_gas_spent, 0);
+            assert!(evm.state_mut().account(&created)?.load_code()?.is_empty());
+            Ok(result.tx_gas_used())
+        };
+        assert_eq!(
+            run(false)?,
+            run(true)?,
+            "rolled-back CREATE must not be billed"
+        );
+    }
+    Ok(())
+}
+
 fn evm(cap: u64) -> TempoEvm<'static> {
     let spec = TempoHardfork::T14;
     let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);

@@ -926,6 +926,57 @@ mod tests {
         result.floor_gas = 21_000;
         assert_eq!(execution_gas_used(&result), 50_000);
     }
+
+    #[test]
+    fn test_commit_accumulates_refund_aware_block_gas() {
+        let chainspec = test_chainspec();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_epoch_length(100)
+            .with_general_gas_limit(30_000_000)
+            .build(InMemoryDB::default(), &chainspec);
+        let previous_regular_gas = 123_000;
+        executor.block_gas_used = previous_regular_gas;
+        for index in 1..=2 {
+            // Receipt = 300k - 30k; block = 300k - 40k state - 30k refund.
+            let gas = executor
+                .commit_transaction(TempoTxResult {
+                    tx_type: TempoTxType::Legacy,
+                    execution_context: ExecutionContext::Transaction {
+                        tx_hash: B256::ZERO,
+                    },
+                    inner: EthTransactionResultWithState::new(
+                        TxResultWithState {
+                            result: TxResult::<TempoEvmTypes> {
+                                status: true,
+                                total_gas_spent: 300_000,
+                                state_gas_spent: 40_000,
+                                refunded: 30_000,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        TempoTxType::Legacy,
+                        0,
+                    ),
+                    next_section: BlockSection::StartOfBlock,
+                    is_payment: false,
+                    block_gas_used: 230_000,
+                    validator_fee: U256::ZERO,
+                })
+                .unwrap();
+            assert_eq!(gas.tx_gas_used(), 270_000);
+            assert_eq!(gas.regular_gas_used(), 230_000);
+            assert_eq!(
+                executor.receipts().last().unwrap().cumulative_gas_used,
+                index * 270_000
+            );
+            assert_eq!(
+                executor.block_gas_used,
+                previous_regular_gas + index * 230_000
+            );
+        }
+    }
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_eips::{
