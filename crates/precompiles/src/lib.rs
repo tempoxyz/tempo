@@ -410,7 +410,7 @@ mod tests {
         code_address: Address,
         caller: Address,
     ) -> (PrecompileResult, GasTracker) {
-        let mut precompiles = test_tempo_precompiles(spec);
+        let precompiles = test_tempo_precompiles(spec);
         let message = Message::<TestTypes> {
             kind,
             gas_limit: 1_000_000,
