@@ -106,7 +106,7 @@ jobs:
           persist-credentials: false
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@62de042f2251366d3fedbba7b7920b4f90fab588 # 2026-10-01T19-42-00Z-62de042f
         with:
-          toolchain: nightly
+          toolchain: 1.98.1
       - uses: tempoxyz/gh-actions/actions/setup-mold@62de042f2251366d3fedbba7b7920b4f90fab588 # 2026-10-01T19-42-00Z-62de042f
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@62de042f2251366d3fedbba7b7920b4f90fab588 # 2026-10-01T19-42-00Z-62de042f
         with:
@@ -114,7 +114,7 @@ jobs:
       - name: Build documentation
         run: cargo doc --workspace --all-features --no-deps --document-private-items
         env:
-          RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options
+          RUSTDOCFLAGS: -D warnings
       - name: Exclude rustdocs from indexing
         if: github.ref_name == 'main' && github.event_name == 'push'
         run: |
