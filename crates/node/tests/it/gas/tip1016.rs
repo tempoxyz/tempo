@@ -29,6 +29,7 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718, eip7702::Authorization};
 use reth_node_api::BuiltPayload;
+use reth_transaction_pool::TransactionPool;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{
     CREATEX_ADDRESS, CreateX, MULTICALL3_ADDRESS, Multicall3, precompiles::DEFAULT_FEE_TOKEN,
@@ -1584,6 +1585,7 @@ async fn test_tip1016_pool_accepts_total_gas_limit_above_block_limit() -> eyre::
     let chain_id = provider.get_chain_id().await?;
     // Check admission both at startup and after a canonical head update.
     for nonce in 0..2 {
+        assert!(setup.node.inner.pool.block_info().block_gas_limit < 700_000_000);
         let raw = build_call_tx(
             &signer,
             chain_id,
@@ -1600,6 +1602,10 @@ async fn test_tip1016_pool_accepts_total_gas_limit_above_block_limit() -> eyre::
                 .body()
                 .transactions()
                 .any(|tx| tx.gas_limit() == 700_000_000)
+        );
+        assert_eq!(
+            setup.node.inner.pool.block_info().block_gas_limit,
+            payload.block().header().inner.gas_limit,
         );
         assert!(payload.block().header().inner.gas_limit < 700_000_000);
         assert!(payload.block().header().inner.gas_used < 100_000);
