@@ -331,18 +331,14 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
 /// layout must therefore stay readable for the lifetime of `tempo/1`.
 #[test]
 fn full_frame_layout_is_frozen() {
-    let frame = alloy_primitives::hex::decode(
-        "000001000000000000000000000000000000000000000000000000000000000000000001893a6fba4f0630edd4f1f610258f9b3a1e1fbf9c1abefaea77a62bfd27b0dea1d448c4b4b992fa094bf96c8789b49cfa8565f0bc98152e274fd6d0e3b85955736432cdca1a52201ff244bf69a65b566ffbcf642a53a23e66b4d9bd6819dd95cc",
-    )
-    .expect("golden frame is valid hex");
+    let frame = alloy_primitives::hex!(
+        "000001000000000000000000000000000000000000000000000000000000000000000001893a6fba4f0630edd4f1f610258f9b3a1e1fbf9c1abefaea77a62bfd27b0dea1d448c4b4b992fa094bf96c8789b49cfa8565f0bc98152e274fd6d0e3b85955736432cdca1a52201ff244bf69a65b566ffbcf642a53a23e66b4d9bd6819dd95cc"
+    );
     let certificate: Certificate =
         gossip::wire::decode(&frame).expect("golden finalization frame still decodes");
 
     assert_eq!(certificate.round(), round(1));
-    assert_eq!(
-        gossip::wire::encode(&certificate).as_ref(),
-        frame.as_slice(),
-    );
+    assert_eq!(gossip::wire::encode(&certificate).as_ref(), frame);
 }
 
 /// The actor must verify a claimed round before it can trust it. A peer may
