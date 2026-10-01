@@ -872,6 +872,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    mod configurable;
+
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
