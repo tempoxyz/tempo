@@ -5,7 +5,7 @@ pub mod dispatch;
 
 use alloy::{
     primitives::{Address, B256, FixedBytes, U256, keccak256},
-    sol_types::SolStruct,
+    sol_types::{SolEvent, SolStruct},
 };
 use std::{borrow::Cow, str::FromStr};
 use tempo_chainspec::{
@@ -18,7 +18,7 @@ use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::contract;
 
 use self::attestation::verify_attestation_with_root;
-use crate::{error::Result, zone_factory::portal_address};
+use crate::{error::Result, storage::StorageCtx, zone_factory::portal_address};
 
 const MODE_NITRO_V1: &[u8] = &[1];
 const MODE_NO_PROOF: &[u8] = &[2];
@@ -111,7 +111,27 @@ impl ZoneVerifier {
         }
 
         let commitment = batch_commitment(self.storage.chain_id(), &call);
-        Ok(attestation.user_data.as_slice() == commitment.as_slice())
+        if attestation.user_data.as_slice() != commitment.as_slice() {
+            return Ok(false);
+        }
+
+        // Logs are forbidden in static calls, which callers like the T13 portal runtime use.
+        if !self.storage.is_static() {
+            let [pcr0, pcr1, pcr2] = approved_pcrs.map(|pcr| pcr.to_vec().into());
+            // `verify` is dispatched as a view call, so emit through a fresh storage handle.
+            StorageCtx.emit_event(
+                ZONE_VERIFIER_ADDRESS,
+                IZoneVerifier::ProofVerified {
+                    zoneId: call.zoneId,
+                    withdrawalBatchIndex: call.expectedWithdrawalBatchIndex,
+                    pcr0,
+                    pcr1,
+                    pcr2,
+                }
+                .encode_log_data(),
+            )?;
+        }
+        Ok(true)
     }
 }
 
@@ -236,7 +256,7 @@ pub enum PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::storage::hashmap::HashMapStorageProvider;
     use alloy::{primitives::Bytes, sol_types::SolCall};
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
@@ -341,6 +361,19 @@ mod tests {
                     .verify_with_policy(portal, call.clone(), &root, Some(pcrs))
                     .unwrap()
             );
+            assert_eq!(
+                verifier.emitted_events(),
+                &vec![
+                    IZoneVerifier::ProofVerified {
+                        zoneId: call.zoneId,
+                        withdrawalBatchIndex: call.expectedWithdrawalBatchIndex,
+                        pcr0: pcrs[0].to_vec().into(),
+                        pcr1: pcrs[1].to_vec().into(),
+                        pcr2: pcrs[2].to_vec().into(),
+                    }
+                    .encode_log_data()
+                ]
+            );
 
             for caller in [Address::repeat_byte(0x77), portal_address(call.zoneId + 1)] {
                 assert!(
@@ -395,6 +428,34 @@ mod tests {
     }
 
     #[test]
+    fn rejected_and_static_verifications_emit_no_event() {
+        let mut call = call();
+        let portal = portal_address(call.zoneId);
+        let (proof, root, pcrs) = attestation::tests::fixture(batch_commitment(1, &call).as_ref());
+        call.proof = proof.into();
+        let mut altered = call.clone();
+        altered.anchorBlockNumber += 1;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
+        storage.set_static(true);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = ZoneVerifier::new();
+            assert!(
+                verifier
+                    .verify_with_policy(portal, call, &root, Some(pcrs))
+                    .unwrap()
+            );
+            assert!(
+                !verifier
+                    .verify_with_policy(portal, altered, &root, Some(pcrs))
+                    .unwrap()
+            );
+            assert!(verifier.emitted_events().is_empty());
+        });
+    }
+
+    #[test]
     fn no_proof_requires_canonical_portal_and_empty_proof() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
@@ -403,6 +464,7 @@ mod tests {
             candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
             let portal = portal_address(candidate.zoneId);
             assert!(verifier.verify(portal, candidate.clone()).unwrap());
+            assert!(verifier.emitted_events().is_empty());
             assert!(!verifier.verify(Address::ZERO, candidate.clone()).unwrap());
             candidate.proof = Bytes::from_static(&[1]);
             assert!(!verifier.verify(portal, candidate.clone()).unwrap());

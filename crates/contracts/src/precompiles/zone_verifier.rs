@@ -22,6 +22,16 @@ crate::sol! {
             uint64 nextProcessedTokenCount;
         }
 
+        /// Emitted when a Nitro proof is accepted, with the PCR0/1/2 measurements it was checked
+        /// against. Not emitted in static calls or in `NoProof` mode.
+        event ProofVerified(
+            uint32 indexed zoneId,
+            uint64 indexed withdrawalBatchIndex,
+            bytes pcr0,
+            bytes pcr1,
+            bytes pcr2
+        );
+
         function verify(
             uint32 zoneId,
             uint64 tempoBlockNumber,
@@ -35,7 +45,7 @@ crate::sol! {
             bytes32 withdrawalQueueHash,
             bytes calldata verifierConfig,
             bytes calldata proof
-        ) external view returns (bool);
+        ) external returns (bool);
     }
 
     /// EIP-712 statement committed to a Nitro attestation's `user_data`.

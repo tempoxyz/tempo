@@ -437,4 +437,9 @@ impl HashMapStorageProvider {
             .into_iter()
             .map(|((addr, slot), value)| (addr, slot, value))
     }
+
+    /// Overrides whether calls execute in a static context.
+    pub fn set_static(&mut self, is_static: bool) {
+        self.is_static = is_static;
+    }
 }
