@@ -42,11 +42,11 @@ echo "Chain: $CHAIN"
 
 # --- Step 1: Query latest successful scheduled docker.yml run ---
 echo "::group::Querying latest nightly docker build"
+# Do not combine --event with --status: GitHub then returns stale runs.
 RUNS_JSON=$(gh run list \
   -R "$REPO" \
   --workflow=docker.yml \
   --event=schedule \
-  --status=completed \
   --limit 10 \
   --json headSha,createdAt,conclusion)
 
