@@ -1,8 +1,8 @@
 [
   {
     "hardfork": "T13",
-    "commit": "https://github.com/tempoxyz/zones/commit/0db3bc3489a451415e953d26391b5cce0e91b4ef",
-    "image": "ghcr.io/tempoxyz/tempo-zone-prover@sha256:97c54b38ae9ed8d219750c344f0c5008f26c639d3baf4dc3fe4a2d77dd30f977",
+    "commit": "https://github.com/tempoxyz/zones/commit/cc82e02428a748e1c80816bae23846e60fd1303d",
+    "image": "ghcr.io/tempoxyz/tempo-zone-prover@sha256:54262c7e520c47a10c8365e229ab196c9be00bc8e2720c2ea4ac338eebc94fb5",
     "pcrs": [
       "9fc1f1de72e6a3f81b2cf25d89dc1715533ceed30cff2bb930b59757793a7dc9664533e43cb98bea7826b26c01164bbb",
       "baa774ff6af9362bc5c4ecafa99c98c371d3d1e1e040e99890b9ba13d81ded18408fa2a65affa148ee2aaafa09142c81",
