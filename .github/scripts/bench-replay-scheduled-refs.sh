@@ -42,17 +42,16 @@ echo "Chain: $CHAIN"
 
 # --- Step 1: Query latest successful scheduled docker.yml run ---
 echo "::group::Querying latest nightly docker build"
-# Do not combine --event with --status: GitHub then returns stale runs.
+# Filter client-side: the API's event/status filters can return stale runs.
 RUNS_JSON=$(gh run list \
   -R "$REPO" \
   --workflow=docker.yml \
-  --event=schedule \
-  --limit 10 \
-  --json headSha,createdAt,conclusion)
+  --limit 200 \
+  --json headSha,createdAt,conclusion,event)
 
-LATEST=$(echo "$RUNS_JSON" | jq -r '[.[] | select(.conclusion == "success")] | first // empty')
+LATEST=$(echo "$RUNS_JSON" | jq -r '[.[] | select(.event == "schedule" and .conclusion == "success")] | first // empty')
 if [ -z "$LATEST" ]; then
-  echo "::error::No successful scheduled docker.yml run found in the last 10 runs"
+  echo "::error::No successful scheduled docker.yml run found in the last 200 runs"
   echo "Runs found: $RUNS_JSON"
   exit 1
 fi
