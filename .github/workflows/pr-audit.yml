@@ -22,6 +22,7 @@ jobs:
       github.event_name == 'merge_group'
     permissions:
       contents: read
+      id-token: write
       pull-requests: read
       statuses: write
     uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@62de042f2251366d3fedbba7b7920b4f90fab588 # 2026-10-01T19-42-00Z-62de042f
