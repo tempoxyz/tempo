@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod native_call;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;

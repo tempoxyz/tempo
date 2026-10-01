@@ -1,0 +1,513 @@
+//! Bounded EVM2 calls for native protocol handlers.
+//!
+//! The caller supplies the original transaction environment and a budget shared
+//! across the entire native operation. Invoke this outside `StorageCtx::enter`:
+//! child contracts may enter another native storage context. This module does
+//! not register an entrypoint or change payment-lane admission.
+
+use alloy::primitives::{Address, Bytes, U256};
+use evm2::{
+    Evm, EvmFeatures, EvmTypes,
+    env::TxEnv,
+    evm::precompile::PrecompileOutput,
+    interpreter::{GasTracker, Host, Message, MessageKind},
+    precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
+    version::GasId,
+};
+
+/// Non-refundable work reservation shared by a native operation's child calls.
+///
+/// Reserving maximum forwarded execution and state gas prevents successful
+/// storage restoration or reverted children from replenishing the operation's
+/// work bound. Fee charging still uses the actual EVM gas tracker.
+#[derive(Debug)]
+pub struct NativeCallBudget {
+    remaining_calls: u32,
+    remaining_work: u64,
+}
+
+impl NativeCallBudget {
+    /// Creates the operation budget from protocol-selected limits.
+    pub const fn new(max_calls: u32, max_work: u64) -> Self {
+        Self {
+            remaining_calls: max_calls,
+            remaining_work: max_work,
+        }
+    }
+
+    fn reserve(&mut self, execution_gas: u64, state_gas: u64) -> Result<(), PrecompileError> {
+        let work = execution_gas
+            .checked_add(state_gas)
+            .ok_or(PrecompileHalt::OutOfGas)?;
+        if self.remaining_calls == 0 || work > self.remaining_work {
+            return Err(PrecompileHalt::OutOfGas.into());
+        }
+        self.remaining_calls -= 1;
+        self.remaining_work -= work;
+        Ok(())
+    }
+}
+
+/// Protocol-selected bounds on one contract call. They are not caller privileges.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeCallLimits {
+    /// Maximum forwarded execution gas, before the EIP-150 reduction.
+    pub execution_gas: u64,
+    /// Maximum state-gas reservoir exposed to this child.
+    pub state_gas: u64,
+    /// Maximum input bytes accepted before any target account is loaded.
+    pub input_bytes: usize,
+    /// Maximum success or revert bytes returned to native code.
+    pub output_bytes: usize,
+}
+
+/// Calls `target` as the native account using the existing EVM journal.
+///
+/// Only zero-value CALL/STATICCALL is supported. Inherited static context always
+/// wins. Cold/warm access and EIP-7702 resolution are charged with the active gas
+/// table; gas is reserved before execution and reconciled through EVM2. A child
+/// failure propagates to the caller. Oversized output reverts the child journal
+/// even if its execution succeeded. Database/fatal errors remain fatal.
+#[allow(clippy::too_many_arguments)]
+pub fn native_call<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    tx_env: &TxEnv<T>,
+    parent: &Message<T>,
+    gas: &mut GasTracker,
+    budget: &mut NativeCallBudget,
+    target: Address,
+    input: Bytes,
+    read_only: bool,
+    limits: NativeCallLimits,
+) -> PrecompileResult {
+    if input.len() > limits.input_bytes {
+        return Err(PrecompileHalt::OutOfGas.into());
+    }
+    let depth = parent
+        .depth
+        .checked_add(1)
+        .ok_or(PrecompileHalt::OutOfGas)?;
+    let features = evm.version().features;
+    let params = evm.version().gas_params;
+    let copy_cost = |len: usize| -> Result<u64, PrecompileError> {
+        u64::try_from(len.div_ceil(32))
+            .ok()
+            .and_then(|words| words.checked_mul(u64::from(params.get(GasId::CopyPerWord))))
+            .ok_or_else(|| PrecompileHalt::OutOfGas.into())
+    };
+    gas.spend(copy_cost(input.len())?)?;
+    // Native payment execution is introduced after Berlin, whose CALL base
+    // charge is the warm account access price. Historical execution does not
+    // dispatch through this adapter.
+    if !features.contains(EvmFeatures::EIP2929) {
+        return Err(PrecompileError::Fatal(
+            "native calls require Berlin gas rules".into(),
+        ));
+    }
+    gas.spend(u64::from(params.get(GasId::WarmStorageReadCost)))?;
+    let cold_cost = params.cold_account_additional_cost();
+    let account = Host::load_account(evm, &target, true, gas.remaining() < cold_cost)?;
+    if account.is_cold {
+        gas.spend(cold_cost)?;
+    }
+    let mut code = account.code;
+    let mut code_address = target;
+    if features.contains(EvmFeatures::EIP7702)
+        && let Some(delegated) = code.eip7702_address()
+    {
+        gas.spend(u64::from(params.get(GasId::WarmStorageReadCost)))?;
+        let account = Host::load_account(evm, &delegated, true, gas.remaining() < cold_cost)?;
+        if account.is_cold {
+            gas.spend(cold_cost)?;
+        }
+        code = account.code;
+        code_address = delegated;
+    }
+    let execution_gas = if features.contains(EvmFeatures::EIP150) {
+        limits
+            .execution_gas
+            .min(params.call_stipend_reduction(gas.remaining()))
+    } else {
+        limits.execution_gas
+    };
+    let state_gas = limits.state_gas.min(gas.reservoir());
+    budget.reserve(execution_gas, state_gas)?;
+    gas.spend(execution_gas)?;
+    let unforwarded_reservoir = gas.reservoir() - state_gas;
+    let is_static = read_only || parent.caller_is_static || parent.kind == MessageKind::StaticCall;
+    let mut child = Message::<T> {
+        kind: if is_static {
+            MessageKind::StaticCall
+        } else {
+            MessageKind::Call
+        },
+        depth,
+        gas_limit: execution_gas,
+        reservoir: state_gas,
+        destination: target,
+        call_target: target,
+        caller: parent.destination,
+        input,
+        value: U256::ZERO,
+        code,
+        code_address,
+        disable_precompiles: code_address != target,
+        caller_is_static: is_static,
+        ..Message::<T>::default()
+    };
+    let checkpoint = evm.state().checkpoint();
+    let mut result = Host::execute_message(evm, tx_env, &mut child)?;
+    // The child only received part of the reservoir. Restore the untouched part
+    // before using EVM2's spill/refund reconciliation.
+    result.gas.set_reservoir(
+        result
+            .gas
+            .reservoir()
+            .checked_add(unforwarded_reservoir)
+            .ok_or(PrecompileHalt::OutOfGas)?,
+    );
+    gas.merge_child_gas(result.gas, result.stop);
+    if result.output.len() > limits.output_bytes {
+        evm.state_mut().rollback(checkpoint, features);
+        return Err(PrecompileHalt::OutOfGas.into());
+    }
+    if let Err(error) = gas.spend(copy_cost(result.output.len())?) {
+        evm.state_mut().rollback(checkpoint, features);
+        return Err(error.into());
+    }
+    match result.stop {
+        stop if stop.is_success() => Ok(PrecompileOutput::new(result.output)),
+        stop if stop.is_revert() => Err(PrecompileError::Revert(result.output)),
+        stop => Err(PrecompileHalt::Other(format!("native child halted: {stop:?}").into()).into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::bytes;
+    use evm2::{
+        BaseEvmTypes, Precompiles, SpecId,
+        bytecode::Bytecode,
+        env::BlockEnvExt,
+        evm::{AccountInfo, InMemoryDB},
+        registry::TxRegistry,
+    };
+
+    const NATIVE: Address = Address::with_last_byte(0x99);
+    const TARGET: Address = Address::with_last_byte(0xaa);
+    const ORIGIN: Address = Address::with_last_byte(0xbb);
+    const LIMITS: NativeCallLimits = NativeCallLimits {
+        execution_gas: 50_000,
+        state_gas: 20_000,
+        input_bytes: 256,
+        output_bytes: 256,
+    };
+
+    fn evm(code: Bytes, spec: SpecId) -> Evm<'static, BaseEvmTypes> {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &TARGET,
+            AccountInfo::default().with_code(Bytecode::new_legacy(code)),
+        );
+        Evm::new(
+            spec,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            db,
+            Precompiles::base(spec),
+        )
+    }
+
+    fn parent() -> Message {
+        Message::<BaseEvmTypes> {
+            destination: NATIVE,
+            code_address: NATIVE,
+            caller: ORIGIN,
+            ..Message::<BaseEvmTypes>::default()
+        }
+    }
+
+    fn tx_env() -> TxEnv {
+        TxEnv::<BaseEvmTypes> {
+            origin: ORIGIN,
+            gas_price: U256::from(17),
+            chain_id: U256::from(42431),
+            ..TxEnv::<BaseEvmTypes>::default()
+        }
+    }
+
+    fn invoke(
+        evm: &mut Evm<'_, BaseEvmTypes>,
+        parent: &Message,
+        gas: &mut GasTracker,
+        budget: &mut NativeCallBudget,
+        limits: NativeCallLimits,
+    ) -> PrecompileResult {
+        native_call(
+            evm,
+            &tx_env(),
+            parent,
+            gas,
+            budget,
+            TARGET,
+            Bytes::new(),
+            false,
+            limits,
+        )
+    }
+
+    #[test]
+    fn preserves_transaction_context_and_native_caller() {
+        // CALLER, ORIGIN, GASPRICE, CHAINID, ADDRESS returned as ABI words.
+        let mut evm = evm(
+            bytes!("335f52326020523a604052466060523060805260a05ff3"),
+            SpecId::OSAKA,
+        );
+        let mut gas = GasTracker::new(100_000);
+        let result = invoke(
+            &mut evm,
+            &parent(),
+            &mut gas,
+            &mut NativeCallBudget::new(1, 70_000),
+            LIMITS,
+        )
+        .unwrap();
+        let output = result.into_bytes();
+        let words = output
+            .chunks_exact(32)
+            .map(U256::from_be_slice)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            words,
+            vec![
+                U256::from_be_slice(NATIVE.as_slice()),
+                U256::from_be_slice(ORIGIN.as_slice()),
+                U256::from(17),
+                U256::from(42431),
+                U256::from_be_slice(TARGET.as_slice())
+            ]
+        );
+        assert!(
+            gas.spent() > 2600,
+            "child execution and output copy must be charged"
+        );
+    }
+
+    #[test]
+    fn inherited_static_context_forbids_child_storage_write() {
+        let mut evm = evm(bytes!("60015f5500"), SpecId::OSAKA);
+        let mut parent = parent();
+        parent.caller_is_static = true;
+        let mut gas = GasTracker::new(100_000);
+        let result = invoke(
+            &mut evm,
+            &parent,
+            &mut gas,
+            &mut NativeCallBudget::new(1, 70_000),
+            LIMITS,
+        );
+        assert!(matches!(result, Err(PrecompileError::Halt(_))));
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&TARGET, &U256::ZERO)
+                .unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(gas.spent(), 52_600);
+    }
+
+    #[test]
+    fn reverted_child_restores_storage_and_returns_paid_revert_data() {
+        // Write then revert with the word 42.
+        let mut evm = evm(bytes!("60015f55602a5f5260205ffd"), SpecId::OSAKA);
+        let mut gas = GasTracker::new(100_000);
+        let result = invoke(
+            &mut evm,
+            &parent(),
+            &mut gas,
+            &mut NativeCallBudget::new(1, 70_000),
+            LIMITS,
+        );
+        let Err(PrecompileError::Revert(output)) = result else {
+            panic!("expected child revert")
+        };
+        assert_eq!(U256::from_be_slice(&output), U256::from(42));
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&TARGET, &U256::ZERO)
+                .unwrap(),
+            U256::ZERO
+        );
+        assert!(gas.spent() > 24_700);
+    }
+
+    #[test]
+    fn oversized_success_output_rolls_back_successful_child() {
+        let mut evm = evm(bytes!("60015f5560205ff3"), SpecId::OSAKA);
+        let mut gas = GasTracker::new(100_000);
+        let limits = NativeCallLimits {
+            output_bytes: 31,
+            ..LIMITS
+        };
+        let result = invoke(
+            &mut evm,
+            &parent(),
+            &mut gas,
+            &mut NativeCallBudget::new(1, 70_000),
+            limits,
+        );
+        assert!(matches!(
+            result,
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
+        ));
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&TARGET, &U256::ZERO)
+                .unwrap(),
+            U256::ZERO
+        );
+    }
+
+    #[test]
+    fn input_bound_rejects_before_work_and_account_load() {
+        let mut evm = evm(bytes!("00"), SpecId::OSAKA);
+        let mut gas = GasTracker::new(100_000);
+        let result = native_call(
+            &mut evm,
+            &tx_env(),
+            &parent(),
+            &mut gas,
+            &mut NativeCallBudget::new(1, 70_000),
+            TARGET,
+            Bytes::from(vec![0; 257]),
+            false,
+            LIMITS,
+        );
+        assert!(matches!(
+            result,
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
+        ));
+        assert_eq!(gas.spent(), 0);
+    }
+
+    #[test]
+    fn work_reservation_is_not_restored_by_success_or_revert() {
+        for code in [bytes!("00"), bytes!("5f5ffd")] {
+            let mut evm = evm(code, SpecId::OSAKA);
+            let mut gas = GasTracker::new(200_000);
+            let mut budget = NativeCallBudget::new(2, 50_000);
+            let _ = invoke(&mut evm, &parent(), &mut gas, &mut budget, LIMITS);
+            assert_eq!(budget.remaining_work, 0);
+            assert_eq!(budget.remaining_calls, 1);
+            assert!(matches!(
+                invoke(&mut evm, &parent(), &mut gas, &mut budget, LIMITS),
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
+            ));
+        }
+    }
+
+    #[test]
+    fn state_reservoir_is_capped_and_unforwarded_gas_is_retained() {
+        let mut evm = evm(bytes!("60015f5500"), SpecId::AMSTERDAM);
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(500_000, 100_000);
+        let initial = gas.remaining() + gas.reservoir();
+        let limits = NativeCallLimits {
+            execution_gas: 200_000,
+            state_gas: 1000,
+            ..LIMITS
+        };
+        let result = invoke(
+            &mut evm,
+            &parent(),
+            &mut gas,
+            &mut NativeCallBudget::new(1, 201_000),
+            limits,
+        );
+        assert!(
+            result.is_ok(),
+            "state gas may spill into the capped execution allowance: {result:?}"
+        );
+        assert!(gas.state_gas_spent() > 1000);
+        // EVM2 funds the child's state-gas spill from the parent's untouched
+        // reservoir on merge, returning the corresponding execution gas.
+        assert_eq!(
+            gas.reservoir(),
+            100_000 - u64::try_from(gas.state_gas_spent()).unwrap()
+        );
+        assert_eq!(gas.state_gas_spilled(), 0);
+        assert!(gas.remaining() + gas.reservoir() < initial);
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&TARGET, &U256::ZERO)
+                .unwrap(),
+            U256::ONE
+        );
+    }
+
+    #[test]
+    fn eip150_retains_parent_gas_when_child_exhausts_allowance() {
+        // Infinite JUMP loop.
+        let mut evm = evm(bytes!("5b5f56"), SpecId::OSAKA);
+        let mut gas = GasTracker::new(10_000);
+        let result = invoke(
+            &mut evm,
+            &parent(),
+            &mut gas,
+            &mut NativeCallBudget::new(1, 70_000),
+            LIMITS,
+        );
+        assert!(matches!(result, Err(PrecompileError::Halt(_))));
+        assert_eq!(gas.remaining(), 7400 / 64);
+    }
+
+    #[test]
+    fn delegated_code_runs_at_target_and_preserves_native_caller() {
+        let delegated = Address::with_last_byte(0xcc);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &TARGET,
+            AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
+        );
+        db.insert_account_info(
+            &delegated,
+            AccountInfo::default()
+                .with_code(Bytecode::new_legacy(bytes!("335f523060205260405ff3"))),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            db,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let mut gas = GasTracker::new(100_000);
+        let output = invoke(
+            &mut evm,
+            &parent(),
+            &mut gas,
+            &mut NativeCallBudget::new(1, 70_000),
+            LIMITS,
+        )
+        .unwrap()
+        .into_bytes();
+        assert_eq!(
+            U256::from_be_slice(&output[..32]),
+            U256::from_be_slice(NATIVE.as_slice())
+        );
+        assert_eq!(
+            U256::from_be_slice(&output[32..]),
+            U256::from_be_slice(TARGET.as_slice())
+        );
+        assert!(gas.spent() > 5200);
+    }
+
+    #[test]
+    fn reservations_cannot_overflow() {
+        let mut budget = NativeCallBudget::new(1, u64::MAX);
+        assert!(budget.reserve(u64::MAX, 1).is_err());
+        assert_eq!(budget.remaining_calls, 1);
+        assert_eq!(budget.remaining_work, u64::MAX);
+        assert!(NativeCallBudget::new(0, u64::MAX).reserve(0, 0).is_err());
+    }
+}
