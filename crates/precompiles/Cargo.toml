@@ -62,6 +62,10 @@ tempo-evm = { workspace = true, features = ["engine"] }
 tempo-alloy.workspace = true
 tempo-revm.workspace = true
 
+[build-dependencies]
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+
 [features]
 default = ["rpc"]
 test-utils = [
