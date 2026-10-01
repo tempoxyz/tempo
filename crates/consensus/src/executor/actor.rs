@@ -172,7 +172,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     pending_acknowledgements: VecDeque<FinalizedBlockRequest>,
 
     /// New-payload requests the execution layer may have executed since the
-    /// last successful forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
+    /// last successful or stale-skipped forkchoice update, see
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
     /// The newest round observed through build and verify contexts or
@@ -881,6 +882,10 @@ where
                 // to the subscriber.
                 info!("tracked finality is below the execution layer's; dropping the build");
             }
+            // The skip closes the batch. An update forced by a full batch
+            // would be skipped just the same, and with the count left full
+            // it would be rescheduled ahead of the mailbox forever.
+            self.deliveries_since_forkchoice = 0;
             self.local_state = target;
             self.acknowledge_finalized();
             return Ok(());
