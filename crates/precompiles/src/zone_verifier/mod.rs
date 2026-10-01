@@ -112,16 +112,13 @@ impl ZoneVerifier {
 
         let commitment = batch_commitment(self.storage.chain_id(), &call);
         if attestation.user_data.as_slice() == commitment.as_slice() {
-            // Logs are forbidden in static calls, such as `eth_call` simulations.
-            if !self.storage.is_static() {
-                let [pcr0, pcr1, pcr2] = approved_pcrs.map(|pcr| pcr.to_vec().into());
-                self.emit_event(IZoneVerifier::ProofVerified {
-                    zoneId: call.zoneId,
-                    pcr0,
-                    pcr1,
-                    pcr2,
-                })?;
-            }
+            let [pcr0, pcr1, pcr2] = approved_pcrs.map(|pcr| pcr.to_vec().into());
+            self.emit_event(IZoneVerifier::ProofVerified {
+                zoneId: call.zoneId,
+                pcr0,
+                pcr1,
+                pcr2,
+            })?;
             return Ok(true);
         }
 

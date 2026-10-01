@@ -2,7 +2,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IZoneVerifier;
 
-use crate::{EncodePrecompileResult, Precompile, charge_input_cost, dispatch};
+use crate::{Precompile, charge_input_cost, dispatch, mutate};
 
 use super::ZoneVerifier;
 
@@ -27,12 +27,7 @@ impl Precompile for ZoneVerifier {
             calldata,
             |call| match call {
                 IZoneVerifier::IZoneVerifierCalls {
-                    // `verify` may emit an event, but static callers still receive its result.
-                    verify(call) => self.verify(msg_sender, call).encode_precompile_result(
-                        0,
-                        0,
-                        |ret| IZoneVerifier::verifyCall::abi_encode_returns(&ret).into(),
-                    ),
+                    verify(call) => mutate(call, msg_sender, |sender, call| self.verify(sender, call)),
                 }
             }
         )

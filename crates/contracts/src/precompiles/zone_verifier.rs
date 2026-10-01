@@ -23,7 +23,7 @@ crate::sol! {
         }
 
         /// Emitted when a Nitro proof is accepted, with the PCR0/1/2 measurements it was checked
-        /// against. Not emitted in static calls or in `NoProof` mode.
+        /// against. Not emitted in `NoProof` mode.
         event ProofVerified(
             uint32 indexed zoneId,
             bytes pcr0,
