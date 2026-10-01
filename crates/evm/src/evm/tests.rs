@@ -54,6 +54,8 @@ use tempo_primitives::{
 
 use crate::{FeePaymentError, ResolvedFeeToken, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
 
+mod tip1016;
+
 // ==================== Test Constants ====================
 
 /// Default balance for funded accounts (1 ETH)
