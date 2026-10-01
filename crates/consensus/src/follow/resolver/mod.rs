@@ -19,10 +19,12 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_resolver::opaque;
-use commonware_runtime::{Clock, Metrics, Spawner, telemetry::metrics::Registered};
+use commonware_runtime::{
+    Clock, Metrics, Spawner,
+    telemetry::metrics::{Counter, MetricsExt as _},
+};
 use eyre::Report;
 use parking_lot::Mutex;
-use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_network_p2p::{BlockAccessListsClient, BlockClient, FullBlockClient};
 use reth_node_builder::NodeTypesWithDBAdapter;
@@ -76,10 +78,9 @@ where
     N: BlockNetwork + Clone + 'static,
 {
     let mailbox_size = config.mailbox_size;
-    let upstream_request_timeouts = context.register(
+    let upstream_request_timeouts = context.counter(
         "upstream_request_timeouts",
         "number of upstream requests that exceeded their deadline",
-        Counter::default(),
     );
     let (receiver, consumer) = handler::init(context.child("handler"), mailbox_size);
     let resolver = opaque::init(
@@ -108,7 +109,7 @@ struct Fetcher<TContext, P, U, N> {
     upstream: U,
     block_network: N,
     upstream_request_timeout: Duration,
-    upstream_request_timeouts: Registered<Counter>,
+    upstream_request_timeouts: Counter,
     retries: Arc<Mutex<RetryState>>,
 }
 
