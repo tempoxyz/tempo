@@ -194,6 +194,8 @@ impl ConfigureEvm for TempoEvmConfig {
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
+                // TODO: #7581 wires the recovery factory from the chain spec.
+                multisig_recovery_factory: None,
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
                 epoch_length: self
@@ -249,6 +251,8 @@ impl ConfigureEvm for TempoEvmConfig {
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
+                // TODO: #7581 wires the recovery factory from the chain spec.
+                multisig_recovery_factory: None,
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
                 epoch_length: self
