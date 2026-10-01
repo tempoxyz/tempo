@@ -9,7 +9,6 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
 use bytes::Bytes;
 use commonware_codec::{Encode as _, FixedSize, types::lazy::Lazy};
 use commonware_consensus::{
@@ -23,51 +22,29 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use parking_lot::Mutex;
-use reth_node_core::primitives::SealedBlock;
 use tempo_node::rpc::consensus::CertifiedBlock;
-use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use super::super::{BlockNetwork, BlockProvider, Upstream};
-use crate::consensus::{Block, Digest};
-
-pub(super) fn make_block(height: u64) -> Block {
-    let header = TempoHeader {
-        inner: Header {
-            number: height,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let inner = TempoBlock {
-        header,
-        body: BlockBody::default(),
-    };
-    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
-        .expect("test block should not contain BAL side data")
-}
+use crate::{
+    consensus::{Block, Digest},
+    follow::test_utils::{self, make_block},
+};
 
 pub(super) fn make_certified_block(height: Height) -> (CertifiedBlock, Bytes) {
-    let block = make_block(height.get());
-    let digest = block.digest();
+    let block = make_block(height.get(), None);
     let signature_bytes = [0u8; <VrfSignature<MinSig> as FixedSize>::SIZE];
     let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest> {
         proposal: Proposal::new(
             Round::new(Epoch::zero(), View::new(height.get())),
             View::zero(),
-            digest,
+            block.digest(),
         ),
         certificate: VrfCertificate {
             signature: Lazy::deferred(&mut &signature_bytes[..], ()),
         },
     };
     let value = (finalization.clone(), block.clone()).encode();
-    let certified = CertifiedBlock {
-        epoch: 0,
-        view: height.get(),
-        digest: digest.0,
-        certificate: alloy_primitives::hex::encode(finalization.encode()),
-        block: block.into_execution_block(),
-    };
+    let certified = test_utils::make_certified_block(block, &finalization);
     (certified, value)
 }
 

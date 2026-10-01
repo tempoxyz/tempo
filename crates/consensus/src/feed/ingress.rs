@@ -61,7 +61,6 @@ impl Reporter for Mailbox {
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::Header;
     use commonware_consensus::{
         Heightable as _, Reporter as _,
         marshal::Update,
@@ -69,31 +68,16 @@ mod tests {
     };
     use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
     use futures::{FutureExt as _, StreamExt as _, executor::block_on};
-    use reth_node_core::primitives::SealedBlock;
-    use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
     use super::Mailbox;
-    use crate::consensus::block::Block;
+    use crate::follow::test_utils::make_block;
 
     #[test]
     fn forwards_tips_and_acknowledges_blocks() {
         block_on(async {
             let (sender, mut receiver) = futures::channel::mpsc::unbounded();
             let mut mailbox = Mailbox::new(sender);
-            let block = Block::try_from_execution_block(
-                SealedBlock::seal_slow(TempoBlock {
-                    header: TempoHeader {
-                        inner: Header {
-                            number: 1,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    body: BlockBody::default(),
-                }),
-                None,
-            )
-            .expect("test block should not contain BAL side data");
+            let block = make_block(1, None);
 
             let _ = mailbox.report(Update::Tip(
                 Round::new(Epoch::zero(), View::new(1)),

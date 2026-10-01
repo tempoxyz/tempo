@@ -18,16 +18,17 @@ use super::{
     Fetcher, MAX_RETRY_DELAY, NoopBlockNetwork, RETRY_STATE_TTL, RetryState, resolve_block,
     resolve_finalized,
 };
+use crate::follow::test_utils::make_block;
 
 mod utils;
-use utils::{StubBlockNetwork, StubBlockProvider, StubUpstream, make_block, make_certified_block};
+use utils::{StubBlockNetwork, StubBlockProvider, StubUpstream, make_certified_block};
 
 #[test]
 fn resolves_blocks_from_local_execution_first() {
     block_on(async {
         let provider = StubBlockProvider::default();
         let upstream = StubUpstream::default();
-        let block = make_block(3);
+        let block = make_block(3, None);
         provider.add_block(&block);
 
         let resolved = resolve_block(&provider, &upstream, &NoopBlockNetwork, block.digest()).await;
@@ -43,7 +44,7 @@ fn falls_back_to_upstream_for_missing_blocks() {
     block_on(async {
         let provider = StubBlockProvider::default();
         let upstream = StubUpstream::default();
-        let block = make_block(4);
+        let block = make_block(4, None);
         upstream.add_block(block.clone());
 
         let resolved = resolve_block(&provider, &upstream, &NoopBlockNetwork, block.digest()).await;
@@ -61,7 +62,7 @@ fn resolves_missing_blocks_from_devp2p() {
         let upstream = StubUpstream::default();
         upstream.hang_block_reads();
         let block_network = StubBlockNetwork::default();
-        let block = make_block(5);
+        let block = make_block(5, None);
         block_network.add_block(block.clone());
 
         let resolved = resolve_block(&provider, &upstream, &block_network, block.digest()).await;
@@ -79,7 +80,7 @@ fn retries_after_local_provider_errors() {
         let provider = StubBlockProvider::default();
         provider.fail_reads();
         let upstream = StubUpstream::default();
-        let block = make_block(6);
+        let block = make_block(6, None);
 
         assert_eq!(
             resolve_block(&provider, &upstream, &NoopBlockNetwork, block.digest()).await,
@@ -145,8 +146,8 @@ fn finalized_block_with_mismatched_body_is_retried() {
 #[test]
 fn retry_state_advances_resets_and_expires() {
     let now = SystemTime::UNIX_EPOCH;
-    let first = handler::Key::Block(make_block(7).digest());
-    let second = handler::Key::Block(make_block(8).digest());
+    let first = handler::Key::Block(make_block(7, None).digest());
+    let second = handler::Key::Block(make_block(8, None).digest());
     let mut retries = RetryState::default();
 
     let mut delay = retries.begin(first, now);
@@ -197,7 +198,7 @@ fn timed_out_upstream_request_is_retried_with_backoff() {
             upstream_request_timeouts: timeouts.clone(),
             retries: Arc::new(Mutex::new(RetryState::default())),
         };
-        let key = handler::Key::Block(make_block(9).digest());
+        let key = handler::Key::Block(make_block(9, None).digest());
 
         assert_eq!(fetcher.fetch(key).await, None);
         assert_eq!(upstream.block_reads(), 1);
