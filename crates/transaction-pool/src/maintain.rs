@@ -594,50 +594,6 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         // normal mined path rather than being discarded from the pool.
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
-        let readd = |removed: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-                     reason: &'static str,
-                     wait_for_head: bool| {
-            let count = removed.len();
-            let pool = pool.clone();
-            let mut tip_receiver = tip_receiver.clone();
-            tokio::spawn(async move {
-                if wait_for_head {
-                    // Reth and Tempo receive the same notification independently. Validate only
-                    // after Reth's pool head is on the current canonical chain.
-                    loop {
-                        let head = pool.block_info();
-                        let tip = *tip_receiver.borrow_and_update();
-                        if pool_head_caught_up(
-                            (head.last_seen_block_number, head.last_seen_block_hash),
-                            tip,
-                            |number| {
-                                pool.client()
-                                    .sealed_header(number)
-                                    .ok()
-                                    .flatten()
-                                    .map(|header| header.hash())
-                            },
-                        ) {
-                            break;
-                        }
-                        tokio::select! {
-                            result = tip_receiver.changed() => {
-                                if result.is_err() { return; }
-                            }
-                            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-                        }
-                    }
-                }
-                let transactions = removed
-                    .into_iter()
-                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
-                    .collect();
-                let results = pool.add_transactions_with_origins(transactions).await;
-                let success = results.iter().filter(|result| result.is_ok()).count();
-                debug!(target: "txpool", total = count, success, reason, "Re-validated transactions");
-            });
-        };
-
         let changed = changed_commitments(bundle_state);
         if reorg || !changed.is_empty() {
             let hashes: Vec<TxHash> = {
@@ -655,7 +611,12 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
             if !hashes.is_empty() {
                 let removed = pool.remove_transactions(hashes);
                 removed_this_iteration.extend(removed.iter().map(|tx| *tx.hash()));
-                readd(removed, "configurable account change", true);
+                spawn_revalidation(
+                    pool.clone(),
+                    removed,
+                    "configurable account change",
+                    Some(tip_receiver.clone()),
+                );
             }
         }
 
@@ -702,7 +663,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
 
                 counter.increment(count as u64);
 
-                readd(removed_txs, reason, false);
+                spawn_revalidation(pool.clone(), removed_txs, reason, None);
             }
         }
 
@@ -773,6 +734,74 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         // Deallocating removed transactions is expensive, so do it after all updates are done.
         drop(removed_txs);
     }
+}
+
+/// Waits until Reth's pool head is canonical at or above the latest maintenance tip.
+/// Returns false if the tip channel closes.
+async fn wait_for_canonical_pool_head<Client, EvmConfig>(
+    pool: &TempoTransactionPool<Client, EvmConfig>,
+    tip: &mut tokio::sync::watch::Receiver<(u64, B256)>,
+) -> bool
+where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + HeaderProvider<Header = TempoHeader>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
+    loop {
+        let head = pool.block_info();
+        let latest = *tip.borrow_and_update();
+        if pool_head_caught_up(
+            (head.last_seen_block_number, head.last_seen_block_hash),
+            latest,
+            |number| {
+                pool.client()
+                    .sealed_header(number)
+                    .ok()
+                    .flatten()
+                    .map(|header| header.hash())
+            },
+        ) {
+            return true;
+        }
+        tokio::select! {
+            result = tip.changed() => if result.is_err() { return false },
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    }
+}
+
+/// Re-adds removed transactions through the validator. With `wait_for_head`, first waits until
+/// Reth's pool head is on the current canonical chain, since Reth and Tempo receive the same
+/// notification independently.
+fn spawn_revalidation<Client, EvmConfig>(
+    pool: TempoTransactionPool<Client, EvmConfig>,
+    removed: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    reason: &'static str,
+    wait_for_head: Option<tokio::sync::watch::Receiver<(u64, B256)>>,
+) where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + HeaderProvider<Header = TempoHeader>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
+    tokio::spawn(async move {
+        if let Some(mut tip) = wait_for_head
+            && !wait_for_canonical_pool_head(&pool, &mut tip).await
+        {
+            return;
+        }
+        let count = removed.len();
+        let transactions = removed
+            .into_iter()
+            .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+            .collect();
+        let results = pool.add_transactions_with_origins(transactions).await;
+        let success = results.iter().filter(|result| result.is_ok()).count();
+        debug!(target: "txpool", total = count, success, reason, "Re-validated transactions");
+    });
 }
 
 #[cfg(test)]
