@@ -1,5 +1,6 @@
 //! TIP-1120 funding arithmetic and native input permissions. Funding admission remains disabled.
 
+pub mod native_dex;
 pub mod permission;
 
 use alloy_primitives::{U256, U512, uint};
