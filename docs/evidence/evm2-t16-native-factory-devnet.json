@@ -1,0 +1,173 @@
+{
+  "chainId": "0x539",
+  "genesisHash": "0x03df7ae1df1c861973b6fdced2e5d05e73b9c6d58bf09c26349e4d2193e9f993",
+  "genesisSha256": "4e5d0dbae396048eca04dea711e817a22a5ca420610956ad719c5f146ef01989",
+  "tempoSourceRevision": "e12c38fc5c0a2a4920c35a8e93648355335529d5",
+  "tempoBinarySha256": "b94e5b484548e0062448a95fd3f94d9c45fc005534cc9bb54768bb84955d765e",
+  "t15Time": 1790935926,
+  "t16Time": 1790936016,
+  "forkParent": {
+    "number": "0x6e",
+    "hash": "0xa33afa12b7ede35a4aaf2d0433d5e416840fac0a7bd14e3adad18fac7fff9058",
+    "timestamp": "0x6abf83cf"
+  },
+  "forkBlock": {
+    "number": "0x6f",
+    "hash": "0xacee8d10bc88433725be35ff32cd07c46b3eb10744ee1bc165b4a4500d3d6cc0",
+    "timestamp": "0x6abf83d0"
+  },
+  "factory": "0x7a2088a1bFc9d81c55368AE168C2C02570cB814F",
+  "vault": "0xdc17c27ae8be831af07cc38c02930007060020f4",
+  "fees": "0xb8eebbf3c9b44ffb0b010d57916044eaf82de1e4",
+  "earnShare": "0x20c0000000000000000000008add4f9444dc5350",
+  "engine": "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512",
+  "venue": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "asset": "0x20c0000000000000000000000000000000000000",
+  "recipient": "0x0000000000000000000000000000000000000b0b",
+  "dispatcherHash": "0x502aeca502056d259b30dcce44d73a0bfbbcca8fd0aaec28647e53978c2ee1b4",
+  "operations": [
+    {
+      "name": "deploy",
+      "transactionHash": "0x99fff07b2272e47129291df068806217e7becd75b2d9837d5957ac84b990ffa3",
+      "blockNumber": "0x90",
+      "blockHash": "0x1b4d7b644f1070f051c06778a45b0f375f80bd147922d7e1cef53ff7be148287",
+      "status": "0x1",
+      "gasUsed": "0xc9c4d4",
+      "blockGasUsed": "0xc9c4d4"
+    },
+    {
+      "name": "bind",
+      "transactionHash": "0xbe77073b4229504977f359975f5d03b31e37d4996c11ecd2de9e1d9f5e4ec83e",
+      "blockNumber": "0xa1",
+      "blockHash": "0x93ed1db28baf0f7e2d4c6682d09c2617b7f095da65a37106b07b2f130c7d3348",
+      "status": "0x1",
+      "gasUsed": "0x443ec",
+      "blockGasUsed": "0x443ec"
+    },
+    {
+      "name": "approve",
+      "transactionHash": "0xa8e5026b79733cf58bc0a5cc208faab973fa5a8f16b14d262fceafe9896405b5",
+      "blockNumber": "0xa2",
+      "blockHash": "0xb006bca1eb9d5f91b4395437aa12da1c8ca71d94956feeb2e17bd0de5a96d857",
+      "status": "0x1",
+      "gasUsed": "0x43d9e",
+      "blockGasUsed": "0x43d9e"
+    },
+    {
+      "name": "deposit",
+      "transactionHash": "0x92c7bfe4b0e950f24ffcb3431a5fabd975f2cd86b0e305115da22330c7c40996",
+      "blockNumber": "0xbd",
+      "blockHash": "0xdd5f4fba511c98fc89e2a95cc421720b26d9790142cce974b693a4dbedc6c7fe",
+      "status": "0x1",
+      "gasUsed": "0x1ad674",
+      "blockGasUsed": "0x1ad674",
+      "laneSamples": {
+        "matching": 8,
+        "total": 120,
+        "generalGasUsed": 0,
+        "paymentGasUsed": "0x1ad674"
+      }
+    },
+    {
+      "name": "yield",
+      "transactionHash": "0xbab541bb47ce1b74e332518886d097f441a71b5c6f6f00274c70ce0b30cb4c26",
+      "blockNumber": "0xf4",
+      "blockHash": "0x6c6c1f4abdd84032ffcb179b2c4dbe5a8e0adfdae53bcb367744a5491e73bba2",
+      "status": "0x1",
+      "gasUsed": "0xa43a",
+      "blockGasUsed": "0xa43a"
+    },
+    {
+      "name": "share-approve",
+      "transactionHash": "0x80682000e6f5f8768a78887263fc93d4e10d27498dd5ea131f9157d76779ffd3",
+      "blockNumber": "0xf5",
+      "blockHash": "0x910159cfcf90f95214c8b6ca5f950a2c467bdcf16288917857100001a8a8efcd",
+      "status": "0x1",
+      "gasUsed": "0x43d9e",
+      "blockGasUsed": "0x43d9e"
+    },
+    {
+      "name": "spend",
+      "transactionHash": "0xa69fdf883e132f1f6e93610848526e829d3adc39e97d405d144496fc7c480efa",
+      "blockNumber": "0x113",
+      "blockHash": "0xc84da7788bcf6b632c0cd02134f12c2846ff03153743a4c097506c535cf120a9",
+      "status": "0x1",
+      "gasUsed": "0x73f34",
+      "blockGasUsed": "0x73f34",
+      "laneSamples": {
+        "matching": 9,
+        "total": 120,
+        "generalGasUsed": 0,
+        "paymentGasUsed": "0x73f34"
+      }
+    },
+    {
+      "name": "redeem",
+      "transactionHash": "0xcbaba56fb8c7b074e19a1abc33321a296f6730b4e064cf5bab956e2b1a8db183",
+      "blockNumber": "0x122",
+      "blockHash": "0x811d32c71768426b7703c1554e8820acdf264fa0f571d8c5648d4f6f81e10fa9",
+      "status": "0x1",
+      "gasUsed": "0x36156",
+      "blockGasUsed": "0x36156"
+    },
+    {
+      "name": "redeem2",
+      "transactionHash": "0x3dbb543d276fc66e66e7b0851d8e07b5c1d81283affe699e7f200277d9700c08",
+      "blockNumber": "0x152",
+      "blockHash": "0xb161e6c3c164e927b51efb655a08b08375e8402013290e208e47a9b86bd3c804",
+      "status": "0x1",
+      "gasUsed": "0x36156",
+      "blockGasUsed": "0x36156",
+      "laneSamples": {
+        "matching": 9,
+        "total": 120,
+        "generalGasUsed": 0,
+        "paymentGasUsed": "0x36156"
+      }
+    },
+    {
+      "name": "revert",
+      "transactionHash": "0xa5a2e7c7209dfd1ddbe249f06b3f3b4dd8b5c376e6577a2f2262e24526c14f0d",
+      "blockNumber": "0x17c",
+      "blockHash": "0xcec6d7b5e3bb576922f7d94351af9617b277b777a5f379d9379157e161d4b7a1",
+      "status": "0x0",
+      "gasUsed": "0x7088c",
+      "blockGasUsed": "0x7088c",
+      "laneSamples": {
+        "matching": 8,
+        "total": 120,
+        "generalGasUsed": 0,
+        "paymentGasUsed": "0x7088c"
+      }
+    }
+  ],
+  "failedRedeemBefore": {
+    "shareSupply": 400000,
+    "vaultAssets": 440000,
+    "recipientAssets": 220000
+  },
+  "failedRedeemAfter": {
+    "shareSupply": 400000,
+    "vaultAssets": 440000,
+    "recipientAssets": 220000
+  },
+  "final": {
+    "shareSupply": 400000,
+    "vaultAssets": 440000,
+    "recipientAssets": 220000
+  },
+  "stateProof": {
+    "blockNumber": "0x327",
+    "blockHash": "0x3389ea47ccca6ae298eb9c5e971fd94bd7164789764e5bd13dd00aa12a2e7cb0",
+    "stateRoot": "0x9c03245ade39347d1839baff004faaf4baedeafbe68be17ea382ed3217ccd6eb",
+    "accountCount": 6,
+    "storageProofCount": 38
+  },
+  "factoryCodeHash": "0x854b273139a8aec8c82a927bbca51bb5f594a8b7f9a9a69f67075cde842c81fc",
+  "factoryVaultImplementation": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+  "factoryVaultImplementationHash": "0xb44664ea19f0f130c2083f086a395389101d9eac13690c860d1e98ba0937ebd5",
+  "factoryFeesImplementation": "0xcf7ed3acca5a467e9e704c703e8d87f634fb0fc9",
+  "factoryFeesImplementationHash": "0xfdf528aa65b7daf20910e02a92b23bd1f1d2d35ae17027ccd61256487aa743d8",
+  "engineHash": "0x36bd7daa8ad8bb33f8543f344751692299c52284ec076c507b13cc9574c9e858",
+  "factoryVaultRuntimeHash": "0x33114fb79bc424bc0134af26dd5b291fcb3966e56a6665b7009bbd82b7332e50"
+}

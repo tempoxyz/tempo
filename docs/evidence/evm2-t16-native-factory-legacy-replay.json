@@ -1,0 +1,33 @@
+{
+  "genesisHash": "0xe4c37aeabb3c011af3f06399ed6951df7c9634a9d0cc4a88e4881a941ac91d2d",
+  "parent": {
+    "number": "0x493",
+    "hash": "0x49df419c51bdcbb02d31b7a452e609ab4ff392f253ed34b5ab95947bfc79393b",
+    "timestamp": "0x6abf4e2f"
+  },
+  "fork": {
+    "number": "0x494",
+    "hash": "0x22ff0bd38b3befe5da4753a8ff1f4fc48e3de8c4d4f936e5aa93bec05bc2573d",
+    "timestamp": "0x6abf87c7"
+  },
+  "vault": "0x856e4424f806d16e8cbc702b3c0f2ede5468eae5",
+  "earnShare": "0x20c000000000000000000000e038c3bee7bf4591",
+  "engineApprovalSlot": "0x07a3cc427bbe718ae11e05403baa6b93536d14a4263220a4a7f8e92d6b31ff92",
+  "engineHash": "0x36bd7daa8ad8bb33f8543f344751692299c52284ec076c507b13cc9574c9e858",
+  "approvalBefore": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "shareSupplyBefore": 1000000,
+  "shareSupplyAtFork": 1000000,
+  "vaultAssetsBefore": 1000000,
+  "vaultAssetsAtFork": 1000000,
+  "deposit": {
+    "transactionHash": "0x6096f55e642dd2d59060ae9dbf528ccf27b427d159fc1ee006ffe479429066cd",
+    "blockNumber": "0x4dc",
+    "blockHash": "0x9cd130f3d6364b08fbdc1942615580dbbd73b19e3b6f0ed5622a61742d44803e",
+    "status": "0x1",
+    "gasUsed": "0x405be",
+    "matchingLaneSamples": 8,
+    "totalLaneSamples": 120
+  },
+  "shareSupplyAfterDeposit": 1100000,
+  "vaultAssetsAfterDeposit": 1100000
+}

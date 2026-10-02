@@ -32,6 +32,7 @@ evm2 = { workspace = true, optional = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
+alloy-sol-types.workspace = true
 alloy-serde = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
@@ -63,7 +64,6 @@ alloy-primitives = { workspace = true, features = [
 	"rand",
 ] }
 alloy-signer.workspace = true
-alloy-sol-types.workspace = true
 alloy-signer-local.workspace = true
 commonware-cryptography = { workspace = true, features = ["arbitrary"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

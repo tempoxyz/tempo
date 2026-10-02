@@ -13,8 +13,14 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
+use alloy_sol_types::SolCall;
 use core::{fmt, num::NonZeroU64};
-use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
+use tempo_contracts::{
+    earn::{earn_payment_kind, earn_settlement_input},
+    precompiles::{
+        ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, zone_portal::ZonePortal,
+    },
+};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
 /// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
@@ -311,6 +317,150 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// T15 candidate for a top-level native portal deposit.
+    ///
+    /// Consensus confirms native portal identity during execution before granting
+    /// payment capacity. This bounded envelope check alone is not authority.
+    pub fn is_native_portal_deposit_candidate(&self) -> bool {
+        if !self.value().is_zero() {
+            return false;
+        }
+        match self {
+            Self::Legacy(tx) => is_canonical_portal_deposit(tx.tx().to.to(), &tx.tx().input),
+            Self::Eip2930(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_deposit(tx.to.to(), &tx.input)
+            }
+            Self::Eip1559(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_deposit(tx.to.to(), &tx.input)
+            }
+            Self::Eip7702(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty()
+                    && tx.authorization_list.is_empty()
+                    && is_canonical_portal_deposit(Some(&tx.to), &tx.input)
+            }
+            Self::AA(_) => false,
+        }
+    }
+
+    /// T15 candidate for a bounded canonical ZonePortal batch submission.
+    /// Runtime registration and sequencer authority are checked during execution.
+    pub fn is_native_portal_settlement_candidate(&self) -> bool {
+        if !self.value().is_zero() {
+            return false;
+        }
+        match self {
+            Self::Legacy(tx) => is_canonical_portal_settlement(tx.tx().to.to(), &tx.tx().input),
+            Self::Eip2930(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_settlement(tx.to.to(), &tx.input)
+            }
+            Self::Eip1559(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_settlement(tx.to.to(), &tx.input)
+            }
+            Self::Eip7702(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty()
+                    && tx.authorization_list.is_empty()
+                    && is_canonical_portal_settlement(Some(&tx.to), &tx.input)
+            }
+            Self::AA(tx) => {
+                let tx = tx.tx();
+                tx.calls.len() == 1
+                    && tx.access_list.is_empty()
+                    && tx.tempo_authorization_list.is_empty()
+                    && tx
+                        .key_authorization
+                        .as_ref()
+                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                    && tx.calls[0].value.is_zero()
+                    && is_canonical_portal_settlement(tx.calls[0].to.to(), &tx.calls[0].input)
+            }
+        }
+    }
+
+    /// T15 candidate for bounded ZonePortal FIFO withdrawal processing.
+    /// Runtime checks portal identity and sequencer authority before admission.
+    pub fn is_native_portal_withdrawal_candidate(&self) -> bool {
+        if !self.value().is_zero() {
+            return false;
+        }
+        match self {
+            Self::Legacy(tx) => is_canonical_portal_withdrawal(tx.tx().to.to(), &tx.tx().input),
+            Self::Eip2930(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_withdrawal(tx.to.to(), &tx.input)
+            }
+            Self::Eip1559(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_withdrawal(tx.to.to(), &tx.input)
+            }
+            Self::Eip7702(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty()
+                    && tx.authorization_list.is_empty()
+                    && is_canonical_portal_withdrawal(Some(&tx.to), &tx.input)
+            }
+            Self::AA(tx) => {
+                let tx = tx.tx();
+                tx.calls.len() == 1
+                    && tx.access_list.is_empty()
+                    && tx.tempo_authorization_list.is_empty()
+                    && tx
+                        .key_authorization
+                        .as_ref()
+                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                    && tx.calls[0].value.is_zero()
+                    && is_canonical_portal_withdrawal(tx.calls[0].to.to(), &tx.calls[0].input)
+            }
+        }
+    }
+
+    /// T16 candidate for an exact, bounded native Earn vault, fee, or
+    /// registered asynchronous settlement payment.
+    /// The runtime checks system-owned registration and code identities before
+    /// this candidate can receive payment-lane capacity.
+    pub fn is_native_earn_payment_candidate(&self) -> bool {
+        if !self.value().is_zero() {
+            return false;
+        }
+        let matches = |to: Option<&Address>, input: &[u8]| {
+            to.is_some() && (earn_payment_kind(input).is_some() || earn_settlement_input(input))
+        };
+        match self {
+            Self::Legacy(tx) => matches(tx.tx().to.to(), &tx.tx().input),
+            Self::Eip2930(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && matches(tx.to.to(), &tx.input)
+            }
+            Self::Eip1559(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && matches(tx.to.to(), &tx.input)
+            }
+            Self::Eip7702(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty()
+                    && tx.authorization_list.is_empty()
+                    && matches(Some(&tx.to), &tx.input)
+            }
+            Self::AA(tx) => {
+                let tx = tx.tx();
+                tx.calls.len() == 1
+                    && tx.access_list.is_empty()
+                    && tx.tempo_authorization_list.is_empty()
+                    && tx
+                        .key_authorization
+                        .as_ref()
+                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                    && tx.calls[0].value.is_zero()
+                    && matches(tx.calls[0].to.to(), &tx.calls[0].input)
+            }
+        }
+    }
+
     /// Returns whether this transaction uses the reserved subblock nonce prefix.
     pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
         self.as_aa()
@@ -569,6 +719,63 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
     to.is_some_and(|to| to.is_tip20())
 }
 
+/// Bounded, canonical ABI check for the two native portal deposit selectors.
+/// Runtime identity verification is still required before payment classification.
+fn is_canonical_portal_deposit(to: Option<&Address>, input: &[u8]) -> bool {
+    if to.is_none_or(|to| to.zone_portal_id().is_none()) || input.len() != 420 {
+        return false;
+    }
+    if input.starts_with(&ZonePortal::depositCall::SELECTOR) {
+        return ZonePortal::depositCall::abi_decode(input)
+            .is_ok_and(|call| call.abi_encode().as_slice() == input);
+    }
+    if input.starts_with(&ZonePortal::depositEncryptedCall::SELECTOR) {
+        return ZonePortal::depositEncryptedCall::abi_decode(input)
+            .is_ok_and(|call| call.abi_encode().as_slice() == input);
+    }
+    false
+}
+
+fn is_canonical_portal_settlement(to: Option<&Address>, input: &[u8]) -> bool {
+    if to.is_none_or(|to| to.zone_portal_id().is_none()) || input.len() > 65_536 {
+        return false;
+    }
+    if input.starts_with(&ZonePortal::submitBatch_0Call::SELECTOR) {
+        return ZonePortal::submitBatch_0Call::abi_decode(input).is_ok_and(|call| {
+            call.abi_encode().as_slice() == input
+                && call.verifierConfig.len() <= 1_024
+                && call.proof.len() <= 32_768
+                && call.signatures.len() <= 16
+                && call.signatures.iter().all(|sig| sig.len() <= 256)
+        });
+    }
+    if input.starts_with(&ZonePortal::submitBatch_1Call::SELECTOR) {
+        return ZonePortal::submitBatch_1Call::abi_decode(input).is_ok_and(|call| {
+            call.abi_encode().as_slice() == input
+                && call.verifierConfig.len() <= 1_024
+                && call.proof.len() <= 32_768
+                && call.signatures.len() <= 16
+                && call.signatures.iter().all(|sig| sig.len() <= 256)
+        });
+    }
+    false
+}
+
+fn is_canonical_portal_withdrawal(to: Option<&Address>, input: &[u8]) -> bool {
+    if to.is_none_or(|to| to.zone_portal_id().is_none()) || input.len() > 65_536 {
+        return false;
+    }
+    ZonePortal::processWithdrawalsCall::abi_decode(input).is_ok_and(|call| {
+        call.abi_encode().as_slice() == input
+            && call.withdrawals.len() <= 16
+            && call.withdrawals.iter().all(|withdrawal| {
+                withdrawal.callbackData.len() <= 4_096
+                    && withdrawal.encryptedSender.len() <= 256
+                    && withdrawal.gasLimit <= 8_000_000
+            })
+    })
+}
+
 /// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
 #[inline]
 fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
@@ -695,6 +902,136 @@ mod tests {
         let [eip2930, eip1559, eip7702, aa] =
             payment_envelopes_with_access_list_to(to, calldata, AccessList::default());
         [legacy, eip2930, eip1559, eip7702, aa]
+    }
+
+    #[test]
+    fn t15_portal_candidate_requires_canonical_bounded_calldata() {
+        let portal = Address::from([
+            0x5a, 0xd0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
+        let input: Bytes = ZonePortal::depositCall {
+            token: PAYMENT_TKN,
+            amount: 1_000_000,
+            keyIndex: U256::ZERO,
+            encrypted: ZonePortal::DepositPayload {
+                ephemeralPubkeyX: B256::ZERO,
+                ephemeralPubkeyYParity: 2,
+                ciphertext: vec![0; 64].into(),
+                nonce: Default::default(),
+                tag: Default::default(),
+            },
+            tempoRefundRecipient: Address::with_last_byte(1),
+        }
+        .abi_encode()
+        .into();
+        assert_eq!(input.len(), 420);
+        for (index, envelope) in payment_envelopes_to(portal, input.clone())
+            .iter()
+            .enumerate()
+        {
+            assert!(!envelope.is_payment_v2());
+            assert_eq!(envelope.is_native_portal_deposit_candidate(), index != 4);
+        }
+        let mut trailing = input.to_vec();
+        trailing.push(0);
+        assert!(
+            !payment_envelopes_to(portal, trailing.into())[2].is_native_portal_deposit_candidate()
+        );
+        assert!(
+            !payment_envelopes_to(Address::with_last_byte(1), input)[2]
+                .is_native_portal_deposit_candidate()
+        );
+    }
+
+    #[test]
+    fn t15_settlement_candidate_requires_canonical_bounded_calldata() {
+        let portal = Address::from([
+            0x5a, 0xd0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
+        let input: Bytes = ZonePortal::submitBatch_1Call {
+            tempoBlockNumber: 1,
+            recentTempoBlockNumber: 1,
+            blockTransition: ZonePortal::BlockTransition {
+                prevBlockHash: B256::ZERO,
+                nextBlockHash: B256::ZERO,
+            },
+            depositQueueTransition: ZonePortal::DepositQueueTransition {
+                prevProcessedHash: B256::ZERO,
+                nextProcessedHash: B256::ZERO,
+                prevDepositNumber: 0,
+                nextDepositNumber: 0,
+            },
+            tokenEnablementTransition: ZonePortal::TokenEnablementTransition {
+                prevProcessedTokenCount: 0,
+                nextProcessedTokenCount: 0,
+            },
+            withdrawalQueueHash: B256::ZERO,
+            verifierConfig: Bytes::new(),
+            proof: Bytes::new(),
+            nextZoneHeight: U256::from(1),
+            signatures: vec![],
+        }
+        .abi_encode()
+        .into();
+        for envelope in payment_envelopes_to(portal, input.clone()) {
+            assert!(envelope.is_native_portal_settlement_candidate());
+        }
+        let bundled = TempoTransaction {
+            fee_token: Some(PAYMENT_TKN),
+            calls: vec![
+                Call {
+                    to: TxKind::Call(portal),
+                    value: U256::ZERO,
+                    input: input.clone(),
+                },
+                Call {
+                    to: TxKind::Call(PAYMENT_TKN),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(
+            !TempoTxEnvelope::AA(bundled.into_signed(Signature::test_signature().into()))
+                .is_native_portal_settlement_candidate()
+        );
+        let mut trailing = input.to_vec();
+        trailing.push(0);
+        assert!(
+            !payment_envelopes_to(portal, trailing.into())[2]
+                .is_native_portal_settlement_candidate()
+        );
+        assert!(
+            !payment_envelopes_to(Address::with_last_byte(1), input)[2]
+                .is_native_portal_settlement_candidate()
+        );
+    }
+
+    #[test]
+    fn t15_withdrawal_candidate_requires_canonical_bounded_calldata() {
+        let portal = Address::from([
+            0x5a, 0xd0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
+        let input: Bytes = ZonePortal::processWithdrawalsCall {
+            withdrawals: vec![],
+            remainingQueue: B256::ZERO,
+        }
+        .abi_encode()
+        .into();
+        for envelope in payment_envelopes_to(portal, input.clone()) {
+            assert!(envelope.is_native_portal_withdrawal_candidate());
+        }
+        let mut trailing = input.to_vec();
+        trailing.push(0);
+        assert!(
+            !payment_envelopes_to(portal, trailing.into())[2]
+                .is_native_portal_withdrawal_candidate()
+        );
+        assert!(
+            !payment_envelopes_to(Address::with_last_byte(1), input)[2]
+                .is_native_portal_withdrawal_candidate()
+        );
     }
 
     /// Like [`payment_envelopes`], but with `access_list` set. Supported by: Eip2930, Eip1559, Eip7702, AA.

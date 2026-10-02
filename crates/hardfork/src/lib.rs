@@ -249,6 +249,10 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t14>.
         T14,
+        /// Unscheduled native payment activation fork.
+        T15,
+        /// Unscheduled native Earn migration and payment activation fork.
+        T16,
     }
 );
 
@@ -397,6 +401,8 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
+            Self::T16 => None,
         }
     }
 
@@ -423,6 +429,8 @@ impl TempoHardfork {
             Self::T12 => Some(MAINNET_T12_TIMESTAMP),
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
+            Self::T16 => None,
         }
     }
 
@@ -449,6 +457,8 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
+            Self::T16 => None,
         }
     }
 
@@ -475,6 +485,8 @@ impl TempoHardfork {
             Self::T12 => Some(MODERATO_T12_TIMESTAMP),
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
+            Self::T16 => None,
         }
     }
 }

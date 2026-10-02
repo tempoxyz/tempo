@@ -394,6 +394,11 @@ impl HashMapStorageProvider {
         self.block_env.number = U256::from(block_number);
     }
 
+    /// Overrides the base fee used by native protocol accounting.
+    pub fn set_base_fee(&mut self, base_fee: U256) {
+        self.block_env.basefee = base_fee;
+    }
+
     /// Overrides the active hardfork spec.
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;

@@ -1,0 +1,77 @@
+{
+  "engineApprovalSlot": "0x07a3cc427bbe718ae11e05403baa6b93536d14a4263220a4a7f8e92d6b31ff92",
+  "transactions": {
+    "revoke": {
+      "transactionHash": "0x3bb1e9087e0ee478d9e8235afd7d2212c00b20fb4c5e597a23c3441654eebfe9",
+      "blockNumber": "0x7a8",
+      "blockHash": "0xfe3afba4d0bdbfebde55dae53ec088969b68ebabd96af73032bb40a44f9a7545",
+      "status": "0x1",
+      "gasUsed": "0x82fe",
+      "blockGasUsed": "0x82fe",
+      "onlyTransaction": true
+    },
+    "rejectedDeposit": {
+      "transactionHash": "0x57c7a2ba52ddf6bfe1867b0be0c7122fd98262725fc2c2307f607fed51e814ed",
+      "blockNumber": "0x7b0",
+      "blockHash": "0xf390271ac3175d631a723a19c80a5737918c0539e34647254b9b680ee71682b2",
+      "status": "0x0",
+      "gasUsed": "0x2dc6c0",
+      "blockGasUsed": "0x2dc6c0",
+      "onlyTransaction": true
+    },
+    "approve": {
+      "transactionHash": "0x041b10284eff7ac09e14b5a6a98f8007ad47a39632a81b5c0a79a68a4020c576",
+      "blockNumber": "0x7b8",
+      "blockHash": "0x6ca20564cafbedd54eeef8ec5e082c3f1e569c1fe3298e803f382ab262d11648",
+      "status": "0x1",
+      "gasUsed": "0x8ace",
+      "blockGasUsed": "0x8ace",
+      "onlyTransaction": true
+    },
+    "sampledDeposit": {
+      "transactionHash": "0x04998fdaad24ee53afa3994910f750dcecd680f805e2933816c55d332677e171",
+      "blockNumber": "0x7bc",
+      "blockHash": "0xcd4244b97ddcfe5997f074e2ada793a1d302c5f1902f08855e559aa88c02f4e1",
+      "status": "0x1",
+      "gasUsed": "0x40ea2",
+      "blockGasUsed": "0x40ea2",
+      "onlyTransaction": true
+    }
+  },
+  "states": {
+    "beforeRevoke": {
+      "block": "0x7a7",
+      "approval": "0x36bd7daa8ad8bb33f8543f344751692299c52284ec076c507b13cc9574c9e858",
+      "shareSupply": 402727,
+      "vaultAssets": 443000
+    },
+    "afterRevoke": {
+      "block": "0x7a8",
+      "approval": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "shareSupply": 402727,
+      "vaultAssets": 443000
+    },
+    "afterRejectedDeposit": {
+      "block": "0x7b0",
+      "approval": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "shareSupply": 402727,
+      "vaultAssets": 443000
+    },
+    "afterApprove": {
+      "block": "0x7b8",
+      "approval": "0x36bd7daa8ad8bb33f8543f344751692299c52284ec076c507b13cc9574c9e858",
+      "shareSupply": 402727,
+      "vaultAssets": 443000
+    },
+    "afterSampledDeposit": {
+      "block": "0x7bc",
+      "approval": "0x36bd7daa8ad8bb33f8543f344751692299c52284ec076c507b13cc9574c9e858",
+      "shareSupply": 403636,
+      "vaultAssets": 444000
+    }
+  },
+  "sampledDepositLane": {
+    "matching": 15,
+    "total": 28
+  }
+}

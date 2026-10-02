@@ -27,6 +27,49 @@ use tempo_primitives::TempoHeader;
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
+/// Legacy Earn accounts admitted for code-identity migration at native activation.
+/// The manifest is fixed before the fork; no block execution scans deployment logs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEarnStack {
+    pub vault: Address,
+    pub vault_runtime_hash: B256,
+    pub vault_implementation: Address,
+    pub vault_implementation_hash: B256,
+    pub fees: Address,
+    pub fees_runtime_hash: B256,
+    pub fees_implementation: Address,
+    pub fees_implementation_hash: B256,
+    pub asset: Address,
+    pub earn_share: Address,
+    pub engine: Address,
+    pub engine_hash: B256,
+}
+
+/// Factory and contract identities authorized to register new Earn stacks at T16.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEarnFactoryConfig {
+    pub address: Address,
+    pub code_hash: B256,
+    pub governor: Address,
+    pub vault_runtime_hash: B256,
+    pub vault_implementation: Address,
+    pub vault_implementation_hash: B256,
+    pub fees_implementation: Address,
+    pub fees_implementation_hash: B256,
+    #[serde(default)]
+    pub approved_engines: Vec<NativeEarnApprovedEngine>,
+}
+
+/// One pre-approved engine instance and its immutable runtime identity.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEarnApprovedEngine {
+    pub address: Address,
+    pub code_hash: B256,
+}
+
 /// Generates [`TempoGenesisInfo`] with one `<fork>_time` field per post-Genesis hardfork.
 macro_rules! tempo_genesis_info {
     ($($variant:ident),* $(,)?) => {
@@ -41,6 +84,12 @@ macro_rules! tempo_genesis_info {
                 /// Optional override for the general (non-payment) gas limit.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 general_gas_limit: Option<u64>,
+                /// Canonical legacy Earn accounts migrated at T16 activation.
+                #[serde(default, skip_serializing_if = "Vec::is_empty")]
+                native_earn_manifest: Vec<NativeEarnStack>,
+                /// Optional T16 factory for atomic admission of new Earn stacks.
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                native_earn_factory: Option<NativeEarnFactoryConfig>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,11 +117,22 @@ tempo_hardfork::tempo_post_genesis_hardforks!(tempo_genesis_info);
 impl TempoGenesisInfo {
     /// Extract Tempo genesis info from genesis extra_fields
     fn extract_from(genesis: &Genesis) -> Self {
-        genesis
+        let decoded = genesis.config.extra_fields.deserialize_as::<Self>();
+        if genesis
             .config
             .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+            .get("nativeEarnManifest")
+            .is_some()
+            || genesis
+                .config
+                .extra_fields
+                .get("nativeEarnFactory")
+                .is_some()
+        {
+            decoded.expect("native Earn configuration and fork schedule must decode exactly")
+        } else {
+            decoded.unwrap_or_default()
+        }
     }
 
     pub fn epoch_length(&self) -> Option<NonZeroU64> {
@@ -81,6 +141,14 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    pub fn native_earn_manifest(&self) -> &[NativeEarnStack] {
+        &self.native_earn_manifest
+    }
+
+    pub fn native_earn_factory(&self) -> Option<&NativeEarnFactoryConfig> {
+        self.native_earn_factory.as_ref()
     }
 }
 
@@ -200,6 +268,21 @@ impl TempoChainSpec {
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
         let info = TempoGenesisInfo::extract_from(&genesis);
+        if let Some(t16) = info.fork_time(TempoHardfork::T16) {
+            assert!(
+                info.fork_time(TempoHardfork::T15)
+                    .is_some_and(|t15| t15 <= t16),
+                "T16 Earn activation requires T15 at or before T16"
+            );
+        }
+        assert!(
+            info.native_earn_manifest().is_empty() || info.fork_time(TempoHardfork::T16).is_some(),
+            "nativeEarnManifest requires scheduled T16 activation"
+        );
+        assert!(
+            info.native_earn_factory().is_none() || info.fork_time(TempoHardfork::T16).is_some(),
+            "nativeEarnFactory requires scheduled T16 activation"
+        );
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -896,6 +979,8 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1791900001), TempoHardfork::T12);
             assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t16_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
         }
 
@@ -1016,6 +1101,8 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1791468001), TempoHardfork::T12);
             assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t16_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
         }
 

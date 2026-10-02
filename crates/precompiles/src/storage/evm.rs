@@ -290,7 +290,7 @@ where
     fn with_loaded_account<R>(
         &mut self,
         address: Address,
-        f: impl FnOnce(bool, &AccountInfo) -> R,
+        f: impl FnOnce(bool, &AccountInfo, Bytecode) -> R,
     ) -> Result<R, TempoPrecompileError> {
         let additional_cost = self.version.gas_params.cold_account_additional_cost();
 
@@ -318,11 +318,11 @@ where
             self.gas_tracker.deduct_gas(additional_cost)?;
         }
 
-        account.load_code()?;
+        let code = account.load_code()?;
 
         let exists = account.exists();
         let default = AccountInfo::default();
-        Ok(f(exists, account.get().unwrap_or(&default)))
+        Ok(f(exists, account.get().unwrap_or(&default), code))
     }
 }
 
@@ -450,14 +450,13 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        self.with_loaded_account(address, |_, info| f(info))
+        self.with_loaded_account(address, |_, info, _| f(info))
     }
 
     #[inline]
     fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
-        self.with_loaded_account(address, |exists, info| {
+        self.with_loaded_account(address, |exists, info, code| {
             let code_hash = if exists { info.code_hash } else { B256::ZERO };
-            let code = info.code.clone().unwrap_or_default();
             (code_hash, code)
         })
     }
@@ -839,7 +838,8 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId, Version,
-        evm::{InMemoryDB, precompile::NoPrecompiles},
+        bytecode::Bytecode,
+        evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
         interpreter::GasTracker,
         registry::TxRegistry,
         version::{GasId, GasParams},
@@ -1093,6 +1093,28 @@ mod tests {
         let data = evm.load_account_code(addr)?;
 
         assert_eq!(data, code);
+        Ok(())
+    }
+
+    #[test]
+    fn account_code_loads_persisted_bytecode_before_copying() -> eyre::Result<()> {
+        let source = Address::random();
+        let destination = Address::random();
+        let code = Bytes::from_static(&[0x60, 0x2a, 0x00]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &source,
+            AccountInfo::default().with_code(Bytecode::new_legacy(code.clone())),
+        );
+        assert!(database.account_info(&source).unwrap().code.is_none());
+        let mut evm = TestEvm::with_database(TempoHardfork::T16, false, database);
+        let mut provider = evm.provider_max_gas();
+        assert_eq!(provider.account_code(source)?.0, keccak256(&code));
+        assert_eq!(
+            provider.copy_runtime(source, destination)?,
+            Some(keccak256(&code))
+        );
+        assert_eq!(provider.account_code(destination)?.1.original_bytes(), code);
         Ok(())
     }
 
