@@ -140,7 +140,9 @@ impl PrefetchPlan {
             self.initialized = true;
         }
         let payer = tx.fee_payer().unwrap_or(tx.inner.caller);
-        if self.payers.insert(payer) {
+        // Explicit fee tokens bypass the saved payer preference. Do not mark the
+        // payer as fetched here: a later candidate may omit its explicit token.
+        if tx.fee_token.is_none() && self.payers.insert(payer) {
             emit(ReadKey::Storage(
                 TIP_FEE_MANAGER_ADDRESS,
                 payer.mapping_slot(fee_slots::USER_TOKENS),
@@ -300,13 +302,13 @@ fn reference_prefetch_keys(
     use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
 
     let payer = tx.fee_payer().unwrap_or(tx.inner.caller);
-    let mut keys = vec![
-        ReadKey::Account(TIP_FEE_MANAGER_ADDRESS),
-        ReadKey::Storage(
+    let mut keys = vec![ReadKey::Account(TIP_FEE_MANAGER_ADDRESS)];
+    if tx.fee_token.is_none() {
+        keys.push(ReadKey::Storage(
             TIP_FEE_MANAGER_ADDRESS,
             payer.mapping_slot(fee_slots::USER_TOKENS),
-        ),
-    ];
+        ));
+    }
     if let Some(aa) = &tx.tempo_tx_env
         && !aa.nonce_key.is_zero()
     {

@@ -71,6 +71,17 @@ and roots; EVM and revm tests and all-target Clippy pass. These warm-memory resu
 exclude trie hashing and are not the public-mix node workload. See
 `t14-reward-prefetch.json` and its raw logs; GitHub measurement is still required.
 
+The funded-recipient variant `tip20_paid_aa_expiring_funded` uses 1,000 randomly
+selected senders, explicit pathUSD fees and opaque expiring nonces (T12+ required).
+It still models one token and transfers only, in warm memory. Across four local
+100,000-transaction sweeps, sequential execution averages 155,359 TPS and the best
+worker count (16) averages 172,182 TPS; 32 workers fall to 146,277 TPS despite
+over 99.9% reuse. See `t14-funded-expiring-scaling.json`. Omitting the unused payer
+preference prefetch for explicit fee tokens improves a separate 500,000-transfer
+comparison from 171,179 to 175,845 TPS with eight workers (+2.7%), with preparation
+time down 6.4%. Sequential references vary by -1.7%; this small local improvement
+does not establish a node speedup. See `t14-explicit-fee-prefetch.json`.
+
 An experiment sharing immutable environments between candidates was rejected:
 eight-worker storage throughput fell 24.6% and paid compute fell 7.3% in the
 broader comparison. The source patch, matching-build results, and sequential

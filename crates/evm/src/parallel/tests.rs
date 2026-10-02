@@ -2263,8 +2263,18 @@ fn execution_throughput() {
                     | "tip20_paid_aa"
                     | "tip20_paid_aa_existing"
                     | "tip20_paid_aa_expiring"
+                    | "tip20_paid_aa_expiring_funded"
             ));
-            let users = if matches!(
+            let funded_expiring = workload == "tip20_paid_aa_expiring_funded";
+            if funded_expiring {
+                assert!(
+                    hardfork.is_some_and(|spec| spec.is_t12()),
+                    "opaque nonces require T12+"
+                );
+            }
+            let users = if funded_expiring {
+                1000
+            } else if matches!(
                 workload,
                 "compute_paid_chains"
                     | "tip20_paid_aa"
@@ -2277,6 +2287,12 @@ fn execution_throughput() {
             };
             let mut db = if matches!(workload, "storage" | "compute") {
                 TestDB::default()
+            } else if funded_expiring {
+                funded_tip20_accounts(
+                    (0..users)
+                        .chain(count + 1000..count * 2 + 1000)
+                        .map(address),
+                )
             } else {
                 funded_tip20_db(users)
             };
@@ -2304,20 +2320,25 @@ fn execution_throughput() {
                         recipient_seed ^= recipient_seed << 17;
                         let recipient = if workload == "tip20_paid_aa_existing" {
                             address(recipient_seed % users)
+                        } else if funded_expiring {
+                            address(count + 1000 + recipient_seed.rotate_left(29) % count)
                         } else {
                             address(count + 1000 + i)
                         };
+                        let expiring = workload.starts_with("tip20_paid_aa_expiring");
                         let signed = TempoTransaction {
                             chain_id: 1,
                             gas_limit: 1_000_000,
                             max_fee_per_gas: 1,
                             max_priority_fee_per_gas: 1,
-                            nonce_key: if workload == "tip20_paid_aa_expiring" {
+                            fee_token: funded_expiring.then_some(PATH_USD_ADDRESS),
+                            nonce: if funded_expiring { recipient_seed } else { 0 },
+                            nonce_key: if expiring {
                                 U256::MAX
                             } else {
                                 U256::from(1 + i / users)
                             },
-                            valid_before: (workload == "tip20_paid_aa_expiring")
+                            valid_before: expiring
                                 .then_some(std::num::NonZeroU64::new(25).unwrap()),
                             calls: vec![Call {
                                 to: PATH_USD_ADDRESS.into(),
@@ -2332,7 +2353,12 @@ fn execution_throughput() {
                             ..Default::default()
                         }
                         .into_signed(TempoSignature::default());
-                        TempoTxEnv::from_recovered_tx(&signed, address(i % users))
+                        let sender = if funded_expiring {
+                            recipient_seed % users
+                        } else {
+                            i % users
+                        };
+                        TempoTxEnv::from_recovered_tx(&signed, address(sender))
                     } else if workload.starts_with("compute") {
                         let mut tx = transaction(i % users, target, i / users, &[]);
                         tx.inner.gas_price = u128::from(workload.starts_with("compute_paid"));

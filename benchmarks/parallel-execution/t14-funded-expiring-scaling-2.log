@@ -1,0 +1,20 @@
+
+running 1 test
+# hardfork=T14
+workload	transactions	workers	seconds	tps	reused	conflicts	retries	backoff	bodies_reused	fees_rebased
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=0 batch=128 prepare=0.000015 ordered=0.596961 commit=0.038027
+tip20_paid_aa_expiring_funded	100000	0	0.641544	155874	0	0	0	0	0	0
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=1 batch=128 prepare=0.249135 ordered=0.904952 commit=0.165239
+tip20_paid_aa_expiring_funded	100000	1	1.334357	74942	100000	0	0	0	0	0
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=4 batch=128 prepare=0.251653 ordered=0.220556 commit=0.125342
+tip20_paid_aa_expiring_funded	100000	4	0.611739	163468	99946	54	0	0	0	99164
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=8 batch=128 prepare=0.264368 ordered=0.218291 commit=0.105848
+tip20_paid_aa_expiring_funded	100000	8	0.604021	165557	99932	68	0	0	0	99150
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=16 batch=128 prepare=0.266372 ordered=0.204903 commit=0.081071
+tip20_paid_aa_expiring_funded	100000	16	0.566069	176657	99919	81	0	0	0	99137
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=32 batch=128 prepare=0.307403 ordered=0.250534 commit=0.084176
+tip20_paid_aa_expiring_funded	100000	32	0.657643	152058	99901	99	0	0	0	99119
+test parallel::tests::execution_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 146 filtered out; finished in 6.47s
+

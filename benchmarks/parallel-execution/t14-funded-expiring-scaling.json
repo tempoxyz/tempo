@@ -1,0 +1,479 @@
+{
+  "status": "local_diagnostic_not_acceptance",
+  "hardfork": "T14",
+  "source_commit": "273c3dfa182a27c2844f4ece71aa21738eb6a432 plus funded fixture",
+  "workload": "tip20_paid_aa_expiring_funded",
+  "description": "Paid AA transfers, explicit pathUSD fee token, opaque expiring nonce, deterministic pseudorandom selection among 1000 senders and funded recipients. One token; transfers only. Warm in-memory state; excludes setup, signing, networking, disk I/O and trie hashing. Not the 100 GiB public-mix GitHub fixture.",
+  "compiler": "Rust 1.98.1 release; strip=none and force-frame-pointers=yes on test crate",
+  "batch_size": 128,
+  "phase_timing": true,
+  "validation": "Each run starts with workers=0 and compares full receipts and state trie roots for every worker count.",
+  "transactions_per_run": 100000,
+  "block_gas_limit": 5000000000,
+  "means_tps": {
+    "0": 155358.75,
+    "1": 81508,
+    "4": 165796.75,
+    "8": 161549,
+    "16": 172182,
+    "32": 146277.25
+  },
+  "rows": [
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.651212,
+      "tps": 153560,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.604494,
+        "commit": 0.04039
+      },
+      "run": 0
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 1,
+      "seconds": 1.166565,
+      "tps": 85722,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 0.235269,
+        "ordered": 0.81981,
+        "commit": 0.100243
+      },
+      "run": 0
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 4,
+      "seconds": 0.620791,
+      "tps": 161085,
+      "reused": 99946,
+      "conflicts": 54,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99164,
+      "phases_seconds": {
+        "prepare": 0.263851,
+        "ordered": 0.220299,
+        "commit": 0.122987
+      },
+      "run": 0
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.718076,
+      "tps": 139261,
+      "reused": 99932,
+      "conflicts": 68,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99150,
+      "phases_seconds": {
+        "prepare": 0.291967,
+        "ordered": 0.261045,
+        "commit": 0.144395
+      },
+      "run": 0
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 16,
+      "seconds": 0.629248,
+      "tps": 158920,
+      "reused": 99919,
+      "conflicts": 81,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99137,
+      "phases_seconds": {
+        "prepare": 0.287969,
+        "ordered": 0.21997,
+        "commit": 0.104405
+      },
+      "run": 0
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 32,
+      "seconds": 0.709482,
+      "tps": 140948,
+      "reused": 99901,
+      "conflicts": 99,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99119,
+      "phases_seconds": {
+        "prepare": 0.32562,
+        "ordered": 0.259144,
+        "commit": 0.105534
+      },
+      "run": 0
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.639892,
+      "tps": 156276,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.595498,
+        "commit": 0.0379
+      },
+      "run": 1
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 32,
+      "seconds": 0.689512,
+      "tps": 145030,
+      "reused": 99901,
+      "conflicts": 99,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99119,
+      "phases_seconds": {
+        "prepare": 0.319121,
+        "ordered": 0.253339,
+        "commit": 0.098651
+      },
+      "run": 1
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 16,
+      "seconds": 0.560858,
+      "tps": 178298,
+      "reused": 99919,
+      "conflicts": 81,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99137,
+      "phases_seconds": {
+        "prepare": 0.263555,
+        "ordered": 0.203779,
+        "commit": 0.079879
+      },
+      "run": 1
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.570736,
+      "tps": 175212,
+      "reused": 99932,
+      "conflicts": 68,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99150,
+      "phases_seconds": {
+        "prepare": 0.259294,
+        "ordered": 0.198488,
+        "commit": 0.098769
+      },
+      "run": 1
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 4,
+      "seconds": 0.588468,
+      "tps": 169933,
+      "reused": 99946,
+      "conflicts": 54,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99164,
+      "phases_seconds": {
+        "prepare": 0.2458,
+        "ordered": 0.21286,
+        "commit": 0.116804
+      },
+      "run": 1
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 1,
+      "seconds": 1.178699,
+      "tps": 84839,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 0.235615,
+        "ordered": 0.835263,
+        "commit": 0.096777
+      },
+      "run": 1
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.641544,
+      "tps": 155874,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.596961,
+        "commit": 0.038027
+      },
+      "run": 2
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 1,
+      "seconds": 1.334357,
+      "tps": 74942,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 0.249135,
+        "ordered": 0.904952,
+        "commit": 0.165239
+      },
+      "run": 2
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 4,
+      "seconds": 0.611739,
+      "tps": 163468,
+      "reused": 99946,
+      "conflicts": 54,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99164,
+      "phases_seconds": {
+        "prepare": 0.251653,
+        "ordered": 0.220556,
+        "commit": 0.125342
+      },
+      "run": 2
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.604021,
+      "tps": 165557,
+      "reused": 99932,
+      "conflicts": 68,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99150,
+      "phases_seconds": {
+        "prepare": 0.264368,
+        "ordered": 0.218291,
+        "commit": 0.105848
+      },
+      "run": 2
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 16,
+      "seconds": 0.566069,
+      "tps": 176657,
+      "reused": 99919,
+      "conflicts": 81,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99137,
+      "phases_seconds": {
+        "prepare": 0.266372,
+        "ordered": 0.204903,
+        "commit": 0.081071
+      },
+      "run": 2
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 32,
+      "seconds": 0.657643,
+      "tps": 152058,
+      "reused": 99901,
+      "conflicts": 99,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99119,
+      "phases_seconds": {
+        "prepare": 0.307403,
+        "ordered": 0.250534,
+        "commit": 0.084176
+      },
+      "run": 2
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.642159,
+      "tps": 155725,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.597294,
+        "commit": 0.03826
+      },
+      "run": 3
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 32,
+      "seconds": 0.679936,
+      "tps": 147073,
+      "reused": 99901,
+      "conflicts": 99,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99119,
+      "phases_seconds": {
+        "prepare": 0.315696,
+        "ordered": 0.251763,
+        "commit": 0.094613
+      },
+      "run": 3
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 16,
+      "seconds": 0.57191,
+      "tps": 174853,
+      "reused": 99919,
+      "conflicts": 81,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99137,
+      "phases_seconds": {
+        "prepare": 0.268683,
+        "ordered": 0.207675,
+        "commit": 0.081538
+      },
+      "run": 3
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.601806,
+      "tps": 166166,
+      "reused": 99932,
+      "conflicts": 68,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99150,
+      "phases_seconds": {
+        "prepare": 0.265321,
+        "ordered": 0.21526,
+        "commit": 0.106113
+      },
+      "run": 3
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 4,
+      "seconds": 0.592766,
+      "tps": 168701,
+      "reused": 99946,
+      "conflicts": 54,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99164,
+      "phases_seconds": {
+        "prepare": 0.249501,
+        "ordered": 0.210275,
+        "commit": 0.119713
+      },
+      "run": 3
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 1,
+      "seconds": 1.241796,
+      "tps": 80529,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "phases_seconds": {
+        "prepare": 0.240587,
+        "ordered": 0.856137,
+        "commit": 0.132322
+      },
+      "run": 3
+    }
+  ]
+}
