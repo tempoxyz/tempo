@@ -1,5 +1,5 @@
 //! Records protocol fee-hook storage and logs without inspecting EVM calls.
-//! Application writes may touch the same slots; fee paths outside these hooks are not tracked.
+//! NOTE: Application writes may touch the same slots. Fee paths outside these hooks are not tracked.
 
 use alloy_primitives::{Address, U256};
 use reth_revm::context::JournalTr as _;
@@ -82,8 +82,7 @@ impl RecordingFeeManager {
     }
 }
 
-/// Slot, entry value, and exit value of a storage-mutating action. `after` is `None` when it
-/// can't be computed (overflow or a failed swap); reads and checks return `None`.
+/// Slot, entry value, and exit value of a storage-mutating action.
 fn storage_write(action: &StorageAction) -> Option<(U256, U256, Option<U256>)> {
     Some(match *action {
         StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => return None,
