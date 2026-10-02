@@ -1202,7 +1202,9 @@ mod tests {
         };
         use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
         use tempo_precompiles::{
-            storage::ContractStorage, test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
+            storage::{ContractStorage, Handler},
+            test_util::TIP20Setup,
+            tip_fee_manager::TipFeeManager,
         };
 
         let payer = Address::repeat_byte(0x41);
@@ -1288,7 +1290,8 @@ mod tests {
         let hash = pool
             .add_transaction(TransactionOrigin::External, tx)
             .await
-            .unwrap();
+            .unwrap()
+            .hash;
         let control = TxBuilder::aa(control_payer)
             .calls(calls)
             .fee_token(second)
@@ -1296,7 +1299,8 @@ mod tests {
         let control_hash = pool
             .add_transaction(TransactionOrigin::External, control)
             .await
-            .unwrap();
+            .unwrap()
+            .hash;
         let control = pool.get(&control_hash).unwrap();
         assert!(!control.transaction.uses_fallback());
         assert!(!pool.get(&hash).unwrap().transaction.uses_fallback());
