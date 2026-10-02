@@ -1427,6 +1427,67 @@ and subsequent resumption. Full outcomes, state deltas, stored receipts, gas and
 canonical roots agree. Replay timings overlap correctness checks and are
 diagnostic only.
 
+## Share immutable AA snapshots between paired iterators
+
+The authoritative and speculative iterators now share their initial candidate
+vector and nonce index. Each retains a private cursor, removal bitmap, live-update
+map, subscription and invalidation state. Snapshot cloning therefore copies shared
+pointers and a compact bitmap instead of every pending transaction reference.
+Single iterators retain their owned vector/map representation.
+
+`shared-snapshot-node.json` compares this change with `40f6cdeb` on the same
+16-core host, with 5B block gas, shared trie roots and 100 local client signers:
+
+| Workload | Execution workers | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2D, new recipients | 16 | 50,000 | 10 | 21,750 | 22,311 |
+| 2D, existing recipients | 16 | 75,000 | 10 | 27,319 | 28,339 |
+| 2D, new recipients | 0 | 50,000 | 10 | 21,613 | 21,906 |
+| 2D, existing recipients | 0 | 75,000 | 10 | 28,985 | 29,117 |
+| Expiring, existing recipients | 16 | 50,000 | 5 | 27,454 | 27,603 |
+
+All 3,759,352 accepted transactions confirm without execution failures or rejected
+dev payloads. The two parallel 2D snapshot totals fall from 2.32 s to 1.99 s and
+1.21 s to 1.03 s, a 14–15% reduction; confirmed rates improve by 2.6–3.7%. The
+sequential controls and short expiring pair are close. Each configuration has one
+node trial, alternating before/after order across workloads; these are not
+confidence intervals or sustained production capacity. Rates include backlog.
+The existing-recipient parallel run remains slower than the sequential control,
+and sustained 50k+ confirmed node TPS remains outstanding.
+
+`shared-snapshot-micro.tsv` retains before/after/after/before runs, each with five
+repeats per size, using payload bounds and scattered nonce keys. Both paired and
+single iterators assert the complete expected selection order. At 100k candidates,
+paired construction averages 32.15 ms before and 26.24 ms after. Draining both
+iterators adds overhead: combined construction and full draining takes 86.90 ms
+before and 87.40 ms after. The node benefits from cheaper construction when a
+block consumes only part of a large snapshot; this is not a full-drain speedup.
+Single-iterator totals at 100k are 51.19 ms before and 50.83 ms after. At 10k their
+mean rises from 1.82 ms to 2.02 ms, concentrated in the first repeat, while their
+median falls from 1.71 ms to 1.66 ms. Raw repeats are retained to expose that
+variation. The environment flags are `TEMPO_POOL_BENCH_LIMITS=1`,
+`TEMPO_POOL_BENCH_SCATTERED=1`, and `TEMPO_POOL_BENCH_PAIR=1` for the paired case.
+
+An earlier prototype shared storage unconditionally and increased the 100k
+single-iterator construction-plus-drain time by 12%. It was replaced with the
+conditional representation above. `shared-snapshot-prototype-micro.tsv` and
+`prototypes/shared-snapshot-unconditional.patch` preserve that experiment; apply
+the patch to `40f6cdeb` with `git apply --unidiff-zero` to reproduce it.
+
+All 243 pool tests pass, including 40,960 generated nonce-index operations against
+independent hash maps and 16,384 generated candidate operations against ordered
+sets. These cover bitmap boundaries, empty snapshots, replacement after removal,
+and clones after partial consumption. Existing paired live/frozen preview,
+invalidation, descendant and gas/size-budget tests also pass. Release Clippy and
+all nine shared-trie and mixed payment-lane node checks pass.
+`shared-snapshot-canonical-*.tsv` verifies 15 busy generated blocks containing
+255,586 user transactions and 15 system transactions. Blocks built in both
+sequential and speculative modes, including expiring AA transfers, match complete
+sequential outcomes, state deltas, stored receipts, gas, receipt roots and state
+roots. Replay timings are diagnostic: adaptive backoff and the minimum body-time
+threshold for reuse are disabled, and sequential execution runs first, warming
+provider caches.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed

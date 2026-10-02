@@ -505,16 +505,16 @@ impl AA2dPool {
 
     /// Returns the best, executable transactions for this sub-pool
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
-        self.best_transactions_inner(false)
+        self.best_transactions_inner(false, false)
     }
 
     /// Return payload candidates with conservative gas and encoded-size bounds.
     pub(crate) fn best_transactions_for_payload(&self) -> BestAA2dTransactions {
-        self.best_transactions_inner(true)
+        self.best_transactions_inner(true, false)
     }
 
     #[allow(clippy::mutable_key_type)]
-    fn best_transactions_inner(&self, payload_limits: bool) -> BestAA2dTransactions {
+    fn best_transactions_inner(&self, payload_limits: bool, shared: bool) -> BestAA2dTransactions {
         let mut limits = payload_limits.then(SelectionLimits::default);
         // Collect independent transactions from both 2D nonce pool and expiring nonce pool
         // Expiring nonce txs are also independent (no nonce dependencies).
@@ -528,10 +528,11 @@ impl AA2dPool {
                     }
                 })
                 .cloned(),
+            shared,
         );
 
-        let mut by_id = HashMap::with_capacity_and_hasher(self.pending_2d, Default::default());
-        by_id.extend(
+        let by_id = CandidateIndex::new(
+            self.pending_2d,
             self.by_id
                 .iter()
                 .filter(|(_, tx)| tx.is_pending())
@@ -543,6 +544,7 @@ impl AA2dPool {
                     }
                     (*id, tx.inner.clone())
                 }),
+            shared,
         );
         BestAA2dTransactions {
             independent,
@@ -562,7 +564,7 @@ impl AA2dPool {
         &self,
         payload_limits: bool,
     ) -> (BestAA2dTransactions, BestAA2dTransactions) {
-        let best = self.best_transactions_inner(payload_limits);
+        let best = self.best_transactions_inner(payload_limits, true);
         let preview = BestAA2dTransactions {
             independent: best.independent.clone(),
             by_id: best.by_id.clone(),
@@ -1564,13 +1566,16 @@ enum IncomingAA2dTransaction {
 /// the snapshot. Arrivals and unlocked descendants retain ordered-set semantics.
 #[derive(Clone, Debug)]
 struct IndependentTransactions {
-    snapshot: Vec<PendingTransaction<TxOrdering>>,
+    snapshot: CandidateSnapshot,
     max_snapshot_submission_id: u64,
     updates: BTreeSet<PendingTransaction<TxOrdering>>,
 }
 
 impl IndependentTransactions {
-    fn new(transactions: impl Iterator<Item = PendingTransaction<TxOrdering>>) -> Self {
+    fn new(
+        transactions: impl Iterator<Item = PendingTransaction<TxOrdering>>,
+        shared: bool,
+    ) -> Self {
         let mut snapshot: Vec<_> = transactions.collect();
         snapshot.sort_unstable();
         snapshot.dedup();
@@ -1580,7 +1585,14 @@ impl IndependentTransactions {
             .max()
             .unwrap_or_default();
         Self {
-            snapshot,
+            snapshot: if shared {
+                CandidateSnapshot::Shared {
+                    remaining: snapshot.len(),
+                    entries: Arc::new(snapshot),
+                }
+            } else {
+                CandidateSnapshot::Owned(snapshot)
+            },
             max_snapshot_submission_id,
             updates: Default::default(),
         }
@@ -1593,21 +1605,147 @@ impl IndependentTransactions {
         // New admissions normally have newer IDs. They cannot duplicate a
         // snapshot entry, regardless of priority, so avoid searching for them.
         if tx.submission_id > self.max_snapshot_submission_id
-            || self.snapshot.binary_search(&tx).is_err()
+            || self.snapshot.remaining().binary_search(&tx).is_err()
         {
             self.updates.insert(tx);
         }
     }
 
     fn pop_last(&mut self) -> Option<PendingTransaction<TxOrdering>> {
-        if self
-            .updates
-            .last()
-            .is_some_and(|update| self.snapshot.last().is_none_or(|tx| update > tx))
-        {
+        if self.updates.last().is_some_and(|update| {
+            self.snapshot
+                .remaining()
+                .last()
+                .is_none_or(|tx| update > tx)
+        }) {
             self.updates.pop_last()
         } else {
-            self.snapshot.pop()
+            self.snapshot.pop_last()
+        }
+    }
+}
+
+/// Keep moves out of an owned Vec for single iterators. Paired iterators share
+/// the backing allocation and clone only candidates they actually consume.
+#[derive(Clone, Debug)]
+enum CandidateSnapshot {
+    Owned(Vec<PendingTransaction<TxOrdering>>),
+    Shared {
+        entries: Arc<Vec<PendingTransaction<TxOrdering>>>,
+        remaining: usize,
+    },
+}
+
+impl CandidateSnapshot {
+    fn remaining(&self) -> &[PendingTransaction<TxOrdering>] {
+        match self {
+            Self::Owned(entries) => entries,
+            Self::Shared { entries, remaining } => &entries[..*remaining],
+        }
+    }
+
+    fn pop_last(&mut self) -> Option<PendingTransaction<TxOrdering>> {
+        match self {
+            Self::Owned(entries) => entries.pop(),
+            Self::Shared { entries, remaining } => {
+                *remaining = remaining.checked_sub(1)?;
+                Some(entries[*remaining].clone())
+            }
+        }
+    }
+}
+
+/// Immutable nonce lookups shared by paired iterators. A private bitmap records
+/// removals from the snapshot; arrivals and replacements live in a private map.
+/// Consuming or updating one iterator therefore cannot change another's view.
+#[derive(Clone, Debug)]
+enum CandidateIndex {
+    Owned(HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>),
+    Shared {
+        snapshot: Arc<HashMap<AA2dTransactionId, (usize, PendingTransaction<TxOrdering>)>>,
+        removed: Vec<u64>,
+        updates: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
+    },
+}
+
+impl CandidateIndex {
+    fn new(
+        capacity: usize,
+        transactions: impl Iterator<Item = (AA2dTransactionId, PendingTransaction<TxOrdering>)>,
+        shared: bool,
+    ) -> Self {
+        if !shared {
+            let mut entries = HashMap::with_capacity_and_hasher(capacity, Default::default());
+            entries.extend(transactions);
+            return Self::Owned(entries);
+        }
+        let mut snapshot = HashMap::with_capacity_and_hasher(capacity, Default::default());
+        for (id, tx) in transactions {
+            let position = snapshot.len();
+            // Preserve dense positions even if a caller supplies a replacement.
+            match snapshot.entry(id) {
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert((position, tx));
+                }
+                hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().1 = tx;
+                }
+            }
+        }
+        Self::Shared {
+            removed: vec![0; snapshot.len().div_ceil(64)],
+            snapshot: Arc::new(snapshot),
+            updates: Default::default(),
+        }
+    }
+
+    fn get(&self, id: &AA2dTransactionId) -> Option<&PendingTransaction<TxOrdering>> {
+        match self {
+            Self::Owned(entries) => entries.get(id),
+            Self::Shared {
+                snapshot,
+                removed,
+                updates,
+            } => {
+                if let Some(tx) = updates.get(id) {
+                    return Some(tx);
+                }
+                let (position, tx) = snapshot.get(id)?;
+                (removed[position / 64] & (1 << (position % 64)) == 0).then_some(tx)
+            }
+        }
+    }
+
+    fn contains_key(&self, id: &AA2dTransactionId) -> bool {
+        self.get(id).is_some()
+    }
+
+    fn insert(&mut self, id: AA2dTransactionId, tx: PendingTransaction<TxOrdering>) {
+        match self {
+            Self::Owned(entries) => {
+                entries.insert(id, tx);
+            }
+            Self::Shared { updates, .. } => {
+                updates.insert(id, tx);
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &AA2dTransactionId) {
+        match self {
+            Self::Owned(entries) => {
+                entries.remove(id);
+            }
+            Self::Shared {
+                snapshot,
+                removed,
+                updates,
+            } => {
+                updates.remove(id);
+                if let Some((position, _)) = snapshot.get(id) {
+                    removed[position / 64] |= 1 << (position % 64);
+                }
+            }
         }
     }
 }
@@ -1618,7 +1756,7 @@ pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
     independent: IndependentTransactions,
     /// Pending transactions indexed for nonce-chain lookups; `independent` determines ordering.
-    by_id: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
+    by_id: CandidateIndex,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
@@ -3814,6 +3952,78 @@ mod tests {
     // ============================================
 
     #[test]
+    fn shared_nonce_indexes_match_independent_maps() {
+        let transactions = (0..514u64)
+            .map(|i| {
+                let tx = TxBuilder::aa(Address::repeat_byte(1))
+                    .nonce_key(U256::from(i % 257 + 1))
+                    .calls(vec![Call {
+                        to: TxKind::Call(Address::ZERO),
+                        value: U256::ZERO,
+                        input: Bytes::copy_from_slice(&i.to_be_bytes()),
+                    }])
+                    .build();
+                (
+                    tx.aa_transaction_id().unwrap(),
+                    PendingTransaction {
+                        submission_id: i,
+                        transaction: Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                        priority: Priority::Value(u128::from(i % 19)),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let value = |tx: Option<&PendingTransaction<TxOrdering>>| {
+            tx.map(|tx| {
+                (
+                    tx.submission_id,
+                    tx.priority.clone(),
+                    *tx.transaction.hash(),
+                )
+            })
+        };
+        // Include bitmap boundaries, an empty snapshot, and duplicate IDs in the
+        // initial input. Later operations also replace already-removed entries.
+        for count in [0, 1, 63, 64, 65, 127, 128, 129, 257, 514] {
+            let expected: HashMap<_, _> = transactions[..count].iter().cloned().collect();
+            let actual = CandidateIndex::new(count, transactions[..count].iter().cloned(), true);
+            let mut expected = [expected.clone(), expected];
+            let mut actual = [actual.clone(), actual];
+            let mut seed = 0x1234_5678u64;
+            for step in 0..4096 {
+                if step == 2048 {
+                    expected[1] = expected[0].clone();
+                    actual[1] = actual[0].clone();
+                }
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let view = (seed >> 16) as usize % 2;
+                let (id, tx) = &transactions[seed as usize % transactions.len()];
+                if seed.is_multiple_of(3) {
+                    expected[view].remove(id);
+                    actual[view].remove(id);
+                } else {
+                    expected[view].insert(*id, tx.clone());
+                    actual[view].insert(*id, tx.clone());
+                }
+                for view in 0..2 {
+                    assert_eq!(value(actual[view].get(id)), value(expected[view].get(id)));
+                    assert_eq!(
+                        actual[view].contains_key(id),
+                        expected[view].contains_key(id)
+                    );
+                }
+            }
+            for (id, _) in &transactions {
+                for view in 0..2 {
+                    assert_eq!(value(actual[view].get(id)), value(expected[view].get(id)));
+                }
+            }
+        }
+    }
+
+    #[test]
     #[allow(clippy::mutable_key_type)]
     fn independent_candidates_match_ordered_set_with_live_updates() {
         let transactions = (0..257)
@@ -3837,37 +4047,46 @@ mod tests {
                 .iter()
                 .chain(&transactions[..initial_count])
                 .cloned();
-            let mut expected: BTreeSet<_> = initial.clone().collect();
-            let mut actual = IndependentTransactions::new(initial);
+            let expected: BTreeSet<_> = initial.clone().collect();
+            let actual = IndependentTransactions::new(initial, true);
+            let mut expected = [expected.clone(), expected];
+            let mut actual = [actual.clone(), actual];
             let mut seed = 0x1234_5678u64;
-            for _ in 0..4096 {
+            for step in 0..4096 {
+                if step == 2048 {
+                    expected[1] = expected[0].clone();
+                    actual[1] = actual[0].clone();
+                }
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
                 seed ^= seed << 17;
+                let view = (seed >> 16) as usize % 2;
                 if !seed.is_multiple_of(3) {
                     let tx = &transactions[seed as usize % transactions.len()];
-                    expected.insert(tx.clone());
-                    actual.insert(tx.clone());
+                    expected[view].insert(tx.clone());
+                    actual[view].insert(tx.clone());
                 } else {
                     assert_eq!(
-                        actual.pop_last().map(|tx| *tx.transaction.hash()),
-                        expected.pop_last().map(|tx| *tx.transaction.hash()),
+                        actual[view].pop_last().map(|tx| *tx.transaction.hash()),
+                        expected[view].pop_last().map(|tx| *tx.transaction.hash()),
                     );
                 }
             }
-            while let Some(tx) = expected.pop_last() {
+            for (mut actual, mut expected) in actual.into_iter().zip(expected) {
+                while let Some(tx) = expected.pop_last() {
+                    assert_eq!(
+                        actual.pop_last().unwrap().transaction.hash(),
+                        tx.transaction.hash()
+                    );
+                }
+                assert!(actual.pop_last().is_none());
+                actual.insert(transactions[0].clone());
                 assert_eq!(
                     actual.pop_last().unwrap().transaction.hash(),
-                    tx.transaction.hash()
+                    transactions[0].transaction.hash()
                 );
+                assert!(actual.pop_last().is_none());
             }
-            assert!(actual.pop_last().is_none());
-            actual.insert(transactions[0].clone());
-            assert_eq!(
-                actual.pop_last().unwrap().transaction.hash(),
-                transactions[0].transaction.hash()
-            );
-            assert!(actual.pop_last().is_none());
         }
     }
 
@@ -3936,10 +4155,10 @@ mod tests {
                         (best, Some(preview))
                     }
                     Some("0") => (
-                        pool.best_transactions_inner(payload_limits),
+                        pool.best_transactions_inner(payload_limits, false),
                         Some(pool.best_transactions()),
                     ),
-                    None => (pool.best_transactions_inner(payload_limits), None),
+                    None => (pool.best_transactions_inner(payload_limits, false), None),
                     Some(value) => panic!("unsupported TEMPO_POOL_BENCH_PAIR={value}"),
                 };
                 let snapshot = start.elapsed().as_secs_f64();
