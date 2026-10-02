@@ -275,6 +275,7 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use alloy_primitives::B256;
+use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
 use reth_e2e_test_utils::E2ETestSetupExt;
 use reth_rpc_builder::RpcModuleSelection;
@@ -282,7 +283,7 @@ use std::{sync::Arc, time::Duration};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
-    spec::TempoChainSpec,
+    spec::{TEMPO_T1_BASE_FEE, TempoChainSpec},
 };
 use tempo_contracts::precompiles::{
     IRolesAuth,
@@ -392,6 +393,12 @@ impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
         let provider = RootProvider::<TempoNetwork>::new(client);
         PendingTransactionBuilder::from_config(provider, config)
     }
+}
+
+/// Sets the max fee and max priority fee per gas of `tx` to [`TEMPO_T1_BASE_FEE`].
+pub(crate) fn with_t1_fees(tx: TransactionRequest) -> TransactionRequest {
+    tx.max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+        .max_priority_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
 }
 
 /// Result type for single node setup

@@ -15,7 +15,7 @@
 //! 7. Multiple storage-creating txs in a single block correctly accumulate exemptions
 //! 8. Reverted inner CALLs do NOT contribute state gas to the parent frame's exemption
 
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::wallet::Wallet;
 use reth_node_api::BuiltPayload;
 
 use alloy::{
@@ -87,9 +87,9 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     // Simple contract init code: PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN
     // Deploys a contract that returns 42, creating new account + code storage.
@@ -99,14 +99,7 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
     let deploy_calldata: Bytes = createx.deployCreate(init_code).calldata().clone();
 
-    let raw_tx = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        CREATEX_ADDRESS,
-        deploy_calldata,
-    );
+    let raw_tx = build_call_tx(&mut account, CREATEX_ADDRESS, deploy_calldata).await;
     let (_, payload) = setup.node.inject_and_advance(raw_tx).await?;
     let block = payload.block();
     let block_number = block.header().inner.number;
@@ -139,9 +132,9 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     // Step 1: Deploy a contract whose runtime code does SSTORE(calldataload(0), 1)
     //
@@ -169,14 +162,7 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
     let deploy_calldata: Bytes = createx.deployCreate(init_code).calldata().clone();
 
-    let deploy_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        CREATEX_ADDRESS,
-        deploy_calldata,
-    );
+    let deploy_raw = build_call_tx(&mut account, CREATEX_ADDRESS, deploy_calldata).await;
     let (_, deploy_payload) = setup.node.inject_and_advance(deploy_raw).await?;
 
     // Get deployed contract address from the CreateX ContractCreation event
@@ -188,7 +174,7 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
         .as_slice()
         .to_vec()
         .into();
-    let call_raw = build_call_tx(&signer, chain_id, 1, 5_000_000, contract_addr, calldata);
+    let call_raw = build_call_tx(&mut account, contract_addr, calldata).await;
     let (_, call_payload) = setup.node.inject_and_advance(call_raw).await?;
 
     let call_block_number = call_payload.block().header().inner.number;
@@ -218,9 +204,9 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     // Deploy a contract that does: SSTORE(slot=calldataload(0), value=calldataload(32))
     //
@@ -236,14 +222,7 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
     let deploy_calldata: Bytes = createx.deployCreate(init_code).calldata().clone();
 
-    let deploy_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        CREATEX_ADDRESS,
-        deploy_calldata,
-    );
+    let deploy_raw = build_call_tx(&mut account, CREATEX_ADDRESS, deploy_calldata).await;
     let (_, deploy_payload) = setup.node.inject_and_advance(deploy_raw).await?;
 
     let deploy_blk = deploy_payload.block().header().inner.number;
@@ -252,27 +231,13 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
     // First call: SSTORE zero->non-zero at slot 0
     let mut calldata1 = [0u8; 64];
     calldata1[63] = 1; // value = 1
-    let call1_raw = build_call_tx(
-        &signer,
-        chain_id,
-        1,
-        5_000_000,
-        contract_addr,
-        calldata1.to_vec().into(),
-    );
+    let call1_raw = build_call_tx(&mut account, contract_addr, calldata1.to_vec().into()).await;
     setup.node.inject_and_advance(call1_raw).await?;
 
     // Second call: SSTORE non-zero->non-zero at slot 0 (value 1->2)
     let mut calldata2 = [0u8; 64];
     calldata2[63] = 2; // value = 2
-    let call2_raw = build_call_tx(
-        &signer,
-        chain_id,
-        2,
-        5_000_000,
-        contract_addr,
-        calldata2.to_vec().into(),
-    );
+    let call2_raw = build_call_tx(&mut account, contract_addr, calldata2.to_vec().into()).await;
     let (_, call2_payload) = setup.node.inject_and_advance(call2_raw).await?;
 
     let blk_number = call2_payload.block().header().inner.number;
@@ -298,51 +263,45 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
-    let signer2 = test_signer(1);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let wallet = Wallet::default().with_chain_id(chain_id);
+    let mut account = wallet.account(0);
 
-    let sender = signer.address();
-    let receiver = signer2.address();
+    let sender = account.address();
+    let receiver = wallet.account(1).address();
     let token =
         tempo_precompiles::tip20::ITIP20::new(tempo_precompiles::PATH_USD_ADDRESS, &provider);
 
     // Mint tokens to both signers
     let mint_calldata: Bytes = token.mint(sender, U256::from(1_000_000)).calldata().clone();
     let mint_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
+        &mut account,
         tempo_precompiles::PATH_USD_ADDRESS,
         mint_calldata,
-    );
+    )
+    .await;
     setup.node.rpc.inject_tx(mint_raw).await?;
     let mint_calldata: Bytes = token
         .mint(receiver, U256::from(1_000_000))
         .calldata()
         .clone();
     let mint_raw2 = build_call_tx(
-        &signer,
-        chain_id,
-        1,
-        5_000_000,
+        &mut account,
         tempo_precompiles::PATH_USD_ADDRESS,
         mint_calldata,
-    );
+    )
+    .await;
     setup.node.inject_and_advance(mint_raw2).await?;
 
     // Transfer to second receiver (existing account, existing balance slot) -- no storage creation
     let transfer_calldata: Bytes = token.transfer(receiver, U256::from(100)).calldata().clone();
     let transfer_raw = build_call_tx(
-        &signer,
-        chain_id,
-        2,
-        5_000_000,
+        &mut account,
         tempo_precompiles::PATH_USD_ADDRESS,
         transfer_calldata,
-    );
+    )
+    .await;
     let (_, transfer_payload) = setup.node.inject_and_advance(transfer_raw).await?;
 
     let blk_number = transfer_payload.block().header().inner.number;
@@ -378,9 +337,9 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     // Deploy a contract whose runtime does SSTORE(0, 1) then REVERT.
     //
@@ -407,20 +366,13 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
     let deploy_calldata: Bytes = createx.deployCreate(init_code).calldata().clone();
 
-    let deploy_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        CREATEX_ADDRESS,
-        deploy_calldata,
-    );
+    let deploy_raw = build_call_tx(&mut account, CREATEX_ADDRESS, deploy_calldata).await;
     let (_, deploy_payload) = setup.node.inject_and_advance(deploy_raw).await?;
     let deploy_block_number = deploy_payload.block().header().inner.number;
     let contract_addr = get_createx_deployed_address(&provider, deploy_block_number).await?;
 
     // Call the contract -- it will do SSTORE(0, 1) then REVERT
-    let call_raw = build_call_tx(&signer, chain_id, 1, 5_000_000, contract_addr, Bytes::new());
+    let call_raw = build_call_tx(&mut account, contract_addr, Bytes::new()).await;
     let (_, call_payload) = setup.node.inject_and_advance(call_raw).await?;
 
     let call_block_number = call_payload.block().header().inner.number;
@@ -460,9 +412,9 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     // Deploy a contract that does 3 SSTOREs: slot 0, 1, 2 all zero->non-zero.
     //
@@ -496,20 +448,13 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
     let deploy_calldata: Bytes = createx.deployCreate(init_code).calldata().clone();
 
-    let deploy_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        CREATEX_ADDRESS,
-        deploy_calldata,
-    );
+    let deploy_raw = build_call_tx(&mut account, CREATEX_ADDRESS, deploy_calldata).await;
     let (_, deploy_payload) = setup.node.inject_and_advance(deploy_raw).await?;
     let deploy_blk = deploy_payload.block().header().inner.number;
     let contract_addr = get_createx_deployed_address(&provider, deploy_blk).await?;
 
     // Call the contract to trigger 3 SSTOREs zero->non-zero
-    let call_raw = build_call_tx(&signer, chain_id, 1, 5_000_000, contract_addr, Bytes::new());
+    let call_raw = build_call_tx(&mut account, contract_addr, Bytes::new()).await;
     let (_, call_payload) = setup.node.inject_and_advance(call_raw).await?;
 
     let call_blk = call_payload.block().header().inner.number;
@@ -540,9 +485,9 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     // Deploy contract: SSTORE(calldataload(0), 1) -- same as existing test
     //
@@ -568,14 +513,7 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
     let deploy_calldata: Bytes = createx.deployCreate(init_code).calldata().clone();
 
-    let deploy_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        CREATEX_ADDRESS,
-        deploy_calldata,
-    );
+    let deploy_raw = build_call_tx(&mut account, CREATEX_ADDRESS, deploy_calldata).await;
     let (_, deploy_payload) = setup.node.inject_and_advance(deploy_raw).await?;
     let deploy_blk = deploy_payload.block().header().inner.number;
     let contract_addr = get_createx_deployed_address(&provider, deploy_blk).await?;
@@ -590,8 +528,8 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
         .to_vec()
         .into();
 
-    let tx1_raw = build_call_tx(&signer, chain_id, 1, 5_000_000, contract_addr, slot_100);
-    let tx2_raw = build_call_tx(&signer, chain_id, 2, 5_000_000, contract_addr, slot_200);
+    let tx1_raw = build_call_tx(&mut account, contract_addr, slot_100).await;
+    let tx2_raw = build_call_tx(&mut account, contract_addr, slot_200).await;
 
     // Inject both before advancing -- they should land in the same block
     setup.node.rpc.inject_tx(tx1_raw).await?;
@@ -637,9 +575,9 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     // Step 1: Deploy "reverting SSTORE" contract (B).
     // Runtime: SSTORE(0, 1) then REVERT
@@ -664,14 +602,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
     let b_deploy_calldata: Bytes = createx.deployCreate(b_init_code).calldata().clone();
 
-    let b_deploy_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        CREATEX_ADDRESS,
-        b_deploy_calldata,
-    );
+    let b_deploy_raw = build_call_tx(&mut account, CREATEX_ADDRESS, b_deploy_calldata).await;
     let (_, b_deploy_payload) = setup.node.inject_and_advance(b_deploy_raw).await?;
     let b_deploy_blk = b_deploy_payload.block().header().inner.number;
     let b_addr = get_createx_deployed_address(&provider, b_deploy_blk).await?;
@@ -705,14 +636,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 
     let a_deploy_calldata: Bytes = createx.deployCreate(a_init_code).calldata().clone();
 
-    let a_deploy_raw = build_call_tx(
-        &signer,
-        chain_id,
-        1,
-        5_000_000,
-        CREATEX_ADDRESS,
-        a_deploy_calldata,
-    );
+    let a_deploy_raw = build_call_tx(&mut account, CREATEX_ADDRESS, a_deploy_calldata).await;
     let (_, a_deploy_payload) = setup.node.inject_and_advance(a_deploy_raw).await?;
     let a_deploy_blk = a_deploy_payload.block().header().inner.number;
     let a_addr = get_createx_deployed_address(&provider, a_deploy_blk).await?;
@@ -724,7 +648,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
         .to_vec()
         .into();
 
-    let call_raw = build_call_tx(&signer, chain_id, 2, 5_000_000, a_addr, b_addr_calldata);
+    let call_raw = build_call_tx(&mut account, a_addr, b_addr_calldata).await;
     let (_, call_payload) = setup.node.inject_and_advance(call_raw).await?;
 
     let call_blk = call_payload.block().header().inner.number;
@@ -782,9 +706,9 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0);
     let provider = setup.node.rpc_provider_for::<TempoNetwork>();
     let chain_id = provider.get_chain_id().await?;
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
     let num_transfers: u64 = 400;
 
@@ -797,14 +721,7 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
         )
         .calldata()
         .clone();
-    let mint_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        PATH_USD_ADDRESS,
-        mint_calldata,
-    );
+    let mint_raw = build_call_tx(&mut account, PATH_USD_ADDRESS, mint_calldata).await;
     setup.node.inject_and_advance(mint_raw).await?;
 
     // Step 2: Build Multicall3.aggregate() calldata with 400 TIP-20 transfers.
@@ -841,13 +758,13 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
             input: aggregate_calldata,
         }],
         nonce_key: U256::ZERO,
-        nonce: 1,
+        nonce: account.next_nonce(),
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
 
     let sig_hash = tx.signature_hash();
-    let signature: alloy::primitives::Signature = signer.sign_hash_sync(&sig_hash)?;
+    let signature: alloy::primitives::Signature = account.signer().sign_hash_sync(&sig_hash)?;
     let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
     let (tx_hash, call_payload) = setup
         .node
