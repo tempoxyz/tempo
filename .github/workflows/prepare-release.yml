@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full commit SHA from the protected main branch
+        description: Full commit SHA from main or a protected release/* branch
         required: true
         type: string
       version:
@@ -21,6 +21,10 @@ concurrency:
   group: prepare-release-v${{ inputs.version }}
   cancel-in-progress: false
 
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   prepare:
     name: Prepare pre-release/v${{ inputs.version }}
@@ -32,6 +36,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - name: Validate inputs
         id: release
         shell: bash
@@ -81,11 +88,18 @@ jobs:
           fi
 
           # A valid Git commit is not necessarily an approved release source.
-          # Require it to be part of the protected main branch's history.
+          # Require it to be part of a protected branch's history: main for
+          # regular releases, or a release/* branch for patch releases that
+          # backport fixes onto an earlier release.
           git fetch --no-tags origin \
-            "+refs/heads/main:refs/remotes/origin/main"
-          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
-            echo "::error::source_sha must be an ancestor of origin/main"
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/release/*:refs/remotes/origin/release/*"
+          source_branches="$(
+            git for-each-ref --contains "$SOURCE_SHA" --format='%(refname:short)' \
+              refs/remotes/origin/main 'refs/remotes/origin/release/*'
+          )"
+          if [[ -z "$source_branches" ]]; then
+            echo "::error::source_sha must be an ancestor of origin/main or an origin/release/* branch"
             exit 1
           fi
 
@@ -179,7 +193,7 @@ jobs:
           echo "existing_commit=${existing_commit}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@3626124474a987bc74b41fc7ae65b2e23f8e4e4e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
       - name: Update workspace version
         shell: bash
@@ -315,7 +329,7 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@c0292122e255def866c64c55e5844d1e7d5fe7ad
+        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           policy: release-pr
 

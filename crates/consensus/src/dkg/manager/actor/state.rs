@@ -6,7 +6,7 @@ use std::{
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
-    Block as _, Heightable as _,
+    Block as _, CertifiableBlock as _, Heightable as _,
     types::{Epoch, Height},
 };
 use commonware_cryptography::{
@@ -324,14 +324,35 @@ where
             .insert(digest, (output, share));
     }
 
+    /// Caches the DKG outcome that holds for every parent in `epoch`.
+    pub(super) fn cache_dkg_outcome_for_epoch(
+        &mut self,
+        epoch: Epoch,
+        output: Output<MinSig, PublicKey>,
+        share: ShareState,
+    ) {
+        self.cache.entry(epoch).or_default().dkg_outcome_for_epoch = Some((output, share));
+    }
+
+    pub(super) fn has_dkg_outcome_for_epoch(&self, epoch: &Epoch) -> bool {
+        self.cache
+            .get(epoch)
+            .is_some_and(|events| events.dkg_outcome_for_epoch.is_some())
+    }
+
+    /// Returns the DKG outcome cached for the parent `digest`, or else the
+    /// DKG outcome cached for the whole `epoch`.
     pub(super) fn get_dkg_outcome(
         &self,
         epoch: &Epoch,
         digest: &Digest,
     ) -> Option<&(Output<MinSig, PublicKey>, ShareState)> {
-        self.cache
-            .get(epoch)
-            .and_then(|events| events.dkg_outcomes.get(digest))
+        self.cache.get(epoch).and_then(|events| {
+            events
+                .dkg_outcomes
+                .get(digest)
+                .or(events.dkg_outcome_for_epoch.as_ref())
+        })
     }
 
     /// Caches the notarized log in memory.
@@ -727,6 +748,7 @@ struct Events {
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
     dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, ShareState)>,
+    dkg_outcome_for_epoch: Option<(Output<MinSig, PublicKey>, ShareState)>,
 }
 
 impl Events {
@@ -993,7 +1015,7 @@ pub(super) struct Round {
 }
 
 impl Round {
-    pub(super) fn from_state(state: &State, namespace: &[u8]) -> Self {
+    pub(super) fn from_state(state: &State, namespace: &[u8], v1_active: bool) -> Self {
         // For full DKG, don't pass the previous output - this creates a new polynomial
         let previous_output = if state.is_full_dkg {
             None
@@ -1003,6 +1025,14 @@ impl Round {
 
         let dealers = state.dealers().clone();
         let players = state.players().clone();
+        let reveal = if v1_active {
+            Reveal::V1
+        } else {
+            #[expect(deprecated, reason = "preserve pre-T12 ceremony transcripts")]
+            {
+                Reveal::V0
+            }
+        };
 
         Self {
             epoch: state.epoch,
@@ -1011,12 +1041,7 @@ impl Round {
                 state.epoch.get(),
                 previous_output,
                 Mode::NonZeroCounter,
-                #[expect(
-                    deprecated,
-                    reason = "switching the revealed-share calculation to V1 changes the round \
-                              summary and requires a coordinated protocol change"
-                )]
-                Reveal::V0,
+                reveal,
                 dealers.clone(),
                 players.clone(),
             )
@@ -1125,7 +1150,7 @@ impl Player {
     }
 }
 
-/// Contains a block's height, parent, digest, and dealer log, if there was one.
+/// Contains a block's height, parent digest and round, digest, and optional dealer log.
 #[derive(Clone, Debug)]
 pub(super) struct ReducedBlock {
     // The block height.
@@ -1133,6 +1158,9 @@ pub(super) struct ReducedBlock {
 
     // The block parent.
     pub(super) parent: Digest,
+
+    // The round the parent was notarized in.
+    pub(super) parent_round: commonware_consensus::types::Round,
 
     // The block digest (hash).
     pub(super) digest: Digest,
@@ -1174,9 +1202,14 @@ impl ReducedBlock {
                 }
             })
         };
+        let context = block.context();
         Self {
             height: block.height(),
             parent: block.parent(),
+            parent_round: commonware_consensus::types::Round::new(
+                context.round.epoch(),
+                context.parent.0,
+            ),
             digest: block.digest(),
             log,
         }
@@ -1374,7 +1407,7 @@ mod tests {
         deterministic::Runner::default().start(|mut context| async move {
             let mut state = make_test_state(&mut context, 1);
             state.is_full_dkg = true;
-            let round = Round::from_state(&state, crate::config::NAMESPACE);
+            let round = Round::from_state(&state, crate::config::NAMESPACE, false);
             let dealer_key = PrivateKey::from_seed(100);
             let player_key = PrivateKey::from_seed(101);
             let mut storage = builder()

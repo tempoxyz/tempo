@@ -44,7 +44,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis};
+use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -79,6 +79,9 @@ pub enum TempoSubcommand {
 
     /// Patch a virgin block-0 database to use a new genesis header.
     Regenesis(Box<regenesis::Regenesis<TempoChainSpecParser>>),
+
+    /// Replay historical canonical blocks under candidate hardfork rules.
+    ShadowReplay(Box<shadow_replay::ShadowReplay>),
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
@@ -126,6 +129,11 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),
                 )?;
+                Ok(())
+            }
+            Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
             }
             Self::Add(_) | Self::Update(_) | Self::Remove(_) | Self::List(_) => {
@@ -1361,25 +1369,48 @@ struct InfoOutput {
 
 #[derive(Debug, clap::Args)]
 pub struct Info {
-    /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
-    rpc_url: String,
+    /// RPC URL to query. Takes precedence over the chain spec's default RPC URL.
+    /// Defaults to the mainnet RPC URL when neither --rpc-url nor --chain is set.
+    #[arg(long)]
+    rpc_url: Option<String>,
 
-    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
-    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    /// Chain spec (mainnet, testnet, or path to chainspec file).
+    /// Resolved automatically from the RPC chain id when omitted.
     #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Option<Arc<TempoChainSpec>>,
 }
 
 impl Info {
     async fn run(self) -> eyre::Result<()> {
-        use alloy_consensus::BlockHeader;
-        use alloy_provider::ProviderBuilder;
+        self.run_with(async |rpc_url: &str| {
+            ProviderBuilder::new_with_network::<TempoNetwork>()
+                .connect(rpc_url)
+                .await
+                .wrap_err("failed to connect to RPC")
+        })
+        .await
+    }
 
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect(&self.rpc_url)
-            .await
-            .wrap_err("failed to connect to RPC")?;
+    /// Runs the command, connecting to the resolved RPC URL with `connect`.
+    ///
+    /// Tests use this to observe the RPC URL and serve mocked responses.
+    async fn run_with<P: Provider<TempoNetwork>>(
+        self,
+        connect: impl AsyncFnOnce(&str) -> eyre::Result<P>,
+    ) -> eyre::Result<()> {
+        use alloy_consensus::BlockHeader;
+
+        let rpc_url = match (self.rpc_url.as_deref(), self.chain.as_deref()) {
+            (Some(rpc_url), _) => rpc_url,
+            (None, Some(chain)) => chain
+                .default_follow_url()
+                .ok_or_eyre("--chain spec has no default RPC URL; pass --rpc-url explicitly")?,
+            (None, None) => tempo_chainspec::spec::PRESTO
+                .default_follow_url()
+                .expect("mainnet chain spec has a default RPC URL"),
+        };
+
+        let provider = connect(rpc_url).await?;
 
         let chain_id = provider
             .get_chain_id()
@@ -1390,9 +1421,7 @@ impl Info {
             Some(chain) => {
                 let spec_chain_id = chain.chain().id();
                 if spec_chain_id != chain_id {
-                    eprintln!(
-                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
-                    );
+                    bail!("--chain spec has chain id {spec_chain_id} but RPC returned {chain_id}");
                 }
                 chain
             }
@@ -1537,8 +1566,7 @@ impl Info {
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
             epoch_length: epoch_length.get(),
-            epoch_blocks_remaining: epoch_length.get()
-                - (current_height.get() % epoch_length.get() + 1),
+            epoch_blocks_remaining: epoch_length.get() - (current_height.get() % epoch_length + 1),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
         };
@@ -1558,6 +1586,7 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::transports::mock::Asserter;
     use clap::Parser;
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
@@ -2053,5 +2082,35 @@ mod tests {
         let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
 
         assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
+    }
+
+    #[tokio::test]
+    async fn info_without_rpc_url_or_chain_queries_mainnet_rpc() {
+        let cli = TempoCli::try_parse_from(["tempo", "consensus", "info"]).unwrap();
+        let info = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::Info(cmd),
+            )) => cmd,
+            other => panic!("expected Info, got `{other:?}`"),
+        };
+
+        // Serve the chain id request, then fail the next request so the command stops early.
+        let asserter = Asserter::new();
+        asserter.push_success(&tempo_chainspec::spec::PRESTO.chain().id());
+        asserter.push_failure_msg("mocked: stop after chain id");
+
+        let mut requested_url = None;
+        let err = info
+            .run_with(async |rpc_url: &str| {
+                requested_url = Some(rpc_url.to_string());
+                Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_mocked_client(asserter.clone()))
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(requested_url.as_deref(), Some("wss://rpc.presto.tempo.xyz"));
+        assert_eq!(err.to_string(), "failed to get latest block number");
+        assert!(asserter.read_q().is_empty());
     }
 }

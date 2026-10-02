@@ -45,6 +45,16 @@ use tempo_precompiles::{
 use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
 
+/// Transaction pool operations for Tempo nonce lanes.
+pub trait TempoTransactionPoolExt: TransactionPool {
+    /// Returns pending transactions in the address's sequential 2D nonce lane.
+    fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
+}
+
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
@@ -1112,7 +1122,15 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        self.protocol_pool.get_queued_transactions_by_sender(sender)
+        let mut txs = self.protocol_pool.get_queued_transactions_by_sender(sender);
+        txs.extend(
+            self.aa_2d_pool
+                .read()
+                .queued_transactions()
+                .filter(|tx| tx.sender() == sender),
+        );
+
+        txs
     }
 
     fn get_highest_transaction_by_sender(
@@ -1269,6 +1287,25 @@ where
     }
 }
 
+impl<Client, EvmConfig> TempoTransactionPoolExt for TempoTransactionPool<Client, EvmConfig>
+where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
+    fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        self.aa_2d_pool
+            .read()
+            .get_pending_transactions_by_address_and_nonce_key(address, nonce_key)
+            .collect()
+    }
+}
+
 impl<Client, EvmConfig> TransactionPoolExt for TempoTransactionPool<Client, EvmConfig>
 where
     EvmConfig: ConfigureTempoPoolEvm,
@@ -1284,7 +1321,12 @@ where
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        self.protocol_pool.on_canonical_state_change(update)
+        // Keep the AA 2D pool's base fee in sync with the protocol pool. Reth only calls
+        // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
+        // keep ordering its eviction sets against a stale base fee once the fee starts moving.
+        let pending_basefee = update.pending_block_base_fee;
+        self.protocol_pool.on_canonical_state_change(update);
+        self.aa_2d_pool.write().set_base_fee(pending_basefee);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
@@ -1646,6 +1688,89 @@ mod tests {
     }
 
     #[test]
+    fn pending_transactions_by_address_and_nonce_key() {
+        use crate::test_utils::{TxBuilder, wrap_valid_tx};
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let nonce_key = U256::from(7);
+        let txs = [
+            TxBuilder::aa(sender).nonce_key(nonce_key).build(),
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build(),
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build(),
+            TxBuilder::aa(sender).nonce_key(U256::from(8)).build(),
+            TxBuilder::aa(Address::random())
+                .nonce_key(nonce_key)
+                .build(),
+            TxBuilder::aa(sender).nonce_key(U256::MAX).build(),
+        ];
+        let expected: Vec<_> = txs[..2].iter().map(|tx| *tx.hash()).collect();
+        for tx in txs {
+            pool.aa_2d_pool
+                .write()
+                .add_transaction(
+                    Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                    0,
+                    TempoHardfork::T1,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            tx_hashes(&pool.get_pending_transactions_by_address_and_nonce_key(sender, nonce_key)),
+            expected
+        );
+        for (address, key) in [
+            (Address::ZERO, nonce_key),
+            (sender, U256::from(9)),
+            (sender, U256::MAX),
+        ] {
+            assert!(
+                pool.get_pending_transactions_by_address_and_nonce_key(address, key)
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_state_change_refreshes_aa_2d_base_fee() {
+        use reth_primitives_traits::SealedBlock;
+        use reth_transaction_pool::PoolUpdateKind;
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let initial_base_fee = pool.aa_2d_pool.read().base_fee();
+
+        let new_tip = SealedBlock::seal_slow(Block {
+            header: TempoHeader {
+                inner: Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    base_fee_per_gas: Some(initial_base_fee),
+                    excess_blob_gas: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        let pending_block_base_fee = initial_base_fee + 1_000;
+
+        pool.on_canonical_state_change(CanonicalStateUpdate {
+            new_tip: &new_tip,
+            pending_block_base_fee,
+            pending_block_blob_fee: None,
+            changed_accounts: Vec::new(),
+            mined_transactions: Vec::new(),
+            update_kind: PoolUpdateKind::Commit,
+        });
+
+        assert_eq!(pool.aa_2d_pool.read().base_fee(), pending_block_base_fee);
+        assert_eq!(
+            pool.protocol_pool.block_info().pending_basefee,
+            pending_block_base_fee
+        );
+    }
+
+    #[test]
     fn pool_size_includes_aa_2d_transaction_counts_and_bytes() {
         let pool = create_test_pool(create_provider_with_tip());
         let tx = crate::test_utils::TxBuilder::aa(Address::random())
@@ -1661,6 +1786,76 @@ mod tests {
         assert_eq!(size.queued, 0);
         assert_eq!(size.queued_size, 0);
         assert_eq!(size.total, 1);
+    }
+
+    #[test]
+    fn by_sender_accessors_include_aa_2d_queued_transactions() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let other = Address::random();
+
+        // Protocol lane (nonce_key = 0): nonce 0 is pending, nonce 2 is gapped and queued.
+        let protocol_pending = crate::test_utils::TxBuilder::aa(sender).nonce(0).build();
+        let protocol_queued = crate::test_utils::TxBuilder::aa(sender).nonce(2).build();
+        // 2D lane (nonce_key = 1): same shape, lives only in the AA 2D pool.
+        let aa_2d_pending = crate::test_utils::TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(0)
+            .build();
+        let aa_2d_queued = crate::test_utils::TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(2)
+            .build();
+        // Another sender's queued 2D transaction must not leak into `sender`'s results.
+        let other_aa_2d_queued = crate::test_utils::TxBuilder::aa(other)
+            .nonce_key(U256::from(1))
+            .nonce(2)
+            .build();
+
+        let protocol_pending_hash = *protocol_pending.hash();
+        let protocol_queued_hash = *protocol_queued.hash();
+        let aa_2d_pending_hash = *aa_2d_pending.hash();
+        let aa_2d_queued_hash = *aa_2d_queued.hash();
+        let other_aa_2d_queued_hash = *other_aa_2d_queued.hash();
+
+        for pooled in [
+            protocol_pending,
+            protocol_queued,
+            aa_2d_pending,
+            aa_2d_queued,
+            other_aa_2d_queued,
+        ] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: *pooled.cost(),
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(pooled, None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .expect("transaction should be admitted");
+        }
+
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 3));
+
+        let mut queued = tx_hashes(&pool.get_queued_transactions_by_sender(sender));
+        queued.sort();
+        let mut expected_queued = vec![protocol_queued_hash, aa_2d_queued_hash];
+        expected_queued.sort();
+        assert_eq!(queued, expected_queued);
+
+        let mut pending = tx_hashes(&pool.get_pending_transactions_by_sender(sender));
+        pending.sort();
+        let mut expected_pending = vec![protocol_pending_hash, aa_2d_pending_hash];
+        expected_pending.sort();
+        assert_eq!(pending, expected_pending);
+
+        assert_eq!(
+            tx_hashes(&pool.get_queued_transactions_by_sender(other)),
+            vec![other_aa_2d_queued_hash]
+        );
+        assert!(pool.get_pending_transactions_by_sender(other).is_empty());
     }
 
     fn sponsored_keychain_transaction(

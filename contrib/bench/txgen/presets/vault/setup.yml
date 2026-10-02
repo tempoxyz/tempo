@@ -130,6 +130,7 @@ setup:
       - var: setup.strategy_vault.address
       - '0x20c0000000000000000000000000000000000000'
   - id: publish_components
+    depends_on: [registry]
     bindings:
       calldata:
         abi_encode_packed:
@@ -167,6 +168,7 @@ setup:
         function:
           var: calldata
   - id: engine
+    depends_on: [publish_components]
     deploy:
       type: eip1559
       from:
@@ -350,6 +352,7 @@ setup:
         - 2
         - true
   - id: configure_1
+    depends_on: [engine]
     tx:
       type: tempo
       from:
@@ -463,6 +466,7 @@ setup:
         function: unpause
         args: []
   - id: deploy_vault
+    depends_on: [factory]
     tx:
       type: tempo
       from:

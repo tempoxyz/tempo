@@ -1,8 +1,8 @@
 use alloy::{
-    primitives::{Address, U256},
+    primitives::{Address, U256, address},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use serde_json::json;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::rpc::simulate::TempoSimulateV1Response;
@@ -16,7 +16,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -63,13 +63,20 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     assert_eq!(meta.symbol, "TEST");
     assert_eq!(meta.currency, "USD");
 
-    // Construct a call that does not target TIP20
+    // Construct calls that target a non-TIP20 address and an undeployed TIP20 address
+    let undeployed_tip20 = address!("0x20C000000000000000000000ffffffffffffffff");
     let payload = json!({
         "blockStateCalls": [{
-            "calls": [{
-                "from": format!("{:#x}", Address::ZERO),
-                "to": format!("{:#x}", Address::random()),
-            }]
+            "calls": [
+                {
+                    "from": format!("{:#x}", Address::ZERO),
+                    "to": format!("{:#x}", Address::random()),
+                },
+                {
+                    "from": format!("{:#x}", Address::ZERO),
+                    "to": format!("{undeployed_tip20:#x}"),
+                },
+            ]
         }],
     });
 
@@ -79,7 +86,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
 
     assert!(
         response.token_metadata.is_empty(),
-        "expected empty token metadata for non-TIP-20 simulation"
+        "expected empty token metadata for non-TIP-20 and undeployed TIP-20 targets"
     );
 
     Ok(())

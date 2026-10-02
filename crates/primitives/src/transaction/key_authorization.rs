@@ -204,7 +204,7 @@ pub struct KeyAuthorization {
     ///
     /// This uses `Option<NonZeroU64>` so `Some(0)` is unrepresentable and cannot silently
     /// roundtrip into `None`.
-    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub expiry: Option<NonZeroU64>,
 
     /// TIP20 spending limits for this key.
@@ -494,41 +494,13 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             chain_id: u.arbitrary()?,
             key_type: u.arbitrary()?,
             key_id: u.arbitrary()?,
-            expiry: u.arbitrary()?,
+            // Zero (including exhausted input) represents an absent expiry.
+            expiry: u.arbitrary::<Option<u64>>()?.and_then(NonZeroU64::new),
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
             witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
             is_admin: u.arbitrary()?,
             account: u.arbitrary()?,
-        })
-    }
-}
-
-#[cfg(feature = "serde")]
-#[doc(hidden)]
-pub mod serde_nonzero_quantity_opt {
-    use core::num::NonZeroU64;
-
-    use serde::{Deserializer, Serializer, de::Error as _};
-
-    pub fn serialize<S>(value: &Option<NonZeroU64>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        alloy_serde::quantity::opt::serialize(&value.map(NonZeroU64::get), serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        alloy_serde::quantity::opt::deserialize(deserializer).and_then(|value: Option<u64>| {
-            value
-                .map(|value| {
-                    NonZeroU64::new(value)
-                        .ok_or_else(|| D::Error::custom("expected non-zero quantity"))
-                })
-                .transpose()
         })
     }
 }
@@ -637,54 +609,6 @@ mod rlp {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use proptest::prelude::*;
-        use proptest_arbitrary_interop::arb;
-
-        proptest! {
-            #[test]
-            fn proptest_key_authorization_borrowed_rlp_matches_owned(
-                mut authorization in arb::<KeyAuthorization>(),
-                limits_state in 0..3u8,
-                calls_state in 0..3u8,
-            ) {
-                // Exercise omitted and explicitly empty lists independently of later fields.
-                match limits_state {
-                    0 => authorization.limits = None,
-                    1 => authorization.limits = Some(Vec::new()),
-                    _ => {}
-                }
-                match calls_state {
-                    0 => authorization.allowed_calls = None,
-                    1 => authorization.allowed_calls = Some(Vec::new()),
-                    _ => {}
-                }
-                let owned = KeyAuthorizationWire {
-                    chain_id: authorization.chain_id,
-                    key_type: authorization.key_type,
-                    key_id: authorization.key_id,
-                    expiry: authorization.expiry,
-                    limits: authorization.limits.clone(),
-                    allowed_calls: authorization.allowed_calls.clone(),
-                    witness: authorization.witness,
-                    is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
-                    account: authorization.account,
-                };
-                let encoded = alloy_rlp::encode(&authorization);
-                prop_assert_eq!(authorization.length(), encoded.len());
-                prop_assert_eq!(owned.length(), encoded.len());
-                prop_assert_eq!(&encoded, &alloy_rlp::encode(&owned));
-
-                let mut input = encoded.as_slice();
-                let decoded = KeyAuthorization::decode(&mut input)?;
-                prop_assert_eq!(decoded, authorization);
-                prop_assert!(input.is_empty());
-            }
-        }
-    }
-
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
     )]
@@ -735,6 +659,54 @@ mod rlp {
             TokenLimitWire::from(self).length()
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+
+        proptest! {
+            #[test]
+            fn proptest_key_authorization_borrowed_rlp_matches_owned(
+                mut authorization in arb::<KeyAuthorization>(),
+                limits_state in 0..3u8,
+                calls_state in 0..3u8,
+            ) {
+                // Exercise omitted and explicitly empty lists independently of later fields.
+                match limits_state {
+                    0 => authorization.limits = None,
+                    1 => authorization.limits = Some(Vec::new()),
+                    _ => {}
+                }
+                match calls_state {
+                    0 => authorization.allowed_calls = None,
+                    1 => authorization.allowed_calls = Some(Vec::new()),
+                    _ => {}
+                }
+                let owned = KeyAuthorizationWire {
+                    chain_id: authorization.chain_id,
+                    key_type: authorization.key_type,
+                    key_id: authorization.key_id,
+                    expiry: authorization.expiry,
+                    limits: authorization.limits.clone(),
+                    allowed_calls: authorization.allowed_calls.clone(),
+                    witness: authorization.witness,
+                    is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
+                    account: authorization.account,
+                };
+                let encoded = alloy_rlp::encode(&authorization);
+                prop_assert_eq!(authorization.length(), encoded.len());
+                prop_assert_eq!(owned.length(), encoded.len());
+                prop_assert_eq!(&encoded, &alloy_rlp::encode(&owned));
+
+                let mut input = encoded.as_slice();
+                let decoded = KeyAuthorization::decode(&mut input)?;
+                prop_assert_eq!(decoded, authorization);
+                prop_assert!(input.is_empty());
+            }
+        }
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -778,6 +750,27 @@ mod tests {
 
     fn nonzero(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test expiry must be non-zero")
+    }
+
+    #[test]
+    fn arbitrary_expiry_boundaries() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        for value in [None, Some(0u64), Some(1), Some(u64::MAX)] {
+            // Default chain ID, key type and key ID, followed by Some's tag.
+            let mut input = vec![0; 32];
+            input.push(1);
+            if let Some(value) = value {
+                input.extend_from_slice(&value.to_le_bytes());
+            }
+            let auth = KeyAuthorization::arbitrary(&mut Unstructured::new(&input)).unwrap();
+            assert_eq!(auth.expiry, value.and_then(NonZeroU64::new));
+
+            let encoded = alloy_rlp::encode(&auth);
+            let mut remaining = encoded.as_slice();
+            assert_eq!(KeyAuthorization::decode(&mut remaining).unwrap(), auth);
+            assert!(remaining.is_empty());
+        }
     }
 
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {

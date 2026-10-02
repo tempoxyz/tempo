@@ -5,7 +5,7 @@ use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
+    Precompile, charge_input_cost, dispatch, mutate, preserve_storage_credits,
     stablecoin_dex::{
         StablecoinDEX, TickLevel,
         orderbook::{BookId, compute_book_key},
@@ -22,13 +22,13 @@ impl Precompile for StablecoinDEX {
             calldata,
             |call| match call {
                 IStablecoinDEX::IStablecoinDEXCalls {
-                    place(call) => mutate(call, msg_sender, |s, c| {
+                    place(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
-                        self.place(s, c.token, c.amount, c.isBid, c.tick)
+                        self.place(sender, c.token, c.amount, c.isBid, c.tick)
                     }),
-                    placeFlip(call) => mutate(call, msg_sender, |s, c| {
+                    placeFlip(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
-                        self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
+                        self.place_flip(sender, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
                     }),
                     balanceOf(call) => view(call, |c| self.balance_of(c.user, c.token)),
                     getOrder(call) => view(call, |c| {
@@ -45,25 +45,25 @@ impl Precompile for StablecoinDEX {
                         preserve_storage_credits(self.address)?;
                         self.create_pair(c.base)
                     }),
-                    withdraw(call) => mutate_void(call, msg_sender, |s, c| {
+                    withdraw(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
-                        self.withdraw(s, c.token, c.amount)
+                        self.withdraw(sender, c.token, c.amount)
                     }),
-                    cancel(call) => mutate_void(call, msg_sender, |s, c| {
+                    cancel(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
-                        self.cancel(s, c.orderId)
+                        self.cancel(sender, c.orderId)
                     }),
-                    cancelStaleOrder(call) => mutate_void(call, msg_sender, |_, c| {
+                    cancelStaleOrder(call) => mutate(call, msg_sender, |_, c| {
                         preserve_storage_credits(self.address)?;
                         self.cancel_stale_order(c.orderId)
                     }),
-                    swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
+                    swapExactAmountIn(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
-                        self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
+                        self.swap_exact_amount_in(sender, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
                     }),
-                    swapExactAmountOut(call) => mutate(call, msg_sender, |s, c| {
+                    swapExactAmountOut(call) => mutate(call, msg_sender, |sender, c| {
                         preserve_storage_credits(self.address)?;
-                        self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
+                        self.swap_exact_amount_out(sender, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
                     }),
                     quoteSwapExactAmountIn(call) => view(call, |c| {
                         self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
@@ -92,7 +92,7 @@ impl Precompile for StablecoinDEX {
                     #[schedule(since = T8)]
                     bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
                     #[schedule(since = T8)]
-                    setBookIndex(call) => mutate_void(call, msg_sender, |_, c| {
+                    setBookIndex(call) => mutate(call, msg_sender, |_, c| {
                         preserve_storage_credits(self.address)?;
                         self.set_book_index(c.index)
                     }),

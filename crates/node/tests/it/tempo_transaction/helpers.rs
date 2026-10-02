@@ -17,6 +17,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use core::num::NonZeroU64;
+use reth_e2e_test_utils::wait::poll_until;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
@@ -167,16 +168,11 @@ pub(super) async fn wait_until_pool_not_contains(
     tx_hash: &alloy::primitives::B256,
     label: &str,
 ) -> eyre::Result<()> {
-    let timeout = std::time::Duration::from_secs(10);
-    let interval = std::time::Duration::from_millis(10);
-    let start = std::time::Instant::now();
-    while pool.contains(tx_hash) {
-        if start.elapsed() > timeout {
-            eyre::bail!("Timed out waiting for tx {tx_hash} to leave pool ({label})");
-        }
-        tokio::time::sleep(interval).await;
-    }
-    Ok(())
+    poll_until(
+        format!("tx {tx_hash} to leave pool ({label})"),
+        || async move { Ok((!pool.contains(tx_hash)).then_some(())) },
+    )
+    .await
 }
 
 /// Fixed funding amount: 500 tokens (6 decimals).
@@ -234,12 +230,14 @@ pub(super) async fn fund_address_with(
     funding_envelope.encode_2718(&mut encoded_funding);
 
     let expected_hash = *funding_envelope.tx_hash();
-    let funding_hash = setup.node.rpc.inject_tx(encoded_funding.into()).await?;
+    let (funding_hash, funding_payload) = setup
+        .node
+        .inject_and_advance(encoded_funding.into())
+        .await?;
     assert_eq!(
         funding_hash, expected_hash,
         "inject_tx hash should match envelope hash"
     );
-    let funding_payload = setup.node.advance_block().await?;
 
     let raw: Option<serde_json::Value> = provider
         .raw_request("eth_getTransactionReceipt".into(), [funding_hash])
@@ -516,13 +514,10 @@ pub(super) async fn submit_and_mine_aa_tx(
     signature: TempoSignature,
 ) -> eyre::Result<B256> {
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-    let tx_hash = *envelope.tx_hash();
-    setup
+    let (tx_hash, _) = setup
         .node
-        .rpc
-        .inject_tx(envelope.encoded_2718().into())
+        .inject_and_advance(envelope.encoded_2718().into())
         .await?;
-    setup.node.advance_block().await?;
     Ok(tx_hash)
 }
 

@@ -28,10 +28,10 @@ use opentelemetry_otlp as _;
 pub mod cli;
 mod defaults;
 mod follow;
-pub mod init_state;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
+pub mod shadow_replay;
 mod snapshot_download;
 mod snapshot_manifest;
 pub mod tempo_cmd;
@@ -44,6 +44,7 @@ pub use crate::{
 pub use reth_cli_util as cli_util;
 pub use tempo_node;
 pub use tempo_node as node;
+pub use tempo_state_bloat as init_state;
 
 use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
@@ -64,7 +65,10 @@ use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
-use tempo_chainspec::spec::{DEV, TempoChainSpec};
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{DEV, TempoChainSpec},
+};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
@@ -76,7 +80,7 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    TempoFullNode,
+    ShadowReplayer, TempoFullNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
@@ -303,6 +307,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     let (consensus_startup_tx, consensus_startup_rx) = oneshot::channel::<(
         TempoFullNode,
+        tempo_node::ExecutedState,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
     )>();
@@ -320,10 +325,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args, gossip_transport) = consensus_startup_rx.blocking_recv().wrap_err(
-            "channel closed before consensus-relevant command line args \
+        let (node, executed_state, args, gossip_transport) =
+            consensus_startup_rx.blocking_recv().wrap_err(
+                "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
-        )?;
+            )?;
 
         let datadir = node
             .config
@@ -418,6 +424,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     ctx.child("consensus"),
                     args.consensus,
                     Arc::new(node),
+                    executed_state,
                     cl_feed_state_clone,
                     gossip_transport,
                 ))
@@ -526,6 +533,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         };
         let chain_id = builder.config().chain.chain().id();
 
+        #[cfg(feature = "custom-pcrs")]
+        if let Some(policy) = args.custom_pcrs.clone() {
+            policy.validate(chain_id)?;
+            warn!(?policy, "replacing compiled-in zone verifier PCRs with a custom policy");
+            tempo_precompiles::zone_verifier::CUSTOM_PCRS
+                .set(policy)
+                .map_err(|_| eyre::eyre!("zone verifier PCRs were already set"))?;
+        }
+
         // Resolve the bootnodes endpoint:
         // --tempo.bootnodes-endpoint=none -> disabled
         // otherwise -> use the provided/default URL
@@ -534,19 +550,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        let tempo_node = overrides.apply_tempo_node({
+            let node = TempoNode::new(&args.node_args, validator_key);
+            match gossip_protocol_handler {
+                Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
+                None => node,
+            }
+        });
+        let executed_state = tempo_node.executed_state();
+
         let NodeHandle {
             node,
             node_exit_future,
         } = builder
-            .node(overrides.apply_tempo_node({
-                let node = TempoNode::new(&args.node_args, validator_key);
-                match gossip_protocol_handler {
-                    Some(protocol_handler) => {
-                        node.with_finalization_cert_gossip(protocol_handler)
-                    }
-                    None => node,
-                }
-            }))
+            .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
@@ -584,6 +601,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
+
+        if let Some(hardfork) = args.node_args.shadow_replay {
+            let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());
+            ShadowReplayer::new(node.provider.clone(), hardfork).spawn(node.tasks().clone());
+        }
 
         // Fetch bootnodes from the endpoint in a background task and inject
         // them into the already-running discovery services.
@@ -639,7 +661,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = consensus_startup_tx.send((node, args, gossip_transport));
+        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport));
 
         // TODO: emit these inside a span
         tokio::select! {
@@ -686,7 +708,7 @@ mod tests {
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        TempoArgs, TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults,
+        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
         follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
@@ -698,6 +720,40 @@ mod tests {
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
+    }
+
+    #[test]
+    fn shadow_replay_is_opt_in_and_parses_candidate_hardfork() {
+        let args = parse_node_args(&["tempo", "node", "--dev"]);
+        assert_eq!(args.node_args.shadow_replay, None);
+
+        let args = parse_node_args(&["tempo", "node", "--dev", "--shadow-replay"]);
+        assert_eq!(args.node_args.shadow_replay, Some(None));
+
+        for flag in ["--shadow-replay", "--shadow-replay.hardfork"] {
+            let args = parse_node_args(&["tempo", "node", "--dev", flag, "T12"]);
+            assert_eq!(args.node_args.shadow_replay, Some(Some(TempoHardfork::T12)));
+        }
+    }
+
+    #[test]
+    fn historical_shadow_replay_subcommand_parses() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "shadow-replay",
+            "--from",
+            "100",
+            "--to",
+            "200",
+            "--hardfork",
+            "T13",
+            "--fail-on-findings",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ext(crate::tempo_cmd::TempoSubcommand::ShadowReplay(_))
+        ));
     }
 
     #[test]
@@ -930,11 +986,11 @@ mod tests {
     }
 
     #[test]
-    fn gossip_is_opt_in_and_requires_a_consensus_engine() {
+    fn gossip_defaults_on_and_requires_a_consensus_engine() {
         init_defaults_once();
 
         assert!(
-            !parse_node_args(&[
+            parse_node_args(&[
                 "tempo",
                 "node",
                 "--consensus.signing-key",
@@ -942,7 +998,7 @@ mod tests {
             ])
             .has_gossip(false)
         );
-        assert!(!parse_node_args(&["tempo", "node", "--follow"]).has_gossip(false));
+        assert!(parse_node_args(&["tempo", "node", "--follow"]).has_gossip(false));
         assert!(
             parse_node_args(&[
                 "tempo",
@@ -997,17 +1053,11 @@ mod tests {
             "node",
             "--consensus.signing-key",
             "unused-signing-key",
-            "--consensus.devp2p.finalizations",
         ]);
         assert!(validator.has_gossip(false));
         assert!(!validator.consensus.gossip_transport(false).ingest);
 
-        let follower = parse_node_args(&[
-            "tempo",
-            "node",
-            "--follow",
-            "--consensus.devp2p.finalizations",
-        ]);
+        let follower = parse_node_args(&["tempo", "node", "--follow"]);
         assert!(follower.has_gossip(false));
         assert!(follower.consensus.gossip_transport(true).ingest);
     }
