@@ -1,4 +1,5 @@
 use alloy::{
+    hex,
     primitives::{Address, U256, address},
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
@@ -42,7 +43,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
             "calls": [{
                 "from": format!("{caller:#x}"),
                 "to": format!("{token_addr:#x}"),
-                "input": alloy::hex::encode_prefixed(&calldata),
+                "input": hex::encode_prefixed(&calldata),
             }]
         }],
         "traceTransfers": true,

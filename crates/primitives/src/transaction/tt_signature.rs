@@ -1308,10 +1308,10 @@ mod tests {
         let s = [0u8; 32];
         assert_invalid(&r, &s, "all-zero signature");
 
-        let one = alloy_primitives::B256::with_last_byte(1).0;
+        let one = B256::with_last_byte(1);
         let order = P256_ORDER.to_be_bytes::<32>();
-        assert_invalid(&order, &one, "signature with r == P256_ORDER");
-        assert_invalid(&one, &order, "signature with s == P256_ORDER");
+        assert_invalid(&order, one.as_slice(), "signature with r == P256_ORDER");
+        assert_invalid(one.as_slice(), &order, "signature with s == P256_ORDER");
     }
 
     #[test]
