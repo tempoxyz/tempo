@@ -13918,6 +13918,7 @@ dependencies = [
  "reqwest 0.13.3",
  "reth-chainspec",
  "reth-e2e-test-utils",
+ "reth-engine-tree",
  "reth-errors",
  "reth-ethereum",
  "reth-evm",

@@ -5,6 +5,13 @@ still regress against sequential execution; this work has not demonstrated that
 execution is no longer the node's bottleneck. The implementation targets current
 main (Tempo 1.14, Reth 2.7, revm 43), with ordered read validation and replay.
 
+Engine payload validation now consumes strict results from its existing
+prewarming workers when available, and executes ordered misses directly.
+The handoff retains at most 128 results and 32 MiB of estimated payload; this
+estimate is not an allocator/RSS bound. Small blocks, disabled prewarming and
+BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
+`--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
+
 Only reusable benchmark scripts and this summary belong in this directory.
 Store reports, JSON, TSV, logs, profiles, rejected patches and research notes in
 `benchmark-artifacts/parallel-execution/` at the repository root. That directory
@@ -144,7 +151,7 @@ throughput falls 27.46% and validation throughput falls 32.71%. Builder reuse
 remains low at 13.63%; recording accepted-prefix hints takes 7.30% of sampled
 builder CPU. Validator reuse is 76.88%. Slack notifications were suppressed.
 Builder concurrency follows `--engine.prewarming-threads`, with twice that many
-admitted candidates; `--execution.threads` controls the separate Engine pool.
+admitted candidates. These earlier runs used a separate Engine speculative pool.
 Generated differential and real-node AA/Engine observer tests pass. Further
 optimization remains in progress.
 
@@ -175,3 +182,20 @@ feature TPS (-16.83%); builder and validator gas throughput fall 26.12% and 34.3
 Builder reuse is 85.95% and validator reuse is 85.78%, with storage conflicts only.
 The workflow suppresses Slack. Cross-run differences do not isolate the effect
 of changing the worker count.
+
+[State-cache comparison 37055427310](https://github.com/tempoxyz/tempo/actions/runs/37055427310)
+measures 12,032 baseline versus 11,011 feature TPS (-8.49%, neutral with wide
+variance); builder and validator gas throughput fall 31.38% and 36.51%.
+Both configurations have long block gaps. Builder validation still accounts
+for 17.23% of sampled CPU despite fewer generic database reads. Local cache-read
+improvements have not translated into a node win; Slack was suppressed.
+
+[State-cache replay 37055435207](https://github.com/tempoxyz/tempo/actions/runs/37055435207)
+validates all 250,000 submitted blocks, including warmup, with throughput down
+16.84%. Of 12,476 nonempty measured blocks, 10,752 contain only one transaction.
+
+[Singleton replay 37057293797](https://github.com/tempoxyz/tempo/actions/runs/37057293797)
+skips worker dispatch for singleton lookahead. Against its own paired main
+baseline, validation throughput falls 2.74%, p90 latency rises 1.25%, and p99
+rises 8.01%. It still does not satisfy the on-win Slack gate. Different runners
+and paired baselines prevent attributing the entire cross-run change to this edit.

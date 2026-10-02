@@ -578,7 +578,10 @@ where
         // Reth's engine submits one transaction at a time. Use the known block body
         // to prepare a bounded window, then let the existing executor validate and
         // commit each transaction in the original order.
-        if !self.inner.evm.has_prepared_transactions() && !recovered.tx().is_system_tx() {
+        if !self.inner.evm.has_engine_prewarming()
+            && !self.inner.evm.has_prepared_transactions()
+            && !recovered.tx().is_system_tx()
+        {
             let batch_size = self.inner.evm.speculative_batch_size();
             let beneficiary = self.inner.evm.ctx().block.beneficiary;
             let start = self.inner.receipts.len();

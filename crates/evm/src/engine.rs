@@ -1,5 +1,5 @@
 use crate::TempoEvmConfig;
-use alloy_consensus::crypto::RecoveryError;
+use alloy_consensus::{crypto::RecoveryError, transaction::TxHashRef};
 use alloy_primitives::Address;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
@@ -15,7 +15,25 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &TempoExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.evm_env(payload.block.header())
+        let env = self.evm_env(payload.block.header())?;
+        if let Some(cache) = &self.inner.executor_factory.evm_factory().engine_prewarming {
+            // Matches pinned Reth's SMALL_BLOCK_TX_THRESHOLD. Below it Reth
+            // does not start transaction prewarming. BAL uses a separate path.
+            if payload.block.body().transactions.len() >= 5 && payload.block_access_list.is_none() {
+                cache.begin(
+                    env.clone(),
+                    payload
+                        .block
+                        .body()
+                        .transactions
+                        .iter()
+                        .map(|tx| *tx.tx_hash()),
+                );
+            } else {
+                cache.clear();
+            }
+        }
+        Ok(env)
     }
 
     fn context_for_payload<'a>(
@@ -284,6 +302,67 @@ mod tests {
         };
         let context = evm_config.context_for_payload(&payload).unwrap();
         assert_eq!(context.senders, &[Address::ZERO]);
+    }
+
+    #[test]
+    fn engine_sessions_require_an_explicit_clone_and_eligible_payload() {
+        let original = TempoEvmConfig::moderato()
+            .with_speculative_executor(crate::parallel::SpeculativeExecutor::new(1, 32).unwrap());
+        let engine = original.clone().with_engine_prewarming();
+        assert!(
+            original
+                .inner
+                .executor_factory
+                .evm_factory()
+                .engine_prewarming
+                .is_none()
+        );
+        assert!(
+            TempoEvmConfig::moderato()
+                .with_engine_prewarming()
+                .inner
+                .executor_factory
+                .evm_factory()
+                .engine_prewarming
+                .is_none()
+        );
+        let cache = engine
+            .inner
+            .executor_factory
+            .evm_factory()
+            .engine_prewarming
+            .as_ref()
+            .unwrap();
+        let transactions = (0..5)
+            .map(|nonce| {
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TxLegacy {
+                        nonce,
+                        ..Default::default()
+                    },
+                    Signature::test_signature(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let mut payload = TempoExecutionData {
+            block: create_test_block(transactions.clone()).into(),
+            block_access_list: None,
+        };
+        let env = engine.evm_env_for_payload(&payload).unwrap();
+        assert!(cache.session(&env).is_some());
+
+        payload.block_access_list = Some(Bytes::new());
+        engine.evm_env_for_payload(&payload).unwrap();
+        assert!(cache.session(&env).is_none(), "BAL must clear the handoff");
+        payload.block_access_list = None;
+        engine.evm_env_for_payload(&payload).unwrap();
+        assert!(cache.session(&env).is_some());
+        payload.block = create_test_block(transactions[..4].to_vec()).into();
+        engine.evm_env_for_payload(&payload).unwrap();
+        assert!(
+            cache.session(&env).is_none(),
+            "small blocks use ordinary lookahead"
+        );
     }
 
     #[test]

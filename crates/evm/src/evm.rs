@@ -33,8 +33,8 @@ use tempo_revm::{
 use crate::{
     TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult,
     parallel::{
-        ExecutionStats, PreexecutedTransaction, SpeculativeBatch, SpeculativeExecutor,
-        SpeculativeResult,
+        EnginePrewarmingCache, EnginePrewarmingSession, ExecutionStats, PreexecutedTransaction,
+        PrewarmingExecutor, SpeculativeBatch, SpeculativeExecutor, SpeculativeResult,
     },
 };
 
@@ -43,10 +43,24 @@ type CandidateValidator<DB> = fn(
     &mut DB,
 ) -> Result<bool, <DB as reth_revm::Database>::Error>;
 
+// Install this only in the marked factory. A function pointer also keeps the
+// recording EVM from recursively instantiating another ReadRecorder<DB>.
+type EngineCapture<DB> = fn(
+    &mut DB,
+    EvmEnv<TempoHardfork, TempoBlockEnv>,
+    TempoTxEnv,
+    Option<usize>,
+) -> Result<
+    PreexecutedTransaction,
+    EVMError<<DB as reth_revm::Database>::Error, TempoInvalidTransaction>,
+>;
+
 /// Factory for creating Tempo EVM instances.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoEvmFactory;
+pub struct TempoEvmFactory {
+    pub(crate) engine_prewarming: Option<EnginePrewarmingCache>,
+}
 
 impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
@@ -63,7 +77,27 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        TempoEvm::new(db, input)
+        let Some(cache) = &self.engine_prewarming else {
+            return TempoEvm::new(db, input);
+        };
+        let mut canonical = input.clone();
+        // These flags identify payload prewarming only within the private
+        // Engine configuration. Txpool prewarming also disables the base fee.
+        let capture = canonical.cfg_env.disable_nonce_check
+            && canonical.cfg_env.disable_balance_check
+            && !canonical.cfg_env.disable_base_fee;
+        if capture {
+            canonical.cfg_env.disable_nonce_check = false;
+            canonical.cfg_env.disable_balance_check = false;
+        }
+        let session = cache.session(&canonical);
+        let mut evm = TempoEvm::new(db, input);
+        if session.is_some() && capture {
+            evm.engine_capture =
+                Some(|db, env, tx, offset| PrewarmingExecutor::new(db, env).execute(tx, offset));
+        }
+        evm.engine_session = session;
+        evm
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -89,6 +123,8 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     prepared: Option<SpeculativeBatch<DB::Error>>,
     preexecuted: Option<PreexecutedTransaction>,
     candidate_validator: Option<CandidateValidator<DB>>,
+    engine_session: Option<std::sync::Arc<EnginePrewarmingSession>>,
+    engine_capture: Option<EngineCapture<DB>>,
     execution_stats: ExecutionStats,
     last_sample: ExecutionStats,
     backoff_remaining: usize,
@@ -116,6 +152,8 @@ impl<DB: Database> TempoEvm<DB> {
             prepared: None,
             preexecuted: None,
             candidate_validator: None,
+            engine_session: None,
+            engine_capture: None,
             execution_stats: ExecutionStats::default(),
             last_sample: ExecutionStats::default(),
             backoff_remaining: 0,
@@ -134,6 +172,18 @@ impl<P: Database, I> TempoEvm<&mut State<P>, I> {
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
+    /// A block executor can consume strict candidates, but must never return
+    /// hint-only prewarming results even if given a relaxed EVM by a caller.
+    pub(crate) fn disarm_engine_capture(&mut self) {
+        if self.engine_capture.take().is_some() {
+            self.engine_session = None;
+        }
+    }
+
+    pub(crate) fn has_engine_prewarming(&self) -> bool {
+        self.engine_session.is_some() && self.engine_capture.is_none()
+    }
+
     /// Enables bounded speculative execution using the standard Tempo EVM configuration.
     pub fn set_speculative_executor(&mut self, executor: Option<SpeculativeExecutor>) {
         self.prepared = None;
@@ -341,6 +391,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             prepared: None,
             preexecuted: None,
             candidate_validator: self.candidate_validator,
+            engine_session: None,
+            engine_capture: None,
             execution_stats: self.execution_stats,
             last_sample: self.last_sample,
             backoff_remaining: self.backoff_remaining,
@@ -482,6 +534,48 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         self.inner.set_body_replay(None);
+        if let Some(session) = self.engine_session.clone() {
+            if let Some(capture) = self.engine_capture {
+                if !self.inspect
+                    && self.standard_configuration
+                    && self.inner.ctx.cfg == self.worker_cfg
+                    && self.inner.ctx.block == session.env().block_env
+                    && !self.inner.ctx.cfg.disable_fee_charge
+                    && !self.inner.actions().is_enabled()
+                    && !self.inner.skip_valid_after_check
+                    && !self.inner.skip_liquidity_check
+                    && self.inner.ctx.journaled_state.state.is_empty()
+                    && self.inner.ctx.journaled_state.transient_storage.is_empty()
+                    && self.inner.ctx.journaled_state.logs.is_empty()
+                    && session.can_capture(&tx)
+                {
+                    let mut strict_tx = tx.clone();
+                    // Reth's index is a parent-relative ring prediction. The
+                    // recorder applies it once, then records a canonical tx.
+                    let offset = strict_tx
+                        .tempo_tx_env
+                        .as_mut()
+                        .and_then(|aa| aa.expiring_nonce_idx.take());
+                    if let Ok(candidate) = capture(
+                        &mut self.inner.ctx.journaled_state.database,
+                        session.env().clone(),
+                        strict_tx,
+                        offset,
+                    ) {
+                        // In pinned Reth this return value supplies proof
+                        // prefetch targets only. It is never committed. Keep
+                        // the strict result separate from the shared read cache.
+                        let hint = candidate.prewarming_result();
+                        session.publish(candidate);
+                        return Ok(hint);
+                    }
+                    // A strict failure must retain the legacy relaxed prewarm,
+                    // including its original transaction and AA offset.
+                }
+            } else if let Some(candidate) = session.take(&tx) {
+                self.set_preexecuted_transaction(candidate);
+            }
+        }
         if self.backoff_remaining > 0 && !tx.is_system_tx {
             self.backoff_remaining -= 1;
             self.execution_stats.backoff += 1;

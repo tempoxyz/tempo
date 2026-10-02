@@ -30,6 +30,7 @@ tempo-revm.workspace = true
 thiserror.workspace = true
 
 reth-chainspec.workspace = true
+reth-engine-tree.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }

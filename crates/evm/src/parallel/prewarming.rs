@@ -173,15 +173,19 @@ mod prefix_tests;
 /// private so callers cannot construct an unchecked result.
 #[derive(Debug)]
 pub struct PreexecutedTransaction {
-    tx: TempoTxEnv,
-    env: Env,
-    result: ResultAndState<TempoHaltReason>,
-    validator_fee: U256,
-    reads: Vec<(ReadKey, ReadValue)>,
-    fee_updates: Vec<FeeUpdate>,
+    pub(super) tx: TempoTxEnv,
+    pub(super) env: Env,
+    pub(super) result: ResultAndState<TempoHaltReason>,
+    pub(super) validator_fee: U256,
+    pub(super) reads: Vec<(ReadKey, ReadValue)>,
+    pub(super) fee_updates: Vec<FeeUpdate>,
 }
 
 impl PreexecutedTransaction {
+    pub(crate) fn prewarming_result(&self) -> ResultAndState<TempoHaltReason> {
+        self.result.clone()
+    }
+
     pub(crate) fn into_candidate<E>(self, tx: &TempoTxEnv) -> Option<SpeculativeResult<E>> {
         transactions_match(&self.tx, tx).then(|| SpeculativeResult {
             env: self.env,

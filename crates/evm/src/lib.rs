@@ -106,6 +106,22 @@ impl TempoEvmConfig {
         self
     }
 
+    /// Gives the Engine's payload prewarming workers a private result handoff.
+    /// Call only on the Engine validator's clone, with prewarming enabled. RPC,
+    /// builders and arbitrary relaxed EVMs must retain an unmarked factory.
+    pub fn with_engine_prewarming(mut self) -> Self {
+        if self.speculative_executor.is_some() {
+            self.inner.executor_factory = alloy_evm::eth::EthBlockExecutorFactory::new(
+                *self.inner.executor_factory.receipt_builder(),
+                self.inner.executor_factory.spec().clone(),
+                TempoEvmFactory {
+                    engine_prewarming: Some(Default::default()),
+                },
+            );
+        }
+        self
+    }
+
     /// Uses the provided sender recovery cache.
     pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
         self.inner = self.inner.with_sender_recovery_cache(cache);
@@ -154,6 +170,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
+        evm.disarm_engine_capture();
         evm.set_speculative_executor(self.speculative_executor.clone());
         TempoBlockExecutor::new(
             evm,

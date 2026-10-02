@@ -4,15 +4,25 @@ use std::sync::{Arc, RwLock};
 
 use alloy_primitives::{Address, B256};
 use eyre::{OptionExt as _, WrapErr as _};
+use reth_chainspec::EthChainSpec as _;
+use reth_engine_tree::tree::{
+    TxPoolPrewarmSource, TxPoolPrewarmTransaction, TxPoolPrewarmTransactions,
+};
 use reth_node_api::{AddOnsContext, FullNodeComponents, PrimitivesTy, TreeConfig};
-use reth_node_builder::rpc::{BasicEngineValidatorBuilder, EngineValidatorBuilder};
+use reth_node_builder::{
+    invalid_block_hook::InvalidBlockHookExt as _,
+    rpc::{BasicEngineValidator, EngineValidatorBuilder, PayloadValidatorBuilder as _},
+};
 use reth_storage_api::{
     AccountReader as _, DatabaseProviderROFactory, StateProvider, StateProviderBox,
 };
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
-use tempo_primitives::TempoPrimitives;
+use reth_transaction_pool::{
+    BestTransactions as _, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+};
+use tempo_primitives::{TempoPrimitives, TempoTxEnvelope};
 
-use crate::{TempoNode, node::TempoEngineValidatorBuilder};
+use crate::{TempoNode, engine::TempoEngineValidator, node::TempoEngineValidatorBuilder};
 
 /// Reads the post-state of blocks that the engine has executed, including
 /// blocks on forks.
@@ -88,7 +98,7 @@ impl ExecutedState {
 /// [`ExecutedState`].
 #[derive(Clone, Debug)]
 pub struct TempoEngineTreeValidatorBuilder {
-    inner: BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+    payload_validator_builder: TempoEngineValidatorBuilder,
     executed_state: ExecutedState,
 }
 
@@ -97,7 +107,7 @@ impl TempoEngineTreeValidatorBuilder {
     /// engine.
     pub fn new(executed_state: ExecutedState) -> Self {
         Self {
-            inner: BasicEngineValidatorBuilder::default(),
+            payload_validator_builder: TempoEngineValidatorBuilder,
             executed_state,
         }
     }
@@ -106,12 +116,9 @@ impl TempoEngineTreeValidatorBuilder {
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder
 where
     Node: FullNodeComponents<Types = TempoNode, Evm = tempo_evm::TempoEvmConfig>,
-    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<Node>,
 {
     type EngineValidator =
-        <BasicEngineValidatorBuilder<TempoEngineValidatorBuilder> as EngineValidatorBuilder<
-            Node,
-        >>::EngineValidator;
+        BasicEngineValidator<Node::Provider, tempo_evm::TempoEvmConfig, TempoEngineValidator>;
 
     async fn build_tree_validator(
         self,
@@ -130,8 +137,71 @@ where
         } else {
             tree_config
         };
-        self.inner
-            .build_tree_validator(ctx, tree_config, overlay_manager)
-            .await
+        let payload_validator = self.payload_validator_builder.build(ctx).await?;
+        let data_dir = ctx
+            .config
+            .datadir
+            .clone()
+            .resolve_datadir(ctx.config.chain.chain());
+        let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
+        let txpool_prewarming = tree_config.txpool_prewarming();
+
+        // Give only the Engine a marked clone. RPC, builder, and invalid-block
+        // hooks retain the original configuration from AddOnsContext.
+        let evm_config = ctx.node.evm_config().clone();
+        let evm_config = if tree_config.disable_prewarming() {
+            evm_config
+        } else {
+            evm_config.with_engine_prewarming()
+        };
+        let mut validator = BasicEngineValidator::new(
+            ctx.node.provider().clone(),
+            Arc::new(ctx.node.consensus().clone()),
+            evm_config,
+            payload_validator,
+            tree_config,
+            invalid_block_hook,
+            overlay_manager,
+            ctx.node.task_executor().clone(),
+        );
+        if txpool_prewarming {
+            validator =
+                validator.with_txpool_prewarming(TempoTxPoolPrewarmSource(ctx.node.pool().clone()));
+        }
+        Ok(validator)
+    }
+}
+
+/// Mirrors Reth's private pool adapter, preserving its parent and fee filters.
+#[derive(Debug)]
+struct TempoTxPoolPrewarmSource<P>(P);
+
+impl<P> TxPoolPrewarmSource<TempoPrimitives> for TempoTxPoolPrewarmSource<P>
+where
+    P: TransactionPool<Transaction: PoolTransaction<Consensus = TempoTxEnvelope>> + 'static,
+{
+    fn best_transactions(
+        &self,
+        parent_hash: B256,
+    ) -> Option<TxPoolPrewarmTransactions<TempoPrimitives>> {
+        let block_info = self.0.block_info();
+        if block_info.last_seen_block_hash != parent_hash {
+            return None;
+        }
+        let mut best = self
+            .0
+            .best_transactions_with_attributes(BestTransactionsAttributes::new(
+                block_info.pending_basefee,
+                block_info
+                    .pending_blob_fee
+                    .map(|fee| u64::try_from(fee).unwrap_or(u64::MAX)),
+            ));
+        best.allow_updates_out_of_order();
+        best.skip_blobs();
+        Some(Box::new(best.map(|transaction| TxPoolPrewarmTransaction {
+            hash: *transaction.hash(),
+            sender: transaction.sender(),
+            transaction: transaction.transaction.clone_into_consensus(),
+        })))
     }
 }

@@ -37,6 +37,13 @@ pub struct FeeUpdate {
 }
 
 impl FeeUpdate {
+    /// Heap storage retained by the recorded arithmetic operations.
+    pub fn estimated_heap_size(&self) -> usize {
+        self.operations
+            .capacity()
+            .saturating_mul(std::mem::size_of::<FeeDelta>())
+    }
+
     /// Apply every arithmetic check in order, including intermediate overflow.
     pub fn apply(&self, mut value: U256) -> Option<U256> {
         for operation in &self.operations {

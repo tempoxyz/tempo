@@ -46,7 +46,9 @@ use tempo_revm::{
 
 use reth_revm::context::result::HaltReason as TempoHaltReason;
 
+mod engine_prewarming;
 mod forwarding;
+pub(crate) use engine_prewarming::{EnginePrewarmingCache, EnginePrewarmingSession};
 mod prewarming;
 #[cfg(test)]
 mod prewarming_guard_tests;

@@ -1,0 +1,446 @@
+//! Deterministic capture/consume coverage for the marked Engine factory.
+
+use super::*;
+use crate::{
+    TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig,
+    evm::{TempoEvm, TempoEvmFactory},
+    parallel::SpeculativeExecutor,
+};
+use alloy_evm::{
+    Evm, EvmFactory, FromRecoveredTx,
+    block::{BlockExecutor, BlockExecutorFactory},
+};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_sol_types::SolCall;
+use alloy_trie::{
+    TrieAccount,
+    root::{state_root_unhashed, storage_root_unhashed},
+};
+use revm::{
+    Database, DatabaseCommit,
+    context::{CfgEnv, JournalTr, TxEnv},
+    database::{CacheDB, EmptyDB},
+    inspector::NoOpInspector,
+    state::{AccountInfo, Bytecode},
+};
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    storage::{StorageActions, StorageCtx},
+    test_util::TIP20Setup,
+    tip20::ITIP20,
+};
+use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+
+type TestDB = CacheDB<EmptyDB>;
+
+fn address(index: u64) -> Address {
+    Address::from_word(B256::from(U256::from(index + 0x1_0000)))
+}
+
+fn env(spec: TempoHardfork) -> Env {
+    Env {
+        cfg_env: CfgEnv::new_with_spec_and_gas_params(
+            spec,
+            tempo_revm::gas_params::tempo_gas_params(spec),
+        ),
+        block_env: TempoBlockEnv {
+            inner: revm::context::BlockEnv {
+                basefee: 0,
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    }
+}
+
+fn relaxed(env: &Env) -> Env {
+    let mut env = env.clone();
+    env.cfg_env.disable_nonce_check = true;
+    env.cfg_env.disable_balance_check = true;
+    env
+}
+
+fn tx(index: u64) -> TempoTxEnv {
+    TempoTxEnv {
+        inner: TxEnv {
+            caller: address(index),
+            kind: TxKind::Call(address(900)),
+            gas_limit: 1_000_000,
+            data: U256::from(index).to_be_bytes::<32>().into(),
+            ..Default::default()
+        },
+        execution_context: ExecutionContext::Transaction {
+            tx_hash: B256::from(U256::from(index)),
+        },
+        ..Default::default()
+    }
+}
+
+fn factory(
+    env: &Env,
+    transactions: &[TempoTxEnv],
+) -> (TempoEvmFactory, Arc<EnginePrewarmingSession>) {
+    let cache = EnginePrewarmingCache::default();
+    let session = cache
+        .begin(
+            env.clone(),
+            transactions.iter().map(|tx| {
+                let ExecutionContext::Transaction { tx_hash } = tx.execution_context else {
+                    unreachable!()
+                };
+                tx_hash
+            }),
+        )
+        .unwrap();
+    (
+        TempoEvmFactory {
+            engine_prewarming: Some(cache),
+        },
+        session,
+    )
+}
+
+fn contract(code: &'static [u8]) -> TestDB {
+    let mut db = TestDB::default();
+    db.insert_account_info(
+        address(900),
+        AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(code))),
+    );
+    db
+}
+
+fn root(db: &TestDB) -> B256 {
+    state_root_unhashed(db.cache.accounts.iter().filter_map(|(address, account)| {
+        account.info().map(|info| {
+            (
+                *address,
+                TrieAccount {
+                    nonce: info.nonce,
+                    balance: info.balance,
+                    code_hash: info.code_hash,
+                    storage_root: storage_root_unhashed(
+                        account
+                            .storage
+                            .iter()
+                            .filter(|(_, value)| !value.is_zero())
+                            .map(|(slot, value)| (B256::from(*slot), *value)),
+                    ),
+                },
+            )
+        })
+    }))
+}
+
+fn ordered(factory: &TempoEvmFactory, db: TestDB, env: Env) -> TempoEvm<TestDB> {
+    let mut evm = factory.create_evm(db, env);
+    evm.set_speculative_executor(Some(SpeculativeExecutor::new(1, 128).unwrap()));
+    assert!(evm.has_engine_prewarming());
+    evm
+}
+
+#[test]
+fn captured_results_match_sequential_outcomes_and_roots() {
+    // Store one in a distinct calldata-selected slot for each transaction.
+    let db = contract(&[0x60, 1, 0x60, 0, 0x35, 0x55, 0]);
+    let env = env(TempoHardfork::T0);
+    let transactions = (0..8).map(tx).collect::<Vec<_>>();
+    let (factory, _) = factory(&env, &transactions);
+    let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+    let parent_root = root(&db);
+    for tx in &transactions {
+        worker.transact_raw(tx.clone()).unwrap();
+    }
+    assert_eq!(
+        root(worker.db()),
+        parent_root,
+        "capture must never commit parent writes"
+    );
+    let mut canonical = TempoEvm::new(db.clone(), env.clone());
+    let mut actual = ordered(&factory, db, env);
+    for tx in transactions {
+        let expected = canonical.transact_raw(tx.clone()).unwrap();
+        let result = actual.transact_raw(tx).unwrap();
+        assert_eq!(result, expected);
+        canonical.db_mut().commit(expected.state);
+        actual.db_mut().commit(result.state);
+    }
+    assert_eq!(actual.execution_stats().reused, 8);
+    assert_eq!(actual.execution_stats().conflicts, 0);
+    assert_eq!(root(actual.db()), root(canonical.db()));
+}
+
+#[test]
+fn changed_reads_replay_after_engine_capture() {
+    // Increment slot zero: the second candidate must replay after the first commit.
+    let db = contract(&[0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0]);
+    let env = env(TempoHardfork::T0);
+    let transactions = [tx(0), tx(1)];
+    let (factory, _) = factory(&env, &transactions);
+    let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+    for tx in &transactions {
+        worker.transact_raw(tx.clone()).unwrap();
+    }
+    let mut canonical = TempoEvm::new(db.clone(), env.clone());
+    let mut actual = ordered(&factory, db, env);
+    for tx in transactions {
+        let expected = canonical.transact_raw(tx.clone()).unwrap();
+        let result = actual.transact_raw(tx).unwrap();
+        assert_eq!(result, expected);
+        canonical.db_mut().commit(expected.state);
+        actual.db_mut().commit(result.state);
+    }
+    assert_eq!(actual.execution_stats().reused, 1);
+    assert_eq!(actual.execution_stats().storage_conflicts, 1);
+    assert_eq!(root(actual.db()), root(canonical.db()));
+}
+
+#[test]
+fn strict_failure_preserves_relaxed_fallback_and_canonical_error() {
+    let env = env(TempoHardfork::T0);
+    let mut tx = tx(0);
+    tx.inner.nonce = 7;
+    let (factory, session) = factory(&env, std::slice::from_ref(&tx));
+    let mut worker = factory.create_evm(TestDB::default(), relaxed(&env));
+    let mut legacy = TempoEvm::new(TestDB::default(), relaxed(&env));
+    assert_eq!(
+        worker.transact_raw(tx.clone()).unwrap(),
+        legacy.transact_raw(tx.clone()).unwrap()
+    );
+    assert!(session.take(&tx).is_none());
+    let mut canonical = TempoEvm::new(TestDB::default(), env.clone());
+    let mut actual = ordered(&factory, TestDB::default(), env);
+    assert_eq!(
+        actual.transact_raw(tx.clone()).unwrap_err().to_string(),
+        canonical.transact_raw(tx).unwrap_err().to_string()
+    );
+    assert_eq!(actual.execution_stats().reused, 0);
+}
+
+#[test]
+fn canonical_miss_does_not_accept_late_capture() {
+    let env = env(TempoHardfork::T0);
+    let tx = tx(0);
+    let (factory, session) = factory(&env, std::slice::from_ref(&tx));
+    let mut actual = ordered(&factory, TestDB::default(), env.clone());
+    actual.transact_raw(tx.clone()).unwrap();
+    let mut worker = factory.create_evm(TestDB::default(), relaxed(&env));
+    worker.transact_raw(tx.clone()).unwrap();
+    assert!(session.take(&tx).is_none());
+    assert_eq!(actual.execution_stats().reused, 0);
+}
+
+#[test]
+fn unmarked_simulation_system_and_txpool_paths_do_not_capture() {
+    for excluded in ["unmarked", "simulation", "system", "txpool"] {
+        let env = env(TempoHardfork::T0);
+        let mut tx = tx(0);
+        let (mut factory, session) = factory(&env, std::slice::from_ref(&tx));
+        let mut worker_env = relaxed(&env);
+        match excluded {
+            "unmarked" => factory = TempoEvmFactory::default(),
+            "simulation" => tx.execution_context = ExecutionContext::Simulation,
+            "system" => tx.is_system_tx = true,
+            "txpool" => worker_env.cfg_env.disable_base_fee = true,
+            _ => unreachable!(),
+        }
+        let mut worker = factory.create_evm(TestDB::default(), worker_env.clone());
+        let mut legacy = TempoEvm::new(TestDB::default(), worker_env);
+        assert_eq!(
+            worker.transact_raw(tx.clone()).unwrap(),
+            legacy.transact_raw(tx.clone()).unwrap(),
+            "{excluded}"
+        );
+        assert!(session.take(&tx).is_none(), "{excluded}");
+    }
+}
+
+#[test]
+fn inspector_paths_do_not_capture() {
+    for attach_after_construction in [false, true] {
+        let env = env(TempoHardfork::T0);
+        let tx = tx(0);
+        let (factory, session) = factory(&env, std::slice::from_ref(&tx));
+        let mut worker = if attach_after_construction {
+            factory
+                .create_evm(TestDB::default(), relaxed(&env))
+                .with_inspector(NoOpInspector)
+        } else {
+            factory.create_evm_with_inspector(TestDB::default(), relaxed(&env), NoOpInspector)
+        };
+        let mut legacy =
+            TempoEvm::new(TestDB::default(), relaxed(&env)).with_inspector(NoOpInspector);
+        assert!(!worker.has_engine_prewarming());
+        assert_eq!(
+            worker.transact_raw(tx.clone()).unwrap(),
+            legacy.transact_raw(tx.clone()).unwrap()
+        );
+        assert!(session.take(&tx).is_none());
+    }
+}
+
+#[test]
+fn modified_execution_configuration_and_journal_do_not_capture() {
+    for excluded in [
+        "cfg",
+        "block",
+        "precompiles",
+        "inner",
+        "actions",
+        "state",
+        "transient",
+        "logs",
+    ] {
+        let env = env(TempoHardfork::T0);
+        let tx = tx(0);
+        let (factory, session) = factory(&env, std::slice::from_ref(&tx));
+        let mut worker = factory.create_evm(TestDB::default(), relaxed(&env));
+        let mut legacy = TempoEvm::new(TestDB::default(), relaxed(&env));
+        if excluded == "actions" {
+            worker = worker.with_actions();
+            legacy = legacy.with_actions();
+        } else {
+            for evm in [&mut worker, &mut legacy] {
+                match excluded {
+                    "cfg" => evm.ctx_mut().cfg.disable_nonce_check = false,
+                    "block" => evm.ctx_mut().block.inner.number += U256::ONE,
+                    "precompiles" => {
+                        let _ = evm.precompiles_mut();
+                    }
+                    "inner" => {
+                        let _ = evm.inner_mut();
+                    }
+                    "state" => {
+                        evm.ctx_mut()
+                            .journaled_state
+                            .state
+                            .insert(address(1000), AccountInfo::default().into());
+                    }
+                    "transient" => {
+                        evm.ctx_mut()
+                            .journaled_state
+                            .transient_storage
+                            .entry(address(1000))
+                            .or_default()
+                            .insert(U256::ZERO, U256::ONE);
+                    }
+                    "logs" => evm.ctx_mut().journaled_state.logs.push(Default::default()),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        assert_eq!(
+            worker.transact_raw(tx.clone()).unwrap(),
+            legacy.transact_raw(tx.clone()).unwrap(),
+            "{excluded}"
+        );
+        assert!(session.take(&tx).is_none(), "{excluded}");
+        if excluded == "actions" {
+            assert_eq!(worker.take_actions(), legacy.take_actions());
+        }
+    }
+}
+
+#[test]
+fn creating_a_block_executor_disarms_relaxed_capture() {
+    let env = env(TempoHardfork::T0);
+    let tx = tx(0);
+    let (factory, session) = factory(&env, std::slice::from_ref(&tx));
+    let worker = factory.create_evm(TestDB::default(), relaxed(&env));
+    let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+        .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+    let ctx = TempoBlockExecutionCtx {
+        transactions: &[],
+        senders: &[],
+        inner: alloy_evm::eth::EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            extra_data: Bytes::new(),
+            tx_count_hint: None,
+            slot_number: None,
+        },
+        general_gas_limit: 30_000_000,
+        shared_gas_limit: 0,
+        consensus_context: None,
+    };
+    let mut executor = config.create_executor(worker, ctx);
+    assert!(!executor.evm_mut().has_engine_prewarming());
+    let mut legacy = TempoEvm::new(TestDB::default(), relaxed(&env));
+    assert_eq!(
+        executor.evm_mut().transact_raw(tx.clone()).unwrap(),
+        legacy.transact_raw(tx.clone()).unwrap()
+    );
+    assert!(session.take(&tx).is_none());
+}
+
+#[test]
+fn expiring_aa_offsets_are_applied_once_and_candidates_remain_canonical() {
+    let caller = address(0);
+    let mut setup = crate::test_utils::test_evm_with_basefee(TestDB::default(), 0);
+    StorageCtx::enter_ctx(setup.ctx_mut(), StorageActions::disabled(), || {
+        let mut setup = TIP20Setup::path_usd(address(999)).with_issuer(address(999));
+        for i in 0..3 {
+            setup = setup.with_mint(address(i), U256::from(1_000_000_000u64));
+        }
+        setup.apply().unwrap();
+    });
+    let state = setup.ctx_mut().journaled_state.finalize();
+    setup.db_mut().commit(state);
+    let mut db = setup.finish().0;
+    for address in [NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS] {
+        db.insert_account_info(
+            address,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0]))),
+        );
+    }
+    assert!(db.basic(caller).unwrap().is_none());
+    let transactions = (0..3)
+        .map(|index| {
+            let signed = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 1,
+                fee_token: Some(PATH_USD_ADDRESS),
+                nonce_key: U256::MAX,
+                valid_before: std::num::NonZeroU64::new(25),
+                calls: vec![Call {
+                    to: PATH_USD_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: ITIP20::transferCall {
+                        to: address(100 + index),
+                        amount: U256::from(index + 1),
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::default());
+            TempoTxEnv::from_recovered_tx(&signed, address(index))
+        })
+        .collect::<Vec<_>>();
+    let env = env(TempoHardfork::T14);
+    let (factory, _) = factory(&env, &transactions);
+    let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+    for (index, tx) in transactions.iter().enumerate() {
+        let mut prewarm_tx = tx.clone();
+        prewarm_tx.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(index);
+        worker.transact_raw(prewarm_tx).unwrap();
+    }
+    let mut canonical = TempoEvm::new(db.clone(), env.clone());
+    let mut actual = ordered(&factory, db, env);
+    for tx in transactions {
+        let expected = canonical.transact_raw(tx.clone()).unwrap();
+        let result = actual.transact_raw(tx).unwrap();
+        assert_eq!(result, expected);
+        canonical.db_mut().commit(expected.state);
+        actual.db_mut().commit(result.state);
+    }
+    assert_eq!(actual.execution_stats().reused, 3);
+    assert!(actual.execution_stats().fees_rebased > 0);
+    assert_eq!(root(actual.db()), root(canonical.db()));
+}
