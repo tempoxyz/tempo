@@ -293,6 +293,8 @@ fn modified_execution_configuration_and_journal_do_not_capture() {
         "state",
         "transient",
         "logs",
+        "warm_precompiles",
+        "warm_access_list",
     ] {
         let env = env(TempoHardfork::T0);
         let tx = tx(0);
@@ -328,6 +330,16 @@ fn modified_execution_configuration_and_journal_do_not_capture() {
                             .insert(U256::ZERO, U256::ONE);
                     }
                     "logs" => evm.ctx_mut().journaled_state.logs.push(Default::default()),
+                    "warm_precompiles" => {
+                        evm.ctx_mut()
+                            .journaled_state
+                            .warm_precompiles(&[address(1000)].into_iter().collect());
+                    }
+                    "warm_access_list" => {
+                        let mut access_list = alloy_primitives::map::AddressMap::default();
+                        access_list.insert(address(1000), [U256::ZERO].into_iter().collect());
+                        evm.ctx_mut().journaled_state.warm_access_list(access_list);
+                    }
                     _ => unreachable!(),
                 }
             }

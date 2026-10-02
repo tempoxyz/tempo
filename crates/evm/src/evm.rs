@@ -135,6 +135,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     backoff_remaining: usize,
     worker_cfg: reth_revm::context::CfgEnv<TempoHardfork>,
     standard_configuration: bool,
+    journal_exposed: bool,
 }
 
 impl<DB: Database> TempoEvm<DB> {
@@ -164,6 +165,7 @@ impl<DB: Database> TempoEvm<DB> {
             backoff_remaining: 0,
             worker_cfg,
             standard_configuration: true,
+            journal_exposed: false,
         }
     }
 }
@@ -390,7 +392,42 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
+        self.journal_exposed = true;
         &mut self.inner.inner.ctx
+    }
+
+    /// Recheck caller-controlled journal warming only after mutable context exposure.
+    /// Ordinary execution preserves the standard precompile set and clears the
+    /// transaction-local warming on finalize/discard. Database reads remain
+    /// independently validated for every candidate.
+    fn standard_journal_for_reuse(&mut self) -> bool {
+        if !self.journal_exposed {
+            return true;
+        }
+        let journal = &self.inner.ctx.journaled_state;
+        let warm = &journal.warm_addresses;
+        if !journal.state.is_empty()
+            || !journal.transient_storage.is_empty()
+            || !journal.logs.is_empty()
+            || journal.depth != 0
+            || !journal.journal.is_empty()
+            || !journal.selfdestructed_addresses.is_empty()
+            || warm.coinbase().is_some()
+            || !warm.access_list().is_empty()
+        {
+            return false;
+        }
+        let precompiles = warm.precompiles();
+        if !precompiles.is_empty()
+            && precompiles
+                != <PrecompilesMap as alloy_evm::revm::handler::PrecompileProvider<
+                    TempoContext<DB>,
+                >>::warm_addresses(&self.inner.inner.precompiles)
+        {
+            return false;
+        }
+        self.journal_exposed = false;
+        true
     }
 
     /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
@@ -428,6 +465,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             backoff_remaining: self.backoff_remaining,
             worker_cfg: self.worker_cfg,
             standard_configuration: self.standard_configuration,
+            journal_exposed: self.journal_exposed,
         }
     }
 
@@ -578,6 +616,7 @@ where
                     && self.inner.ctx.journaled_state.transient_storage.is_empty()
                     && self.inner.ctx.journaled_state.logs.is_empty()
                     && session.can_capture(&tx)
+                    && self.standard_journal_for_reuse()
                 {
                     let mut strict_tx = tx.clone();
                     // Reth's index is a parent-relative ring prediction. The
@@ -636,6 +675,7 @@ where
                         })
                         .map(|candidate| (candidate, false))
                 })
+            && self.standard_journal_for_reuse()
             && candidate.env.cfg_env == self.inner.ctx.cfg
             && candidate.env.block_env == self.inner.ctx.block
         {
@@ -733,6 +773,9 @@ where
         self.inspect = enabled;
         if enabled {
             self.prepared = None;
+        } else {
+            // Inspectors receive mutable contexts directly, bypassing ctx_mut.
+            self.journal_exposed = true;
         }
     }
 
