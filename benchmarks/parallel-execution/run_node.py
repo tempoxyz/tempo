@@ -67,6 +67,7 @@ def trial(args, threads, target):
                  "--mnemonic", MNEMONIC, "--target-urls", rpc, "--fd-limit", "65536",
                  "--max-concurrent-requests", str(args.client_concurrency), "--max-concurrent-transactions", "10000",
                  "--benchmark-mode", f"local-workers-{threads}-{args.nonces}"]
+    bench_cmd.extend(["--existing-recipients", str(args.recipients == "existing").lower()])
     if args.nonces == "2d":
         bench_cmd.append("--use-2d-nonces")
     node_env = {}
@@ -168,6 +169,8 @@ def main():
     parser.add_argument("--builder-max-tasks", type=int,
                         help="Override concurrent payload tasks, including for matched trie comparisons")
     parser.add_argument("--nonces", choices=["2d", "expiring"], default="2d")
+    parser.add_argument("--recipients", choices=["existing", "new"], default="existing",
+                        help="Use funded signer recipients or new random addresses")
     parser.add_argument("--block-gas-limit", type=int,
                         help="Override the gas limit in a fresh benchmark genesis copy")
     args = parser.parse_args()
@@ -197,6 +200,7 @@ def main():
     (args.output / "host.json").write_text(json.dumps({"platform": platform.platform(),
         "processor": platform.processor(), "block_gas_limit": args.block_gas_limit,
         "share_sparse_trie": args.share_sparse_trie,
+        "recipients": args.recipients,
         "builder_max_tasks": args.builder_max_tasks,
         "tokio_worker_threads": os.environ.get("TOKIO_WORKER_THREADS"),
         "node_tokio_worker_threads": (str(args.node_tokio_threads)

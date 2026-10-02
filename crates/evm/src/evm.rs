@@ -339,6 +339,7 @@ where
                 return candidate.result;
             } else {
                 self.execution_stats.conflicts += 1;
+                tracing::trace!(target: "tempo::execution::conflicts", caller = ?tx.inner.caller, payer = ?tx.fee_payer().ok(), "Conflicting candidate");
                 self.inner.set_body_replay(candidate.body);
             }
         }

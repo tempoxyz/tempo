@@ -1090,6 +1090,68 @@ Complete execution results and state deltas, stored receipts, gas, receipt roots
 and canonical state roots match. Replay timings are diagnostic, with sequential
 execution first.
 
+## Chaining speculative nonce dependencies
+
+Repeated fee payers within a window now stay on the same worker in transaction
+order. Each such worker keeps a private write overlay, allowing later nonce and
+balance checks to see its earlier predictions. Every database read, including an
+overlay hit, still requires validation against the authoritative committed prefix.
+Skipped candidates and cross-worker changes therefore invalidate later predictions
+when they affect the transaction's reads. Windows with independent payers retain
+dynamic worker assignment without the overlay. This remains opt-in through the
+node's existing execution-thread setting.
+
+`chained-micro.tsv` compares the final conditional strategy with the previous
+dynamic strategy in an off/on/on/off sequence. Each run executes 50,000 transactions
+with zero and 16 workers, checking complete receipts and final roots. The new
+`compute_paid_chains` workload interleaves 100 funded senders with sequential
+protocol nonces; each transaction performs 500 KECCAK256 iterations and pays fees.
+With 16 workers, it improves from 21,355–21,597 TPS to 50,249–51,625 TPS
+(about 2.37x comparing the two-run means), versus 7,310–7,441 TPS sequentially.
+Reused outcomes increase from 38,181 to 49,985 out of 50,000, eliminating 10,696
+nonce-error retries. Independent paid compute and TIP-20 controls do not establish
+a performance change in these short runs. These are executor microbenchmarks,
+not sustained node throughput.
+
+```sh
+TEMPO_BENCH_COUNTS=50000 TEMPO_BENCH_WORKERS=0,16 \
+  TEMPO_BENCH_WORKLOADS=tip20_paid,compute_paid,compute_paid_chains \
+  TEMPO_BENCH_CHAINED=1 \
+  cargo test -p tempo-evm --release execution_throughput -- --ignored --nocapture
+```
+
+`chained-prototype-node.json` retains four isolated trials of the earlier prototype,
+which used overlays even for independent payers. At 50k offered TPS, 16 workers,
+5B block gas and shared trie roots, existing-recipient AA transfers measure
+27,396 TPS before and 27,059 after; new-recipient transfers measure 19,750 before
+and 19,545 after. All 886,138 accepted transactions confirm, with no execution
+failures or rejected dev payloads. These single paired trials establish no node
+throughput gain. The benchmark now exposes `--recipients existing|new`; its default
+has always used the same 100 funded accounts as both senders and recipients.
+Most remaining read conflicts in that workload are incoming balance transfers,
+which payer-based assignment cannot predict across workers.
+
+`chained-prototype-canonical-{2d,expiring,new}.tsv` covers seven stored local blocks
+with 132,835 user transactions and seven system transactions. Full execution
+results, state deltas, canonical receipts, gas, receipt roots and state roots
+match sequential execution. These verify the earlier unconditional overlay path;
+replay timings are diagnostic, with sequential execution first. The generated
+suite additionally compares both strategies across forks, frozen/streaming views
+and fee rebasing modes, including transitive conflicts, skipped predecessors and
+contract creation. Public historical replay remains outstanding.
+
+The final conditional scheduler's follow-up (`chained-node.json`) confirms all
+676,054 accepted transactions across three more 50k offered-load trials without
+execution failures or rejected dev payloads. Confirmed throughput is 27,416 TPS
+for existing-recipient 2D nonces, 19,201 for new-recipient 2D nonces, and 26,093
+for existing-recipient expiring nonces. `chained-canonical-*.tsv` verifies nine of
+their busiest blocks: 183,018 user transactions and nine system transactions
+match full results, state deltas, canonical receipts, gas and both roots.
+The release EVM suite passes 89 tests (two ignored benchmarks); node checks
+also pass the four post-block Merkle-proof variants, TIP-20 transfers and mixed
+payment-lane workloads with sequential, synchronous parallel and background-root
+configurations. Release Clippy passes for all EVM targets.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed

@@ -133,6 +133,37 @@ fn differential_mode(
     adaptive: bool,
     (streaming, fee_rebasing): (bool, bool),
 ) -> ExecutionStats {
+    // Exercise both worker strategies against full canonical outcomes. Keep the
+    // original strategy's counters for tests targeting particular replay paths.
+    differential_worker_mode(
+        db.clone(),
+        transactions,
+        threads,
+        batch_size,
+        spec,
+        adaptive,
+        (streaming, fee_rebasing, true),
+    );
+    differential_worker_mode(
+        db,
+        transactions,
+        threads,
+        batch_size,
+        spec,
+        adaptive,
+        (streaming, fee_rebasing, false),
+    )
+}
+
+fn differential_worker_mode(
+    db: TestDB,
+    transactions: &[TempoTxEnv],
+    threads: usize,
+    batch_size: usize,
+    spec: TempoHardfork,
+    adaptive: bool,
+    (streaming, fee_rebasing, chained): (bool, bool, bool),
+) -> ExecutionStats {
     let env = EvmEnv {
         cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
             spec,
@@ -155,6 +186,7 @@ fn differential_mode(
             .with_adaptive_backoff(adaptive)
             .with_streaming(streaming)
             .with_fee_rebasing(fee_rebasing)
+            .with_chained_workers(chained)
             .with_minimum_body_duration(Duration::ZERO),
     ));
     let mut sequential_gas = 0;
@@ -243,6 +275,88 @@ fn speculative_nonce_errors_are_retried_in_order() {
     let stats = differential(TestDB::default(), &txs, 4, 16);
     assert_eq!(stats.reused, 1);
     assert_eq!(stats.retries, 15);
+}
+
+#[test]
+fn chained_workers_reuse_nonce_dependencies() {
+    let mut db = TestDB::default();
+    contract(&mut db, address(900), &[0]);
+    let txs = (0..32)
+        .map(|i| transaction(i % 4, address(900), i / 4, &[]))
+        .collect::<Vec<_>>();
+    for spec in FEE_SPECS {
+        for streaming in [false, true] {
+            let stats = differential_worker_mode(
+                db.clone(),
+                &txs,
+                4,
+                32,
+                spec,
+                false,
+                (streaming, true, true),
+            );
+            assert_eq!(stats.reused, 32, "{spec:?}, streaming={streaming}");
+            assert_eq!(stats.conflicts + stats.retries, 0);
+        }
+    }
+}
+
+#[test]
+fn chained_workers_revalidate_transitive_predictions() {
+    let mut db = TestDB::default();
+    let target = address(900);
+    // Increment and return a counter. The second lane invalidates the first
+    // lane's predictions, including the result chained from its stale result.
+    contract(
+        &mut db,
+        target,
+        &[
+            0x60, 0, 0x54, 0x60, 1, 1, 0x80, 0x60, 0, 0x55, 0x60, 0, 0x52, 0x60, 32, 0x60, 0, 0xf3,
+        ],
+    );
+    let txs = [
+        transaction(1, target, 0, &[]),
+        transaction(2, target, 0, &[]),
+        transaction(1, target, 1, &[]),
+        transaction(1, target, 2, &[]),
+    ];
+    for spec in FEE_SPECS {
+        let stats =
+            differential_worker_mode(db.clone(), &txs, 2, 4, spec, false, (false, true, true));
+        assert_eq!(stats.reused, 1);
+        assert_eq!(stats.conflicts, 3);
+    }
+}
+
+#[test]
+fn chained_workers_reject_predictions_from_skipped_candidates() {
+    let mut db = TestDB::default();
+    contract(&mut db, address(900), &[0]);
+    let txs = [
+        transaction(1, address(900), 0, &[]),
+        transaction(1, address(900), 1, &[]),
+        transaction(2, address(900), 0, &[]),
+    ];
+    let mut sequential = test_evm_with_basefee(db.clone(), 0);
+    let mut parallel = test_evm_with_basefee(db, 0);
+    parallel.set_speculative_executor(Some(
+        SpeculativeExecutor::new(2, 3)
+            .unwrap()
+            .with_streaming(false),
+    ));
+    parallel.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+    // A pool preview candidate can disappear before authoritative selection.
+    // Its predicted nonce must not make the next transaction valid.
+    let expected = sequential.transact_raw(txs[1].clone()).unwrap_err();
+    let actual = parallel.transact_raw(txs[1].clone()).unwrap_err();
+    assert_eq!(expected.to_string(), actual.to_string());
+    assert_eq!(parallel.execution_stats().conflicts, 1);
+    let expected = sequential.transact_raw(txs[2].clone()).unwrap();
+    let actual = parallel.transact_raw(txs[2].clone()).unwrap();
+    assert_eq!(expected, actual);
+    sequential.db_mut().commit(expected.state);
+    parallel.db_mut().commit(actual.state);
+    assert_eq!(root(sequential.db()), root(parallel.db()));
 }
 
 #[test]
@@ -1342,6 +1456,7 @@ fn execution_throughput() {
     let profile = std::env::var_os("TEMPO_BENCH_PHASES").is_some();
     let streaming = std::env::var("TEMPO_BENCH_STREAMING").map_or(true, |value| value != "0");
     let fee_rebasing = std::env::var("TEMPO_BENCH_FEE_REBASING").map_or(true, |value| value != "0");
+    let chained = std::env::var("TEMPO_BENCH_CHAINED").map_or(true, |value| value != "0");
     println!(
         "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused\tfees_rebased"
     );
@@ -1349,12 +1464,22 @@ fn execution_throughput() {
         for workload in workloads.split(',') {
             assert!(matches!(
                 workload,
-                "storage" | "compute" | "compute_paid" | "tip20" | "tip20_paid"
+                "storage"
+                    | "compute"
+                    | "compute_paid"
+                    | "compute_paid_chains"
+                    | "tip20"
+                    | "tip20_paid"
             ));
+            let users = if workload == "compute_paid_chains" {
+                100
+            } else {
+                count
+            };
             let mut db = if matches!(workload, "storage" | "compute") {
                 TestDB::default()
             } else {
-                funded_tip20_db(count)
+                funded_tip20_db(users)
             };
             let target = address(count + 900);
             if workload == "storage" {
@@ -1374,8 +1499,8 @@ fn execution_throughput() {
             let txs = (0..count)
                 .map(|i| {
                     if workload.starts_with("compute") {
-                        let mut tx = transaction(i, target, 0, &[]);
-                        tx.inner.gas_price = u128::from(workload == "compute_paid");
+                        let mut tx = transaction(i % users, target, i / users, &[]);
+                        tx.inner.gas_price = u128::from(workload.starts_with("compute_paid"));
                         tx
                     } else if workload == "storage" {
                         let mut input = U256::from(i).to_be_bytes::<32>().to_vec();
@@ -1406,7 +1531,8 @@ fn execution_throughput() {
                         SpeculativeExecutor::new(threads, batch_size)
                             .unwrap()
                             .with_streaming(streaming)
-                            .with_fee_rebasing(fee_rebasing),
+                            .with_fee_rebasing(fee_rebasing)
+                            .with_chained_workers(chained),
                     ));
                 }
                 let mut receipts = Vec::with_capacity(txs.len());

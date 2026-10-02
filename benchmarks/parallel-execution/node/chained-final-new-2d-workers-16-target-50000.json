@@ -1,0 +1,397 @@
+{
+  "metadata": {
+    "target_tps": 50000,
+    "run_duration_secs": 5,
+    "accounts": 100,
+    "chain_id": 1337,
+    "total_connections": 256,
+    "start_block": 4,
+    "end_block": 46,
+    "mode": "local-workers-16-2d",
+    "tip20_weight": 1.0,
+    "tip20_virtual_weight": 0.0,
+    "place_order_weight": 0.0,
+    "swap_weight": 0.0,
+    "erc20_weight": 0.0,
+    "mpp_weight": 0.0
+  },
+  "sending": {
+    "accepted": 222686,
+    "rejected": 0,
+    "timed_out": 0,
+    "generation_failed": 0,
+    "unconfirmed": 0,
+    "send_duration_secs": 5.007089704
+  },
+  "blocks": [
+    {
+      "number": 6,
+      "tx_count": 4,
+      "ok_count": 4,
+      "err_count": 0,
+      "gas_used": 1598838,
+      "timestamp": 1790926486722,
+      "latency_ms": null
+    },
+    {
+      "number": 7,
+      "tx_count": 4977,
+      "ok_count": 4977,
+      "err_count": 0,
+      "gas_used": 2651934364,
+      "timestamp": 1790926486822,
+      "latency_ms": 100
+    },
+    {
+      "number": 8,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499654894,
+      "timestamp": 1790926487124,
+      "latency_ms": 302
+    },
+    {
+      "number": 9,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655242,
+      "timestamp": 1790926487677,
+      "latency_ms": 553
+    },
+    {
+      "number": 10,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655758,
+      "timestamp": 1790926488192,
+      "latency_ms": 515
+    },
+    {
+      "number": 11,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655494,
+      "timestamp": 1790926488840,
+      "latency_ms": 648
+    },
+    {
+      "number": 12,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655110,
+      "timestamp": 1790926489492,
+      "latency_ms": 652
+    },
+    {
+      "number": 13,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655194,
+      "timestamp": 1790926490220,
+      "latency_ms": 728
+    },
+    {
+      "number": 14,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499654678,
+      "timestamp": 1790926491032,
+      "latency_ms": 812
+    },
+    {
+      "number": 15,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655062,
+      "timestamp": 1790926491726,
+      "latency_ms": 694
+    },
+    {
+      "number": 16,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499654810,
+      "timestamp": 1790926492161,
+      "latency_ms": 435
+    },
+    {
+      "number": 17,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655290,
+      "timestamp": 1790926492622,
+      "latency_ms": 461
+    },
+    {
+      "number": 18,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499654858,
+      "timestamp": 1790926493040,
+      "latency_ms": 418
+    },
+    {
+      "number": 19,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655398,
+      "timestamp": 1790926493445,
+      "latency_ms": 405
+    },
+    {
+      "number": 20,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655158,
+      "timestamp": 1790926493870,
+      "latency_ms": 425
+    },
+    {
+      "number": 21,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499654966,
+      "timestamp": 1790926494257,
+      "latency_ms": 387
+    },
+    {
+      "number": 22,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499654966,
+      "timestamp": 1790926494626,
+      "latency_ms": 369
+    },
+    {
+      "number": 23,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499654822,
+      "timestamp": 1790926495002,
+      "latency_ms": 376
+    },
+    {
+      "number": 24,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655050,
+      "timestamp": 1790926495349,
+      "latency_ms": 347
+    },
+    {
+      "number": 25,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655062,
+      "timestamp": 1790926495685,
+      "latency_ms": 336
+    },
+    {
+      "number": 26,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655146,
+      "timestamp": 1790926496032,
+      "latency_ms": 347
+    },
+    {
+      "number": 27,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655446,
+      "timestamp": 1790926496359,
+      "latency_ms": 327
+    },
+    {
+      "number": 28,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655602,
+      "timestamp": 1790926496662,
+      "latency_ms": 303
+    },
+    {
+      "number": 29,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655014,
+      "timestamp": 1790926496985,
+      "latency_ms": 323
+    },
+    {
+      "number": 30,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655446,
+      "timestamp": 1790926497279,
+      "latency_ms": 294
+    },
+    {
+      "number": 31,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655422,
+      "timestamp": 1790926497551,
+      "latency_ms": 272
+    },
+    {
+      "number": 32,
+      "tx_count": 8444,
+      "ok_count": 8444,
+      "err_count": 0,
+      "gas_used": 4499655062,
+      "timestamp": 1790926497843,
+      "latency_ms": 292
+    },
+    {
+      "number": 33,
+      "tx_count": 6633,
+      "ok_count": 6633,
+      "err_count": 0,
+      "gas_used": 3534491680,
+      "timestamp": 1790926498113,
+      "latency_ms": 270
+    },
+    {
+      "number": 34,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498309,
+      "latency_ms": 196
+    },
+    {
+      "number": 35,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498349,
+      "latency_ms": 40
+    },
+    {
+      "number": 36,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498350,
+      "latency_ms": 1
+    },
+    {
+      "number": 37,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498351,
+      "latency_ms": 1
+    },
+    {
+      "number": 38,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498352,
+      "latency_ms": 1
+    },
+    {
+      "number": 39,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498353,
+      "latency_ms": 1
+    },
+    {
+      "number": 40,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498355,
+      "latency_ms": 2
+    },
+    {
+      "number": 41,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498358,
+      "latency_ms": 3
+    },
+    {
+      "number": 42,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498361,
+      "latency_ms": 3
+    },
+    {
+      "number": 43,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498362,
+      "latency_ms": 1
+    },
+    {
+      "number": 44,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498363,
+      "latency_ms": 1
+    },
+    {
+      "number": 45,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498368,
+      "latency_ms": 5
+    },
+    {
+      "number": 46,
+      "tx_count": 1,
+      "ok_count": 1,
+      "err_count": 0,
+      "gas_used": 0,
+      "timestamp": 1790926498374,
+      "latency_ms": 6
+    }
+  ]
+}

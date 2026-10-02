@@ -16,8 +16,10 @@ use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::{Address, B256, U256, map::HashMap};
 use rayon::{ThreadPool, ThreadPoolBuildError, ThreadPoolBuilder};
 use reth_revm::{
+    DatabaseCommit, DatabaseRef,
     context::result::{EVMError, ResultAndState},
     database_interface::DBErrorMarker,
+    db::CacheDB,
     state::{AccountInfo, Bytecode},
 };
 use std::sync::{
@@ -43,6 +45,7 @@ pub struct SpeculativeExecutor {
     minimum_body_duration: Duration,
     streaming: bool,
     fee_rebasing: bool,
+    chained_workers: bool,
 }
 
 impl SpeculativeExecutor {
@@ -68,6 +71,7 @@ impl SpeculativeExecutor {
             minimum_body_duration: Duration::from_micros(20),
             streaming: true,
             fee_rebasing: true,
+            chained_workers: true,
         })
     }
 
@@ -96,6 +100,13 @@ impl SpeculativeExecutor {
     /// that require all fee conflicts to use ordinary replay.
     pub fn with_fee_rebasing(mut self, enabled: bool) -> Self {
         self.fee_rebasing = enabled;
+        self
+    }
+
+    /// Let each worker carry earlier speculative writes into later transactions
+    /// from the same payer. Every resulting read still requires ordered validation.
+    pub fn with_chained_workers(mut self, enabled: bool) -> Self {
+        self.chained_workers = enabled;
         self
     }
 
@@ -152,6 +163,21 @@ impl SpeculativeExecutor {
         });
         let (sender, receiver) = mpsc::channel();
         let workers = count.min(self.pool.current_num_threads());
+        let mut lanes = vec![Vec::new(); workers];
+        let mut chained_workers = false;
+        if self.chained_workers {
+            let mut payers: HashMap<Address, usize> = HashMap::default();
+            for (index, (tx, _)) in shared.inputs.iter().enumerate() {
+                let next_lane = payers.len() % workers;
+                let lane = *payers
+                    .entry(tx.fee_payer().unwrap_or(tx.inner.caller))
+                    .or_insert(next_lane);
+                lanes[lane].push(index);
+            }
+            // Independent payers need neither a private write overlay nor fixed
+            // assignment. Preserve dynamic worker balancing for those windows.
+            chained_workers = payers.len() < count;
+        }
         let mut batch = SpeculativeBatch {
             shared: shared.clone(),
             receiver,
@@ -159,14 +185,21 @@ impl SpeculativeExecutor {
             cursor: 0,
             workers,
         };
-        for _ in 0..workers {
+        for lane in lanes {
             let sender = sender.clone();
             let shared = shared.clone();
             let minimum_body_duration = self.minimum_body_duration;
             let fee_rebasing = self.fee_rebasing;
+            let indices = chained_workers.then_some(lane);
             self.pool.spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_worker(&shared, &sender, minimum_body_duration, fee_rebasing);
+                    run_worker(
+                        &shared,
+                        &sender,
+                        minimum_body_duration,
+                        fee_rebasing,
+                        indices,
+                    );
                 }));
                 drop(shared);
                 // Catch worker panics before leaving Rayon. The owning coordinator
@@ -196,19 +229,35 @@ fn run_worker<E: DBErrorMarker>(
     sender: &mpsc::Sender<Message<E>>,
     minimum_body_duration: Duration,
     fee_rebasing: bool,
+    indices: Option<Vec<usize>>,
 ) {
     let db = RecordingDatabase {
-        sender: sender.clone(),
-        shared,
+        remote: RemoteDatabase {
+            sender: sender.clone(),
+            shared,
+        },
+        overlay: indices.as_ref().map(|_| {
+            CacheDB::new(RemoteDatabase {
+                sender: sender.clone(),
+                shared,
+            })
+        }),
         reads: Vec::new(),
         body_reads: Vec::new(),
     };
+    let mut indices = indices.map(Vec::into_iter);
     let mut evm = TempoEvm::new(db, shared.inputs[0].1.clone());
     evm.inner_mut().enable_body_recording(minimum_body_duration);
     let mut standard_fee_gas = fee_rebasing
         && evm.ctx().cfg.gas_params == tempo_revm::gas_params::tempo_gas_params(evm.ctx().cfg.spec);
     while !shared.cancelled.load(Ordering::Relaxed) {
-        let index = shared.next.fetch_add(1, Ordering::Relaxed);
+        let index = match &mut indices {
+            Some(indices) => match indices.next() {
+                Some(index) => index,
+                None => break,
+            },
+            None => shared.next.fetch_add(1, Ordering::Relaxed),
+        };
         let Some((tx, env)) = shared.inputs.get(index) else {
             break;
         };
@@ -244,6 +293,15 @@ fn run_worker<E: DBErrorMarker>(
         let mut body = evm.inner_mut().take_recorded_body();
         if let Some(body) = &mut body {
             body.set_database_reads(body_reads);
+        }
+        if let Ok(result) = &result
+            && let Some(overlay) = &mut evm.ctx_mut().journaled_state.database.overlay
+        {
+            // This is a private prediction, not an authoritative commit. Reads
+            // served from it are recorded by the outer database just like remote
+            // reads, so any skipped, failed or conflicting predecessor is checked
+            // against the real committed prefix before a later result is reused.
+            overlay.commit(result.state.clone());
         }
         let _ = sender.send(Message::Finished(
             index,
@@ -409,6 +467,11 @@ pub(crate) struct SpeculativeResult<E> {
 }
 
 impl<E: DBErrorMarker> SpeculativeResult<E> {
+    fn conflict(key: &ReadKey, reason: &'static str) -> bool {
+        tracing::trace!(target: "tempo::execution::conflicts", ?key, reason, "Replaying state conflict");
+        false
+    }
+
     /// Read values, rather than touched addresses, determine dependencies. Two transfers
     /// touching distinct balances in the same TIP-20 therefore need not conflict.
     pub(crate) fn validate<DB: Database<Error = E>>(&mut self, db: &mut DB) -> Result<bool, E> {
@@ -422,14 +485,15 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
                     ReadValue::Storage(new),
                 ) = (key, expected, actual)
                 else {
-                    return Ok(false);
+                    return Ok(Self::conflict(key, "account, code or block hash"));
                 };
                 let Some(update) = self
                     .fee_updates
                     .iter()
                     .find(|update| update.address == *address && update.slot == *slot)
                 else {
-                    return Ok(false);
+                    tracing::trace!(target: "tempo::execution::conflicts", ?key, expected = %old, actual = %new, "Storage values differ");
+                    return Ok(Self::conflict(key, "ordinary storage"));
                 };
                 let Some(account) = self
                     .result
@@ -437,22 +501,22 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
                     .ok()
                     .and_then(|result| result.state.get(address))
                 else {
-                    return Ok(false);
+                    return Ok(Self::conflict(key, "missing result account"));
                 };
                 let Some(storage) = account.storage.get(slot) else {
-                    return Ok(false);
+                    return Ok(Self::conflict(key, "missing result storage"));
                 };
                 if account.is_created()
                     || account.is_selfdestructed()
                     || storage.original_value != *old
                     || update.apply(*old) != Some(storage.present_value)
                 {
-                    return Ok(false);
+                    return Ok(Self::conflict(key, "fee journal mismatch"));
                 }
                 let Some(present) = update.apply(new) else {
                     // Including intermediate maximum-fee overflow: the ordinary
                     // executor must produce the canonical error or result.
-                    return Ok(false);
+                    return Ok(Self::conflict(key, "fee arithmetic overflow"));
                 };
                 patches.push((*address, *slot, new, present));
             }
@@ -494,18 +558,39 @@ impl<E: DBErrorMarker> DBErrorMarker for ProxyError<E> {}
 
 #[derive(Debug)]
 struct RecordingDatabase<'a, E> {
-    sender: mpsc::Sender<Message<E>>,
-    shared: &'a Work,
+    remote: RemoteDatabase<'a, E>,
+    overlay: Option<CacheDB<RemoteDatabase<'a, E>>>,
     reads: Vec<(ReadKey, ReadValue)>,
     body_reads: Vec<(ReadKey, ReadValue)>,
 }
 
-impl<E> RecordingDatabase<'_, E> {
+impl<E: DBErrorMarker> RecordingDatabase<'_, E> {
     fn read(&mut self, key: ReadKey) -> Result<ReadValue, ProxyError<E>> {
-        if self.shared.cancelled.load(Ordering::Relaxed) {
+        if self.remote.shared.cancelled.load(Ordering::Relaxed) {
             return Err(ProxyError::Cancelled);
         }
         let start = tempo_revm::replay::is_recording_body().then(std::time::Instant::now);
+        let value = match &mut self.overlay {
+            Some(overlay) => read(overlay, key)?,
+            None => self.remote.read(key)?,
+        };
+        self.reads.push((key, value.clone()));
+        if let Some(start) = start {
+            self.body_reads.push((key, value.clone()));
+            tempo_revm::replay::record_database_time(start.elapsed());
+        }
+        Ok(value)
+    }
+}
+
+#[derive(Debug)]
+struct RemoteDatabase<'a, E> {
+    sender: mpsc::Sender<Message<E>>,
+    shared: &'a Work,
+}
+
+impl<E> RemoteDatabase<'_, E> {
+    fn read(&self, key: ReadKey) -> Result<ReadValue, ProxyError<E>> {
         // Release the read lock before waiting for the coordinator to populate it.
         let cached = self.shared.prefetched.get(&key).cloned().or_else(|| {
             self.shared
@@ -527,12 +612,39 @@ impl<E> RecordingDatabase<'_, E> {
                 .map_err(|_| ProxyError::Cancelled)?
                 .map_err(ProxyError::Provider)?
         };
-        self.reads.push((key, value.clone()));
-        if let Some(start) = start {
-            self.body_reads.push((key, value.clone()));
-            tempo_revm::replay::record_database_time(start.elapsed());
-        }
         Ok(value)
+    }
+}
+
+impl<E: DBErrorMarker> DatabaseRef for RemoteDatabase<'_, E> {
+    type Error = ProxyError<E>;
+
+    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        let ReadValue::Account(info) = self.read(ReadKey::Account(address))? else {
+            unreachable!()
+        };
+        Ok(info)
+    }
+
+    fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        let ReadValue::Storage(value) = self.read(ReadKey::Storage(address, slot))? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
+    fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, Self::Error> {
+        let ReadValue::Code(code) = self.read(ReadKey::Code(hash))? else {
+            unreachable!()
+        };
+        Ok(code)
+    }
+
+    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        let ReadValue::BlockHash(hash) = self.read(ReadKey::BlockHash(number))? else {
+            unreachable!()
+        };
+        Ok(hash)
     }
 }
 
