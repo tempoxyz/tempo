@@ -79,11 +79,27 @@ The revoked attempt exhausted its 3,000,000 gas limit and was not admitted as
 a verified Earn payment. This tests suspension and restoration; it does not
 establish a zero-general-gas claim for invalid or revoked calls.
 
+A fresh chain using the same genesis and Tempo revision `c82e6f741` exercised
+the registration event added after the original run. Its release binary SHA-256
+is `55009b21d8fe970e9330b1b972e6b5e5df9d302677ca4c377fc41110e98dd89b`.
+T16 activated in block `0x1` because its scheduled timestamp had passed when
+this chain started. The factory deployed a stack in block `0x26`; the
+[receipt](evm2-t16-native-registration-event.json) contains one
+`NativeEarnRegistered` log from the registry, with the vault, asset, EarnShare,
+fees, engine, and pinned engine code hash. After engine binding and approval,
+a 1,000,000-asset deposit succeeded in block `0x6e`. EarnShare supply and vault
+backing both reached 1,000,000. Sixteen [metric
+samples](evm2-t16-native-registration-event-lanes.json.gz) charged all
+1,758,836 gas to payment and zero to general. The checker validates the saved
+receipt, log topics and data, dispatcher code, balances, and live archived
+blocks when `--event-rpc-url` is supplied.
+
 The evidence can be checked offline, then against the still-running devnet:
 
 ```sh
 python3 scripts/native-payments/check-t16-factory-devnet.py
-python3 scripts/native-payments/check-t16-factory-devnet.py --rpc-url http://127.0.0.1:56545 --legacy-rpc-url http://127.0.0.1:58545 --tempo-binary target/release/tempo
+python3 scripts/native-payments/check-t16-factory-devnet.py --rpc-url http://127.0.0.1:56545 --legacy-rpc-url http://127.0.0.1:58545
+python3 scripts/native-payments/check-t16-factory-devnet.py --event-rpc-url http://127.0.0.1:55545 --event-binary target/release/tempo
 gzip -dc docs/evidence/evm2-t16-native-factory-proofs.json.gz | cargo run --quiet -p tempo-evm --example verify_native_earn_factory_proofs -- - docs/evidence/evm2-t16-native-factory-devnet.json
 ```
 

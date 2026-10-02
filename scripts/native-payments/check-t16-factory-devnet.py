@@ -39,7 +39,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rpc-url", help="also verify archived blocks and current chain state")
     parser.add_argument("--legacy-rpc-url", help="also verify the replayed legacy Earn fork")
+    parser.add_argument("--event-rpc-url", help="also verify registration on the event-enabled devnet")
     parser.add_argument("--tempo-binary", type=Path, help="check the exact release binary used")
+    parser.add_argument("--event-binary", type=Path, help="check the event-enabled release binary")
     args = parser.parse_args()
 
     summary = json.loads((EVIDENCE / f"{PREFIX}-devnet.json").read_text())
@@ -134,6 +136,30 @@ def main():
     assert matches == revocation["sampledDepositLane"]["matching"] > 0
     assert len(lane_record["samples"]) == revocation["sampledDepositLane"]["total"]
 
+    event_run = json.loads((EVIDENCE / "evm2-t16-native-registration-event.json").read_text())
+    event_lanes = json.loads(gzip.decompress(
+        (EVIDENCE / "evm2-t16-native-registration-event-lanes.json.gz").read_bytes()
+    ))
+    event = event_run["registrationLog"]
+    assert event["address"] == "0x5aea000000000000000000000000000000000000"
+    assert event["topics"] == [
+        "0xe941985d5446028e43c141fc9de757ef0be628464c52a67b2e875d981f2c5d4b",
+        "0x" + address_word(summary["vault"]),
+        "0x" + address_word(summary["asset"]),
+        "0x" + address_word(summary["earnShare"]),
+    ]
+    assert event["data"] == "0x" + address_word(summary["fees"]) + address_word(summary["engine"]) + summary["engineHash"][2:]
+    assert event_run["shareSupply"] == event_run["vaultAssets"] == 1_000_000
+    assert bytes.fromhex(event_run["vaultCode"][2:]) == (EVIDENCE.parents[1] / "crates/contracts/abi/NativeEarnDispatcherV1.bin").read_bytes()
+    if args.event_binary:
+        assert hashlib.sha256(args.event_binary.read_bytes()).hexdigest() == event_run["binarySha256"]
+    assert all(operation["status"] == "0x1" and operation["onlyTransaction"] and operation["gasUsed"] == operation["blockGasUsed"] for operation in event_run["transactions"].values())
+    event_deposit = event_run["transactions"]["deposit"]
+    assert event_lanes["receipt"]["transactionHash"] == event_deposit["transactionHash"]
+    event_matches = sum(row["generalGas"] == 0 and row["paymentGas"] == int(event_deposit["gasUsed"], 16) for row in event_lanes["samples"])
+    assert event_matches == event_run["depositLane"]["matching"] > 0
+    assert len(event_lanes["samples"]) == event_run["depositLane"]["total"]
+
     if args.rpc_url:
         url = args.rpc_url
         assert rpc(url, "eth_chainId", []) == summary["chainId"]
@@ -192,7 +218,20 @@ def main():
             assert call_uint(url, legacy["earnShare"], "0x18160ddd", height) == supply
             assert call_uint(url, legacy["vault"], "0x01e1d114", height) == assets
         assert rpc(url, "eth_getTransactionReceipt", [legacy["deposit"]["transactionHash"]])["status"] == "0x1"
-    print(f"T16 factory and legacy forks, {len(summary['operations']) + 5} receipts, {sampled + 2} lane-sampled payments, revocation, and accounting verified")
+    if args.event_rpc_url:
+        url = args.event_rpc_url
+        assert rpc(url, "eth_getBlockByNumber", ["0x0", False])["hash"] == event_run["genesisHash"]
+        assert rpc(url, "eth_getBlockByNumber", ["0x1", False])["hash"] == event_run["activationBlock"]["hash"]
+        for operation in event_run["transactions"].values():
+            receipt = rpc(url, "eth_getTransactionReceipt", [operation["transactionHash"]])
+            assert receipt["blockHash"] == operation["blockHash"]
+            assert receipt["status"] == operation["status"]
+            block = rpc(url, "eth_getBlockByNumber", [operation["blockNumber"], False])
+            assert block["transactions"] == [operation["transactionHash"]]
+        receipt = rpc(url, "eth_getTransactionReceipt", [event_run["transactions"]["deploy"]["transactionHash"]])
+        assert [{key: log[key] for key in ("address", "topics", "data")} for log in receipt["logs"] if log["address"] == event["address"]] == [event]
+        assert rpc(url, "eth_getCode", [summary["vault"], "latest"]) == event_run["vaultCode"]
+    print(f"T16 factory and legacy forks, {len(summary['operations']) + 9} receipts, {sampled + 3} lane-sampled payments, revocation, registration event, and accounting verified")
 
 
 if __name__ == "__main__":
