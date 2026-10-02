@@ -1,0 +1,98 @@
+{
+  "logs-feature-1-a": {
+    "totals": {
+      "block_completions": 114,
+      "speculated": 73214,
+      "nonce_filtered": 0,
+      "reused": 572,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "conflicts": 27388,
+      "retries": 38022,
+      "backoff": 501206
+    },
+    "messages": {
+      "Finished speculative block execution": 114
+    }
+  },
+  "logs-feature-1-b": {
+    "totals": {
+      "block_completions": 101,
+      "speculated": 62880,
+      "nonce_filtered": 0,
+      "reused": 492,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "conflicts": 21935,
+      "retries": 32122,
+      "backoff": 412775
+    },
+    "messages": {
+      "Finished speculative block execution": 101
+    }
+  },
+  "logs-feature-2-a": {
+    "totals": {
+      "block_completions": 118,
+      "speculated": 80512,
+      "nonce_filtered": 0,
+      "reused": 629,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "conflicts": 29306,
+      "retries": 41915,
+      "backoff": 547573
+    },
+    "messages": {
+      "Finished speculative block execution": 118
+    }
+  },
+  "logs-feature-2-b": {
+    "totals": {
+      "block_completions": 103,
+      "speculated": 61208,
+      "nonce_filtered": 0,
+      "reused": 478,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "conflicts": 21994,
+      "retries": 29220,
+      "backoff": 396739
+    },
+    "messages": {
+      "Finished speculative block execution": 103
+    }
+  },
+  "logs-feature-3-a": {
+    "totals": {
+      "block_completions": 113,
+      "speculated": 75648,
+      "nonce_filtered": 0,
+      "reused": 591,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "conflicts": 28765,
+      "retries": 38919,
+      "backoff": 512852
+    },
+    "messages": {
+      "Finished speculative block execution": 113
+    }
+  },
+  "logs-feature-3-b": {
+    "totals": {
+      "block_completions": 97,
+      "speculated": 60700,
+      "nonce_filtered": 0,
+      "reused": 474,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "conflicts": 21719,
+      "retries": 30713,
+      "backoff": 403974
+    },
+    "messages": {
+      "Finished speculative block execution": 97
+    }
+  }
+}
