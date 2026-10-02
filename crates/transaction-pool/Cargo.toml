@@ -68,6 +68,7 @@ test-utils = [
 ]
 
 [dev-dependencies]
+tempo-revm = { workspace = true, features = ["test-utils"] }
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }

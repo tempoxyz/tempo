@@ -621,6 +621,124 @@ mod tests {
     }
 
     #[test]
+    fn fallback_payment_replay_rejects_skipped_credit_and_selected_debit() {
+        use crate::test_utils::{TestExecutorBuilder, fallback_payment_fixture, fallback_test_evm};
+        use tempo_chainspec::{TempoHardfork, spec::MODERATO};
+        use tempo_precompiles::tip20::TIP20Token;
+        use tempo_revm::TestFallbackFeeManager;
+        for commit_reads in [false, true] {
+            for changed_index in [0, 1] {
+                let (db, tx, recovered, tokens) = fallback_payment_fixture([0, 20_007, 20_007]);
+                assert!(recovered.is_payment_v2());
+                assert_eq!(tx.tempo_tx_env.as_ref().unwrap().nonce_key, U256::ONE);
+                let payer = tx.fee_payer().unwrap();
+                let mut capture = fallback_test_evm(db.clone())
+                    .with_fee_manager(TestFallbackFeeManager(tokens.clone()))
+                    .with_actions();
+                let captured = capture.transact_raw(tx.clone()).unwrap();
+                assert!(captured.result.is_success());
+                let actions = capture.take_actions().unwrap();
+                let validator_fee = capture.validator_fee();
+                let changed_token = tokens[changed_index];
+                let slot = TIP20Token::from_address_unchecked(changed_token).balances[payer].slot();
+                let new_balance = if changed_index == 0 {
+                    U256::from(30_000)
+                } else {
+                    U256::ZERO
+                };
+                assert!(actions.iter().any(|action| matches!(action, StorageAction::Sload(token, key, value)
+                    if *token == changed_token && *key == slot && *value == U256::from([0, 20_007][changed_index]))));
+                let mut state = State::builder().with_database(db.clone()).build();
+                // A preceding committed transaction has populated the executor's current cache.
+                state.storage(changed_token, slot).unwrap();
+                state
+                    .cache
+                    .accounts
+                    .get_mut(&changed_token)
+                    .unwrap()
+                    .account
+                    .as_mut()
+                    .unwrap()
+                    .storage
+                    .insert(slot, new_balance);
+                let mut builder = TestExecutorBuilder::default().with_spec(TempoHardfork::T14);
+                builder.fallback_tokens = Some(tokens.clone());
+                let mut executor = builder.build(&mut state, &MODERATO);
+                executor.evm_mut().ctx_mut().cfg.chain_id = 42431;
+                let error = executor
+                    .execute_transaction_with_actions(
+                        (tx.clone(), &recovered),
+                        StorageActionReplay {
+                            result: captured.result,
+                            actions,
+                            expiring_nonce: None,
+                            validator_fee,
+                        },
+                        |_| panic!("stale replay must not commit"),
+                        commit_reads,
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    StorageActionReplayError::from_block_execution_error(&error),
+                    Some(StorageActionReplayError::ActionConflict)
+                );
+                drop(executor);
+                assert_eq!(state.storage(changed_token, slot).unwrap(), new_balance);
+
+                // Fresh execution resolves the currently funded candidate; its fresh trace can replay.
+                let mut fresh_db = db;
+                fresh_db
+                    .insert_account_storage(changed_token, slot, new_balance)
+                    .unwrap();
+                let mut fresh = fallback_test_evm(fresh_db)
+                    .with_fee_manager(TestFallbackFeeManager(tokens.clone()))
+                    .with_actions();
+                let result = fresh.transact_raw(tx.clone()).unwrap();
+                assert!(result.result.is_success());
+                let fresh_actions = fresh.take_actions().unwrap();
+                let selected_index = if changed_index == 0 { 0 } else { 2 };
+                let selected = tokens[selected_index];
+                let selected_slot =
+                    TIP20Token::from_address_unchecked(selected).balances[payer].slot();
+                assert_eq!(
+                    result.state[&selected].storage[&selected_slot].present_value(),
+                    U256::from(if changed_index == 0 { 30_000 } else { 20_007 }) - U256::ONE
+                );
+                let expected_result = result.result.clone();
+                let expected_state = result.state.clone();
+                let mut builder = TestExecutorBuilder::default().with_spec(TempoHardfork::T14);
+                builder.fallback_tokens = Some(tokens);
+                let mut executor = builder.build(&mut state, &MODERATO);
+                executor.evm_mut().ctx_mut().cfg.chain_id = 42431;
+                executor
+                    .execute_transaction_with_actions(
+                        (tx, &recovered),
+                        StorageActionReplay {
+                            result: result.result,
+                            actions: fresh_actions,
+                            expiring_nonce: None,
+                            validator_fee: fresh.validator_fee(),
+                        },
+                        |replayed| {
+                            use alloy_evm::block::TxResult;
+                            assert_eq!(replayed.result().result, expected_result);
+                        },
+                        commit_reads,
+                    )
+                    .unwrap();
+                drop(executor);
+                for (token, account) in expected_state {
+                    for (key, value) in account.storage {
+                        if value.is_changed() {
+                            assert_eq!(state.storage(token, key).unwrap(), value.present_value());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn recorded_sload_rejects_changed_database_value() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);

@@ -53,6 +53,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+tempo-revm = { workspace = true, features = ["test-utils"] }
 alloy-eips.workspace = true
 alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-global"] }

@@ -76,6 +76,8 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Actual fallback use and examined slots, captured during admission.
+    fallback_selection: OnceLock<tempo_revm::FeeTokenSelection>,
 }
 
 impl TempoPooledTransaction {
@@ -129,6 +131,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            fallback_selection: OnceLock::new(),
         }
     }
 
@@ -400,6 +403,7 @@ impl TempoPooledTransaction {
             key_authorization_target_subject: self.key_authorization_target_subject.clone(),
             // Discard state-dependent caches before revalidation.
             fee_balance_slot: OnceLock::new(),
+            fallback_selection: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             key_authorization_signer_subject: OnceLock::new(),
@@ -439,6 +443,45 @@ impl TempoPooledTransaction {
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Stores the actual selector result; token membership cannot identify fallback use.
+    pub(crate) fn set_fallback_selection(&self, selection: tempo_revm::FeeTokenSelection) {
+        let _ = self.fallback_selection.set(selection);
+    }
+
+    /// Whether admission reached the activated final fallback.
+    pub fn uses_fallback(&self) -> bool {
+        self.fallback_selection
+            .get()
+            .is_some_and(|selection| selection.used_fallback)
+    }
+
+    /// Exact candidate balance slots examined at admission.
+    pub fn fallback_balance_slots(&self) -> &[(Address, U256)] {
+        self.fallback_selection
+            .get()
+            .map(|selection| selection.balance_slots.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// Detect both credits and debits, including protocol writes without Transfer logs.
+    pub(crate) fn needs_fallback_revalidation(
+        &self,
+        state: &AddressMap<revm::database::BundleAccount>,
+        is_reorg: bool,
+        fork_changed: bool,
+    ) -> bool {
+        if fork_changed && self.inner().fee_token().is_none() {
+            return true;
+        }
+        (is_reorg && self.uses_fallback())
+            || self.fallback_balance_slots().iter().any(|(token, slot)| {
+                state
+                    .get(token)
+                    .and_then(|account| account.storage.get(slot))
+                    .is_some_and(|value| value.is_changed())
+            })
     }
 
     /// Returns true when the transaction fee is paid by the transaction sender.
@@ -771,6 +814,10 @@ impl PoolTransactionError for TempoPoolTransactionError {
 impl InMemorySize for TempoPooledTransaction {
     fn size(&self) -> usize {
         self.inner.size()
+            + std::mem::size_of_val(&self.fallback_selection)
+            + self.fallback_selection.get().map_or(0, |selection| {
+                selection.balance_slots.capacity() * std::mem::size_of::<(Address, U256)>()
+            })
     }
 }
 
@@ -1136,6 +1183,55 @@ impl KeyAuthorizationTargetSubject {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fallback_revalidation_tracks_skipped_balances_and_reorgs() {
+        use crate::test_utils::TxBuilder;
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        let tx = TxBuilder::eip1559(Address::repeat_byte(0x41)).build();
+        let first = DEFAULT_FEE_TOKEN;
+        let second = alloy_primitives::address!("20c0000000000000000000000000000000000001");
+        let payer = tx.fee_payer().unwrap();
+        let slot = TIP20Token::from_address_unchecked(first).balances[payer].slot();
+        tx.set_resolved_fee_token(second);
+        // Admission examined both the skipped first candidate and the selected second.
+        tx.fallback_selection
+            .set(tempo_revm::FeeTokenSelection {
+                token: second,
+                used_fallback: true,
+                balance_slots: vec![(first, slot), (second, slot)],
+            })
+            .unwrap();
+        for token in [first, second] {
+            for (before, after, expected) in [(1, 2, true), (2, 1, true), (2, 2, false)] {
+                let state = [(
+                    token,
+                    BundleAccount::new(
+                        None,
+                        None,
+                        [(
+                            slot,
+                            StorageSlot::new_changed(U256::from(before), U256::from(after)),
+                        )]
+                        .into_iter()
+                        .collect(),
+                        AccountStatus::Changed,
+                    ),
+                )]
+                .into_iter()
+                .collect();
+                assert_eq!(
+                    tx.needs_fallback_revalidation(&state, false, false),
+                    expected
+                );
+            }
+        }
+        let empty = AddressMap::default();
+        assert!(!tx.needs_fallback_revalidation(&empty, false, false));
+        assert!(tx.needs_fallback_revalidation(&empty, true, false));
+        let fresh = tx.with_discarded_caches();
+        assert!(fresh.needs_fallback_revalidation(&empty, false, true));
+    }
+
     use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;

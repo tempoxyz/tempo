@@ -49,12 +49,12 @@ use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
 };
-use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
+use tempo_precompiles::storage::StorageActions;
 use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
-    TempoInvalidTransaction, TempoStateAccess,
+    FeeTokenResolutionError, FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager,
+    TempoBlockEnv, TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
 };
 
 #[cfg(test)]
@@ -78,7 +78,7 @@ impl FeeTokenResolver for TempoEvmConfig {
         fee_payer: Address,
         spec: TempoHardfork,
         actions: StorageActions,
-    ) -> TempoResult<Address>
+    ) -> Result<Address, FeeTokenResolutionError>
     where
         S: TempoStateAccess<M>,
     {

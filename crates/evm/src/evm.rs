@@ -1394,6 +1394,52 @@ mod tests {
     }
 
     #[test]
+    fn fallback_sponsored_payment_has_constant_gas_and_refunds_selected_token() {
+        use crate::test_utils::fallback_payment_fixture;
+        use tempo_precompiles::tip20::TIP20Token;
+        use tempo_revm::TestFallbackFeeManager;
+        let mut gas_used = None;
+        for (balances, selected) in [
+            ([20_007, 20_007, 20_007], 0),
+            ([0, 20_007, 20_007], 1),
+            ([0, 0, 20_007], 2),
+        ] {
+            let (db, tx, _, tokens) = fallback_payment_fixture(balances);
+            let payer = tx.fee_payer().unwrap();
+            let mut env = evm_env_with_spec(TempoHardfork::T14);
+            env.cfg_env.chain_id = 42431;
+            env.block_env.inner.basefee = 1_000_000_000;
+            let mut evm = TempoEvm::new(db, env)
+                .with_fee_manager(TestFallbackFeeManager(tokens.clone()))
+                .with_actions();
+            let result = evm.transact_raw(tx).unwrap();
+            assert!(result.result.is_success(), "{:?}", result.result);
+            let used = result.result.gas().tx_gas_used();
+            if let Some(expected) = gas_used {
+                assert_eq!(used, expected);
+            } else {
+                gas_used = Some(used);
+            }
+            let actions = evm.take_actions().unwrap();
+            for (index, token) in tokens.iter().enumerate().take(selected + 1) {
+                let slot = TIP20Token::from_address_unchecked(*token).balances[payer].slot();
+                assert!(actions.iter().any(
+                    |action| matches!(action, StorageAction::Sload(address, key, value)
+                    if address == token && *key == slot && *value == U256::from(balances[index]))
+                ));
+            }
+            evm.db_mut().commit(result.state);
+            let fee = tempo_primitives::transaction::calc_gas_balance_spending(used, 1_000_000_000);
+            for (index, token) in tokens.iter().enumerate() {
+                let slot = TIP20Token::from_address_unchecked(*token).balances[payer].slot();
+                let expected =
+                    U256::from(balances[index]) - if index == selected { fee } else { U256::ZERO };
+                assert_eq!(evm.db_mut().storage(*token, slot).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
     fn test_tip20_full_evm_storage_actions() {
         for hardfork in TempoHardfork::VARIANTS {
             // skip pre-T5 hardforks to avoid clutter

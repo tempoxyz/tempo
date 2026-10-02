@@ -52,6 +52,7 @@ tempo-precompiles = { workspace = true, features = ["test-utils"] }
 test-case.workspace = true
 
 [features]
+test-utils = []
 reth = ["dep:reth-storage-api"]
 serde = [
 	"revm/serde",

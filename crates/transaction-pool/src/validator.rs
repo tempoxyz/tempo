@@ -528,6 +528,9 @@ where
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(validation_ctx.fee_token);
+        if let Some(selection) = validation_ctx.fallback_selection {
+            transaction.set_fallback_selection(selection);
+        }
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
@@ -1105,6 +1108,73 @@ mod tests {
         validator.on_new_head_block(&mock_block);
 
         validator
+    }
+
+    #[test]
+    fn fallback_pool_revalidation_refreshes_actual_selection_and_balance_cache() {
+        use tempo_revm::TestFallbackFeeManager;
+        let payer = Address::repeat_byte(0x41);
+        let tx = TxBuilder::eip1559(payer).build_eip1559();
+        let validator = setup_validator(&tx, 1).with_disable_fee_amm_check(true);
+        validator
+            .active_hardfork
+            .store(TempoHardfork::T14.variant_index(), Ordering::Relaxed);
+        validator.cached_evm_env.write().cfg_env.spec = TempoHardfork::T14;
+        let second = address!("20c0000000000000000000000000000000000001");
+        let slot = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[payer].slot();
+        let seed = |token, balance| {
+            validator.client().add_account(
+                token,
+                ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                    (
+                        tip20_slots::CURRENCY.into(),
+                        uint!(
+                            0x5553440000000000000000000000000000000000000000000000000000000006_U256
+                        ),
+                    ),
+                    (tip20_slots::TRANSFER_POLICY_ID.into(), U256::ONE << 160),
+                    (slot.into(), U256::from(balance)),
+                ]),
+            );
+        };
+        seed(PATH_USD_ADDRESS, 0u64);
+        seed(second, 20_007u64);
+        let validate = |tx| {
+            let provider = validator.client().latest().unwrap();
+            let db = StateProviderDatabase::new(provider.as_ref().into_evm_state_provider());
+            let mut evm =
+                tempo_evm::evm::TempoEvm::new(db, validator.cached_evm_env.read().clone())
+                    .with_fee_manager(TestFallbackFeeManager(vec![PATH_USD_ADDRESS, second]));
+            evm.configure_for_pool();
+            match validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm) {
+                TransactionValidationOutcome::Valid { transaction, .. } => {
+                    transaction.into_transaction()
+                }
+                outcome => panic!("fallback admission failed: {outcome:?}"),
+            }
+        };
+        let admitted = validate(tx);
+        assert!(admitted.uses_fallback());
+        assert_eq!(admitted.effective_fee_token(), second);
+        assert_eq!(admitted.fee_balance_slot(), Some((second, slot)));
+        assert_eq!(
+            admitted.fallback_balance_slots(),
+            &[(PATH_USD_ADDRESS, slot), (second, slot)]
+        );
+        // Earlier credit makes the cached selection obsolete; maintenance must discard it.
+        seed(PATH_USD_ADDRESS, 20_007u64);
+        let refreshed = validate(admitted.with_discarded_caches());
+        assert_eq!(refreshed.effective_fee_token(), PATH_USD_ADDRESS);
+        assert_eq!(refreshed.fee_balance_slot(), Some((PATH_USD_ADDRESS, slot)));
+        assert_eq!(
+            refreshed.fallback_balance_slots(),
+            &[(PATH_USD_ADDRESS, slot)]
+        );
+        // A selected debit reselects the later candidate again.
+        seed(PATH_USD_ADDRESS, 0u64);
+        let refreshed = validate(refreshed.with_discarded_caches());
+        assert_eq!(refreshed.effective_fee_token(), second);
+        assert_eq!(refreshed.fee_balance_slot(), Some((second, slot)));
     }
 
     #[test]
