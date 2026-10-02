@@ -5,7 +5,7 @@
 //! child contracts may enter another native storage context. This module does
 //! not register an entrypoint or change payment-lane admission.
 
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, B256, Bytes, U256};
 use core::cell::{Cell, RefCell};
 use evm2::{
     Evm, EvmFeatures, EvmTypes,
@@ -59,6 +59,7 @@ impl NativeCallBudget {
 pub struct NativeCallContext {
     budget: RefCell<Option<Rc<NativeCallBudget>>>,
     verified_portal_deposit: Cell<bool>,
+    verified_portal_settlement: Cell<bool>,
 }
 
 impl Clone for NativeCallContext {
@@ -86,6 +87,7 @@ impl NativeCallContext {
     pub fn reset(&mut self) {
         *self.budget.get_mut() = None;
         self.verified_portal_deposit.set(false);
+        self.verified_portal_settlement.set(false);
     }
 
     /// Records that the top-level portal deposit passed its native identity checks.
@@ -96,6 +98,16 @@ impl NativeCallContext {
     /// Whether the current transaction entered a verified native portal deposit.
     pub fn verified_portal_deposit(&self) -> bool {
         self.verified_portal_deposit.get()
+    }
+
+    /// Records a top-level batch after portal and sequencer checks.
+    pub fn record_verified_portal_settlement(&self) {
+        self.verified_portal_settlement.set(true);
+    }
+
+    /// Whether the current transaction entered a verified native batch.
+    pub fn verified_portal_settlement(&self) -> bool {
+        self.verified_portal_settlement.get()
     }
 }
 
@@ -204,6 +216,36 @@ pub fn native_delegate_call<T: EvmTypes>(
         MessageKind::DelegateCall,
     )?
     .into_result()
+}
+
+/// Authenticates a fixed implementation before granting native payment capacity.
+/// The account access and code-hash work are charged to the current frame.
+pub fn verify_native_code<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    gas: &mut GasTracker,
+    target: Address,
+    expected_hash: B256,
+) -> Result<(), PrecompileError> {
+    let params = evm.version().gas_params;
+    if !evm.version().features.contains(EvmFeatures::EIP2929) {
+        return Err(PrecompileError::Fatal(
+            "native code checks require Berlin gas rules".into(),
+        ));
+    }
+    gas.spend(u64::from(params.get(GasId::WarmStorageReadCost)))?;
+    let cold_cost = params.cold_account_additional_cost();
+    let account = Host::load_account(evm, &target, true, gas.remaining() < cold_cost)?;
+    if account.is_cold {
+        gas.spend(cold_cost)?;
+    }
+    if account.code.eip7702_address().is_some() {
+        return Err(PrecompileError::Revert(Bytes::new()));
+    }
+    gas.spend(params.keccak256_word_cost(account.code.len().div_ceil(32)))?;
+    if account.code.hash_slow() != expected_hash {
+        return Err(PrecompileError::Revert(Bytes::new()));
+    }
+    Ok(())
 }
 
 /// Executes a bounded dependency frame with recoverable child failure results.

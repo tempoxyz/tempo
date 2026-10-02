@@ -598,6 +598,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let baseline_payment = self.is_payment(original);
         let native_portal_candidate =
             self.evm().config_spec_id().is_t15() && original.is_native_portal_deposit_candidate();
+        let native_settlement_candidate = self.evm().config_spec_id().is_t15()
+            && original.is_native_portal_settlement_candidate();
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
@@ -611,7 +613,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     .evm()
                     .ext()
                     .native_call_context
-                    .verified_portal_deposit());
+                    .verified_portal_deposit())
+            || (native_settlement_candidate
+                && self
+                    .evm()
+                    .ext()
+                    .native_call_context
+                    .verified_portal_settlement());
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.

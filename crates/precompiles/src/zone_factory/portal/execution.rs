@@ -7,13 +7,16 @@ use crate::{
     DelegateCallNotAllowed,
     error::{Result, TempoPrecompileError},
     input_cost,
-    native_call::{NativeCallBudget, NativeCallExt, NativeCallLimits, native_call},
+    native_call::{
+        NativeCallBudget, NativeCallExt, NativeCallLimits, native_call, native_delegate_call,
+        verify_native_code,
+    },
     storage::{Handler, StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider},
     storage_credits::NonCreditableSlots,
     zone_factory::ZoneFactory,
 };
 use alloy::{
-    primitives::{Bytes, U256},
+    primitives::{Bytes, U256, keccak256},
     sol_types::{SolCall, SolError, SolValue},
 };
 use evm2::{
@@ -22,18 +25,22 @@ use evm2::{
     interpreter::{GasTracker, Message, MessageKind},
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::LazyLock};
 use tempo_contracts::{
     TempoHardfork,
     precompiles::{
-        ITIP20,
+        ITIP20, ZONE_PORTAL_IMPL_ADDRESS,
         zone_portal::{ZonePortal, ZonePortalError},
     },
+    zones::T13_ZONE_PORTAL_RUNTIME,
 };
 use tempo_primitives::TempoBlockExt;
 
 /// Canonical encoding of either deposit selector with exactly 64 ciphertext bytes.
 const DEPOSIT_CALL_BYTES: usize = 420;
+
+static PORTAL_IMPLEMENTATION_HASH: LazyLock<alloy::primitives::B256> =
+    LazyLock::new(|| keccak256(&T13_ZONE_PORTAL_RUNTIME));
 
 /// Runtime-selected storage policy and paid dependency limits for one native call.
 pub struct NativePortalExecution<'a> {
@@ -200,6 +207,111 @@ impl NativePortalExecution<'_> {
             Err(error) => error.into_precompile_result(),
         }
     }
+
+    /// Executes a registered sequencer's bounded batch through the canonical
+    /// protocol implementation in the portal's existing storage context.
+    ///
+    /// This retains the historical verifier, signature, queue, and event rules
+    /// while every nested call consumes the one paid delegate frame.
+    pub fn submit_batch<T: EvmTypes<BlockEnvExt = TempoBlockExt>>(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> PrecompileResult
+    where
+        T::EvmExt: NativeCallExt,
+    {
+        if message.destination != message.code_address {
+            return Err(PrecompileError::Revert(
+                DelegateCallNotAllowed {}.abi_encode().into(),
+            ));
+        }
+        if !message.value.is_zero() {
+            return Err(PrecompileError::Revert(Bytes::new()));
+        }
+        if message.input.len() > 65_536 {
+            return Err(PrecompileHalt::OutOfGas.into());
+        }
+        let prepared = self.with_storage(evm, message, gas, |portal| {
+            portal
+                .storage
+                .deduct_gas(input_cost(self.spec, message.input.len())?)?;
+            if portal.storage.is_static() {
+                return Err(TempoPrecompileError::StaticCallNotAllowed);
+            }
+            if !ZoneFactory::new().is_zone_portal(message.destination)?
+                || !portal.initialized.read()?
+                || message.code.original_byte_slice() != ZONE_PORTAL_PROXY_RUNTIME
+            {
+                return Err(ZonePortalError::PortalNotRegistered(
+                    ZonePortal::PortalNotRegistered {},
+                )
+                .into());
+            }
+            if portal.role[message.caller].read()? != 1 {
+                return Err(ZonePortalError::NotSequencer(ZonePortal::NotSequencer {}).into());
+            }
+            let config = crate::dispatch::abi_decoder_config_for_spec(self.spec);
+            if message
+                .input
+                .starts_with(&ZonePortal::submitBatch_0Call::SELECTOR)
+            {
+                let call =
+                    ZonePortal::submitBatch_0Call::abi_decode_with_config(&message.input, config)
+                        .map_err(|_| TempoPrecompileError::OutOfGas)?;
+                if call.abi_encode().as_slice() != message.input.as_ref()
+                    || call.verifierConfig.len() > 1_024
+                    || call.proof.len() > 32_768
+                    || call.signatures.len() > 16
+                    || call.signatures.iter().any(|sig| sig.len() > 256)
+                {
+                    return Err(TempoPrecompileError::OutOfGas);
+                }
+            } else if message
+                .input
+                .starts_with(&ZonePortal::submitBatch_1Call::SELECTOR)
+            {
+                let call =
+                    ZonePortal::submitBatch_1Call::abi_decode_with_config(&message.input, config)
+                        .map_err(|_| TempoPrecompileError::OutOfGas)?;
+                if call.abi_encode().as_slice() != message.input.as_ref()
+                    || call.verifierConfig.len() > 1_024
+                    || call.proof.len() > 32_768
+                    || call.signatures.len() > 16
+                    || call.signatures.iter().any(|sig| sig.len() > 256)
+                {
+                    return Err(TempoPrecompileError::OutOfGas);
+                }
+            } else {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            Ok(())
+        });
+        if let Err(error) = prepared {
+            return error.into_precompile_result();
+        }
+        verify_native_code(
+            evm,
+            gas,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            *PORTAL_IMPLEMENTATION_HASH,
+        )?;
+        if message.depth == 0 {
+            evm.ext()
+                .native_call_context()
+                .record_verified_portal_settlement();
+        }
+        native_delegate_call(
+            evm,
+            message,
+            gas,
+            self.budget,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            message.input.clone(),
+            self.dependency_limits,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +421,90 @@ mod tests {
             ..Default::default()
         };
         Host::execute_message(evm, &TxEnv::<Types>::default(), &mut message).unwrap()
+    }
+
+    fn empty_batch() -> ZonePortal::submitBatch_1Call {
+        ZonePortal::submitBatch_1Call {
+            tempoBlockNumber: 1,
+            recentTempoBlockNumber: 1,
+            blockTransition: ZonePortal::BlockTransition {
+                prevBlockHash: B256::ZERO,
+                nextBlockHash: B256::ZERO,
+            },
+            depositQueueTransition: ZonePortal::DepositQueueTransition {
+                prevProcessedHash: B256::ZERO,
+                nextProcessedHash: B256::ZERO,
+                prevDepositNumber: 0,
+                nextDepositNumber: 0,
+            },
+            tokenEnablementTransition: ZonePortal::TokenEnablementTransition {
+                prevProcessedTokenCount: 0,
+                nextProcessedTokenCount: 0,
+            },
+            withdrawalQueueHash: B256::ZERO,
+            verifierConfig: Bytes::new(),
+            proof: Bytes::new(),
+            nextZoneHeight: U256::from(1),
+            signatures: vec![],
+        }
+    }
+
+    #[test]
+    fn native_batch_rejects_missing_implementation_before_payment_admission() {
+        let (mut evm, sequencer) = setup_evm(false, false);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || -> Result<()> {
+            ZonePortalStorage::new(PORTAL).role[sequencer].write(1)
+        })
+        .unwrap();
+        let mut message = Message::<Types> {
+            kind: MessageKind::Call,
+            gas_limit: 30_000_000,
+            destination: PORTAL,
+            call_target: PORTAL,
+            caller: sequencer,
+            input: empty_batch().abi_encode().into(),
+            code: Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
+            code_address: PORTAL,
+            ..Default::default()
+        };
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::<Types>::default(), &mut message).unwrap();
+        assert!(result.stop.is_revert());
+        assert!(!evm.ext().native_call_context().verified_portal_settlement());
+    }
+
+    #[test]
+    fn native_batch_enters_canonical_implementation_with_paid_child_work() {
+        let (mut evm, sequencer) = setup_evm(false, false);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || -> Result<()> {
+            let mut portal = ZonePortalStorage::new(PORTAL);
+            portal.role[sequencer].write(1)?;
+            portal
+                .storage
+                .set_code(ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME)?;
+            Ok(())
+        })
+        .unwrap();
+        let mut message = Message::<Types> {
+            kind: MessageKind::Call,
+            gas_limit: 30_000_000,
+            destination: PORTAL,
+            call_target: PORTAL,
+            caller: sequencer,
+            input: empty_batch().abi_encode().into(),
+            code: Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
+            code_address: PORTAL,
+            ..Default::default()
+        };
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::<Types>::default(), &mut message).unwrap();
+        // This synthetic batch has no valid proof or signatures, so Solidity
+        // rejects it after the authenticated, charged delegate frame enters.
+        assert!(result.stop.is_revert());
+        assert!(evm.ext().native_call_context().verified_portal_settlement());
+        assert!(result.gas.spent() > 2_600);
     }
 
     fn balances(

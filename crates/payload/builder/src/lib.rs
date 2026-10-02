@@ -568,6 +568,10 @@ where
             let is_payment = if hardfork.is_t15() {
                 tx.transaction.is_payment()
                     || tx.transaction.inner().is_native_portal_deposit_candidate()
+                    || tx
+                        .transaction
+                        .inner()
+                        .is_native_portal_settlement_candidate()
             } else if hardfork.is_t5() {
                 tx.transaction.is_payment()
             } else {
