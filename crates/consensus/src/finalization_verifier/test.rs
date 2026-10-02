@@ -6,7 +6,7 @@ use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::{Error, FinalizationVerifier};
+use super::{CertificateVerificationError, Error, FinalizationVerifier};
 use crate::follow::test_utils::{
     EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
 };
@@ -41,6 +41,42 @@ fn tracks_boundary_identity() {
         verifier
             .decode_and_verify(&mut context, &certified)
             .expect("installed identity should verify the next epoch");
+    });
+}
+
+#[test_traced]
+fn retired_identity_does_not_verify_unregistered_epochs() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let retired = dkg_fixture(&mut context, Epoch::zero());
+        let current = dkg_fixture(&mut context, Epoch::new(1));
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 0,
+                identity: *retired.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+
+        // A full DKG replaced the configured identity from epoch 1 on.
+        let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&current.outcome));
+        verifier
+            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+            .expect("boundary should install the new identity");
+
+        // Epoch 2 has no registered scheme, so it's verified against the fallback identity.
+        let block = make_block(2 * EPOCH_LENGTH.get(), None);
+        let forged = make_finalization(&block, Epoch::new(2), &retired.schemes);
+        assert!(matches!(
+            verifier.decode_and_verify(&mut context, &make_certified_block(block.clone(), &forged)),
+            Err(Error::CertificateVerification(
+                CertificateVerificationError::FallbackVerificationFailed
+            ))
+        ));
+
+        let finalization = make_finalization(&block, Epoch::new(2), &current.schemes);
+        verifier
+            .decode_and_verify(&mut context, &make_certified_block(block, &finalization))
+            .expect("the newest identity should verify later unregistered epochs");
     });
 }
 
