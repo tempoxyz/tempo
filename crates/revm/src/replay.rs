@@ -113,6 +113,7 @@ struct TokenHints {
     account: bool,
     transfer: bool,
     fee: bool,
+    rewards: bool,
 }
 
 impl PrefetchPlan {
@@ -194,14 +195,20 @@ impl PrefetchPlan {
                 flags.account = true;
             }
             if (pays_fees || recipient.is_some()) && !flags.transfer {
-                for slot in [
-                    token_slots::PAUSED,
-                    token_slots::TRANSFER_POLICY_ID,
-                    token_slots::GLOBAL_REWARD_PER_TOKEN,
-                ] {
+                for slot in [token_slots::PAUSED, token_slots::TRANSFER_POLICY_ID] {
                     emit(ReadKey::Storage(token, slot));
                 }
                 flags.transfer = true;
+            }
+            // T8 disables automatic reward settlement on transfers and fees.
+            // Avoid fetching three unused reward-info slots for every holder.
+            let rewards = !spec.is_t8();
+            if rewards && (pays_fees || recipient.is_some()) && !flags.rewards {
+                emit(ReadKey::Storage(
+                    token,
+                    token_slots::GLOBAL_REWARD_PER_TOKEN,
+                ));
+                flags.rewards = true;
             }
             if pays_fees && !flags.fee {
                 emit(ReadKey::Storage(
@@ -220,15 +227,17 @@ impl PrefetchPlan {
             self.holder(
                 token,
                 payer,
-                pays_fees || recipient.is_some_and(|to| payer == tx.inner.caller || payer == to),
+                rewards
+                    && (pays_fees
+                        || recipient.is_some_and(|to| payer == tx.inner.caller || payer == to)),
                 &mut emit,
             );
             if let Some(recipient) = recipient {
                 if tx.inner.caller != payer {
-                    self.holder(token, tx.inner.caller, true, &mut emit);
+                    self.holder(token, tx.inner.caller, rewards, &mut emit);
                 }
                 if recipient != payer && recipient != tx.inner.caller {
-                    self.holder(token, recipient, true, &mut emit);
+                    self.holder(token, recipient, rewards, &mut emit);
                 }
             }
         }

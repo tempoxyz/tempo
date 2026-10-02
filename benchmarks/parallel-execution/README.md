@@ -5,7 +5,7 @@ execution is no longer the bottleneck in a live Tempo node.
 
 The scheduler has been ported from Tempo 1.6 onto current main (Tempo 1.14,
 Reth 2.7, revm 43). Earlier measurements below describe the old base. Current-main
-performance must be measured again with the GitHub workflows. See
+GitHub comparisons are summarized below. See
 `main-port-validation.json` for port checks. Call-body reuse currently falls back to full ordered replay under T7+ gas-credit
 rules. Protocol fee rebasing is enabled through T14 after checking that upstream
 protocol hooks disable storage-credit accounting; state-gas splitting and custom
@@ -46,6 +46,14 @@ throughput improved only about 4% and remained below sequential execution.
 See `t14-nonce-prediction.json`; this is not evidence of a node speedup.
 `TEMPO_BENCH_WORKLOADS=tip20_paid_aa_expiring` selects this fixture and
 `TEMPO_BENCH_NONCE_PREDICTION=0` disables the prediction for comparison.
+
+T8+ prefetch now omits the TIP-20 reward slots whose automatic hooks are disabled.
+An alternating before/after/after/before local comparison of 500,000 expiring AA
+transfers improves eight-worker throughput from 139,886 to 165,147 TPS (+18.1%),
+with preparation time falling 31.9%. All four runs preserve sequential receipts
+and roots; EVM and revm tests and all-target Clippy pass. These warm-memory results
+exclude trie hashing and are not the public-mix node workload. See
+`t14-reward-prefetch.json` and its raw logs; GitHub measurement is still required.
 
 Enable node validation and payload building with:
 
@@ -1905,12 +1913,12 @@ physical cores to each of two validators; begin with eight execution workers
 per validator and measure scaling. Include 10k, 25k, 50k and higher offered
 loads with normal state-root computation.
 
-`github-benchmarks.json` records the published tested snapshot, workflow revision
-and outstanding access/compatibility work. No GitHub benchmark has run yet.
-The current harness targets newer node interfaces than this checkout, including
-conditional regenesis and encrypted consensus keys. Resolve those differences
-before interpreting results. Local in-memory TPS is not the GitHub performance
-gate, and forwarding remains opt-in pending that measurement.
+`github-benchmarks.json` records pinned snapshots, workflow revisions, inputs and
+results. The current-main port retains the harness's regenesis and encrypted
+consensus key interfaces. The first two completed throughput comparisons regress;
+cursor prediction is under measurement in the third. Historical replay is being
+retried with Rust 1.98.1 after an LLVM compiler crash. Local in-memory TPS is not
+the GitHub performance gate, and forwarding remains opt-in pending measurement.
 
 ## Correctness model and integration
 

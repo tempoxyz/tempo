@@ -1,0 +1,201 @@
+{
+  "status": "local_diagnostic_not_acceptance",
+  "hardfork": "T14",
+  "before_commit": "50ee6f588",
+  "change": "Stop prefetching disabled TIP-20 automatic reward storage at T8+. Actual execution reads still fetch and validate their values.",
+  "transactions_per_run": 500000,
+  "workload": "Paid AA transfers with expiring nonces to fresh recipients, 100 senders; not the GitHub public-mix fixture.",
+  "run_order": [
+    "before",
+    "after",
+    "after",
+    "before"
+  ],
+  "window": 128,
+  "block_gas_limit": 5000000000,
+  "worker_counts": [
+    0,
+    8
+  ],
+  "phase_timing": true,
+  "compiler": "Rust 1.98.1; matching release settings with strip=none and force-frame-pointers on the test crate",
+  "binary_sha256": {
+    "before": "5a627b17646d8cc87e4e030bf675c7ad77bbb12436f726719bd6e2212c23444f",
+    "after": "86f15121e63bc9e828e7f15ee79bfba333af784572838e29dc62a0b07142aeb0"
+  },
+  "means_tps": {
+    "before_workers_0": 137919.5,
+    "before_workers_8": 139885.5,
+    "after_workers_0": 136726.5,
+    "after_workers_8": 165146.5
+  },
+  "mean_prepare_seconds": {
+    "before": 1.9492135,
+    "after": 1.3270724999999999
+  },
+  "eight_worker_tps_delta_pct": 18.05834057139588,
+  "prepare_delta_pct": -31.91754007449672,
+  "validation": "All four runs compare full receipts and state trie root against sequential. EVM 145 passed, 2 ignored; revm 200 passed. Release all-target Clippy passes for both crates with warnings denied.",
+  "rows": [
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.635913,
+      "tps": 137517,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.341223,
+        "commit": 0.262642
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.616228,
+      "tps": 138266,
+      "reused": 499993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496086,
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.954435,
+        "ordered": 1.065546,
+        "commit": 0.527682
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.657213,
+      "tps": 136716,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 7.4e-05,
+        "ordered": 3.327384,
+        "commit": 0.297758
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.050646,
+      "tps": 163900,
+      "reused": 499993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496086,
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.330954,
+        "ordered": 1.107796,
+        "commit": 0.541684
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.656656,
+      "tps": 136737,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.325735,
+        "commit": 0.298936
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.00494,
+      "tps": 166393,
+      "reused": 499993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496086,
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.323191,
+        "ordered": 1.079789,
+        "commit": 0.532665
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.614744,
+      "tps": 138322,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 7.4e-05,
+        "ordered": 3.317129,
+        "commit": 0.265845
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.533434,
+      "tps": 141505,
+      "reused": 499993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496086,
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.943992,
+        "ordered": 1.024907,
+        "commit": 0.499671
+      }
+    }
+  ]
+}
