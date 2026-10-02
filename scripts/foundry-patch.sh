@@ -93,6 +93,9 @@ else
     printf '\n[patch."https://github.com/tempoxyz/tempo"]\n'
     while IFS=$'\t' read -r crate path; do
       [[ -n "$crate" ]] || continue
+      # Foundry's old tempo-revm must retain its matching git-sourced
+      # precompile API; the EVM2-only local crate no longer exports it.
+      [[ "$crate" == "tempo-precompiles" ]] && continue
       printf '%s = { path = "%s/%s" }\n' "$crate" "$TEMPO_ROOT" "$path"
     done <<< "$PATCHES"
   } >> "$FOUNDRY_CARGO"
@@ -170,7 +173,7 @@ update_stale_tempo_git_packages() {
         next
       }
       /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
-        if (name != "" && version != "") {
+        if (name != "" && version != "" && name != "tempo-revm" && name != "tempo-precompiles") {
           print name "@" version
         }
       }
@@ -276,13 +279,12 @@ remaining_tempo_git_packages="$(awk '
   /^name = / { name = $3; gsub(/"/, "", name) }
   /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ { print name }
 ' "$FOUNDRY_ROOT/Cargo.lock" | sort -u)"
-if [[ -n "$remaining_tempo_git_packages" && "$remaining_tempo_git_packages" != "tempo-revm" ]]; then
+if [[ -n "$remaining_tempo_git_packages" && "$remaining_tempo_git_packages" != $'tempo-precompiles\ntempo-revm' ]]; then
   echo "ERROR: unexpected Tempo git packages remain in Foundry's Cargo.lock:" >&2
   printf '%s\n' "$remaining_tempo_git_packages" >&2
   exit 1
 fi
 
-# This pinned Foundry revision still uses tempo-revm for its legacy Anvil EVM.
-# It is not a Tempo runtime dependency and has no local counterpart after the
-# EVM2 migration. Every other Tempo crate must resolve from the checkout.
-echo "Foundry patched successfully – Tempo crates other than Foundry's legacy tempo-revm resolve from $TEMPO_ROOT"
+# This pinned Foundry revision still uses tempo-revm and its precompile API for
+# legacy Anvil execution. Neither is a Tempo runtime dependency in this branch.
+echo "Foundry patched successfully – Tempo crates other than Foundry's legacy tempo-revm pair resolve from $TEMPO_ROOT"
