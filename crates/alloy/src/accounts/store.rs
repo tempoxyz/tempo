@@ -3115,17 +3115,17 @@ fn persisted_scopes_to_call_scopes(
             return Err(PersistedKeyError::RecipientsWithoutSelector);
         }
 
-        let index = match grouped
+        let (index, created) = match grouped
             .iter()
             .position(|candidate| candidate.target == scope.address)
         {
-            Some(index) => index,
+            Some(index) => (index, false),
             None => {
                 grouped.push(CallScope {
                     target: scope.address,
                     selector_rules: Vec::new(),
                 });
-                grouped.len() - 1
+                (grouped.len() - 1, true)
             }
         };
         let entry = &mut grouped[index];
@@ -3156,6 +3156,13 @@ fn persisted_scopes_to_call_scopes(
             {
                 return Err(PersistedKeyError::InvalidRecipientConstraint);
             }
+        }
+        // An entry without a selector means "any selector on this target", which is encoded
+        // downstream as an empty `selector_rules` list. Appending a rule for that same target
+        // would turn the wildcard into an allowlist and silently narrow the key's permissions,
+        // so an existing wildcard wins.
+        if !created && entry.selector_rules.is_empty() {
+            continue;
         }
         entry.selector_rules.push(SelectorRule {
             selector: selector.0,
@@ -3260,6 +3267,52 @@ mod tests {
     const PROCESS_STARTED_PATH_ENV: &str = "TEMPO_ACCOUNTS_PROCESS_TEST_STARTED_PATH";
     const PROCESS_OPERATION_ENV: &str = "TEMPO_ACCOUNTS_PROCESS_TEST_OPERATION";
     const PROCESS_SIGNER_BYTE_ENV: &str = "TEMPO_ACCOUNTS_PROCESS_TEST_SIGNER_BYTE";
+
+    #[test]
+    fn wildcard_call_scope_is_not_narrowed_by_a_later_selector() {
+        let target = Address::repeat_byte(0x22);
+        let scopes = persisted_scopes_to_call_scopes(vec![
+            PersistedScope {
+                address: target,
+                selector: None,
+                recipients: None,
+            },
+            PersistedScope {
+                address: target,
+                selector: Some(PersistedSelector([0xaa, 0xbb, 0xcc, 0xdd])),
+                recipients: None,
+            },
+        ])
+        .expect("scopes convert");
+
+        // A selector-less entry means "any selector on this target"; the later
+        // selector-specific entry must not collapse it into an allowlist.
+        assert_eq!(scopes.len(), 1);
+        assert!(scopes[0].selector_rules.is_empty());
+    }
+
+    #[test]
+    fn distinct_targets_keep_their_own_selector_rules() {
+        let first = Address::repeat_byte(0x22);
+        let second = Address::repeat_byte(0x33);
+        let scopes = persisted_scopes_to_call_scopes(vec![
+            PersistedScope {
+                address: first,
+                selector: Some(PersistedSelector([0xaa, 0xbb, 0xcc, 0xdd])),
+                recipients: None,
+            },
+            PersistedScope {
+                address: second,
+                selector: Some(PersistedSelector([0x11, 0x22, 0x33, 0x44])),
+                recipients: None,
+            },
+        ])
+        .expect("scopes convert");
+
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0].selector_rules.len(), 1);
+        assert_eq!(scopes[1].selector_rules.len(), 1);
+    }
 
     struct StoreMutationProcess {
         child: Child,
