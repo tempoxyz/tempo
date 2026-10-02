@@ -1,0 +1,287 @@
+{
+  "kind": "evm2_t16_native_earn_zone_fork_smoke",
+  "l1Rpc": "http://127.0.0.1:58545",
+  "zoneRpc": "http://127.0.0.1:59545",
+  "l1GenesisHash": "0xe4c37aeabb3c011af3f06399ed6951df7c9634a9d0cc4a88e4881a941ac91d2d",
+  "zoneGenesisHash": "0x257e3e47a94fd7051172b0da7f5193bf4f890a1222e4a08652ad8372b9a91b34",
+  "l1ChainId": "0x539",
+  "zoneChainId": "0x53900000001",
+  "l1T15Time": 1790921148,
+  "l1T16Time": 1790922288,
+  "zoneT15Time": 1790922875,
+  "forkBlock": 1172,
+  "addresses": {
+    "asset": "0x20c0000000000000000000000000000000000000",
+    "share": "0x20c000000000000000000000e038c3bee7bf4591",
+    "vault": "0x856e4424f806d16e8cbc702b3c0f2ede5468eae5",
+    "fees": "0xc4e6626fe2ed2f037ef00228cb1715209e4ce867",
+    "venue": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "sender": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "recipient": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "portal": "0x5ad0000000000000000000000000000000000001"
+  },
+  "source": {
+    "tempo": "2ed378214",
+    "zones": "c494eca38",
+    "earn": "8d592ee",
+    "evm2": "1e4dbf287df62e5b24fef4f7dbae32deb14b4fc5",
+    "reth": "11ad602fe1ad2cbff2d01ad21c59dec9af4e1f4a"
+  },
+  "binarySha256": {
+    "tempo": "e4a62eb1874ccc20b19e3b6d30125a6749158313b252c97ae128e926f15dbdb9",
+    "zones": "0044a3beee666ee78f096d8cd5631b67b9d9c2538feb7207dfecddd92dc64d22"
+  },
+  "proofFile": "evm2-t16-native-earn-manifest-proof.json",
+  "forkBoundary": {
+    "1171": {
+      "blockHash": "0x49df419c51bdcbb02d31b7a452e609ab4ff392f253ed34b5ab95947bfc79393b",
+      "timestamp": 1790922287,
+      "vaultCodeHash": "0x33114fb79bc424bc0134af26dd5b291fcb3966e56a6665b7009bbd82b7332e50",
+      "feeCodeHash": "0x3676bec3f6253d1e4994698e4af9d4c47b7c6741d6df6c3a2fe57d6ebe144979"
+    },
+    "1172": {
+      "blockHash": "0xb96387484fafe3f3a0e046b3f04d7c210e133cdb1b48c2a9a1188987161c7391",
+      "timestamp": 1790922288,
+      "vaultCodeHash": "0x502aeca502056d259b30dcce44d73a0bfbbcca8fd0aaec28647e53978c2ee1b4",
+      "feeCodeHash": "0x502aeca502056d259b30dcce44d73a0bfbbcca8fd0aaec28647e53978c2ee1b4"
+    }
+  },
+  "snapshots": {
+    "1171": {
+      "shareSupply": 1000000,
+      "senderShares": 1000000,
+      "vaultAssets": 1000000,
+      "venueAssets": 1000000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709551615
+    },
+    "1172": {
+      "shareSupply": 1000000,
+      "senderShares": 1000000,
+      "vaultAssets": 1000000,
+      "venueAssets": 1000000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709551615
+    },
+    "1192": {
+      "shareSupply": 1000000,
+      "senderShares": 1000000,
+      "vaultAssets": 1000000,
+      "venueAssets": 1000000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709551615
+    },
+    "1193": {
+      "shareSupply": 600000,
+      "senderShares": 600000,
+      "vaultAssets": 600000,
+      "venueAssets": 600000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1229": {
+      "shareSupply": 600000,
+      "senderShares": 600000,
+      "vaultAssets": 600000,
+      "venueAssets": 600000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1230": {
+      "shareSupply": 800000,
+      "senderShares": 800000,
+      "vaultAssets": 800000,
+      "venueAssets": 800000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1249": {
+      "shareSupply": 800000,
+      "senderShares": 800000,
+      "vaultAssets": 800000,
+      "venueAssets": 800000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1250": {
+      "shareSupply": 800000,
+      "senderShares": 800000,
+      "vaultAssets": 900000,
+      "venueAssets": 900000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1266": {
+      "shareSupply": 800000,
+      "senderShares": 800000,
+      "vaultAssets": 900000,
+      "venueAssets": 900000,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1267": {
+      "shareSupply": 700000,
+      "senderShares": 700000,
+      "vaultAssets": 787500,
+      "venueAssets": 787500,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1284": {
+      "shareSupply": 700000,
+      "senderShares": 700000,
+      "vaultAssets": 787500,
+      "venueAssets": 787500,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    },
+    "1285": {
+      "shareSupply": 700000,
+      "senderShares": 700000,
+      "vaultAssets": 787500,
+      "venueAssets": 787500,
+      "portalBacking": 100000,
+      "recipientAssets": 18446744073709951615
+    }
+  },
+  "earnTransactions": {
+    "assetApproval": {
+      "hash": "0x7367b0809f9a7469688476f8c2021e94ff7ee3fddbdc3c8ba6f3da94dd309ecf",
+      "block": 1223,
+      "blockHash": "0x751777786009f6370803c8971cd560d7e4fb4c8f7be4690f5cbdb39219abd3ed",
+      "timestamp": 1790922339,
+      "status": 1,
+      "gasUsed": 277942,
+      "laneMetric": {
+        "time": 1790922339.5300124,
+        "payment_transactions_last": 1.0,
+        "general_gas_used_last": 0.0,
+        "payment_gas_used_last": 277942.0,
+        "gas_used_last": 277942.0,
+        "pool_transactions_included_last": 1.0
+      }
+    },
+    "spend": {
+      "hash": "0x80eb284407c6fefd63d836b8e4a0ec0089cae22c47e309ef2cfda39a3fe9817f",
+      "block": 1193,
+      "blockHash": "0xee5faa70948ba83c5de7dbe991cd0236364efeab87c721c850bea0cdfa72b5b0",
+      "timestamp": 1790922309,
+      "status": 1,
+      "gasUsed": 222094,
+      "laneMetric": {
+        "time": 1790922309.5222905,
+        "payment_transactions_last": 1.0,
+        "general_gas_used_last": 0.0,
+        "payment_gas_used_last": 222094.0,
+        "gas_used_last": 222094.0,
+        "pool_transactions_included_last": 1.0
+      }
+    },
+    "deposit": {
+      "hash": "0x3e0973ead68199f50e779a27e835e963474ced79a54f8477f86d086c8ed5f434",
+      "block": 1230,
+      "blockHash": "0x6ffff286699018c5f228135c30b0e50fd99aeca4e189bd08e4543ae4a860cd8a",
+      "timestamp": 1790922346,
+      "status": 1,
+      "gasUsed": 262432,
+      "laneMetric": {
+        "time": 1790922346.5291355,
+        "payment_transactions_last": 1.0,
+        "general_gas_used_last": 0.0,
+        "payment_gas_used_last": 262432.0,
+        "gas_used_last": 262432.0,
+        "pool_transactions_included_last": 1.0
+      }
+    },
+    "yieldTransfer": {
+      "hash": "0x1cf1187987604707146aa9a093aa2318716f20d2c4cd925cd1aacdbfda515275",
+      "block": 1250,
+      "blockHash": "0xfce261ea3a5941374fbf489f177ce44a43d63af02ae729d419ce4868d4606161",
+      "timestamp": 1790922366,
+      "status": 1,
+      "gasUsed": 39942,
+      "laneMetric": {
+        "time": 1790922366.543348,
+        "payment_transactions_last": 1.0,
+        "general_gas_used_last": 0.0,
+        "payment_gas_used_last": 39942.0,
+        "gas_used_last": 39942.0,
+        "pool_transactions_included_last": 1.0
+      }
+    },
+    "redeem": {
+      "hash": "0xaf2692ade248089e686d4ed1df097562958926db240d0921b8a86912de0e86fd",
+      "block": 1267,
+      "blockHash": "0xdb671b1c5ba6c5756c5391d34a6bfdb690571e8f2293ad21345022b4d6d2fc8f",
+      "timestamp": 1790922383,
+      "status": 1,
+      "gasUsed": 218144,
+      "laneMetric": {
+        "time": 1790922383.6237478,
+        "payment_transactions_last": 1.0,
+        "general_gas_used_last": 0.0,
+        "payment_gas_used_last": 218144.0,
+        "gas_used_last": 218144.0,
+        "pool_transactions_included_last": 1.0
+      }
+    },
+    "failedRedeem": {
+      "hash": "0x56b6ae46b462e8dc98124809ae40d6249cf74e9ef10b30eac36f28c841598ae5",
+      "block": 1285,
+      "blockHash": "0x8984d19b8ed86e89d60d677be46c07a4988e2192db075911bc77f0e8d82ff461",
+      "timestamp": 1790922401,
+      "status": 0,
+      "gasUsed": 457558,
+      "laneMetric": {
+        "time": 1790922401.5769103,
+        "payment_transactions_last": 1.0,
+        "general_gas_used_last": 0.0,
+        "payment_gas_used_last": 457558.0,
+        "gas_used_last": 457558.0,
+        "pool_transactions_included_last": 1.0
+      }
+    }
+  },
+  "zone": {
+    "depositTx": "0x809e4f5086c9da5e7e1f3f6234d19aa0bc595f5aa41e13e694e2748b9dd7c166",
+    "privateTransferTx": "0x448a299902eaca3ca3a8d6f9d09a203c23261bef8cd937878a5e620962d73793",
+    "settlementTx": "0x668d17409a488b4ce38884673812de66d88f908e76756881f9771670bf58b1e6",
+    "privateTransferBlock": 736,
+    "privateTransferTimestamp": 1790922985,
+    "privateBalances": {
+      "sender": 90000,
+      "recipient": 10000,
+      "supply": 100000
+    },
+    "settlementReceipt": {
+      "status": "0x1",
+      "blockNumber": "0x752",
+      "gasUsed": "0x1820e",
+      "blockHash": "0xe1f8e98852b1896ae1e25fc0b324646b68626335da613113efc5b991f1856d4a"
+    },
+    "settlementPaymentTransactions": 1,
+    "settlementBlockTransactions": 1,
+    "privateTransferTx2": "0xe3f72095a5b937ca18d1f02f60c2d924034d6395d1288d55cec2a5913cf67923",
+    "settlementTx2": "0xc8dc55377dd83f83e79241114f8952bd75da6e6a04620cdaa528b4d036a56d5f",
+    "privateTransferBlock2": 1418,
+    "privateBalancesAfterSecondTransfer": {
+      "sender": 80000,
+      "recipient": 20000,
+      "supply": 100000
+    },
+    "settlementReceipt2": {
+      "status": "0x1",
+      "blockNumber": "0x9fa",
+      "gasUsed": "0x1821a",
+      "blockHash": "0xec484ab3e6c974cbf01b55278d6aa36e376e632f9034c986e293ff8792a84108"
+    },
+    "settlementLaneMetric2": {
+      "time": 1790923260.5812209,
+      "payment_transactions_last": 1.0,
+      "general_gas_used_last": 0.0,
+      "payment_gas_used_last": 98842.0,
+      "gas_used_last": 98842.0,
+      "pool_transactions_included_last": 1.0
+    }
+  }
+}
