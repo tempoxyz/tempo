@@ -1,0 +1,86 @@
+[
+  {
+    "id": "t12.allow-abi-suffix",
+    "description": "T11 rejected precompile calldata with trailing bytes via an empty revert; T12 accepts it (TIP-1116). Matches any envelope call and an empty-reverting control transaction; not proof that the matching call caused the revert.",
+    "boundary": "call",
+    "when": {
+      "all": [
+        { "ref": "call.rejects_only_abi_suffix" },
+        { "eq": [{ "ref": "real.outcome" }, { "outcome": "revert" }] },
+        {
+          "eq": [
+            { "ref": "real.output_hash" },
+            { "b256": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470" }
+          ]
+        }
+      ]
+    },
+    "accept": [
+      {
+        "fields": ["outcome", "output", "receipt_logs", "existence", "balance", "nonce", "code", "storage_reset", "storage"],
+        "address": "any",
+        "slot": "any"
+      }
+    ]
+  },
+  {
+    "id": "t12.tip20-channel-reserve",
+    "description": "Channel Reserve storage, including its TIP-1060 credit balance, when an envelope call targets it and the transaction changed its storage. Not a causation proof.",
+    "boundary": "call",
+    "call": { "to": "0x4D50500000000000000000000000000000000000" },
+    "when": { "tx_changed_storage": "0x4D50500000000000000000000000000000000000" },
+    "accept": [
+      { "fields": ["storage"], "address": "0x4D50500000000000000000000000000000000000", "slot": "any" },
+      {
+        "fields": ["storage"],
+        "address": "0x1060000000000000000000000000000000000000",
+        "slot": { "to_u256": { "address": "0x4D50500000000000000000000000000000000000" } }
+      }
+    ]
+  },
+  {
+    "id": "t12.stablecoin-dex",
+    "description": "DEX storage, including its TIP-1060 credit balance, when an envelope call targets a DEX swap and the transaction changed DEX storage. Includes any AA call, even if unreached; not a causation proof.",
+    "boundary": "call",
+    "call": {
+      "to": "0xdec0000000000000000000000000000000000000",
+      "functions": [
+        "swapExactAmountIn(address,address,uint128,uint128)",
+        "swapExactAmountOut(address,address,uint128,uint128)"
+      ]
+    },
+    "when": { "tx_changed_storage": "0xdec0000000000000000000000000000000000000" },
+    "accept": [
+      { "fields": ["storage"], "address": "0xdec0000000000000000000000000000000000000", "slot": "any" },
+      {
+        "fields": ["storage"],
+        "address": "0x1060000000000000000000000000000000000000",
+        "slot": { "to_u256": { "address": "0xdec0000000000000000000000000000000000000" } }
+      }
+    ]
+  },
+  {
+    "id": "t12.sstore-sentry",
+    "description": "Low-headroom success-to-halt transitions treated as T12 SSTORE sentry failures. A pre-refund gas heuristic, not proof.",
+    "boundary": "transaction",
+    "when": {
+      "all": [
+        { "eq": [{ "ref": "real.outcome" }, { "outcome": "success" }] },
+        { "eq": [{ "ref": "shadow.outcome" }, { "outcome": "halt" }] },
+        {
+          "lte": [
+            { "sub": [{ "ref": "tx.gas_limit" }, { "ref": "real.gas.total_spent" }] },
+            { "u256": "2300" }
+          ]
+        }
+      ]
+    },
+    "accept": [
+      {
+        "fields": ["outcome", "output", "receipt_logs", "existence", "balance", "nonce", "code", "storage_reset", "storage"],
+        "address": "any",
+        "slot": "any"
+      }
+    ]
+  }
+]
