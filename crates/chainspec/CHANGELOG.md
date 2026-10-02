@@ -1,5 +1,12 @@
 # Changelog
 
+## `tempo-chainspec@1.12.0`
+
+### Minor Changes
+
+- Add `TempoHardfork::genesis_key`, derive `TempoGenesisInfo` fork fields from the hardfork list, and add reusable `--hardfork`/`--<fork>-time` genesis generator arguments (`tempo_chainspec::cli::TempoHardforkArgs`). (by @MatthiasSeitz, [#8081](https://github.com/tempoxyz/tempo/pull/8081))
+- Add T14 hardfork support with a configurable `t14Time` genesis activation timestamp. T14 remains unscheduled on mainnet and Moderato. (by @MatthiasSeitz, [#8081](https://github.com/tempoxyz/tempo/pull/8081))
+
 ## `tempo-chainspec@1.11.0`
 
 ### Minor Changes

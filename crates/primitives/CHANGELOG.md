@@ -1,5 +1,8 @@
 # Changelog
 
+## `tempo-primitives@1.12.0`
+
+
 ## `tempo-primitives@1.11.0`
 
 ### Minor Changes
