@@ -290,3 +290,32 @@ blocks. Both runs used NoProof settlement. Because the baseline has no
 equivalent mixed Earn/Zone workload or timed load record, 74.97 transactions
 per second is a new-stack observation rather than a comparative speedup. A
 matched benchmark against the current revm production stack remains open.
+
+## Current revm common-operation control
+
+The [TIP-20 control summary](EVM2_TIP20_CONTROL-summary.json) and
+[per-transaction receipts](EVM2_TIP20_CONTROL-raw.json.gz) compare a common
+public `transfer(address,uint256)` on the current revm Tempo `84e3c44` and
+the EVM2 branch, using separate release binaries and disposable nodes with
+the same genesis hash, chain ID 1337, one-second block schedule, and local
+host. Twenty alternating cycles sent ten transfers per engine per cycle.
+All 400 receipts succeeded; the 20 measured blocks on each engine contained
+only the submitted transfers, and their receipt gas reconciled to 8,609,700
+block gas on each engine. Every captured lane sample attributed the full
+measured block gas to payment and zero to general.
+
+The client-observed ten-transaction burst completion p50/p95/p99 was
+0.533/0.535/0.940 seconds on revm and 0.430/0.531/0.533 seconds on EVM2.
+This is a scheduled-block, sequential-client control with one sender and one
+recipient; it does not establish an execution-engine speedup. The two builds
+also differ in native-payment branch changes. The current revm stack cannot
+run the native Earn/Zone mixed workload, so this control does not close the
+matched combined-workload benchmark gap.
+
+`run-common-tip20-baseline.py` repeats the control against two already
+running nodes, using `TEMPO_BENCH_KEY`, separate RPC and metrics URLs, and
+their release binaries. It rejects a genesis mismatch, reverted or missing
+receipts, cross-block bursts, unrelated transactions in measured blocks,
+receipt/block gas disagreement, and absent zero-general lane samples. The
+run used `--cycles 20 --count 10` and a 3,000,000-gas transaction limit to
+cover the first transfer to a cold recipient.
