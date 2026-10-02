@@ -19,10 +19,14 @@ import sys
 import threading
 import time
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path,
+                        default=ROOT / "benchmark-artifacts/parallel-execution" / f"profile-{time.time_ns()}",
+                        help="Artifact directory (default: a fresh ignored benchmark-artifacts/parallel-execution/profile-* directory)")
     parser.add_argument("--node-binary", required=True, type=Path)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--target", type=int, default=50000)

@@ -154,7 +154,9 @@ def trial(args, threads, target):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument("--output", type=pathlib.Path,
+                        default=ROOT / "benchmark-artifacts/parallel-execution" / f"node-{time.time_ns()}",
+                        help="Artifact directory (default: a fresh ignored benchmark-artifacts/parallel-execution/node-* directory)")
     parser.add_argument("--targets", default="10000,25000,50000,75000")
     parser.add_argument("--workers", default="0,16")
     parser.add_argument("--duration", type=int, default=10)
