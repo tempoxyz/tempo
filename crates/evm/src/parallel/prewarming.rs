@@ -25,6 +25,65 @@ struct PrefixAccount {
 }
 
 impl PrewarmingState {
+    /// Initializes hints from the builder's pre-execution state before workers
+    /// start. This replaces previous hints without reading the parent provider.
+    pub fn seed_from_cache(&self, cache: &reth_revm::db::CacheState) {
+        let mut prefix = PrefixState {
+            code: cache
+                .contracts
+                .iter()
+                .map(|(&hash, code)| (hash, code.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        for (&address, account) in &cache.accounts {
+            if account.status.is_not_modified() {
+                continue;
+            }
+            let (info, storage) = match &account.account {
+                Some(account) => {
+                    if let Some(code) = &account.info.code {
+                        prefix
+                            .code
+                            .entry(account.info.code_hash)
+                            .or_insert_with(|| code.clone());
+                    }
+                    (
+                        Some(account.info.clone()),
+                        account
+                            .storage
+                            .iter()
+                            .map(|(&slot, &value)| (slot, value))
+                            .collect(),
+                    )
+                }
+                None => (None, HashMap::default()),
+            };
+            prefix.accounts.insert(
+                address,
+                PrefixAccount {
+                    info,
+                    storage,
+                    cleared: account.status.is_storage_known(),
+                },
+            );
+        }
+        // Expiring-nonce prediction bypasses ordinary storage hints. Its source
+        // offsets begin at zero for this build, after all pre-execution changes.
+        prefix.nonce_cursor = prefix
+            .accounts
+            .get(&NONCE_PRECOMPILE_ADDRESS)
+            .and_then(|account| {
+                account
+                    .storage
+                    .get(&nonce_slots::EXPIRING_NONCE_RING_PTR)
+                    .copied()
+                    .or_else(|| account.cleared.then_some(U256::ZERO))
+                    .map(|ptr| (ptr, 0))
+            });
+        *self.0.write().expect("prewarming prefix poisoned") = prefix;
+    }
+
     /// Publishes a transaction's accepted state for subsequent speculation.
     /// `expiring_offset` is its position among expiring source candidates, before
     /// pool filtering. The state is only a hint and never committed by workers.
@@ -105,6 +164,10 @@ impl PrewarmingState {
 #[cfg(test)]
 #[path = "prewarming_state_tests.rs"]
 mod state_tests;
+
+#[cfg(test)]
+#[path = "prewarming_prefix_tests.rs"]
+mod prefix_tests;
 
 /// A successful speculative execution, including every database read. Fields are
 /// private so callers cannot construct an unchecked result.

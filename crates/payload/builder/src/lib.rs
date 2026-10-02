@@ -495,6 +495,9 @@ where
         )
         .with_speculative(speculative_prewarming);
         let prewarming_prefix = prewarm_ctx.prefix();
+        if let Some(prefix) = &prewarming_prefix {
+            prefix.seed_from_cache(&executor.evm().db().cache);
+        }
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
