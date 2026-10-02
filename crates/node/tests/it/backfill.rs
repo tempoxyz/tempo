@@ -1,18 +1,17 @@
+use crate::utils::with_t1_fees;
 use alloy::{
-    consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
 };
-use alloy_eips::{BlockNumberOrTag, Encodable2718};
-use alloy_network::TxSignerSync;
+use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
+use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_node_api::BuiltPayload;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
 /// Test that verifies backfill sync works correctly.
 ///
@@ -58,31 +57,18 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     println!("Advancing first node...");
     let target_blocks = 50;
 
-    // Create multiple wallets for different transactions to avoid nonce issues
-    let wallets = Wallet::new(target_blocks as usize)
-        .with_chain_id(chain_id)
-        .wallet_gen();
+    let accounts = Wallet::default().with_chain_id(chain_id);
 
     // For simplicity, let's just send one transaction per block using the simple approach
     for i in 0..target_blocks {
-        // Use a different wallet for each transaction to avoid nonce conflicts
-        let wallet_signer = wallets[i as usize].clone();
-
-        // Create a new transaction for this block
-        let raw_tx = {
-            let mut tx = TxEip1559 {
-                chain_id,
-                gas_limit: 300_000,
-                to: Address::ZERO.into(),
-                max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-                max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-                ..Default::default()
-            };
-            let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
-            TxEnvelope::Eip1559(tx.into_signed(signature))
-                .encoded_2718()
-                .into()
-        };
+        // Use a different account for each transaction to avoid nonce conflicts
+        let tx = TransactionRequest::default()
+            .to(Address::ZERO)
+            .gas_limit(300_000);
+        let raw_tx = accounts
+            .account(i as u32)
+            .sign_tx_bytes(with_t1_fees(tx))
+            .await;
 
         // Send the transaction
         let tx_hash = node1.rpc.inject_tx(raw_tx).await?;
