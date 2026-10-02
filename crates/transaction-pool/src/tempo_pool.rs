@@ -29,6 +29,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
+    pool::trace_removed,
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
@@ -107,6 +108,7 @@ where
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
+        trace_removed(mined.iter().map(|tx| tx.hash()), "mined");
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
@@ -246,7 +248,7 @@ where
 
         for tx in transactions {
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
-                to_remove.push(*tx.hash());
+                to_remove.push((*tx.hash(), "expired"));
                 continue;
             }
 
@@ -255,7 +257,7 @@ where
                     .paused_tokens
                     .contains(&tx.transaction.effective_fee_token())
             {
-                to_remove.push(*tx.hash());
+                to_remove.push((*tx.hash(), "paused_token"));
                 paused_token_count += 1;
                 continue;
             }
@@ -281,7 +283,7 @@ where
                             .as_ref()
                             .is_some_and(|subject| subject.matches_revoked(&updates.revoked_keys)))
                 {
-                    to_remove.push(*tx.hash());
+                    to_remove.push((*tx.hash(), "revoked"));
                     revoked_count += 1;
                     continue;
                 }
@@ -292,7 +294,7 @@ where
                         subject.matches_key_update(&updates.key_authorization_target_changes)
                     })
                 {
-                    to_remove.push(*tx.hash());
+                    to_remove.push((*tx.hash(), "key_authorization_target"));
                     key_authorization_target_count += 1;
                     continue;
                 }
@@ -304,7 +306,7 @@ where
                     && subject.matches_spending_limit_update(&updates.spending_limit_changes)
                     && tx.transaction.is_sender_paid_fee()
                 {
-                    to_remove.push(*tx.hash());
+                    to_remove.push((*tx.hash(), "spending_limit"));
                     spending_limit_count += 1;
                     continue;
                 }
@@ -327,7 +329,7 @@ where
                         spec,
                     )
                 {
-                    to_remove.push(*tx.hash());
+                    to_remove.push((*tx.hash(), "spending_limit_spend"));
                     spending_limit_spend_count += 1;
                     continue;
                 }
@@ -341,7 +343,7 @@ where
                     .get(&subject.account)
                     .is_some_and(|witnesses| witnesses.contains(&subject.witness))
             {
-                to_remove.push(*tx.hash());
+                to_remove.push((*tx.hash(), "key_authorization_witness"));
                 key_authorization_witness_count += 1;
                 continue;
             }
@@ -357,7 +359,7 @@ where
                 match amm_cache.has_enough_liquidity(user_token, cost, provider) {
                     Ok(true) => {}
                     Ok(false) => {
-                        to_remove.push(*tx.hash());
+                        to_remove.push((*tx.hash(), "liquidity"));
                         liquidity_count += 1;
                         continue;
                     }
@@ -395,7 +397,7 @@ where
                         };
 
                         if balance < tx.transaction.fee_token_cost() {
-                            to_remove.push(*tx.hash());
+                            to_remove.push((*tx.hash(), "insolvent_fee_payer"));
                             insolvent_fee_payer_count += 1;
                             continue;
                         }
@@ -442,7 +444,7 @@ where
                         .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
 
                 if sender_evicted || recipient_evicted {
-                    to_remove.push(*tx.hash());
+                    to_remove.push((*tx.hash(), "blacklisted"));
                     blacklisted_count += 1;
                 }
             }
@@ -486,7 +488,7 @@ where
                     });
 
                 if sender_evicted || recipient_evicted {
-                    to_remove.push(*tx.hash());
+                    to_remove.push((*tx.hash(), "unwhitelisted"));
                     unwhitelisted_count += 1;
                 }
             }
@@ -503,7 +505,7 @@ where
                     .fee_payer()
                     .is_ok_and(|fee_payer| updates.user_token_changes.contains(&fee_payer))
             {
-                to_remove.push(*tx.hash());
+                to_remove.push((*tx.hash(), "user_token"));
                 user_token_count += 1;
             }
         }
@@ -528,7 +530,24 @@ where
             paused_token_count,
             "Evicting invalidated or expired transactions"
         );
-        self.remove_transactions(to_remove)
+        let removed = self.remove_transactions(to_remove.iter().map(|(hash, _)| *hash).collect());
+        if tracing::enabled!(target: "txpool", tracing::Level::DEBUG) {
+            for (hash, detail) in &to_remove {
+                let reason = if *detail == "expired" {
+                    "expired"
+                } else {
+                    "invalidated"
+                };
+                let _span = tracing::debug_span!(
+                    target: "txpool",
+                    "txpool.remove",
+                    tx_hash = %hash,
+                    reason,
+                    detail,
+                );
+            }
+        }
+        removed
     }
 
     /// Adds a validated transaction to the subpool derived from its type and nonce key.

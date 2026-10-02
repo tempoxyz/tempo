@@ -15,7 +15,7 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
+use reth_transaction_pool::{AllPoolTransactions, TransactionPool, pool::trace_removed};
 use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
@@ -583,6 +583,7 @@ where
             if !hashes.is_empty() {
                 let removed_txs = pool.remove_transactions(hashes);
                 let count = removed_txs.len();
+                trace_removed(removed_txs.iter().map(|tx| tx.hash()), "revalidate");
 
                 for tx in &removed_txs {
                     removed_this_iteration.insert(*tx.hash());
@@ -665,7 +666,9 @@ where
                     tip_timestamp,
                     "Evicting stale pending transactions"
                 );
-                removed_txs.push(pool.remove_transactions(stale_to_evict));
+                let stale = pool.remove_transactions(stale_to_evict);
+                trace_removed(stale.iter().map(|tx| tx.hash()), "stale");
+                removed_txs.push(stale);
             }
         }
 

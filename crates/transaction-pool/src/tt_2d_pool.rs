@@ -8,7 +8,7 @@ use alloy_primitives::{
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
 };
 use reth_primitives_traits::{InMemorySize, transaction::error::InvalidTransactionError};
-use reth_tracing::tracing::trace;
+use reth_tracing::tracing::{debug_span, field, trace};
 use reth_transaction_pool::{
     AllPoolTransactions, BestTransactions, GetPooledTransactionLimit, PoolResult, PoolTransaction,
     PriceBumpConfig, Priority, SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin,
@@ -16,7 +16,7 @@ use reth_transaction_pool::{
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{
         AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction,
-        size::SizeTracker,
+        record_insert_outcome, size::SizeTracker, trace_removed,
     },
 };
 use revm::database::BundleAccount;
@@ -220,6 +220,36 @@ impl AA2dPool {
     /// transactions (nonce_key == U256::MAX) are handled specially. Otherwise, they are
     /// treated as regular 2D nonce transactions.
     pub(crate) fn add_transaction(
+        &mut self,
+        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        on_chain_nonce: u64,
+        hardfork: tempo_chainspec::hardfork::TempoHardfork,
+    ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
+        let span = debug_span!(
+            target: "txpool",
+            "txpool.insert",
+            tx_hash = %transaction.hash(),
+            sender = %transaction.sender(),
+            nonce = transaction.nonce(),
+            origin = ?transaction.origin,
+            pool = "aa_2d",
+            expiring_nonce = transaction.transaction.is_expiring_nonce(),
+            subpool = field::Empty,
+            outcome = field::Empty,
+            replaced = field::Empty,
+            reason = field::Empty,
+        );
+        let _enter = span.enter();
+        let result = self.insert_transaction(transaction, on_chain_nonce, hardfork);
+        record_insert_outcome(&span, &result);
+        if let Ok(added) = &result {
+            trace_removed(added.replaced().map(|tx| tx.hash()), "replaced");
+        }
+        result
+    }
+
+    /// Inserts a 2d AA transaction, see [`Self::add_transaction`].
+    fn insert_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         on_chain_nonce: u64,
@@ -1239,6 +1269,7 @@ impl AA2dPool {
 
         if !removed.is_empty() {
             self.metrics.inc_removed(removed.len());
+            trace_removed(removed.iter().map(|tx| tx.hash()), "pool_limit");
         }
 
         removed
