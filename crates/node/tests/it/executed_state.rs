@@ -37,15 +37,13 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
         ..Default::default()
     };
     let signature = signer.sign_transaction_sync(&mut tx)?;
-    producer
-        .rpc
-        .inject_tx(
+    let (_, first) = producer
+        .inject_and_advance(
             TxEnvelope::Eip1559(tx.into_signed(signature))
                 .encoded_2718()
                 .into(),
         )
         .await?;
-    let first = producer.advance_block().await?;
     let second = producer.advance_block().await?;
     let second_hash = second.block().hash();
 

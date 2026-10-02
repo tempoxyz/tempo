@@ -13,7 +13,7 @@ use reth_e2e_test_utils::{
 };
 use reth_node_api::BuiltPayload;
 use reth_node_metrics::recorder::install_prometheus_recorder;
-use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
+use reth_primitives_traits::AlloyBlockHeader as _;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
 /// Test that verifies backfill sync works correctly.
@@ -76,29 +76,9 @@ async fn test_backfill_sync() -> eyre::Result<()> {
                 .into()
         };
 
-        // Send the transaction
-        let tx_hash = node1.rpc.inject_tx(raw_tx).await?;
-
-        // Advance the block to include the transaction
-        let payload = node1.advance_block().await?;
-
-        // Verify the transaction was included
+        // Send the transaction and advance the block that includes it
+        let (_, payload) = node1.inject_and_advance(raw_tx).await?;
         let block_number = payload.block().number();
-
-        let block = provider1
-            .get_block(block_number.into())
-            .full()
-            .await?
-            .unwrap();
-        // Find the transaction by hash (index may vary based on system transactions)
-        let txs = block.into_transactions_vec();
-        assert!(
-            txs.iter().any(|tx| tx.inner.tx_hash() == &tx_hash),
-            "Transaction {} not found in block {}. Block has {} transactions.",
-            tx_hash,
-            block_number,
-            txs.len()
-        );
 
         if block_number % 10 == 0 {
             println!("Advanced to block {block_number}");

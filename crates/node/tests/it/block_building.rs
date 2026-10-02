@@ -85,8 +85,7 @@ where
         salt,
     );
     let create_bytes = sign_and_encode(create_tx.into_transaction_request(), nonce_start).await?;
-    node.rpc.inject_tx(create_bytes).await?;
-    node.advance_block().await?;
+    node.inject_and_advance(create_bytes).await?;
 
     // Get token address from logs
     let latest_block = provider.get_block_number().await?;
@@ -106,15 +105,13 @@ where
     let roles = IRolesAuth::new(token_addr, provider.clone());
     let grant_tx = roles.grantRole(ISSUER_ROLE, sender_address);
     let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), nonce_start + 1).await?;
-    node.rpc.inject_tx(grant_bytes).await?;
-    node.advance_block().await?;
+    node.inject_and_advance(grant_bytes).await?;
 
     // Mint tokens
     let token = ITIP20::ITIP20Instance::new(token_addr, provider.clone());
     let mint_tx = token.mint(sender_address, U256::from(1_000_000));
     let mint_bytes = sign_and_encode(mint_tx.into_transaction_request(), nonce_start + 2).await?;
-    node.rpc.inject_tx(mint_bytes).await?;
-    node.advance_block().await?;
+    node.inject_and_advance(mint_bytes).await?;
 
     Ok(token)
 }
@@ -190,13 +187,13 @@ where
     Ok(())
 }
 
-async fn sign_and_inject(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+/// Signs `tx_request` with `nonce` and returns the encoded transaction.
+async fn sign_tx(
     signer: &alloy::signers::local::PrivateKeySigner,
     chain_id: u64,
     mut tx_request: TransactionRequest,
     nonce: u64,
-) -> eyre::Result<B256> {
+) -> eyre::Result<Bytes> {
     let signer_wallet = EthereumWallet::from(signer.clone());
     tx_request.nonce = Some(nonce);
     tx_request.chain_id = Some(chain_id);
@@ -213,10 +210,7 @@ async fn sign_and_inject(
         &signer_wallet,
     )
     .await?;
-    let tx_hash = *signed_tx.tx_hash();
-    let tx_bytes: Bytes = signed_tx.encoded_2718().into();
-    node.rpc.inject_tx(tx_bytes).await?;
-    Ok(tx_hash)
+    Ok(signed_tx.encoded_2718().into())
 }
 
 /// Helper to count payment and non-payment transactions
@@ -626,8 +620,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
 
     // Seed AMM liquidity for user_token <-> hop_token <-> PATH_USD.
     let liquidity = U256::from(500_000u64);
-    sign_and_inject(
-        &mut setup.node,
+    let mint_tx = sign_tx(
         &user_signer,
         chain_id,
         fee_amm
@@ -642,9 +635,8 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     )
     .await?;
     nonce += 1;
-    setup.node.advance_block().await?;
-    sign_and_inject(
-        &mut setup.node,
+    setup.node.inject_and_advance(mint_tx).await?;
+    let mint_tx = sign_tx(
         &user_signer,
         chain_id,
         fee_amm
@@ -659,11 +651,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     )
     .await?;
     nonce += 1;
-    setup.node.advance_block().await?;
+    setup.node.inject_and_advance(mint_tx).await?;
 
     // Set the user's fee token preference to the custom token
-    sign_and_inject(
-        &mut setup.node,
+    let set_user_token_tx = sign_tx(
         &user_signer,
         chain_id,
         fee_manager
@@ -673,7 +664,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     )
     .await?;
     nonce += 1;
-    setup.node.advance_block().await?;
+    setup.node.inject_and_advance(set_user_token_tx).await?;
 
     // Record collected fees before the attack block
     let collected_before = fee_manager
@@ -682,8 +673,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .await?;
 
     // Submit a transaction that pays fees in user_fee_token and settles through the two-hop route.
-    let attack_tx_hash = sign_and_inject(
-        &mut setup.node,
+    let attack_tx = sign_tx(
         &user_signer,
         chain_id,
         ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
@@ -694,7 +684,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     .await?;
 
     // Build and commit the block
-    let payload = setup.node.advance_block().await?;
+    let (attack_tx_hash, payload) = setup.node.inject_and_advance(attack_tx).await?;
     let payload_fees = payload.fees();
 
     let attack_receipt = user_provider
@@ -747,8 +737,7 @@ async fn fund_path_usd(
     let provider = node.rpc_provider_with_wallet(EthereumWallet::from(funder.clone()));
     let token = ITIP20::new(PATH_USD_ADDRESS, provider);
 
-    sign_and_inject(
-        node,
+    let transfer_tx = sign_tx(
         funder,
         chain_id,
         token
@@ -757,7 +746,7 @@ async fn fund_path_usd(
         funder_nonce,
     )
     .await?;
-    node.advance_block().await?;
+    node.inject_and_advance(transfer_tx).await?;
 
     Ok(())
 }
@@ -804,8 +793,7 @@ async fn inject_reserve_payment_txs(
     let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, provider);
 
     // open (payment)
-    sign_and_inject(
-        node,
+    let open_tx = sign_tx(
         sender,
         chain_id,
         reserve
@@ -821,14 +809,13 @@ async fn inject_reserve_payment_txs(
         start_nonce,
     )
     .await?;
-    node.advance_block().await?;
+    node.inject_and_advance(open_tx).await?;
 
     let opened = decode_channel_opened(node).await?;
     let desc = descriptor_from(&opened);
 
     // topUp (payment)
-    sign_and_inject(
-        node,
+    let top_up_tx = sign_tx(
         sender,
         chain_id,
         reserve
@@ -837,16 +824,17 @@ async fn inject_reserve_payment_txs(
         start_nonce + 1,
     )
     .await?;
+    node.rpc.inject_tx(top_up_tx).await?;
 
     // requestClose (payment)
-    sign_and_inject(
-        node,
+    let request_close_tx = sign_tx(
         sender,
         chain_id,
         reserve.requestClose(desc).into_transaction_request(),
         start_nonce + 2,
     )
     .await?;
+    node.rpc.inject_tx(request_close_tx).await?;
 
     Ok(())
 }

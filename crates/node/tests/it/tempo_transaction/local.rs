@@ -174,8 +174,7 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-        self.setup.node.advance_block().await?;
+        self.setup.node.inject_and_advance(encoded.into()).await?;
 
         let raw: Option<serde_json::Value> = self
             .provider
@@ -213,13 +212,11 @@ impl super::types::TestEnv for Localnet {
 
             let signature = sign_aa_tx_secp256k1(&tx, signer)?;
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-            let tx_hash = *envelope.tx_hash();
-            self.setup
+            let (tx_hash, _) = self
+                .setup
                 .node
-                .rpc
-                .inject_tx(envelope.encoded_2718().into())
+                .inject_and_advance(envelope.encoded_2718().into())
                 .await?;
-            self.setup.node.advance_block().await?;
             wait_until_pool_not_contains(
                 &self.setup.node.inner.pool,
                 &tx_hash,
@@ -2025,8 +2022,10 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     println!("First submission - tx hash: {tx_hash}");
 
     // First submission should succeed
-    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
-    setup.node.advance_block().await?;
+    setup
+        .node
+        .inject_and_advance(encoded.clone().into())
+        .await?;
 
     assert_receipt_status(&provider, tx_hash, true).await?;
     println!("✓ First submission succeeded");
