@@ -5,7 +5,8 @@
 
 use super::analysis::{AccountDelta, Field};
 use crate::shadow_replay::{
-    Boundary, Evidence, ObservedTx, TxOutcome, calls::ObservedCall, fees::post_fee_slot_change,
+    Boundary, Evidence, ObservedTx, TxOutcome,
+    inspector::{ObservedCall, post_fee_slot_change},
 };
 use alloy::{
     consensus::Transaction as _,
@@ -68,27 +69,19 @@ impl Context<'_> {
         .then_some((real_hash, shadow_hash))
     }
 
-    /// Borrows all top-level calls (including AA subcalls) from the canonical transaction.
-    /// Internal EVM calls are not present in the transaction envelope.
-    fn call(&self) -> impl Iterator<Item = (TxKind, &[u8])> + '_ {
-        self.tx
-            .into_iter()
-            .flat_map(TempoTxEnvelope::calls)
-            .map(|(kind, input)| (kind, input.as_ref()))
-    }
-
-    /// Pairs each envelope call with its observed `(real, shadow)` results. An arm that never
-    /// entered the call (an earlier AA call failed) yields `None`.
+    /// Pairs each envelope call (including AA subcalls) with its observed `(real, shadow)`
+    /// results. An arm that never entered the call (an earlier AA call failed) yields `None`.
+    /// Internal EVM calls are part of their top-level call.
     fn calls(
         &self,
     ) -> impl Iterator<Item = (TxKind, &[u8], Option<&ObservedCall>, Option<&ObservedCall>)> + '_
     {
-        let observed = self.observed_txs();
-        self.call().enumerate().map(move |(index, (kind, input))| {
-            let (real, shadow) = observed.unzip();
+        let (real, shadow) = self.observed_txs().unzip();
+        let calls = self.tx.into_iter().flat_map(TempoTxEnvelope::calls);
+        calls.enumerate().map(move |(index, (kind, input))| {
             (
                 kind,
-                input,
+                input.as_ref(),
                 real.and_then(|tx| tx.calls.get(index)),
                 shadow.and_then(|tx| tx.calls.get(index)),
             )
@@ -220,21 +213,17 @@ fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
 const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
     id: "t12.allow-abi-suffix",
     check: |ctx, field| {
-        if !ctx.calls().any(|(kind, calldata, real, _)| {
-            kind.to()
-                .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata))
-                && real.is_some_and(|call| {
-                    call.outcome == TxOutcome::Revert && call.output_hash == KECCAK256_EMPTY
-                })
-        }) {
-            return None;
-        }
-
-        // After T11's empty-revert rejection, accept any T12 effect except tx invalidation.
-        let (real, _) = ctx.observed_txs()?;
-        (real.outcome == TxOutcome::Revert
-            && real.output_hash == KECCAK256_EMPTY
-            && field.name != "execution")
+        // The rejected call must be the control's failing call (and therefore the batch result):
+        // after T11's empty-revert rejection, accept any T12 effect except tx invalidation.
+        (field.name != "execution").then_some(())?;
+        ctx.calls()
+            .any(|(kind, calldata, real, _)| {
+                kind.to()
+                    .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata))
+                    && real.is_some_and(|call| {
+                        call.outcome == TxOutcome::Revert && call.output_hash == KECCAK256_EMPTY
+                    })
+            })
             .then_some(())
     },
 };

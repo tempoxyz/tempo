@@ -20,9 +20,8 @@
 //! is reported separately.
 
 mod analysis;
-mod calls;
 mod expectations;
-mod fees;
+mod inspector;
 
 use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_evm::{
@@ -32,15 +31,15 @@ use alloy_evm::{
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
-use calls::{CallRecorder, ObservedCall};
-use fees::{FeeWrites, RecordingFeeManager};
+use inspector::{FeeWrites, ObservedCall, Recorded, ReplayInspector};
 use metrics::{Counter, Gauge, Histogram};
 use reth_chainspec::ForkCondition;
 use reth_ethereum::tasks::TaskExecutor;
 use reth_evm::ConfigureEvm as _;
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
-    CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
+    CanonStateSubscriptions, ChainSpecProvider, EvmStateProviderAdapter, StateProvider,
+    StateProviderBox, StateProviderFactory,
 };
 use reth_revm::{
     context::result::ResultGas,
@@ -50,13 +49,13 @@ use reth_revm::{
     state::{AccountInfo, EvmState},
 };
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
-use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
-use tempo_evm::{TempoEvmConfig, TempoTxResult};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -286,35 +285,29 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         Ok(outcome)
     }
 
+    /// Opens an isolated in-memory overlay on the block's parent state.
+    fn parent_state(&self, block: &RecoveredBlock<Block>) -> Result<ReplayDb, String> {
+        let provider = self
+            .provider
+            .state_by_block_hash(block.parent_hash())
+            .map_err(|e| format!("failed to open parent state {}: {e}", block.parent_hash()))?;
+        Ok(State::builder()
+            .with_database(StateProviderDatabase::new(
+                provider.into_evm_state_provider(),
+            ))
+            .with_bundle_update()
+            .build())
+    }
+
     /// Executes each transaction under both rule sets from the same canonical prefix.
     ///
     /// The candidate result is observed but never committed. Committing the control result into
     /// both executors advances the canonical prefix without cascading candidate transaction
     /// effects; candidate pre-block changes are preserved across control commits.
     fn execute(&self, block: &RecoveredBlock<Block>) -> Result<(Evidence, Evidence), String> {
-        let provider = self
-            .provider
-            .state_by_block_hash(block.parent_hash())
-            .map_err(|e| format!("failed to open parent state {}: {e}", block.parent_hash()))?;
-        let mut db = State::builder()
-            .with_database(StateProviderDatabase::new(
-                provider.into_evm_state_provider(),
-            ))
-            .with_bundle_update()
-            .build();
-        let writes = Rc::new(RefCell::new(FeeWrites::default()));
-        let calls = CallRecorder::default();
-        let evm = self
-            .real_config
-            .evm_for_block(&mut db, block.header())
-            .map_err(|e| format!("failed to configure control EVM: {e}"))?
-            .with_inspector(calls.clone())
-            .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
-        let context = self
-            .real_config
-            .context_for_block(block.sealed_block())
-            .map_err(|e| format!("failed to configure control executor: {e}"))?;
-        let mut executor = self.real_config.create_executor(evm, context);
+        let mut db = self.parent_state(block)?;
+        let inspector = ReplayInspector::default();
+        let mut executor = executor(&self.real_config, &mut db, block, &inspector, "control")?;
         let mut real = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
             return Ok((
@@ -323,7 +316,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             ));
         }
         real.pre_block = Some(drain(executor.evm_mut().db_mut()));
-        calls.take();
+        inspector.take();
 
         // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
         // control results when one arm runs ahead.
@@ -335,7 +328,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             let mut results = Some(results);
             for (index, tx) in block.transactions_recovered().enumerate() {
                 let result = executor.execute_transaction_without_commit(tx);
-                let calls = calls.take();
+                let recorded = inspector.take();
                 let result = match result {
                     Ok(result) => result,
                     Err(e) => {
@@ -343,11 +336,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
                         break;
                     }
                 };
-                let observed = ObservedTx::from_result(
-                    &result,
-                    std::mem::take(&mut *writes.borrow_mut()),
-                    calls,
-                );
+                let observed = ObservedTx::from_result(&result, recorded);
                 if results
                     .as_ref()
                     .is_some_and(|sender| sender.send(result.clone()).is_err())
@@ -378,62 +367,26 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         canonical_bal: BalState,
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
-        let provider = self
-            .provider
-            .state_by_block_hash(block.parent_hash())
-            .map_err(|e| {
-                format!(
-                    "failed to open shadow parent state {}: {e}",
-                    block.parent_hash()
-                )
-            })?;
-        let mut db = State::builder()
-            .with_database(StateProviderDatabase::new(
-                provider.into_evm_state_provider(),
-            ))
-            .with_bundle_update()
-            .build();
-        let writes = Rc::new(RefCell::new(FeeWrites::default()));
-        let calls = CallRecorder::default();
-        let evm = self
-            .shadow_config
-            .evm_for_block(&mut db, block.header())
-            .map_err(|e| format!("failed to configure shadow EVM: {e}"))?
-            .with_inspector(calls.clone())
-            .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
-        let context = self
-            .shadow_config
-            .context_for_block(block.sealed_block())
-            .map_err(|e| format!("failed to configure shadow executor: {e}"))?;
-        let mut executor = self.shadow_config.create_executor(evm, context);
+        let mut db = self.parent_state(block)?;
+        let inspector = ReplayInspector::default();
+        let mut executor = executor(&self.shadow_config, &mut db, block, &inspector, "shadow")?;
         let mut shadow = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
             return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
         }
         shadow.pre_block = Some(drain(executor.evm_mut().db_mut()));
-        calls.take();
+        inspector.take();
         // Keep candidate pre-block changes in the cache; only transaction results are discarded.
         executor.evm_mut().db_mut().bal_state = canonical_bal;
 
         for tx in block.transactions_recovered() {
             let result = executor.execute_transaction_without_commit(tx);
-            let calls = calls.take();
-            match result {
-                Ok(result) => {
-                    let observed = ObservedTx::from_result(
-                        &result,
-                        std::mem::take(&mut *writes.borrow_mut()),
-                        calls,
-                    );
-                    shadow.txs.push(Ok(
-                        observed.with_state(transition(result.into_result().state))
-                    ));
-                }
-                Err(e) => {
-                    let _ = std::mem::take(&mut *writes.borrow_mut());
-                    shadow.txs.push(Err(e.to_string()));
-                }
-            }
+            let recorded = inspector.take();
+            shadow.txs.push(match result {
+                Ok(result) => Ok(ObservedTx::from_result(&result, recorded)
+                    .with_state(transition(result.into_result().state))),
+                Err(e) => Err(e.to_string()),
+            });
             let Ok(canonical) = canonical_results.recv() else {
                 return Ok(shadow);
             };
@@ -457,6 +410,27 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         }
         Ok(shadow)
     }
+}
+
+type ReplayDb = State<StateProviderDatabase<EvmStateProviderAdapter<StateProviderBox>>>;
+
+/// Builds one arm's block executor with the replay inspector as inspector and fee manager.
+fn executor<'a>(
+    config: &'a TempoEvmConfig,
+    db: &'a mut ReplayDb,
+    block: &'a RecoveredBlock<Block>,
+    inspector: &ReplayInspector,
+    arm: &str,
+) -> Result<TempoBlockExecutor<'a, &'a mut ReplayDb, ReplayInspector>, String> {
+    let evm = config
+        .evm_for_block(db, block.header())
+        .map_err(|e| format!("failed to configure {arm} EVM: {e}"))?
+        .with_inspector(inspector.clone())
+        .with_fee_manager(inspector.clone());
+    let context = config
+        .context_for_block(block.sealed_block())
+        .map_err(|e| format!("failed to configure {arm} executor: {e}"))?;
+    Ok(config.create_executor(evm, context))
 }
 
 struct SavedPreBlockInfo {
@@ -590,10 +564,10 @@ struct ObservedTx {
 }
 
 impl ObservedTx {
-    fn from_result(result: &TempoTxResult, writes: FeeWrites, calls: Vec<ObservedCall>) -> Self {
+    fn from_result(result: &TempoTxResult, recorded: Recorded) -> Self {
         let execution = &result.result().result;
         let logs = execution.logs();
-        let fee_normalized = normalized_fee_transfer(logs, &writes);
+        let fee_normalized = normalized_fee_transfer(logs, &recorded.fee);
         Self {
             outcome: match execution {
                 reth_revm::context::result::ExecutionResult::Success { .. } => TxOutcome::Success,
@@ -604,9 +578,9 @@ impl ObservedTx {
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
             fee_normalized,
-            fee: writes,
+            fee: recorded.fee,
             state: TransitionState::default(),
-            calls,
+            calls: recorded.calls,
         }
     }
 
