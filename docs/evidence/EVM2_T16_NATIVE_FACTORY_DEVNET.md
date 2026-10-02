@@ -277,7 +277,7 @@ fresh fork. The earlier [combined fork run](EVM2_T16_EARN_ZONE_FORK.md) covers
 legacy Earn and Zone migration and the mixed serial workload. Vendor Veda
 settlement and real Nitro-attested Zone settlement remain open.
 
-## Comparison with the current stack
+## Comparison with the pre-native EVM2 baseline
 
 The [pre-upgrade bridge baseline](https://github.com/tempoxyz/zones/blob/dan/evm2-native-payments/docs/evidence/EVM2_BRIDGE_BASELINE.md)
 used real public transfer, encrypted Zone deposit, withdrawal, and NoProof
@@ -288,4 +288,5 @@ and Zone together, reconciled 1,000,000 units of custody in each system, and
 measured zero general gas for the 12,000 Earn payments in 120 sampled workload
 blocks. Both runs used NoProof settlement. Because the baseline has no
 equivalent mixed Earn/Zone workload or timed load record, 74.97 transactions
-per second is a new-stack observation rather than a comparative speedup.
+per second is a new-stack observation rather than a comparative speedup. A
+matched benchmark against the current revm production stack remains open.
