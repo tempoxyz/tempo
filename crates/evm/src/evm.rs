@@ -694,6 +694,7 @@ where
                     executor.record_prewarmed_reuse();
                 }
                 self.execution_stats.fees_rebased += u64::from(candidate.fees_rebased);
+                self.execution_stats.native_rebased += u64::from(candidate.native_rebased);
                 self.inner.ctx.tx = tx;
                 self.inner.validator_fee = candidate.validator_fee;
                 return candidate.result;

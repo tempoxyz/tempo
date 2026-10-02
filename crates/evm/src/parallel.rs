@@ -10,6 +10,8 @@
 //!
 //! Explicit unmetered fee arithmetic can be rebased only when no ordinary access
 //! observes its slot. Each intermediate arithmetic check is repeated at commit.
+//! A restricted T14 native custody increment has a separate journal witness;
+//! rebasing it also requires identical storage gas classes and no other access.
 
 use crate::{TempoBlockEnv, evm::TempoEvm};
 use alloy_evm::{Database, Evm, EvmEnv};
@@ -37,6 +39,7 @@ use tempo_precompiles::{
     storage::{
         StorageKey,
         fee_updates::{self, FeeUpdate},
+        native_increment::{self, NativeIncrementWitness},
     },
 };
 use tempo_revm::{
@@ -48,6 +51,7 @@ use reth_revm::context::result::HaltReason as TempoHaltReason;
 
 mod engine_prewarming;
 mod forwarding;
+mod native_rebase;
 pub(crate) use engine_prewarming::{EnginePrewarmingCache, EnginePrewarmingSession};
 mod prewarming;
 #[cfg(test)]
@@ -476,10 +480,19 @@ fn run_worker<E: DBErrorMarker>(
         let record_fees = standard_fee_gas
             && !env.cfg_env.enable_amsterdam_eip8037
             && tx.calls().all(|(kind, _)| kind.is_call());
-        let (result, fee_updates) = if record_fees {
-            fee_updates::record(|| evm.transact_raw(tx.clone()))
+        let native_target = native_rebase::target(tx, env);
+        let execute = || {
+            if record_fees {
+                fee_updates::record(|| evm.transact_raw(tx.clone()))
+            } else {
+                (evm.transact_raw(tx.clone()), Vec::new())
+            }
+        };
+        let ((result, fee_updates), native_increment) = if let Some(target) = native_target {
+            native_increment::record(target, execute)
         } else {
-            (evm.transact_raw(tx.clone()), Vec::new())
+            let mut execute = execute;
+            (execute(), None)
         };
         let result = match result {
             Err(EVMError::Database(ProxyError::Cancelled)) => break,
@@ -491,6 +504,8 @@ fn run_worker<E: DBErrorMarker>(
             }),
         };
         let reads = std::mem::take(&mut evm.ctx_mut().journaled_state.database.reads);
+        let native_increment =
+            native_rebase::certify(native_increment, result.as_ref().ok(), &reads, &fee_updates);
         let body_reads = std::mem::take(&mut evm.ctx_mut().journaled_state.database.body_reads);
         let mut body = evm.inner_mut().take_recorded_body();
         if let Some(body) = &mut body {
@@ -527,6 +542,8 @@ fn run_worker<E: DBErrorMarker>(
                 body,
                 fee_updates,
                 fees_rebased: false,
+                native_increment,
+                native_rebased: false,
                 conflict: None,
             }),
         ));
@@ -671,6 +688,8 @@ pub struct ExecutionStats {
     pub bodies_reused: u64,
     /// Full results reused after rebasing explicit fee-only arithmetic.
     pub fees_rebased: u64,
+    /// Full results reused after rebasing a certified native custody increment.
+    pub native_rebased: u64,
     /// Candidates replayed after their state dependencies changed.
     pub conflicts: u64,
     /// Conflicts on account metadata, bytecode, or block hashes.
@@ -700,6 +719,8 @@ pub(crate) struct SpeculativeResult<E> {
     pub(crate) body: Option<BodyCache>,
     fee_updates: Vec<FeeUpdate>,
     pub(crate) fees_rebased: bool,
+    native_increment: Option<NativeIncrementWitness>,
+    pub(crate) native_rebased: bool,
     pub(crate) conflict: Option<ConflictKind>,
 }
 
@@ -752,9 +773,9 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
         })
     }
 
-    /// Both validators use identical dependency checks and defer all fee patches
+    /// Both validators use identical dependency checks and defer all patches
     /// until every read validates. The matcher scans in order and stops at the
-    /// first difference, so fee validation precedes any later database reads.
+    /// first difference, so arithmetic validation precedes any later database reads.
     fn validate_with(
         &mut self,
         mut first_difference: impl FnMut(
@@ -762,6 +783,7 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
         ) -> Result<Option<(usize, ReadValue)>, E>,
     ) -> Result<bool, E> {
         let mut patches = Vec::new();
+        let mut native_patch = None;
         let mut remaining = self.reads.as_slice();
         while let Some((offset, actual)) = first_difference(remaining)? {
             let (key, expected) = &remaining[offset];
@@ -776,6 +798,33 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
                     false,
                 ));
             };
+            if let Some(witness) = self.native_increment.as_ref().filter(|witness| {
+                witness.target.address == *address && witness.target.slot == *slot
+            }) {
+                if *old != witness.original
+                    || !self
+                        .result
+                        .as_ref()
+                        .is_ok_and(|result| native_rebase::matches_result(witness, result))
+                {
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "native increment journal mismatch",
+                        false,
+                    ));
+                }
+                let Some(present) = witness.rebase(new) else {
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "native increment gas class or overflow",
+                        false,
+                    ));
+                };
+                native_patch = Some((*address, *slot, new, present));
+                continue;
+            }
             let Some(update) = self
                 .fee_updates
                 .iter()
@@ -837,8 +886,9 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
         // All dependency and arithmetic checks precede mutations. Preserve every
         // other account field, storage slot, receipt, log and gas value.
         self.fees_rebased = !patches.is_empty();
+        self.native_rebased = native_patch.is_some();
         if let Ok(result) = &mut self.result {
-            for (address, slot, original, present) in patches {
+            for (address, slot, original, present) in patches.into_iter().chain(native_patch) {
                 let storage = result
                     .state
                     .get_mut(&address)

@@ -120,13 +120,15 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     Ok(())
 }
 
-#[test_case::test_case(64, 64, 64; "independent")]
-#[test_case::test_case(128, 16, 8; "repeated_senders_and_recipients")]
+#[test_case::test_case(64, 64, 64, false; "independent")]
+#[test_case::test_case(128, 16, 8, false; "repeated_senders_and_recipients")]
+#[test_case::test_case(64, 64, 1, true; "native_reserve_opens")]
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     transaction_count: usize,
     sender_count: usize,
     recipient_count: usize,
+    native_opens: bool,
 ) -> eyre::Result<()> {
     use crate::{
         tempo_transaction::helpers::{create_basic_aa_tx, sign_aa_tx_secp256k1},
@@ -138,9 +140,9 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     use reth_e2e_test_utils::wallet::test_signer;
     use reth_storage_api::{BlockReader as _, ReceiptProvider as _};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
+    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20ChannelReserve};
     use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS,
+        NONCE_PRECOMPILE_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
         nonce::slots::EXPIRING_NONCE_RING_PTR,
         storage::StorageKey as _,
         tip20::{ITIP20, slots::BALANCES},
@@ -185,29 +187,52 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             );
         }
     }
-    let mut recipients = std::collections::BTreeMap::<Address, u64>::new();
+    let mut expected_balances = std::collections::BTreeMap::<Address, u64>::new();
     for index in 0..transaction_count {
         let signer = &signers[index % sender_count];
-        let recipient =
-            Address::from_word(B256::from(U256::from(0x10000 + index % recipient_count)));
-        let mut tx = create_basic_aa_tx(
-            chain_id,
-            index as u64,
-            vec![
-                Call {
-                    to: DEFAULT_FEE_TOKEN.into(),
+        let (calls, recipient, amount) = if native_opens {
+            // Deposit and fees both use pathUSD. Opening a channel credits
+            // custody, so the balance assertion targets the reserve, not payee.
+            (
+                vec![Call {
+                    to: TIP20_CHANNEL_RESERVE_ADDRESS.into(),
                     value: U256::ZERO,
-                    input: ITIP20::transferCall {
-                        to: recipient,
-                        amount: U256::ONE,
+                    input: ITIP20ChannelReserve::openCall {
+                        payee: signers[0].address(),
+                        operator: Address::ZERO,
+                        token: DEFAULT_FEE_TOKEN,
+                        deposit: alloy_primitives::aliases::U96::ONE,
+                        salt: B256::from(U256::from(index + 1)),
+                        authorizedSigner: Address::ZERO,
                     }
                     .abi_encode()
                     .into(),
-                };
-                4
-            ],
-            2_000_000,
-        );
+                }],
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                1,
+            )
+        } else {
+            let recipient =
+                Address::from_word(B256::from(U256::from(0x10000 + index % recipient_count)));
+            (
+                vec![
+                    Call {
+                        to: DEFAULT_FEE_TOKEN.into(),
+                        value: U256::ZERO,
+                        input: ITIP20::transferCall {
+                            to: recipient,
+                            amount: U256::ONE,
+                        }
+                        .abi_encode()
+                        .into(),
+                    };
+                    4
+                ],
+                recipient,
+                4,
+            )
+        };
+        let mut tx = create_basic_aa_tx(chain_id, index as u64, calls, 2_000_000);
         tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
         tx.valid_before = std::num::NonZeroU64::new(300);
         let signature = sign_aa_tx_secp256k1(&tx, signer)?;
@@ -216,7 +241,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             .rpc
             .inject_tx(envelope.encoded_2718().into())
             .await?;
-        *recipients.entry(recipient).or_default() += 4;
+        *expected_balances.entry(recipient).or_default() += amount;
     }
     let payload = producer.advance_block().await?;
     let block_hash = payload.block().hash();
@@ -229,7 +254,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             .filter(|tx| !tx.is_system_tx())
             .count(),
         transaction_count,
-        "all transfers must reach the same prewarmed block"
+        "all transactions must reach the same prewarmed block"
     );
     let expected_receipts = producer
         .inner
@@ -294,7 +319,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             expected_output = Some(pending.execution_output().clone());
         }
         let state = executed_state.state_by_block_hash(observer.provider.clone(), block_hash)?;
-        for (recipient, balance) in &recipients {
+        for (recipient, balance) in &expected_balances {
             assert_eq!(
                 state.storage(DEFAULT_FEE_TOKEN, recipient.mapping_slot(BALANCES).into())?,
                 Some(U256::from(*balance))

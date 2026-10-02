@@ -459,6 +459,34 @@ fn expiring_aa_offsets_are_applied_once_and_candidates_remain_canonical() {
     assert_eq!(root(actual.db()), root(canonical.db()));
 }
 
+#[test]
+fn engine_handoff_preserves_certified_native_increment() {
+    let (mut parent, env, tx, token, slot) =
+        crate::parallel::tests::native_increment_tests::fixture();
+    let (factory, _) = factory(&env, std::slice::from_ref(&tx));
+    let mut worker = factory.create_evm(parent.clone(), relaxed(&env));
+    let mut prewarm_tx = tx.clone();
+    prewarm_tx.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(0);
+    let hint = worker.transact_raw(prewarm_tx).unwrap();
+    assert!(hint.result.is_success());
+    // A predecessor changed custody after the worker finished. The published
+    // certificate must survive the Engine queue and ordered validation.
+    parent
+        .insert_account_storage(token, slot, U256::from(20))
+        .unwrap();
+    let mut expected = TempoEvm::new(parent.clone(), env.clone());
+    let mut actual = ordered(&factory, parent, env);
+    let expected_result = expected.transact_raw(tx.clone()).unwrap();
+    let actual_result = actual.transact_raw(tx).unwrap();
+    assert_eq!(actual_result, expected_result);
+    assert_eq!(actual.validator_fee(), expected.validator_fee());
+    assert_eq!(actual.execution_stats().reused, 1);
+    assert_eq!(actual.execution_stats().native_rebased, 1);
+    expected.db_mut().commit(expected_result.state);
+    actual.db_mut().commit(actual_result.state);
+    assert_eq!(root(actual.db()), root(expected.db()));
+}
+
 fn block_context() -> TempoBlockExecutionCtx<'static> {
     TempoBlockExecutionCtx {
         transactions: &[],

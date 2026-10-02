@@ -34,6 +34,8 @@ pub struct EvmPrecompileStorageProvider<'a> {
     checkpoint_stack: Vec<(usize, usize)>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// Avoid per-access recorder lookups outside speculative transactions.
+    native_recording: bool,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -60,6 +62,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
+            native_recording: super::native_increment::is_recording(),
         }
     }
 
@@ -143,7 +146,11 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         super::access::storage(address, key);
         let mut account = self.internals.load_account_mut(address)?;
         let val = account.sload(key, skip_cold_load)?;
-        Ok(StateLoad::new(val.present_value, val.is_cold))
+        let result = StateLoad::new(val.present_value, val.is_cold);
+        if self.native_recording {
+            super::native_increment::loaded(address, key, &result);
+        }
+        Ok(result)
     }
 
     /// Performs a raw journaled SSTORE without metering gas or recording a storage action.
@@ -157,10 +164,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
         super::access::storage(address, key);
         self.ensure_not_static()?;
-        Ok(self
-            .internals
-            .load_account_mut(address)?
-            .sstore(key, value, skip_cold_load)?)
+        let result =
+            self.internals
+                .load_account_mut(address)?
+                .sstore(key, value, skip_cold_load)?;
+        if self.native_recording {
+            super::native_increment::stored(address, key, &result);
+        }
+        Ok(result)
     }
 
     /// Performs a metered precompile SLOAD, optionally recording the storage action.
@@ -247,6 +258,33 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
 
         Ok(())
+    }
+
+    #[inline]
+    fn sinc_inner(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
+        let current = self.sload_inner(address, key, false)?;
+        let value = current
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+
+        // If the value goes from zero to non-zero, do not record it as `Sinc`,
+        // because it requires special TIP-1060 gas credits accounting.
+        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            StorageAction::Sstore(address, key, current, value)
+        } else {
+            StorageAction::Sinc(address, key, current, delta)
+        };
+
+        self.sstore_inner(address, key, value, |_| sstore_action)
     }
 
     #[inline]
@@ -370,6 +408,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        super::native_increment::unsupported();
         super::fee_updates::unsupported();
         self.ensure_not_static()?;
 
@@ -435,24 +474,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
-        self.ensure_not_static()?;
-
-        let current = self.sload_inner(address, key, false)?;
-        let value = current
-            .checked_add(delta)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-
-        // If the value goes from zero to non-zero, do not record it as `Sinc`,
-        // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
-            self.actions
-                .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, current, value)
+        if self.native_recording {
+            super::native_increment::sinc(address, key, delta, || {
+                self.sinc_inner(address, key, delta)
+            })
         } else {
-            StorageAction::Sinc(address, key, current, delta)
-        };
-
-        self.sstore_inner(address, key, value, |_| sstore_action)
+            self.sinc_inner(address, key, delta)
+        }
     }
 
     #[inline]
@@ -605,6 +633,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        super::native_increment::unsupported();
         #[cfg(debug_assertions)]
         self.assert_lifo(&checkpoint, "revert");
         self.internals.checkpoint_revert(checkpoint)
@@ -860,6 +889,175 @@ mod tests {
     impl std::ops::DerefMut for TestEvm {
         fn deref_mut(&mut self) -> &mut Self::Target {
             &mut self.0
+        }
+    }
+
+    fn native_increment_fixture(
+        original: U256,
+    ) -> (
+        TestEvm,
+        crate::storage::native_increment::NativeIncrementTarget,
+    ) {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let target = crate::storage::native_increment::NativeIncrementTarget {
+            address: Address::repeat_byte(0x55),
+            slot: U256::from(19),
+            delta: U256::ONE,
+        };
+        let db = &mut evm.ctx_mut().journaled_state.database;
+        db.insert_account_info(
+            target.address,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+        db.insert_account_storage(target.address, target.slot, original)
+            .unwrap();
+        (evm, target)
+    }
+
+    #[test]
+    fn native_increment_witness_uses_real_journal_metering() {
+        use crate::storage::native_increment;
+
+        let (mut evm, target) = native_increment_fixture(U256::from(10));
+        let (result, witness) = native_increment::record(target, || {
+            evm.provider_max_gas()
+                .sinc(target.address, target.slot, target.delta)
+        });
+        result.unwrap();
+        let witness = witness.expect("one clean cold-load increment");
+        assert_eq!(witness.original, U256::from(10));
+        assert_eq!(witness.present, U256::from(10));
+        assert_eq!(witness.new, U256::from(11));
+        assert!(witness.load_is_cold);
+        assert!(!witness.store_is_cold);
+        assert_eq!(witness.rebase(U256::from(20)), Some(U256::from(21)));
+    }
+
+    #[test]
+    fn native_increment_provider_lifetime_is_conservative() {
+        use crate::storage::native_increment;
+
+        let (mut evm, target) = native_increment_fixture(U256::from(10));
+        let mut provider = evm.provider_max_gas();
+        assert!(!provider.native_recording);
+        let (result, witness) = native_increment::record(target, || {
+            provider.sinc(target.address, target.slot, target.delta)
+        });
+        result.unwrap();
+        assert!(
+            witness.is_none(),
+            "pre-existing provider cannot certify metering"
+        );
+        assert_eq!(
+            provider.sload(target.address, target.slot).unwrap(),
+            U256::from(11)
+        );
+
+        let (mut evm, target) = native_increment_fixture(U256::from(10));
+        let (mut provider, witness) = native_increment::record(target, || evm.provider_max_gas());
+        assert!(provider.native_recording);
+        assert!(witness.is_none());
+        assert!(!native_increment::is_recording());
+        provider
+            .sinc(target.address, target.slot, target.delta)
+            .unwrap();
+        assert_eq!(
+            provider.sload(target.address, target.slot).unwrap(),
+            U256::from(11),
+            "a provider outliving its recorder executes normally"
+        );
+    }
+
+    #[test]
+    fn native_increment_rejects_warm_zero_and_overflowing_operations() {
+        use crate::storage::native_increment;
+
+        for (original, warm) in [
+            (U256::from(10), true),
+            (U256::ZERO, false),
+            (U256::MAX, false),
+        ] {
+            let (mut evm, target) = native_increment_fixture(original);
+            if warm {
+                evm.provider_max_gas()
+                    .sload(target.address, target.slot)
+                    .unwrap();
+            }
+            let (result, witness) = native_increment::record(target, || {
+                evm.provider_max_gas()
+                    .sinc(target.address, target.slot, target.delta)
+            });
+            if original == U256::MAX {
+                assert!(result.is_err());
+            } else {
+                result.unwrap();
+            }
+            assert!(witness.is_none());
+        }
+    }
+
+    #[test]
+    fn native_increment_rejects_oog_after_the_journal_write() {
+        use crate::storage::native_increment;
+
+        let (mut evm, target) = native_increment_fixture(U256::from(10));
+        let gas = &evm.ctx().cfg.gas_params;
+        let after_load = gas.call_stipend() + 1;
+        assert!(gas.sstore_static_gas() + gas.sstore_reset_without_cold_load_cost() > after_load);
+        let gas_limit =
+            gas.warm_storage_read_cost() + gas.cold_storage_additional_cost() + after_load;
+        let (result, witness) = native_increment::record(target, || {
+            evm.provider_with_gas_limit(gas_limit, 0).sinc(
+                target.address,
+                target.slot,
+                target.delta,
+            )
+        });
+        assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+        assert!(witness.is_none());
+        assert_eq!(
+            evm.provider_max_gas()
+                .sload(target.address, target.slot)
+                .unwrap(),
+            U256::from(11),
+            "the journal write occurred before dynamic gas failed"
+        );
+    }
+
+    #[test]
+    fn native_increment_rejects_warm_observers_reverts_and_code_changes() {
+        use crate::storage::native_increment;
+
+        for case in 0..3 {
+            let (mut evm, target) = native_increment_fixture(U256::from(10));
+            let (_, witness) = native_increment::record(target, || {
+                let mut provider = evm.provider_max_gas();
+                let checkpoint = provider.checkpoint();
+                provider
+                    .sinc(target.address, target.slot, target.delta)
+                    .unwrap();
+                match case {
+                    0 => {
+                        // This observation is served from the warm journal.
+                        assert_eq!(
+                            provider.sload(target.address, target.slot).unwrap(),
+                            U256::from(11)
+                        );
+                        provider.checkpoint_commit(checkpoint);
+                    }
+                    1 => provider.checkpoint_revert(checkpoint),
+                    _ => {
+                        provider
+                            .set_code(Address::repeat_byte(0x66), Bytecode::default())
+                            .unwrap();
+                        provider.checkpoint_commit(checkpoint);
+                    }
+                }
+            });
+            assert!(witness.is_none(), "case {case}");
         }
     }
 

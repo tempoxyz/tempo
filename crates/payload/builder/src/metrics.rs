@@ -132,6 +132,8 @@ impl TempoPayloadBuilderMetrics {
             .increment(stats.bodies_reused);
         metrics::counter!("tempo_payload_builder_rebased_fee_transactions_total")
             .increment(stats.fees_rebased);
+        metrics::counter!("tempo_payload_builder_rebased_native_transactions_total")
+            .increment(stats.native_rebased);
         metrics::counter!("tempo_payload_builder_conflicting_transactions_total")
             .increment(stats.conflicts);
         metrics::counter!("tempo_payload_builder_speculative_retries_total")

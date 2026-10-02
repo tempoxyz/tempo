@@ -6,6 +6,7 @@
 pub mod access;
 pub mod actions;
 pub mod fee_updates;
+pub mod native_increment;
 pub use actions::{StorageAction, StorageActions};
 
 pub mod evm;

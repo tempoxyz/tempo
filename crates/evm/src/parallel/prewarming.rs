@@ -3,7 +3,7 @@
 use super::*;
 
 /// Advisory values from the builder's accepted prefix. Workers may read across
-/// updates; exact ordered validation still checks every value before reuse.
+/// updates; ordered validation still checks every dependency before reuse.
 /// Dropping the block's prewarming context releases this cache.
 #[derive(Clone, Debug, Default)]
 pub struct PrewarmingState(Arc<RwLock<PrefixState>>);
@@ -179,6 +179,7 @@ pub struct PreexecutedTransaction {
     pub(super) validator_fee: U256,
     pub(super) reads: Vec<(ReadKey, ReadValue)>,
     pub(super) fee_updates: Vec<FeeUpdate>,
+    pub(super) native_increment: Option<NativeIncrementWitness>,
 }
 
 impl PreexecutedTransaction {
@@ -194,6 +195,8 @@ impl PreexecutedTransaction {
             reads: self.reads,
             fee_updates: self.fee_updates,
             fees_rebased: false,
+            native_increment: self.native_increment,
+            native_rebased: false,
             body: None,
             conflict: None,
         })
@@ -275,12 +278,23 @@ impl<DB: Database> PrewarmingExecutor<DB> {
             && self.env.cfg_env.gas_params
                 == tempo_revm::gas_params::tempo_gas_params(self.env.cfg_env.spec)
             && tx.calls().all(|(kind, _)| kind.is_call());
-        let (result, fee_updates) = if record_fees {
-            fee_updates::record(|| self.evm.transact_raw(tx.clone()))
+        let native_target = native_rebase::target(&tx, &self.env);
+        let execute = || {
+            if record_fees {
+                fee_updates::record(|| self.evm.transact_raw(tx.clone()))
+            } else {
+                (self.evm.transact_raw(tx.clone()), Vec::new())
+            }
+        };
+        let ((result, fee_updates), native_increment) = if let Some(target) = native_target {
+            native_increment::record(target, execute)
         } else {
-            (self.evm.transact_raw(tx.clone()), Vec::new())
+            let mut execute = execute;
+            (execute(), None)
         };
         let reads = std::mem::take(&mut self.evm.ctx_mut().journaled_state.database.reads);
+        let native_increment =
+            native_rebase::certify(native_increment, result.as_ref().ok(), &reads, &fee_updates);
         Ok(PreexecutedTransaction {
             tx,
             env: self.env.clone(),
@@ -288,6 +302,7 @@ impl<DB: Database> PrewarmingExecutor<DB> {
             validator_fee: self.evm.validator_fee(),
             reads,
             fee_updates,
+            native_increment,
         })
     }
 }

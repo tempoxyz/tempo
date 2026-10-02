@@ -7,7 +7,8 @@ use alloy::primitives::{Address, U256, map::HashSet};
 use scoped_tls::scoped_thread_local;
 use std::{cell::RefCell, time::Duration};
 
-scoped_thread_local!(static ACCESSES: RefCell<StorageAccesses>);
+// None observes native increments without collecting call-body dependencies.
+scoped_thread_local!(static ACCESSES: Option<RefCell<StorageAccesses>>);
 
 /// Journal storage accessed while executing a transaction's calls.
 #[derive(Debug, Default)]
@@ -22,38 +23,64 @@ pub struct StorageAccesses {
 
 /// Run a call body with access recording, restoring the previous scope on unwind.
 pub fn record<R>(f: impl FnOnce() -> R) -> (R, StorageAccesses) {
-    let accesses = RefCell::default();
+    let accesses = Some(RefCell::default());
     let result = ACCESSES.set(&accesses, f);
+    let Some(accesses) = accesses else {
+        unreachable!("body recorder always collects storage accesses")
+    };
     (result, accesses.into_inner())
+}
+
+/// Observe native accesses without replacing an enclosing call-body recorder.
+pub(crate) fn record_native<R>(f: impl FnOnce() -> R) -> R {
+    if ACCESSES.is_set() {
+        f()
+    } else {
+        ACCESSES.set(&None, f)
+    }
 }
 
 /// Whether database reads belong to a recorded call body.
 #[inline]
 pub fn is_recording() -> bool {
-    ACCESSES.is_set()
+    ACCESSES.is_set() && ACCESSES.with(Option::is_some)
 }
 
 /// Separate database round trips from execution when deciding whether a body is
 /// expensive enough to cache. This estimate never affects validity checks.
 pub fn record_database_time(elapsed: Duration) {
     if ACCESSES.is_set() {
-        ACCESSES.with(|accesses| accesses.borrow_mut().database_time += elapsed);
+        ACCESSES.with(|accesses| {
+            if let Some(accesses) = accesses {
+                accesses.borrow_mut().database_time += elapsed;
+            }
+        });
     }
 }
 
 /// Record a journal read or write, including accesses served from its cache.
 #[inline]
 pub fn storage(address: Address, key: U256) {
-    super::fee_updates::storage(address, key);
     if ACCESSES.is_set() {
-        ACCESSES.with(|accesses| accesses.borrow_mut().slots.insert((address, key)));
+        super::native_increment::storage(address, key);
+        ACCESSES.with(|accesses| {
+            if let Some(accesses) = accesses {
+                accesses.borrow_mut().slots.insert((address, key));
+            }
+        });
     }
+    super::fee_updates::storage(address, key);
 }
 
 /// Disable call-body reuse for an operation that can clear account storage.
 pub fn unsupported() {
-    super::fee_updates::unsupported();
     if ACCESSES.is_set() {
-        ACCESSES.with(|accesses| accesses.borrow_mut().unsupported = true);
+        super::native_increment::unsupported();
+        ACCESSES.with(|accesses| {
+            if let Some(accesses) = accesses {
+                accesses.borrow_mut().unsupported = true;
+            }
+        });
     }
+    super::fee_updates::unsupported();
 }

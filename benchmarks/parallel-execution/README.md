@@ -14,6 +14,17 @@ accepted-state hints retained separately. The estimate is not an allocator/RSS
 bound. Small blocks, disabled prewarming and
 BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
+Typed block executors use authoritative State-cache validation, with received
+BALs retaining ordinary database validation.
+Mutable context access and inspector use also require checking journal warming
+before reuse; custom warm sets retain ordinary execution and its gas charges.
+
+T14 workers can also rebase one certified nonzero custody increment from a
+successful single-call AA channel open. A whole-transaction journal observer
+excludes other accesses to that slot; arithmetic, every SSTORE gas class and
+all other reads must still match. Zero crossings, overflow, warm target access
+lists, authorization lists and multi-call transactions retain ordinary replay.
+The `native_rebased` counter is separate from fee rebasing.
 
 Only reusable benchmark scripts and this summary belong in this directory.
 Store reports, JSON, TSV, logs, profiles, rejected patches and research notes in
@@ -226,3 +237,18 @@ This is not a win, and the workflow suppresses Slack.
 validates all 250,000 submitted blocks, including warmup. Execution throughput
 falls 2.26% and p99 latency rises 8.42%. Only 47 measured blocks per pass contain
 at least five transactions, so historical coverage of the handoff is limited.
+
+[Accepted-prefix comparison 37070029365](https://github.com/tempoxyz/tempo/actions/runs/37070029365)
+raises Engine reuse to 60.00% of canonical transactions, but throughput falls
+16,583 to 14,467 TPS (-12.76%); builder and validator gas throughput fall 25.46%
+and 14.73%. Prefix updates and read validation consume visible ordered CPU.
+The workflow suppresses Slack. Actual sender rates remain below 17k/s, but the
+sender is closed-loop: its 50,000-pending cap repeatedly fills, throttling input
+until transactions are included. The configured 50k/s is a ceiling, and lower
+observed sender rates alone do not imply that this test is unsaturated.
+
+[Accepted-prefix replay 37070034657](https://github.com/tempoxyz/tempo/actions/runs/37070034657)
+validates all 250,000 submissions, with throughput down 2.73% and p99 up 7.76%.
+Its measured range is 42,267,216–42,317,215, different from the preceding replay;
+all four passes match 14,327 transactions. Only 25 blocks per pass meet the
+five-transaction capture threshold. Slack is suppressed.

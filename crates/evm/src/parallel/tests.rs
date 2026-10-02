@@ -14,6 +14,8 @@ use revm::{
 
 type TestDB = CacheDB<EmptyDB>;
 
+#[path = "native_increment_tests.rs"]
+pub(super) mod native_increment_tests;
 #[path = "prewarming_bench.rs"]
 mod prewarming_bench;
 
