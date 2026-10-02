@@ -38,6 +38,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
+    native_call::{NativeCallExt, NativeCallLimits},
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -51,7 +52,7 @@ use crate::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
-    zone_factory::ZoneFactory,
+    zone_factory::{ZoneFactory, portal::execution::NativePortalExecution},
     zone_verifier::ZoneVerifier,
 };
 use std::{cell::RefCell, rc::Rc};
@@ -60,7 +61,11 @@ use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
-use alloy::{primitives::Address, sol, sol_types::SolError};
+use alloy::{
+    primitives::Address,
+    sol,
+    sol_types::{SolCall, SolError},
+};
 #[cfg(test)]
 use evm2::precompiles::PrecompileHalt;
 use evm2::{
@@ -199,6 +204,21 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
                 .any(|(candidate, activation)| candidate == address && self.spec >= *activation)
     }
 
+    fn is_native_portal_deposit(&self, message: &Message<T>) -> bool {
+        use tempo_contracts::precompiles::zone_portal::ZonePortal;
+
+        self.spec.is_t15()
+            && message.kind == MessageKind::Call
+            && message.destination == message.code_address
+            && message.code_address.zone_portal_id().is_some()
+            && (message
+                .input
+                .starts_with(&ZonePortal::depositCall::SELECTOR)
+                || message
+                    .input
+                    .starts_with(&ZonePortal::depositEncryptedCall::SELECTOR))
+    }
+
     fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
@@ -245,6 +265,7 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
 impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: NativeCallExt,
 {
     fn move_precompiles(
         &mut self,
@@ -265,12 +286,34 @@ where
         self.base.contains(address) || self.contains_tempo(address)
     }
 
+    fn contains_message(&self, message: &Message<T>) -> bool {
+        self.is_native_portal_deposit(message) || self.contains(&message.code_address)
+    }
+
     fn execute(
         &self,
         evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
+        if self.is_native_portal_deposit(message) {
+            let budget = evm.ext().native_call_context().budget(8, 16_000_000);
+            return Some(
+                NativePortalExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                    dependency_limits: NativeCallLimits {
+                        execution_gas: 1_000_000,
+                        state_gas: 1_000_000,
+                        input_bytes: 256,
+                        output_bytes: 256,
+                    },
+                }
+                .deposit(evm, message, gas),
+            );
+        }
         if let Some(result) = self.base.execute(evm, message, gas) {
             return Some(result);
         }
@@ -336,7 +379,7 @@ mod tests {
         type ConfigSelector = BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = ();
-        type EvmExt = ();
+        type EvmExt = crate::native_call::NativeCallContext;
         type MessageExt = ();
         type MessageResultExt = ();
         type TxEnvExt = ();
@@ -982,6 +1025,31 @@ mod tests {
             !precompiles.contains(&zone_factory::portal_address(1)),
             "ZonePortal storage handles must not be registered as precompiles"
         );
+    }
+
+    #[test]
+    fn test_native_portal_deposit_selector_activates_at_t15() {
+        use tempo_contracts::precompiles::zone_portal::ZonePortal;
+
+        let portal = zone_factory::portal_address(1);
+        let mut message = Message::<TestTypes> {
+            kind: MessageKind::Call,
+            destination: portal,
+            code_address: portal,
+            input: ZonePortal::depositCall::SELECTOR.to_vec().into(),
+            ..Default::default()
+        };
+        let before = test_tempo_precompiles(TempoHardfork::T14);
+        let after = test_tempo_precompiles(TempoHardfork::T15);
+        assert!(!before.contains_message(&message));
+        assert!(after.contains_message(&message));
+        message.input = ZonePortal::depositEncryptedCall::SELECTOR.to_vec().into();
+        assert!(after.contains_message(&message));
+        message.input = ZonePortal::claimRefundCall::SELECTOR.to_vec().into();
+        assert!(!after.contains_message(&message));
+        message.kind = MessageKind::DelegateCall;
+        message.input = ZonePortal::depositCall::SELECTOR.to_vec().into();
+        assert!(!after.contains_message(&message));
     }
 
     #[test]

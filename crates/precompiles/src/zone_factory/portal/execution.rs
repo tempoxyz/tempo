@@ -1,7 +1,6 @@
 //! Native portal execution using one journal and bounded paid dependency calls.
 //!
-//! The runtime must select the fork and transaction-wide budget before dispatch.
-//! This implementation is not registered in the production provider yet.
+//! The runtime selects the fork and transaction-wide budget before dispatch.
 
 use super::{ZONE_PORTAL_PROXY_RUNTIME, ZonePortalStorage};
 use crate::{
@@ -202,18 +201,13 @@ mod tests {
         *,
     };
     use crate::{
-        PATH_USD_ADDRESS, TempoPrecompiles, native_call::NativeCallBudget, storage::Handler,
-        tip20::TIP20Token, zone_factory::portal::deposit::tests::baseline_call,
+        PATH_USD_ADDRESS, TempoPrecompiles, storage::Handler, tip20::TIP20Token,
+        zone_factory::portal::deposit::tests::baseline_call,
     };
     use alloy::primitives::{Address, B256};
     use evm2::{
-        BaseEvmConfigSelector, ExecutionConfig, SpecId,
-        bytecode::Bytecode,
-        env::TxEnv,
-        evm::{InMemoryDB, precompile::PrecompileProvider},
-        interpreter::Host,
-        precompiles::{MovePrecompileError, PrecompileId},
-        registry::TxRegistry,
+        BaseEvmConfigSelector, ExecutionConfig, SpecId, bytecode::Bytecode, env::TxEnv,
+        evm::InMemoryDB, interpreter::Host, registry::TxRegistry,
     };
     use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::TempoBlockEnv;
@@ -224,68 +218,13 @@ mod tests {
         type ConfigSelector = BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = ();
-        type EvmExt = ();
+        type EvmExt = crate::native_call::NativeCallContext;
         type MessageExt = ();
         type MessageResultExt = ();
         type TxEnvExt = ();
         type TxResultExt = ();
         type BlockEnvExt = TempoBlockExt;
         type Host<'a> = Evm<'a, Self>;
-    }
-
-    struct NativeTestProvider {
-        base: TempoPrecompiles<Types>,
-        budget: NativeCallBudget,
-        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
-    }
-
-    impl PrecompileProvider<Types> for NativeTestProvider {
-        fn addresses(&self) -> Vec<Address> {
-            let mut addresses = self.base.addresses();
-            addresses.push(PORTAL);
-            addresses
-        }
-
-        fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
-            self.base.precompile_ids()
-        }
-
-        fn contains(&self, address: &Address) -> bool {
-            *address == PORTAL || self.base.contains(address)
-        }
-
-        fn move_precompiles(
-            &mut self,
-            moves: &[(Address, Address)],
-        ) -> std::result::Result<(), MovePrecompileError> {
-            self.base.move_precompiles(moves)
-        }
-
-        fn execute(
-            &self,
-            evm: &mut Evm<'_, Types>,
-            message: &Message<Types>,
-            gas: &mut GasTracker,
-        ) -> Option<PrecompileResult> {
-            if message.code_address == PORTAL {
-                return Some(
-                    NativePortalExecution {
-                        spec: TempoHardfork::T14,
-                        actions: StorageActions::disabled(),
-                        non_creditable_slots: self.non_creditable_slots.clone(),
-                        budget: &self.budget,
-                        dependency_limits: NativeCallLimits {
-                            execution_gas: 2_000_000,
-                            state_gas: 2_000_000,
-                            input_bytes: 100,
-                            output_bytes: 32,
-                        },
-                    }
-                    .deposit(evm, message, gas),
-                );
-            }
-            self.base.execute(evm, message, gas)
-        }
     }
 
     const PORTAL: Address = Address::new([
@@ -295,14 +234,10 @@ mod tests {
 
     fn setup_evm(approve: bool, queue_full: bool) -> (Evm<'static, Types>, Address) {
         let (sender, call) = baseline_call();
-        let spec = TempoHardfork::T14;
+        let spec = TempoHardfork::T15;
         let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
         let slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
-        let provider = NativeTestProvider {
-            base: TempoPrecompiles::new(spec, StorageActions::disabled(), slots.clone()),
-            budget: NativeCallBudget::new(2, 8_000_000),
-            non_creditable_slots: slots,
-        };
+        let provider = TempoPrecompiles::new(spec, StorageActions::disabled(), slots);
         let mut evm = Evm::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
@@ -372,7 +307,7 @@ mod tests {
         evm: &mut Evm<'static, Types>,
         sender: Address,
     ) -> (U256, U256, U256, U256, U256, u64, B256) {
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm, TempoHardfork::T14);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm, TempoHardfork::T15);
         StorageCtx::enter(&mut storage, || -> Result<_> {
             let token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
             let portal = ZonePortalStorage::new(PORTAL);

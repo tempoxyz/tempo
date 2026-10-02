@@ -93,6 +93,12 @@ pub trait NativeCallExt {
     fn native_call_context(&self) -> &NativeCallContext;
 }
 
+impl NativeCallExt for NativeCallContext {
+    fn native_call_context(&self) -> &NativeCallContext {
+        self
+    }
+}
+
 /// Protocol-selected bounds on one contract call. They are not caller privileges.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeCallLimits {

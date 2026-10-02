@@ -1,8 +1,7 @@
 //! Solidity-compatible storage layout for ZonePortal accounts created by the native factory.
 //!
-//! This type is only a storage handle. It is not registered as a precompile because the current
-//! REVM precompile interface cannot make the external calls required by ZonePortal. Calls to a
-//! portal continue to execute the ERC-1167 proxy and the canonical Solidity implementation.
+//! This type is a storage handle shared by the native factory and the T15 native deposit path.
+//! Before T15, portal calls execute the ERC-1167 proxy and canonical Solidity implementation.
 
 pub mod deposit;
 pub mod execution;
@@ -49,8 +48,8 @@ pub struct PortalWithdrawalQueue {
 
 /// Canonical Solidity storage layout of the ZonePortal runtime installed at T10.
 ///
-/// The generated handlers let the native factory initialize a portal without duplicating raw
-/// slot numbers. This contract type is deliberately absent from the EVM precompile map.
+/// The generated handlers let the native factory and payment handler access the same layout
+/// without duplicating raw slot numbers. Dispatch is selector aware from T15.
 #[contract]
 pub struct ZonePortalStorage {
     admin: Address,
