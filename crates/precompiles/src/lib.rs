@@ -40,7 +40,7 @@ use crate::{
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
     native_call::{NativeCallExt, NativeCallLimits},
-    native_earn::{NativeEarnExecution, NativeEarnRegistrar},
+    native_earn::{NativeEarnExecution, NativeEarnRegistrar, NativeEarnSettlementExecution},
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -77,15 +77,17 @@ use evm2::{
     precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 
-pub use tempo_contracts::earn::NATIVE_EARN_REGISTRY_ADDRESS;
-pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+pub use tempo_contracts::{
+    earn::NATIVE_EARN_REGISTRY_ADDRESS,
+    precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
+        DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+        STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+        TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+        ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    },
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -258,6 +260,16 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             && tempo_contracts::earn::earn_payment_kind(&message.input).is_some()
     }
 
+    fn is_native_earn_settlement(&self, message: &Message<T>) -> bool {
+        self.spec.is_t16()
+            && message.kind == MessageKind::Call
+            && message.depth == 0
+            && message.destination == message.code_address
+            && message.code.original_byte_slice()
+                == tempo_contracts::earn::NATIVE_EARN_DISPATCHER_V1_RUNTIME
+            && tempo_contracts::earn::earn_settlement_input(&message.input)
+    }
+
     fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
@@ -332,6 +344,7 @@ where
             || self.is_native_portal_settlement(message)
             || self.is_native_portal_withdrawal(message)
             || self.is_native_earn_payment(message)
+            || self.is_native_earn_settlement(message)
             || self.contains(&message.code_address)
     }
 
@@ -341,6 +354,18 @@ where
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
+        if self.is_native_earn_settlement(message) {
+            let budget = evm.ext().native_call_context().budget(8, 32_000_000);
+            return Some(
+                NativeEarnSettlementExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                }
+                .execute(evm, message, gas),
+            );
+        }
         if self.is_native_earn_payment(message) {
             let budget = evm.ext().native_call_context().budget(8, 16_000_000);
             return Some(
@@ -1174,6 +1199,36 @@ mod tests {
         assert!(!active.contains_message(&message));
         message.input = vec![0x37, 0xa4, 0xe8, 0x34].into();
         message.kind = MessageKind::DelegateCall;
+        assert!(!active.contains_message(&message));
+    }
+
+    #[test]
+    fn native_earn_settlement_requires_t16_top_level_dispatcher() {
+        let forwarder = Address::with_last_byte(0x9b);
+        let mut input = vec![0xbf, 0x8d, 0x3f, 0x22];
+        input.extend_from_slice(&alloy::primitives::U256::from(64).to_be_bytes::<32>());
+        input.extend_from_slice(&[0u8; 32]);
+        input.extend_from_slice(&alloy::primitives::U256::ONE.to_be_bytes::<32>());
+        input.extend_from_slice(&[0x11; 32]);
+        let mut message = Message::<TestTypes> {
+            kind: MessageKind::Call,
+            destination: forwarder,
+            code_address: forwarder,
+            input: input.into(),
+            code: Bytecode::new_legacy(
+                tempo_contracts::earn::NATIVE_EARN_DISPATCHER_V1_RUNTIME
+                    .to_vec()
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        assert!(!test_tempo_precompiles(TempoHardfork::T15).contains_message(&message));
+        let active = test_tempo_precompiles(TempoHardfork::T16);
+        assert!(active.contains_message(&message));
+        message.depth = 1;
+        assert!(!active.contains_message(&message));
+        message.depth = 0;
+        message.code = Bytecode::new_legacy(vec![0x00].into());
         assert!(!active.contains_message(&message));
     }
 

@@ -23,8 +23,9 @@ use tempo_contracts::{
     earn::{
         EARN_IMPLEMENTATION_SLOT, EarnPaymentKind, EarnRegistrationField, INativeEarnRegistrar,
         NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
-        NATIVE_EARN_REGISTRY_ADDRESS, NativeEarnRegistered, earn_engine_approval_preimage,
-        earn_fees_clone_runtime, earn_payment_kind, earn_registration_preimage, factory_slots,
+        NATIVE_EARN_REGISTRY_ADDRESS, NativeEarnRegistered, NativeEarnSettlementRegistered,
+        earn_engine_approval_preimage, earn_fees_clone_runtime, earn_forwarder_snapshot_preimage,
+        earn_payment_kind, earn_registration_preimage, earn_settlement_input, factory_slots,
     },
 };
 use tempo_primitives::TempoBlockExt;
@@ -62,6 +63,7 @@ fn registration(address: Address, kind: EarnPaymentKind) -> Result<EarnRegistrat
     let expected_kind = match kind {
         EarnPaymentKind::Vault => 1,
         EarnPaymentKind::Fees => 2,
+        EarnPaymentKind::SettlementForwarder => 3,
     };
     if read(EarnRegistrationField::Kind)? != U256::from(expected_kind) {
         return Err(TempoPrecompileError::OutOfGas);
@@ -310,6 +312,113 @@ impl NativeEarnRegistrar {
             .into_log_data(),
         )
     }
+
+    fn register_settlement_forwarder(
+        &mut self,
+        sender: Address,
+        call: INativeEarnRegistrar::registerSettlementForwarderCall,
+    ) -> Result<()> {
+        self.require_governor(sender)?;
+        if call.forwarder == Address::ZERO
+            || call.vault == Address::ZERO
+            || call.engine == Address::ZERO
+            || call.forwarder == call.vault
+            || call.forwarder == call.engine
+            || call.forwarderCodeHash == B256::ZERO
+            || call.forwarderCodeHash == alloy::primitives::KECCAK256_EMPTY
+            || self.storage.account_code(call.forwarder)?.0 != call.forwarderCodeHash
+            || self.storage.account_code(call.vault)?.0 != NATIVE_EARN_DISPATCHER_V1_HASH
+            || self.storage.sload(
+                NATIVE_EARN_REGISTRY_ADDRESS,
+                charged_registration_slot(call.forwarder, EarnRegistrationField::Kind)?,
+            )? != U256::ZERO
+            || self
+                .storage
+                .sload(call.forwarder, EARN_IMPLEMENTATION_SLOT)?
+                != U256::ZERO
+            || self.storage.sload(call.vault, U256::ZERO)?
+                != U256::from_be_slice(call.engine.as_slice())
+        {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        let vault = registration(call.vault, EarnPaymentKind::Vault)?;
+        let engine_hash = self.approved_engine_hash(call.engine)?;
+        if engine_hash == B256::ZERO
+            || engine_hash != vault.engine_hash
+            || self.storage.account_code(call.engine)?.0 != engine_hash
+        {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        let snapshot_hash = self
+            .storage
+            .keccak256(&earn_forwarder_snapshot_preimage(call.forwarder))?;
+        let mut snapshot_bytes = [0u8; 20];
+        snapshot_bytes[..4].copy_from_slice(&[0x5a, 0xec, 0x00, 0x01]);
+        snapshot_bytes[4..].copy_from_slice(&snapshot_hash[16..]);
+        let snapshot = Address::from(snapshot_bytes);
+        if !self
+            .storage
+            .with_account_info(snapshot, |info| Ok(info.is_empty()))?
+        {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        if self.storage.copy_runtime(call.forwarder, snapshot)? != Some(call.forwarderCodeHash) {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        self.storage.sstore(
+            call.forwarder,
+            EARN_IMPLEMENTATION_SLOT,
+            U256::from_be_slice(snapshot.as_slice()),
+        )?;
+        self.storage.set_code(
+            call.forwarder,
+            Bytes::copy_from_slice(NATIVE_EARN_DISPATCHER_V1_RUNTIME),
+        )?;
+        for (field, value) in [
+            (EarnRegistrationField::Kind, U256::from(3)),
+            (
+                EarnRegistrationField::Pair,
+                U256::from_be_slice(call.vault.as_slice()),
+            ),
+            (
+                EarnRegistrationField::Implementation,
+                U256::from_be_slice(snapshot.as_slice()),
+            ),
+            (
+                EarnRegistrationField::ImplementationHash,
+                U256::from_be_slice(call.forwarderCodeHash.as_slice()),
+            ),
+            (
+                EarnRegistrationField::Asset,
+                U256::from_be_slice(vault.asset.as_slice()),
+            ),
+            (
+                EarnRegistrationField::EarnShare,
+                U256::from_be_slice(vault.earn_share.as_slice()),
+            ),
+            (
+                EarnRegistrationField::EngineHash,
+                U256::from_be_slice(engine_hash.as_slice()),
+            ),
+        ] {
+            self.storage.sstore(
+                NATIVE_EARN_REGISTRY_ADDRESS,
+                charged_registration_slot(call.forwarder, field)?,
+                value,
+            )?;
+        }
+        self.storage.emit_event(
+            NATIVE_EARN_REGISTRY_ADDRESS,
+            NativeEarnSettlementRegistered {
+                forwarder: call.forwarder,
+                vault: call.vault,
+                engine: call.engine,
+                snapshot,
+                forwarderCodeHash: call.forwarderCodeHash,
+            }
+            .into_log_data(),
+        )
+    }
 }
 
 impl Precompile for NativeEarnRegistrar {
@@ -320,6 +429,7 @@ impl Precompile for NativeEarnRegistrar {
         dispatch!(calldata, |call| match call {
             INativeEarnRegistrar::INativeEarnRegistrarCalls {
                 register(call) => mutate(call, msg_sender, |sender, call| self.register(sender, call)),
+                registerSettlementForwarder(call) => mutate(call, msg_sender, |sender, call| self.register_settlement_forwarder(sender, call)),
                 approveEngine(call) => mutate(call, msg_sender, |sender, call| self.approve_engine(sender, call.engine)),
                 revokeEngine(call) => mutate(call, msg_sender, |sender, call| self.revoke_engine(sender, call.engine)),
                 updateVaultEngine(call) => mutate(call, msg_sender, |sender, call| self.update_vault_engine(sender, call.vault, call.engine)),
@@ -386,6 +496,7 @@ impl NativeEarnExecution<'_> {
             let expected_pair_kind = match kind {
                 EarnPaymentKind::Vault => EarnPaymentKind::Fees,
                 EarnPaymentKind::Fees => EarnPaymentKind::Vault,
+                EarnPaymentKind::SettlementForwarder => return Err(TempoPrecompileError::OutOfGas),
             };
             let pair = registration(registered.pair, expected_pair_kind)?;
             if pair.pair != message.destination
@@ -419,10 +530,12 @@ impl NativeEarnExecution<'_> {
                         return Err(TempoPrecompileError::OutOfGas);
                     }
                 }
+                EarnPaymentKind::SettlementForwarder => return Err(TempoPrecompileError::OutOfGas),
             }
             let vault = match kind {
                 EarnPaymentKind::Vault => message.destination,
                 EarnPaymentKind::Fees => registered.pair,
+                EarnPaymentKind::SettlementForwarder => return Err(TempoPrecompileError::OutOfGas),
             };
             if !TIP20Token::from_address(registered.earn_share)?
                 .has_role_internal(vault, ISSUER_ROLE)?
@@ -488,6 +601,7 @@ impl NativeEarnExecution<'_> {
         let (execution_gas, state_gas) = match kind {
             EarnPaymentKind::Vault => (8_000_000, 4_000_000),
             EarnPaymentKind::Fees => (2_000_000, 1_000_000),
+            EarnPaymentKind::SettlementForwarder => return Err(PrecompileHalt::OutOfGas.into()),
         };
         native_delegate_call(
             evm,
@@ -500,6 +614,157 @@ impl NativeEarnExecution<'_> {
                 execution_gas,
                 state_gas,
                 input_bytes: 8_192,
+                output_bytes: 4_096,
+            },
+        )
+    }
+}
+
+/// Registered forwarding-solver admission for a bounded async solve and
+/// vault claim finalization in one payment transaction.
+pub struct NativeEarnSettlementExecution<'a> {
+    pub spec: TempoHardfork,
+    pub actions: StorageActions,
+    pub non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    pub budget: &'a NativeCallBudget,
+}
+
+impl NativeEarnSettlementExecution<'_> {
+    pub fn execute<T: EvmTypes<BlockEnvExt = TempoBlockExt>>(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> PrecompileResult
+    where
+        T::EvmExt: NativeCallExt,
+    {
+        if message.kind != MessageKind::Call
+            || message.depth != 0
+            || message.destination != message.code_address
+            || message.caller_is_static
+            || !message.value.is_zero()
+            || message.code.original_byte_slice() != NATIVE_EARN_DISPATCHER_V1_RUNTIME
+            || !earn_settlement_input(&message.input)
+        {
+            return Err(PrecompileError::Revert(Bytes::new()));
+        }
+        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, false)
+            .with_actions(self.actions.clone())
+            .with_non_creditable_slots(self.non_creditable_slots.clone());
+        let prepared = StorageCtx::enter(&mut storage, || {
+            let storage = StorageCtx;
+            storage.deduct_gas(input_cost(self.spec, message.input.len())?)?;
+            let registered =
+                registration(message.destination, EarnPaymentKind::SettlementForwarder)?;
+            if storage.sload(message.destination, EARN_IMPLEMENTATION_SLOT)?
+                != U256::from_be_slice(registered.implementation.as_slice())
+            {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            let vault = registration(registered.pair, EarnPaymentKind::Vault)?;
+            let fees = registration(vault.pair, EarnPaymentKind::Fees)?;
+            if vault.asset != registered.asset
+                || vault.earn_share != registered.earn_share
+                || vault.engine_hash != registered.engine_hash
+                || fees.pair != registered.pair
+                || fees.asset != registered.asset
+                || fees.earn_share != registered.earn_share
+                || storage.account_code(registered.pair)?.0 != NATIVE_EARN_DISPATCHER_V1_HASH
+                || storage.account_code(vault.pair)?.0 != NATIVE_EARN_DISPATCHER_V1_HASH
+                || storage.sload(registered.pair, EARN_IMPLEMENTATION_SLOT)?
+                    != U256::from_be_slice(vault.implementation.as_slice())
+                || storage.sload(vault.pair, EARN_IMPLEMENTATION_SLOT)?
+                    != U256::from_be_slice(fees.implementation.as_slice())
+                || word_address(storage.sload(registered.pair, U256::from(1))?) != vault.asset
+                || word_address(storage.sload(registered.pair, U256::from(2))?) != vault.earn_share
+                || word_address(storage.sload(registered.pair, U256::from(3))?) != vault.pair
+                || word_address(storage.sload(vault.pair, U256::ZERO)?) != registered.pair
+                || word_address(storage.sload(vault.pair, U256::from(1))?) != vault.earn_share
+            {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            let engine = word_address(storage.sload(registered.pair, U256::ZERO)?);
+            let approval_slot =
+                U256::from_be_bytes(storage.keccak256(&earn_engine_approval_preimage(engine))?.0);
+            if engine == Address::ZERO
+                || storage.sload(NATIVE_EARN_REGISTRY_ADDRESS, approval_slot)?
+                    != U256::from_be_slice(registered.engine_hash.as_slice())
+                || !TIP20Token::from_address(vault.earn_share)?
+                    .has_role_internal(registered.pair, ISSUER_ROLE)?
+            {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            Ok((registered, vault, fees, engine))
+        });
+        let (registered, vault, fees, engine) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return error.into_precompile_result(),
+        };
+        verify_native_code(
+            evm,
+            gas,
+            registered.implementation,
+            registered.implementation_hash,
+        )?;
+        verify_native_code(evm, gas, vault.implementation, vault.implementation_hash)?;
+        verify_native_code(evm, gas, fees.implementation, fees.implementation_hash)?;
+        verify_native_code(evm, gas, engine, registered.engine_hash)?;
+        // The solver's immutable engine getter must name the registered vault
+        // engine before the transaction can enter the payment lane.
+        let returned = native_delegate_call(
+            evm,
+            message,
+            gas,
+            self.budget,
+            registered.implementation,
+            Bytes::from_static(&[0xc9, 0xd4, 0x62, 0x3f]),
+            NativeCallLimits {
+                execution_gas: 100_000,
+                state_gas: 100_000,
+                input_bytes: 4,
+                output_bytes: 32,
+            },
+        )?;
+        if returned.bytes().len() != 32
+            || word_address(U256::from_be_slice(returned.bytes())) != engine
+        {
+            return Err(PrecompileHalt::OutOfGas.into());
+        }
+        let mut authorization = vec![0xcd, 0xa4, 0x85, 0x0d];
+        authorization
+            .extend_from_slice(&U256::from_be_slice(message.caller.as_slice()).to_be_bytes::<32>());
+        let authorized = native_delegate_call(
+            evm,
+            message,
+            gas,
+            self.budget,
+            registered.implementation,
+            Bytes::from(authorization),
+            NativeCallLimits {
+                execution_gas: 100_000,
+                state_gas: 100_000,
+                input_bytes: 36,
+                output_bytes: 32,
+            },
+        )?;
+        if authorized.bytes().len() != 32 || U256::from_be_slice(authorized.bytes()) != U256::ONE {
+            return Err(PrecompileHalt::OutOfGas.into());
+        }
+        evm.ext()
+            .native_call_context()
+            .record_verified_earn_payment();
+        native_delegate_call(
+            evm,
+            message,
+            gas,
+            self.budget,
+            registered.implementation,
+            message.input.clone(),
+            NativeCallLimits {
+                execution_gas: 11_000_000,
+                state_gas: 4_000_000,
+                input_bytes: 356,
                 output_bytes: 4_096,
             },
         )
@@ -538,6 +803,7 @@ mod tests {
     const VAULT_IMPL: Address = Address::with_last_byte(0x93);
     const FEES_IMPL: Address = Address::with_last_byte(0x94);
     const ENGINE: Address = Address::with_last_byte(0x95);
+    const FORWARDER: Address = Address::with_last_byte(0x9b);
     const NEW_ENGINE: Address = Address::with_last_byte(0x9a);
     const ASSET: Address =
         alloy::primitives::address!("0x20c0000000000000000000000000000000000096");
@@ -689,7 +955,7 @@ mod tests {
         let mut message = Message::<Types> {
             kind: MessageKind::Call,
             depth,
-            gas_limit: 15_000_000,
+            gas_limit: 50_000_000,
             destination,
             call_target: destination,
             caller,
@@ -760,6 +1026,140 @@ mod tests {
         })
         .unwrap();
         evm
+    }
+
+    fn mock_forwarder_code(authorized: bool) -> Bytes {
+        let mut code = vec![
+            0x36, 0x60, 0x04, 0x14, 0x60, 0x18, 0x57, 0x36, 0x60, 0x24, 0x14, 0x60, 0x36, 0x57,
+            0x33, 0x60, 0x2b, 0x55, 0x60, 0x2a, 0x60, 0x2a, 0x55, 0x00, 0x5b, 0x73,
+        ];
+        code.extend_from_slice(ENGINE.as_slice());
+        code.extend_from_slice(&[
+            0x60,
+            0x00,
+            0x52,
+            0x60,
+            0x20,
+            0x60,
+            0x00,
+            0xf3,
+            0x5b,
+            0x60,
+            u8::from(authorized),
+            0x60,
+            0x00,
+            0x52,
+            0x60,
+            0x20,
+            0x60,
+            0x00,
+            0xf3,
+        ]);
+        Bytes::from(code)
+    }
+
+    fn settlement_input() -> Bytes {
+        let mut input = vec![0xbf, 0x8d, 0x3f, 0x22];
+        input.extend_from_slice(&U256::from(64).to_be_bytes::<32>());
+        input.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+        input.extend_from_slice(&U256::ONE.to_be_bytes::<32>());
+        input.extend_from_slice(&[0x11; 32]);
+        Bytes::from(input)
+    }
+
+    #[test]
+    fn registered_settlement_forwarder_executes_in_payment_lane() {
+        let mut evm = setup_registrar(true);
+        assert!(register_call(&mut evm, FACTORY).stop.is_success());
+        let code = mock_forwarder_code(true);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T16);
+        StorageCtx::enter(&mut storage, || {
+            StorageCtx.set_code(FORWARDER, code.clone())
+        })
+        .unwrap();
+        let input = INativeEarnRegistrar::registerSettlementForwarderCall {
+            forwarder: FORWARDER,
+            vault: VAULT,
+            engine: ENGINE,
+            forwarderCodeHash: keccak256(&code),
+        }
+        .abi_encode();
+        let result = registrar_call(&mut evm, GOVERNOR, input);
+        assert!(result.stop.is_success(), "{result:?}");
+        assert_eq!(evm.logs().len(), 2);
+        assert_eq!(evm.logs()[1].address, NATIVE_EARN_REGISTRY_ADDRESS);
+        let snapshot = tempo_contracts::earn::earn_forwarder_snapshot_address(FORWARDER);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T16);
+        StorageCtx::enter(&mut storage, || -> Result<()> {
+            assert_eq!(StorageCtx.account_code(snapshot)?.0, keccak256(&code));
+            assert_eq!(
+                StorageCtx.account_code(FORWARDER)?.0,
+                NATIVE_EARN_DISPATCHER_V1_HASH
+            );
+            assert_eq!(
+                StorageCtx.sload(FORWARDER, EARN_IMPLEMENTATION_SLOT)?,
+                U256::from_be_slice(snapshot.as_slice())
+            );
+            Ok(())
+        })
+        .unwrap();
+        let result = call_with_input(
+            &mut evm,
+            FORWARDER,
+            Address::with_last_byte(0xaa),
+            0,
+            settlement_input(),
+        );
+        assert!(result.stop.is_success(), "{result:?}");
+        assert!(evm.ext().native_call_context().verified_earn_payment());
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T16);
+        let marker =
+            StorageCtx::enter(&mut storage, || StorageCtx.sload(FORWARDER, U256::from(42)))
+                .unwrap();
+        assert_eq!(marker, U256::from(42));
+        let caller =
+            StorageCtx::enter(&mut storage, || StorageCtx.sload(FORWARDER, U256::from(43)))
+                .unwrap();
+        assert_eq!(caller, U256::from(0xaa));
+    }
+
+    #[test]
+    fn settlement_forwarder_rejects_unregistered_or_unauthorized_calls() {
+        let mut evm = setup_registrar(true);
+        assert!(register_call(&mut evm, FACTORY).stop.is_success());
+        let unregistered = call_with_input(
+            &mut evm,
+            FORWARDER,
+            Address::with_last_byte(0xaa),
+            0,
+            settlement_input(),
+        );
+        assert!(!unregistered.stop.is_success());
+        assert!(!evm.ext().native_call_context().verified_earn_payment());
+
+        let code = mock_forwarder_code(false);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T16);
+        StorageCtx::enter(&mut storage, || {
+            StorageCtx.set_code(FORWARDER, code.clone())
+        })
+        .unwrap();
+        let input = INativeEarnRegistrar::registerSettlementForwarderCall {
+            forwarder: FORWARDER,
+            vault: VAULT,
+            engine: ENGINE,
+            forwarderCodeHash: keccak256(&code),
+        }
+        .abi_encode();
+        assert!(registrar_call(&mut evm, GOVERNOR, input).stop.is_success());
+        let unauthorized = call_with_input(
+            &mut evm,
+            FORWARDER,
+            Address::with_last_byte(0xaa),
+            0,
+            settlement_input(),
+        );
+        assert!(!unauthorized.stop.is_success());
+        assert!(!evm.ext().native_call_context().verified_earn_payment());
     }
 
     fn register_call(

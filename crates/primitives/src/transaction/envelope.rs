@@ -15,9 +15,11 @@ use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_sol_types::SolCall;
 use core::{fmt, num::NonZeroU64};
-use tempo_contracts::earn::earn_payment_kind;
-use tempo_contracts::precompiles::{
-    ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, zone_portal::ZonePortal,
+use tempo_contracts::{
+    earn::{earn_payment_kind, earn_settlement_input},
+    precompiles::{
+        ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, zone_portal::ZonePortal,
+    },
 };
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
@@ -417,15 +419,17 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// T15 candidate for an exact, bounded native Earn vault or fee payment.
+    /// T16 candidate for an exact, bounded native Earn vault, fee, or
+    /// registered asynchronous settlement payment.
     /// The runtime checks system-owned registration and code identities before
     /// this candidate can receive payment-lane capacity.
     pub fn is_native_earn_payment_candidate(&self) -> bool {
         if !self.value().is_zero() {
             return false;
         }
-        let matches =
-            |to: Option<&Address>, input: &[u8]| to.is_some() && earn_payment_kind(input).is_some();
+        let matches = |to: Option<&Address>, input: &[u8]| {
+            to.is_some() && (earn_payment_kind(input).is_some() || earn_settlement_input(input))
+        };
         match self {
             Self::Legacy(tx) => matches(tx.tx().to.to(), &tx.tx().input),
             Self::Eip2930(tx) => {

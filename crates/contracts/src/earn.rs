@@ -16,9 +16,17 @@ sol! {
         address engine,
         bytes32 engineCodeHash
     );
+    event NativeEarnSettlementRegistered(
+        address indexed forwarder,
+        address indexed vault,
+        address indexed engine,
+        address snapshot,
+        bytes32 forwarderCodeHash
+    );
 
     interface INativeEarnRegistrar {
         function register(address vault, address fees, address asset, address earnShare, address engine) external;
+        function registerSettlementForwarder(address forwarder, address vault, address engine, bytes32 forwarderCodeHash) external;
         function approveEngine(address engine) external;
         function revokeEngine(address engine) external;
         function updateVaultEngine(address vault, address engine) external;
@@ -57,6 +65,25 @@ pub fn earn_engine_approval_slot(engine: Address) -> U256 {
     U256::from_be_bytes(keccak256(earn_engine_approval_preimage(engine)).0)
 }
 
+/// Snapshot address for a forwarding solver's constructor-bound runtime.
+/// The registration path requires an empty account before installing code.
+pub fn earn_forwarder_snapshot_preimage(forwarder: Address) -> [u8; 64] {
+    const DOMAIN: B256 =
+        b256!("0x9e587dd096a47d85f5affdf8aa92b08fb4697f4cf4925dc31935182190250754");
+    let mut input = [0u8; 64];
+    input[..32].copy_from_slice(DOMAIN.as_slice());
+    input[44..64].copy_from_slice(forwarder.as_slice());
+    input
+}
+
+pub fn earn_forwarder_snapshot_address(forwarder: Address) -> Address {
+    let hash = keccak256(earn_forwarder_snapshot_preimage(forwarder));
+    let mut address = [0u8; 20];
+    address[..4].copy_from_slice(&[0x5a, 0xec, 0x00, 0x01]);
+    address[4..].copy_from_slice(&hash[16..]);
+    Address::from(address)
+}
+
 /// ERC-1967 implementation slot used by the v1 dispatcher.
 pub const EARN_IMPLEMENTATION_SLOT: U256 = U256::from_be_bytes([
     0x36, 0x08, 0x94, 0xa1, 0x3b, 0xa1, 0xa3, 0x21, 0x06, 0x67, 0xc8, 0x28, 0x49, 0x2d, 0xb9, 0x8d,
@@ -81,6 +108,24 @@ pub enum EarnRegistrationField {
 pub enum EarnPaymentKind {
     Vault,
     Fees,
+    SettlementForwarder,
+}
+
+/// Canonical bounded Veda forwarding-solver batch. The only dynamic argument
+/// is an array of one to eight request IDs; `coverDeficit` is an exact bool.
+pub fn earn_settlement_input(input: &[u8]) -> bool {
+    if input.len() < 4 + 96 + 32
+        || input.len() > 4 + 96 + 8 * 32
+        || !input.starts_with(&[0xbf, 0x8d, 0x3f, 0x22])
+        || read_u64_word(&input[4..36]) != Some(64)
+        || !matches!(read_u64_word(&input[36..68]), Some(0 | 1))
+    {
+        return false;
+    }
+    let Some(count) = read_u64_word(&input[68..100]) else {
+        return false;
+    };
+    (1..=8).contains(&count) && input.len() == 100 + count * 32
 }
 
 /// Bounded ABI envelope for native Earn payment admission. Identity and caller
@@ -193,6 +238,7 @@ pub const NATIVE_EARN_DISPATCHER_V1_HASH: B256 =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn dispatcher_runtime_matches_pinned_hash() {
@@ -200,6 +246,33 @@ mod tests {
             alloy_primitives::keccak256(NATIVE_EARN_DISPATCHER_V1_RUNTIME),
             NATIVE_EARN_DISPATCHER_V1_HASH
         );
+    }
+
+    #[test]
+    fn settlement_batch_requires_canonical_bounded_array() {
+        let mut input = vec![0xbf, 0x8d, 0x3f, 0x22];
+        input.extend_from_slice(&U256::from(64).to_be_bytes::<32>());
+        input.extend_from_slice(&U256::ONE.to_be_bytes::<32>());
+        input.extend_from_slice(&U256::ONE.to_be_bytes::<32>());
+        input.extend_from_slice(&[0x11; 32]);
+        assert!(earn_settlement_input(&input));
+        let mut invalid = input.clone();
+        invalid[67] = 2;
+        assert!(!earn_settlement_input(&invalid));
+        invalid = input.clone();
+        invalid[99] = 9;
+        assert!(!earn_settlement_input(&invalid));
+        invalid = input.clone();
+        invalid.push(0);
+        assert!(!earn_settlement_input(&invalid));
+        for _ in 1..8 {
+            input.extend_from_slice(&[0x22; 32]);
+        }
+        input[99] = 8;
+        assert!(earn_settlement_input(&input));
+        input.extend_from_slice(&[0x33; 32]);
+        input[99] = 9;
+        assert!(!earn_settlement_input(&input));
     }
 
     #[test]
