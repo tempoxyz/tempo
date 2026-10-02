@@ -116,6 +116,25 @@ cleanup_reth_ipc() {
   fi
 }
 
+# Check the source range before installing/building binaries or downloading state.
+# Keep excluding the newest snapshot, but allow an older one for longer replays.
+SNAPSHOTS=$($MC ls "$SNAPSHOT_BUCKET/")
+set +x
+if ! SOURCE_HEAD=$(curl --fail --silent --show-error --max-time 30 --retry 2 \
+  "$REPLAY_RPC_URL" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'); then
+  echo "::error::Could not query replay source head" >&2
+  exit 1
+fi
+set -x
+SNAPSHOT_NAME=$(printf '%s\n' "$SNAPSHOTS" | python3 \
+  "$(dirname "${BASH_SOURCE[0]}")/bench-replay-snapshot.py" \
+  --prefix "$SNAPSHOT_PREFIX" --source-head "$SOURCE_HEAD" \
+  --blocks "$BLOCKS" --warmup "$WARMUP")
+SNAPSHOT_BLOCK=$(echo "$SNAPSHOT_NAME" | awk -F- '{print $3}')
+echo "Selected snapshot: $SNAPSHOT_NAME"
+echo "Snapshot block: $SNAPSHOT_BLOCK"
+
 # ============================================================================
 # Install txgen-tempo and bench-cli
 # ============================================================================
@@ -171,20 +190,6 @@ FEATURE_BIN="$(cd ../tempo-feature && pwd)/target/profiling/tempo"
 # ============================================================================
 # Snapshot management
 # ============================================================================
-
-# Pick second-to-latest snapshot directory (filter out .json/.tar.lz4 files)
-SNAPSHOTS=$($MC ls "$SNAPSHOT_BUCKET/" | awk '{print $NF}' | sed 's:/$::' | grep "^${SNAPSHOT_PREFIX}" | grep -v '\.' | sort)
-SNAPSHOT_COUNT=$(echo "$SNAPSHOTS" | wc -l)
-if [ "$SNAPSHOT_COUNT" -lt 2 ]; then
-  echo "::error::Need at least 2 snapshots matching ${SNAPSHOT_PREFIX}*, found $SNAPSHOT_COUNT"
-  exit 1
-fi
-SNAPSHOT_NAME=$(echo "$SNAPSHOTS" | tail -2 | head -1)
-echo "Selected snapshot: $SNAPSHOT_NAME"
-
-# Extract snapshot block number from name: tempo-{chain_id}-{block_number}-{timestamp}
-SNAPSHOT_BLOCK=$(echo "$SNAPSHOT_NAME" | awk -F- '{print $3}')
-echo "Snapshot block: $SNAPSHOT_BLOCK"
 
 MANIFEST_REMOTE="${SNAPSHOT_BUCKET}/${SNAPSHOT_NAME}/manifest.json"
 REMOTE_HASH=$($MC cat "$MANIFEST_REMOTE" 2>/dev/null | sha256sum | awk '{print $1}')
