@@ -112,6 +112,19 @@ def summarize(directory):
             "send_start_to_last_canonical_seconds": round(elapsed, 6),
             "confirmed_tps_including_backlog": round(included / elapsed),
         }
+        rejections = {"timestamp_through_last_busy_block": 0,
+                      "timestamp_after_last_busy_block": 0, "other": []}
+        for line in node_log.splitlines():
+            if "Invalid block error on new payload" not in line:
+                continue
+            if "validation_err=block timestamp " in line:
+                number = int(re.search(r"invalid_number=(\d+)", line)[1])
+                key = ("timestamp_through_last_busy_block" if number <= last_busy
+                       else "timestamp_after_last_busy_block")
+                rejections[key] += 1
+            else:
+                rejections["other"].append(line)
+        result["rejected_dev_payloads"] = rejections
     return result
 
 

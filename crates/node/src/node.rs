@@ -333,16 +333,31 @@ impl TempoPayloadAttributesBuilder {
     pub const fn new() -> Self {
         Self
     }
+
+    fn timestamp_after(parent: u64, mut clock: impl FnMut() -> u64) -> u64 {
+        // Dev mining can catch up missed interval ticks within one millisecond.
+        // Tempo requires a timestamp strictly after the parent and no later than
+        // wall time, so advancing the parent's timestamp without waiting is invalid.
+        loop {
+            let now = clock();
+            if now > parent {
+                return now;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
 }
 
 impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
-    fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+    fn build(&self, parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
+        let millis = Self::timestamp_after(parent.timestamp_millis(), || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        });
 
         let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
@@ -561,5 +576,28 @@ where
             self.state_provider_metrics,
             self.disable_state_cache,
         ))
+    }
+}
+
+#[cfg(test)]
+mod payload_attributes_tests {
+    use super::TempoPayloadAttributesBuilder;
+
+    #[test]
+    fn dev_timestamp_waits_for_wall_clock_to_pass_parent() {
+        for (parent, readings, expected) in [
+            (1_000, vec![1_001], 1_001),
+            (1_000, vec![1_000, 1_000, 1_001], 1_001),
+            (1_000, vec![1_000, 999, 998, 1_005], 1_005),
+            (999, vec![999, 1_000], 1_000),
+        ] {
+            let mut readings = readings.into_iter();
+            let timestamp = TempoPayloadAttributesBuilder::timestamp_after(parent, || {
+                readings.next().expect("clock must advance")
+            });
+            assert_eq!(timestamp, expected);
+            assert!(timestamp > parent);
+            assert!(readings.next().is_none());
+        }
     }
 }

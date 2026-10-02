@@ -948,6 +948,30 @@ CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
   cargo test -p tempo-payload-builder --release trie_journal_copy_throughput -- --ignored --nocapture
 ```
 
+## Dev-miner timestamp catch-up
+
+When the dev miner catches up interval ticks after a slow block, successive
+payload requests can occur in the same millisecond. Its attributes builder
+previously used the current wall time without checking the parent. Tempo rejects
+timestamps at or before the parent, and also rejects timestamps after wall time.
+The dev builder now waits in one-millisecond sleeps until the clock is strictly
+after the parent, then uses that observed time. This also waits through backward
+clock adjustments.
+
+A clock-controlled regression covers repeated readings, backward readings, and
+the millisecond-to-second boundary. The shared-trie TIP-20, mixed payment-lane,
+and four post-block proof regressions pass. Release Clippy passes. The benchmark
+summary now includes rejected dev payload counts, separating timestamp errors
+before/after the last user transaction block and preserving other error reasons.
+
+`dev-timestamp-node.json` and `node/dev-timestamp-*.json` retain three fresh
+16-worker, shared-trie trials after the fix. The 2D workloads at 50k and 75k
+offered TPS confirm 27,717 and 27,203 TPS; the expiring-AA workload at 50k offered
+confirms 26,296 TPS. All 672,799 accepted transactions confirm, with zero node
+error lines, rejected payloads, submission/execution failures, or background-root
+fallbacks. Catch-up after the backlog clears also completes without rejections.
+These runs validate the clock fix and do not establish a throughput improvement.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -1058,6 +1082,13 @@ canonical state roots match sequential execution. The separate post-block
 fixture above adds three system-only blocks whose roots also match the
 original synchronous control. These remain generated local chains, and replay
 timings are diagnostic only.
+
+`dev-timestamp-canonical-2d.tsv` (blocks 19–21) and
+`dev-timestamp-canonical-expiring.tsv` (blocks 13–15) verify six newly built blocks
+after the dev clock fix: 124,392 user transactions plus six system transactions.
+Complete execution results and state deltas, stored receipts, gas, receipt roots,
+and canonical state roots match. Replay timings are diagnostic, with sequential
+execution first.
 
 ## Correctness model and integration
 

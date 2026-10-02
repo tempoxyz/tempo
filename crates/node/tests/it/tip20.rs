@@ -20,7 +20,10 @@ use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 #[test_case::test_case(4, false; "parallel")]
 #[test_case::test_case(4, true; "parallel_shared_trie")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer(execution_threads: usize, share_sparse_trie: bool) -> eyre::Result<()> {
+async fn test_tip20_transfer(
+    execution_threads: usize,
+    share_sparse_trie: bool,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
