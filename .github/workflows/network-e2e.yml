@@ -1,7 +1,8 @@
 name: Tempo Network E2E
 
 on:
-  pull_request:
+  # Detection reads PR data through pinned actions; fork code is never executed.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize, ready_for_review]
   merge_group:
 
@@ -60,8 +61,9 @@ jobs:
           package-prefix: reth
       - name: Decide whether tests are required
         id: decision
+        if: steps.paths.outcome == 'success' && steps.reth.outcome == 'success'
         env:
-          REQUIRED: ${{ contains(fromJSON(steps.paths.outputs.changes), 'consensus') || steps.reth.outputs.changed == 'true' }}
+          REQUIRED: ${{ contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true' }}
           SAME_REPO: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           if [[ "$REQUIRED" == true && "$SAME_REPO" != true ]]; then
@@ -79,7 +81,8 @@ jobs:
       pull-requests: read
       packages: write
       id-token: write
-    uses: ./.github/workflows/docker.yml
+    # Pinned CI actionlint 1.7.12 does not support the newer $/ syntax yet.
+    uses: ./.github/workflows/docker.yml # zizmor: ignore[self-repository]
     secrets: inherit # zizmor: ignore[secrets-inherit]
 
   dispatch:

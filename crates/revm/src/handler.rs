@@ -1786,12 +1786,14 @@ where
 
         // First perform standard validation (header + transaction environment).
         // This validates: prevrandao, excess_blob_gas, chain_id, gas limits, tx type support, etc.
-        // REVM rejects u64::MAX because protocol nonces are incremented after execution. T12
-        // expiring nonces are opaque discriminators and never incremented, so validate the rest
-        // of the environment with a temporary in-range value.
+        // REVM rejects u64::MAX because protocol nonces are incremented after execution. Expiring
+        // nonces are never incremented, so validate the rest of the environment with a temporary
+        // in-range value. Before T12, Tempo's fork-specific validation below still rejects the
+        // discriminator, but does so with a transient error instead of a permanent nonce-overflow
+        // error. At T12+, the discriminator is accepted.
         // TODO: Remove this workaround when migrating to EVM2. Its per-transaction-type handlers
-        // let Tempo omit the nonce-overflow check for T12+ expiring nonce transactions.
-        let accepts_max_expiring_nonce = evm.ctx.cfg.spec.is_t12()
+        // let Tempo omit the nonce-overflow check for expiring nonce transactions.
+        let is_max_expiring_nonce = evm.ctx.cfg.spec.is_t1()
             && evm.ctx.tx.nonce() == u64::MAX
             && evm
                 .ctx
@@ -1799,11 +1801,11 @@ where
                 .tempo_tx_env
                 .as_ref()
                 .is_some_and(|aa| aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY);
-        if accepts_max_expiring_nonce {
+        if is_max_expiring_nonce {
             evm.ctx.tx.inner.nonce = 0;
         }
         let validation_result = validation::validate_env::<_, Self::Error>(evm.ctx());
-        if accepts_max_expiring_nonce {
+        if is_max_expiring_nonce {
             evm.ctx.tx.inner.nonce = u64::MAX;
         }
         validation_result?;
@@ -2226,7 +2228,8 @@ pub struct ValidationContext {
 /// This includes:
 /// - Base 21k stipend (once for the transaction)
 /// - Signature verification gas (P256: 5k, WebAuthn: 5k + webauthn_data)
-/// - Per-call account access cost (COLD_ACCOUNT_ACCESS_COST * calls.len())
+/// - Per-call account access cost (`COLD_ACCOUNT_ACCESS_COST * (calls.len() - 1)`); the 21k
+///   stipend above already covers the first call's target access
 /// - Per-call input data gas (calldata tokens * 4 gas)
 /// - Per-call CREATE costs (if applicable):
 ///   - Additional 32k base (CREATE constant)
@@ -2258,8 +2261,8 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let cold_account_cost =
         gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
 
-    // 3. Per-call overhead: cold account access
-    // if the `to` address has not appeared in the call batch before.
+    // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
+    // already covers the first call's target access.
     gas.initial_regular_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)

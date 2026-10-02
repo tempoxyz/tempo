@@ -47,6 +47,8 @@ const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
 const HEADER_RPC_BATCH_SIZE: usize = 128;
 /// Maximum number of block headers to serve in a `GetBlockHeaders` response.
 const MAX_HEADERS_SERVE: usize = 1024;
+/// Maximum number of block bodies to serve in a `GetBlockBodies` response.
+const MAX_BODIES_SERVE: usize = 1024;
 /// Soft cap on the total encoded body size in a `GetBlockBodies` response.
 const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 /// Maximum number of header and body requests handled at once. Further requests wait in the
@@ -747,7 +749,7 @@ async fn resolve_bodies(
     let mut bodies = Vec::new();
     let mut total_bytes = 0usize;
 
-    for &hash in hashes {
+    for &hash in hashes.iter().take(MAX_BODIES_SERVE) {
         let body = match cache
             .get_by_hash(&hash)
             .and_then(|block| block.body.clone())
@@ -917,6 +919,25 @@ mod tests {
         let bodies = resolve_bodies(&provider, &mut cache, &[first_hash, second_hash]).await;
         assert_eq!(bodies.len(), 1);
         assert!(bodies[0].length() > SOFT_BODY_RESPONSE_SIZE_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_caps_number_of_bodies() {
+        let provider = moderato_provider();
+        let count = MAX_BODIES_SERVE as u64 + 10;
+        let mut cache = BlockCache::new(count);
+        let hashes = (1..=count).map(numbered_hash).collect::<Vec<_>>();
+        for (number, hash) in (1..=count).zip(&hashes) {
+            cache.insert_block(
+                number,
+                *hash,
+                TempoHeader::default(),
+                tempo_primitives::BlockBody::default(),
+            );
+        }
+
+        let bodies = resolve_bodies(&provider, &mut cache, &hashes).await;
+        assert_eq!(bodies.len(), MAX_BODIES_SERVE);
     }
 
     #[tokio::test]
