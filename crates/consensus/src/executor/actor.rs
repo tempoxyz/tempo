@@ -172,7 +172,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     pending_acknowledgements: VecDeque<FinalizedBlockRequest>,
 
     /// New-payload requests the execution layer may have executed since the
-    /// last successful forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
+    /// last successful or stale-skipped forkchoice update, see
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
     /// The newest round observed through build and verify contexts or
@@ -872,19 +873,6 @@ where
         build: Option<(Span, oneshot::Sender<TempoBuiltPayload>)>,
         response: Option<eyre::Result<ForkchoiceUpdated>>,
     ) -> eyre::Result<()> {
-        let Some(response) = response else {
-            // No update was submitted because the execution layer is ahead
-            // of tracked finality. Advance the tracked state for replay and
-            // acknowledgements; a skipped update cannot register a build.
-            if build.is_some() {
-                // Dropping the build's response channel signals the failure
-                // to the subscriber.
-                info!("tracked finality is below the execution layer's; dropping the build");
-            }
-            self.local_state = target;
-            self.acknowledge_finalized();
-            return Ok(());
-        };
         let diverged = || {
             format!(
                 "forkchoice update onto head `{}` at height `{}` and finalized block `{}` at \
@@ -893,19 +881,39 @@ where
                 target.head.1, target.head.0, target.finalized.1, target.finalized.0,
             )
         };
-        let response = response.wrap_err_with(diverged)?;
-        if !response.is_valid() {
-            return Err(Report::msg(response.payload_status)).wrap_err_with(diverged);
-        }
+        let accepted = match response {
+            // No update was submitted because the execution layer is ahead
+            // of tracked finality.
+            None => None,
+            Some(Ok(updated)) if updated.is_valid() => Some(updated),
+            Some(Ok(updated)) => {
+                return Err(Report::msg(updated.payload_status)).wrap_err_with(diverged);
+            }
+            Some(Err(error)) => return Err(error).wrap_err_with(diverged),
+        };
 
+        // A skipped update settles the deliveries like an accepted one: an
+        // update forced by a full batch would be skipped just the same, and
+        // with the count left full it would be rescheduled ahead of the
+        // mailbox forever.
         self.deliveries_since_forkchoice = 0;
         self.local_state = target;
         self.acknowledge_finalized();
 
         // Dropping the build's response channel signals the failure to the
         // subscriber.
-        match (build, response.payload_id) {
-            (Some((cause, response)), Some(payload_id)) => {
+        match (build, accepted) {
+            (None, _) => {}
+            (Some(_dropped_to_signal_failure), None) => {
+                info!("tracked finality is below the execution layer's; dropping the build");
+            }
+            (
+                Some((cause, response)),
+                Some(ForkchoiceUpdated {
+                    payload_id: Some(payload_id),
+                    ..
+                }),
+            ) => {
                 let job = StartPayloadJob {
                     cause,
                     payload_id,
@@ -914,10 +922,9 @@ where
                 self.payload_jobs
                     .push(run_payload_job(self.execution_node.clone(), job).boxed());
             }
-            (Some(_dropped_to_signal_failure), None) => {
+            (Some(_dropped_to_signal_failure), Some(_)) => {
                 warn!("execution layer did not return a payload id for the build request");
             }
-            (None, _) => {}
         }
         Ok(())
     }
@@ -2418,6 +2425,8 @@ async fn execute_build(
     fields(
         block.digest = %request.block.digest(),
         block.height = %request.block.height(),
+        proposal.epoch = request.block.context().round.epoch().get(),
+        proposal.view = request.block.context().round.view().get(),
     ),
 )]
 async fn execute_finalization(
@@ -2437,6 +2446,8 @@ async fn execute_finalization(
         block.digest = %block.digest(),
         block.height = %block.height(),
         block.parent_digest = %block.parent_digest(),
+        proposal.epoch = block.context().round.epoch().get(),
+        proposal.view = block.context().round.view().get(),
     ),
 )]
 async fn execute_delivery(

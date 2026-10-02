@@ -43,7 +43,7 @@ jobs:
     steps:
       # ── checkout ───────────────────────────────────────────────
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
@@ -107,10 +107,10 @@ jobs:
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           tool: nextest@0.9.127
 
@@ -161,6 +161,7 @@ jobs:
           chmod +x /usr/local/bin/amp-run
 
       # ── update reth rev ─────────────────────────────────────────
+      # When already on the latest rev, all later steps are skipped.
       - name: Update reth rev in Cargo.toml
         id: update
         env:
@@ -206,6 +207,7 @@ jobs:
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
         id: check-loop
+        if: steps.update.outputs.bumped == 'true'
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
@@ -274,6 +276,7 @@ jobs:
       # ── test compilation check + Amp fix loop ─────────────────
       - name: Fix test compilation errors
         id: test-loop
+        if: steps.update.outputs.bumped == 'true'
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
@@ -343,6 +346,7 @@ jobs:
 
       # ── commit source fixes ─────────────────────────────────────
       - name: Commit source fixes
+        if: steps.update.outputs.bumped == 'true'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
@@ -352,10 +356,12 @@ jobs:
           fi
 
       # ── zepter feature lint ─────────────────────────────────────
-      - uses: tempoxyz/gh-actions/actions/cargo-install@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/actions/cargo-install@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        if: steps.update.outputs.bumped == 'true'
         with:
           tool: zepter
       - name: Fix zepter lint
+        if: steps.update.outputs.bumped == 'true'
         run: |
           if ! zepter run check; then
             echo "Zepter check failed — running auto-fix..."
@@ -370,11 +376,13 @@ jobs:
 
       # ── push ───────────────────────────────────────────────────
       - name: Push working branch
+        if: steps.update.outputs.bumped == 'true'
         run: |
           git push --force-with-lease origin reth-auto-bump
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
+        if: steps.update.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
@@ -512,6 +520,7 @@ jobs:
 
       # ── wait for CI and fix failures ─────────────────────────
       - name: Wait for CI and fix failures
+        if: steps.update.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
@@ -704,8 +713,6 @@ jobs:
           DETAILS=""
           if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
             DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/commit/${OLD_REV}|${OLD_REV:0:7}> → <https://github.com/paradigmxyz/reth/commit/${NEW_REV}|${NEW_REV:0:7}> (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
-          elif [ "$BUMPED" = "false" ]; then
-            DETAILS="${DETAILS}\n• Already on latest reth rev"
           fi
 
           if [ "$CLIPPY_PASSED" = "false" ]; then

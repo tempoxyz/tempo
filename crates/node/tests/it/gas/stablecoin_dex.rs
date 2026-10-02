@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
+use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinDEX, IStorageCredits,
@@ -20,7 +20,7 @@ use tempo_precompiles::{
 };
 use test_case::test_case;
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts, make_genesis_at};
+use crate::utils::{TestNodeBuilder, make_genesis_at};
 
 const USER_COUNT: usize = 16;
 
@@ -42,12 +42,6 @@ fn under_overflow_revert() -> Bytes {
         .into_precompile_result(0, 0)
         .unwrap()
         .bytes
-}
-
-fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {
-    Ok(MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(index)?
-        .build()?)
 }
 
 async fn approve<P: Provider + Clone>(
@@ -131,9 +125,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         .await?;
     let http_url = setup.http_url;
 
-    let signers = (0..=USER_COUNT as u32)
-        .map(signer)
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let signers = (0..=USER_COUNT as u32).map(test_signer).collect::<Vec<_>>();
     let providers = signers
         .iter()
         .map(|signer| {
@@ -157,7 +149,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         pending.push(base.mint(account, mint_amount).send().await?);
         pending.push(quote.mint(account, mint_amount).send().await?);
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     for provider in providers.iter().skip(1) {
         approve(provider.clone(), base_addr, STABLECOIN_DEX_ADDRESS).await?;
@@ -503,7 +495,7 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
         builder
     };
     let setup = builder.build_http_only().await?;
-    let signers = (0..=6).map(signer).collect::<eyre::Result<Vec<_>>>()?;
+    let signers = (0..=6).map(test_signer).collect::<Vec<_>>();
     let providers = signers
         .iter()
         .map(|signer| {

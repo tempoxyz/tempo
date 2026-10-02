@@ -3,6 +3,7 @@ use alloy::{
     providers::Provider,
     sol_types::SolEvent,
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IAddressRegistry, ITIP20, ITIP403Registry, ITIPFeeAMM, TIP_FEE_MANAGER_ADDRESS,
@@ -16,7 +17,6 @@ use test_case::test_case;
 
 use super::helpers::{
     GAS_LIMIT, GasSnapshot, TempoCalls, TempoTxSender, fixed_signer, print_gas_snapshot,
-    test_signer,
 };
 use crate::{
     gas::helpers::Receipt,
@@ -218,14 +218,10 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
         self.admin.address()
     }
 
-    fn user(&mut self) -> eyre::Result<TempoTxSender<P>> {
-        let signer = test_signer(self.next_user)?;
+    fn user(&mut self) -> TempoTxSender<P> {
+        let signer = test_signer(self.next_user);
         self.next_user += 1;
-        Ok(TempoTxSender::with_zero_nonce(
-            self.admin.provider.clone(),
-            self.admin.chain_id,
-            signer,
-        ))
+        TempoTxSender::with_zero_nonce(self.admin.provider.clone(), self.admin.chain_id, signer)
     }
 
     async fn set_reward_recipient(
@@ -391,9 +387,9 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
     ) -> eyre::Result<Receipt> {
         self.reset_policy().await?;
 
-        let mut sender = self.user()?;
+        let mut sender = self.user();
         let mut recipient = match scenario.recipient {
-            RecipientKind::Direct { .. } => Some(self.user()?),
+            RecipientKind::Direct { .. } => Some(self.user()),
             RecipientKind::Virtual => None,
         };
         let mut funded_accounts = vec![(sender.address(), scenario.sender_balance())];
@@ -576,7 +572,7 @@ async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Res
         .with_instant_mining()
         .build_http_only()
         .await?;
-    let mut admin = TempoTxSender::connect(setup.http_url.clone(), test_signer(0)?).await?;
+    let mut admin = TempoTxSender::connect(setup.http_url.clone(), test_signer(0)).await?;
     let token = setup_test_token(admin.provider.clone(), admin.address()).await?;
     admin.sync_nonce().await?;
     let token_addr = *token.address();
@@ -647,7 +643,7 @@ async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
         .with_genesis(make_genesis_at(TempoHardfork::T0))
         .build_http_only()
         .await?;
-    let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
+    let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)).await?;
     let token = setup_test_token(sender.provider.clone(), sender.address()).await?;
     sender.sync_nonce().await?;
 

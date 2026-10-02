@@ -62,6 +62,11 @@ tempo-evm = { workspace = true, features = ["engine"] }
 tempo-alloy.workspace = true
 tempo-revm.workspace = true
 
+[build-dependencies]
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+
 [features]
 default = ["rpc"]
 test-utils = [
@@ -87,6 +92,8 @@ serde = [
 	"rand_08/serde",
 	"tempo-revm/serde"
 ]
+# Devnet-only: allow `ZoneVerifier::verify` to use PCRs supplied at startup.
+custom-pcrs = []
 
 [[test]]
 name = "storage"
