@@ -25,6 +25,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
+use reth_e2e_test_utils::wait::poll_until;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
 
@@ -38,21 +39,25 @@ async fn get_createx_deployed_address<P: Provider>(
     block_number: u64,
 ) -> eyre::Result<Address> {
     let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
-    for _ in 0..50 {
-        if let Some(receipts) = provider.get_block_receipts(block_id).await? {
-            let receipt = receipts
-                .iter()
-                .find(|r| !r.inner.logs().is_empty())
-                .expect("should have a receipt with logs");
-            assert!(receipt.status(), "deployment should succeed");
-            let addr = Address::from_slice(
-                &receipt.inner.logs()[0].inner.data.topics()[1].as_slice()[12..],
-            );
-            return Ok(addr);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    eyre::bail!("timed out waiting for deploy receipts at block {block_number}");
+    poll_until(
+        format!("deploy receipts at block {block_number}"),
+        || async move {
+            Ok(provider
+                .get_block_receipts(block_id)
+                .await?
+                .map(|receipts| {
+                    let receipt = receipts
+                        .iter()
+                        .find(|r| !r.inner.logs().is_empty())
+                        .expect("should have a receipt with logs");
+                    assert!(receipt.status(), "deployment should succeed");
+                    Address::from_slice(
+                        &receipt.inner.logs()[0].inner.data.topics()[1].as_slice()[12..],
+                    )
+                }))
+        },
+    )
+    .await
 }
 
 /// Returns the total gas_used from all receipts in a block, polling until the RPC catches up.
@@ -61,13 +66,13 @@ async fn total_receipt_gas_for_block<P: Provider>(
     block_number: u64,
 ) -> eyre::Result<u64> {
     let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
-    for _ in 0..50 {
-        if let Some(receipts) = provider.get_block_receipts(block_id).await? {
-            return Ok(receipts.iter().map(|r| r.gas_used).sum());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    eyre::bail!("timed out waiting for receipts at block {block_number}");
+    poll_until(format!("receipts at block {block_number}"), || async move {
+        Ok(provider
+            .get_block_receipts(block_id)
+            .await?
+            .map(|receipts| receipts.iter().map(|r| r.gas_used).sum()))
+    })
+    .await
 }
 
 /// Happy path: deploying a contract via CreateX creates new storage (account creation +

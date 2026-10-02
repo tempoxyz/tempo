@@ -7,7 +7,10 @@ use alloy_eips::{BlockNumberOrTag, Encodable2718};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
-use reth_e2e_test_utils::wallet::{Wallet, test_signer};
+use reth_e2e_test_utils::{
+    wait::poll_until,
+    wallet::{Wallet, test_signer},
+};
 use reth_node_api::BuiltPayload;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
@@ -43,9 +46,6 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     let provider1 = ProviderBuilder::new()
         .wallet(eth_wallet.clone())
         .connect_http(http_url1);
-
-    // Wait for nodes to be ready
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     // Get the chain ID from the provider
     let chain_id = provider1.get_chain_id().await?;
@@ -171,42 +171,19 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     println!("FCU returned SYNCING status - backfill mechanism triggered correctly");
 
     println!("Waiting for node2 to sync with node1...");
-    let mut attempts = 0;
-    let max_attempts = 30; // 30 seconds timeout
-
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-        let current_block2 = provider2
-            .get_block_by_number(BlockNumberOrTag::Latest)
-            .await?
-            .expect("Could not get latest block");
-
-        if current_block2.header.number >= final_block_number {
-            println!(
-                "Node2 successfully synced to block {}",
-                current_block2.header.number
-            );
-            break;
-        }
-
-        attempts += 1;
-        if attempts >= max_attempts {
-            return Err(eyre::eyre!(
-                "Node2 failed to sync to target block {} after {} seconds. Current block: {}",
-                final_block_number,
-                max_attempts,
-                current_block2.header.number
-            ));
-        }
-
-        if attempts % 5 == 0 {
-            println!(
-                "Sync progress: {}/{}",
-                current_block2.header.number, final_block_number
-            );
-        }
-    }
+    let synced_block_number = poll_until(
+        format!("node2 to sync to target block {final_block_number}"),
+        || async {
+            let current_block2 = provider2
+                .get_block_by_number(BlockNumberOrTag::Latest)
+                .await?
+                .expect("Could not get latest block");
+            let number = current_block2.header.number;
+            Ok((number >= final_block_number).then_some(number))
+        },
+    )
+    .await?;
+    println!("Node2 successfully synced to block {synced_block_number}");
 
     // Verify that node2 has the same state as node1
     let final_block2 = provider2

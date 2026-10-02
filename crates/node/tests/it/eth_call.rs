@@ -13,7 +13,7 @@ use alloy_rpc_types_eth::{
     TransactionInput,
     state::{AccountOverride, StateOverride},
 };
-use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wait::poll_until, wallet::test_signer};
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
@@ -520,13 +520,17 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
 
     *dynamic_validator.lock().unwrap() = wallet_address;
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let block = provider
-        .get_block(BlockId::latest())
-        .await?
-        .expect("Could not get latest block");
-    assert_eq!(block.header.beneficiary, wallet_address);
+    poll_until(
+        format!("latest beneficiary to become {wallet_address}"),
+        || async {
+            let block = provider
+                .get_block(BlockId::latest())
+                .await?
+                .expect("Could not get latest block");
+            Ok((block.header.beneficiary == wallet_address).then_some(()))
+        },
+    )
+    .await?;
 
     let recipient = Address::random();
     let calldata = user_fee_token

@@ -4,6 +4,7 @@ use alloy::{
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
+use eyre::WrapErr;
 use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::{
@@ -182,13 +183,10 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     setup.node.advance_block().await?;
 
     // Verify tx is evicted
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    let pooled_txs_after = setup
+    setup
         .node
-        .inner
-        .pool
-        .get_transactions_by_sender(signer_addr);
-    assert!(pooled_txs_after.is_empty());
+        .wait_for_pool(|pool| pool.get_transactions_by_sender(signer_addr).is_empty())
+        .await?;
 
     Ok(())
 }
@@ -253,25 +251,20 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 
     node1.advance_block().await?;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    assert!(
-        !node1.inner.pool.contains(&tx_hash),
-        "tx should be mined out of pool"
-    );
+    node1
+        .wait_for_pool(|pool| !pool.contains(&tx_hash))
+        .await
+        .wrap_err("tx should be mined out of pool")?;
 
     // Step 3: Import block B into node1 and FCU to it → reorg A→B
     node1.submit_payload(block_b).await?;
     node1.update_forkchoice(block_b_hash, block_b_hash).await?;
 
     // Step 4: Wait for the orphaned tx to reappear in node1's pool
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-    while !node1.inner.pool.contains(&tx_hash) {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "tx should be back in node1 pool after reorg (timed out)"
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    }
+    node1
+        .wait_for_pool(|pool| pool.contains(&tx_hash))
+        .await
+        .wrap_err("tx should be back in node1 pool after reorg")?;
 
     Ok(())
 }
@@ -551,16 +544,11 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
         .update_forkchoice(policy_block_hash, policy_block_hash)
         .await?;
 
-    // Pool maintenance runs asynchronously; give it a moment to re-validate
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    // Non-whitelisted transactions should be evicted
-    for hash in &evictable_hashes {
-        assert!(
-            !node1.inner.pool.contains(hash),
-            "non-whitelisted tx should be evicted after policy change"
-        );
-    }
+    // Pool maintenance runs asynchronously; wait for it to evict the non-whitelisted txs
+    node1
+        .wait_for_pool(|pool| evictable_hashes.iter().all(|hash| !pool.contains(hash)))
+        .await
+        .wrap_err("non-whitelisted tx should be evicted after policy change")?;
 
     // Whitelisted transaction should still be in the pool
     assert!(

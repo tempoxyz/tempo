@@ -6,8 +6,8 @@ use alloy::{
 use alloy_eips::BlockNumberOrTag;
 use eyre::WrapErr;
 use futures::{StreamExt, future::join_all, stream};
-use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
-use std::{env, time::Duration};
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wait::poll_until, wallet::test_signer};
+use std::env;
 use tempo_chainspec::constants::gas::{
     TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR, tempo_t7_next_block_base_fee,
 };
@@ -158,25 +158,21 @@ async fn test_t7_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
         .wallet(wallet)
         .connect_http(setup.http_url);
 
-    let mut floor_block = None;
-    for _ in 0..128 {
-        let block = provider
-            .get_block_by_number(BlockNumberOrTag::Latest)
-            .await?
-            .expect("Could not get latest block");
-        let base_fee = block
-            .header
-            .base_fee_per_gas
-            .expect("Could not get basefee");
-        if base_fee == TEMPO_T7_BASE_FEE_FLOOR {
-            floor_block = Some(block);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-
-    let floor_block =
-        floor_block.expect("base fee should decay to the T6 floor under low activity");
+    let floor_block = poll_until(
+        "base fee to decay to the T6 floor under low activity",
+        || async {
+            let block = provider
+                .get_block_by_number(BlockNumberOrTag::Latest)
+                .await?
+                .expect("Could not get latest block");
+            let base_fee = block
+                .header
+                .base_fee_per_gas
+                .expect("Could not get basefee");
+            Ok((base_fee == TEMPO_T7_BASE_FEE_FLOOR).then_some(block))
+        },
+    )
+    .await?;
     assert_eq!(
         floor_block
             .header
