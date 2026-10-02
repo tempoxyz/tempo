@@ -179,6 +179,8 @@ impl TxResult for TempoTxResult {
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
     transactions: &'a [TempoTxEnvelope],
+    senders: &'a [Address],
+    sender_recovery_cache: Option<reth_evm::SenderRecoveryCache>,
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -202,9 +204,12 @@ where
         evm: TempoEvm<DB, I>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
+        sender_recovery_cache: Option<reth_evm::SenderRecoveryCache>,
     ) -> Self {
         Self {
             transactions: ctx.transactions,
+            senders: ctx.senders,
+            sender_recovery_cache,
             incentive_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -591,9 +596,19 @@ where
                 let env = if offset == 0 && candidate == recovered.tx() {
                     tx_env.clone()
                 } else {
-                    let Ok(signer) = candidate.try_recover() else {
-                        break;
-                    };
+                    // The engine already recovers senders on its transaction pipeline.
+                    // Reuse its block context or shared ingress cache instead of
+                    // repeating expensive signature recovery on this serial thread.
+                    let signer = self
+                        .senders
+                        .get(self.inner.receipts.len() + offset)
+                        .copied()
+                        .map(Ok)
+                        .unwrap_or_else(|| match &self.sender_recovery_cache {
+                            Some(cache) => cache.recover(candidate),
+                            None => candidate.try_recover(),
+                        });
+                    let Ok(signer) = signer else { break };
                     tempo_revm::TempoTxEnv::from_recovered_tx(candidate, signer)
                 };
                 inputs.push((env, fee_recipient));

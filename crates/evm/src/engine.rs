@@ -26,7 +26,11 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             block,
             block_access_list: _,
         } = payload;
-        self.context_for_block(block)
+        let mut ctx = self.context_for_block(block)?;
+        if let Some(block) = block.recovered_block() {
+            ctx.senders = block.senders();
+        }
+        Ok(ctx)
     }
 
     fn tx_iterator_for_payload(
@@ -266,6 +270,20 @@ mod tests {
         // Verify context fields
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
+        assert!(context.senders.is_empty());
+
+        let recovered = payload
+            .block
+            .clone()
+            .into_sealed_block()
+            .try_recover()
+            .unwrap();
+        let payload = TempoExecutionData {
+            block: recovered.into(),
+            block_access_list: None,
+        };
+        let context = evm_config.context_for_payload(&payload).unwrap();
+        assert_eq!(context.senders, &[Address::ZERO]);
     }
 
     #[test]

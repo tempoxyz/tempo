@@ -402,6 +402,7 @@ where
         TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
         transactions: &[],
+        senders: &[],
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
             parent_beacon_block_root: Some(B256::ZERO),

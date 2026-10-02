@@ -134,6 +134,17 @@ impl TestExecutorBuilder {
         chainspec: &'a Arc<TempoChainSpec>,
         transactions: &'a [TempoTxEnvelope],
     ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
+        self.build_with_recovered_transactions(db, chainspec, transactions, &[], None)
+    }
+
+    pub(crate) fn build_with_recovered_transactions<'a, DB: StateDB>(
+        self,
+        db: DB,
+        chainspec: &'a Arc<TempoChainSpec>,
+        transactions: &'a [TempoTxEnvelope],
+        senders: &'a [alloy_primitives::Address],
+        sender_recovery_cache: Option<reth_evm::SenderRecoveryCache>,
+    ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
         let mut cfg_env = revm::context::CfgEnv::default();
         cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
         cfg_env.spec = self.spec;
@@ -157,6 +168,7 @@ impl TestExecutorBuilder {
 
         let ctx = TempoBlockExecutionCtx {
             transactions,
+            senders,
             inner: EthBlockExecutionCtx {
                 parent_hash: self.parent_hash,
                 parent_beacon_block_root: self.parent_beacon_block_root,
@@ -171,7 +183,7 @@ impl TestExecutorBuilder {
             consensus_context: None,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec, sender_recovery_cache);
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {

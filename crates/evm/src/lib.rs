@@ -155,7 +155,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
         I: Inspector<TempoContext<DB>>,
     {
         evm.set_speculative_executor(self.speculative_executor.clone());
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        TempoBlockExecutor::new(
+            evm,
+            ctx,
+            self.chain_spec(),
+            self.inner.sender_recovery_cache.clone(),
+        )
     }
 }
 
@@ -279,6 +284,7 @@ impl ConfigureEvm for TempoEvmConfig {
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
         Ok(TempoBlockExecutionCtx {
             transactions: &block.body().transactions,
+            senders: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
@@ -306,6 +312,7 @@ impl ConfigureEvm for TempoEvmConfig {
     ) -> Result<TempoBlockExecutionCtx<'_>, Self::Error> {
         Ok(TempoBlockExecutionCtx {
             transactions: &[],
+            senders: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,

@@ -8,6 +8,9 @@ pub struct TempoBlockExecutionCtx<'a> {
     /// Ordered block transactions, used for bounded speculative lookahead during validation.
     /// Empty while building a block, where candidates come from the transaction pool.
     pub transactions: &'a [tempo_primitives::TempoTxEnvelope],
+    /// Senders already recovered for the block body, when supplied by the caller.
+    /// Empty for sealed blocks and block building.
+    pub senders: &'a [alloy_primitives::Address],
     /// Inner [`EthBlockExecutionCtx`].
     #[deref]
     pub inner: EthBlockExecutionCtx<'a>,

@@ -2527,17 +2527,29 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
         }
     }
     let mut expected_output = None;
-    for parallel in [false, true] {
+    let senders = recovered.iter().map(|tx| tx.signer()).collect::<Vec<_>>();
+    // Uncached, cold-cache, warm-cache and recovered-block lookahead must all
+    // preserve receipts, intermediate state hooks and the final state trie.
+    for mode in 0..5 {
+        let parallel = mode != 0;
+        let cache = (mode == 2 || mode == 3).then(reth_evm::SenderRecoveryCache::default);
+        if mode == 3 {
+            for tx in &txs {
+                cache.as_ref().unwrap().recover(tx).unwrap();
+            }
+        }
         let changes = Arc::new(Mutex::new(Vec::new()));
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
-            .build_with_transactions(
+            .build_with_recovered_transactions(
                 CommitDb {
                     inner: db.clone(),
                     changes: changes.clone(),
                 },
                 &spec,
                 &txs,
+                if mode == 4 { &senders } else { &[] },
+                cache.clone(),
             );
         if parallel {
             executor
@@ -2550,6 +2562,12 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
         }
         if parallel {
             assert!(executor.evm().execution_stats().reused > 0);
+        }
+        if let Some(cache) = cache {
+            use alloy_consensus::transaction::TxHashRef;
+            // This transaction's sender is only recovered by lookahead; the
+            // authoritative calls above already carry their recovered senders.
+            assert_eq!(cache.get(txs[1].tx_hash()), Some(senders[1]));
         }
         let (evm, result) = executor.finish().unwrap();
         let output = (

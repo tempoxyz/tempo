@@ -230,6 +230,7 @@ mod tests {
 
         let execution_ctx = TempoBlockExecutionCtx {
             transactions: &[],
+            senders: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -340,6 +341,7 @@ mod tests {
 
         let execution_ctx = TempoBlockExecutionCtx {
             transactions: &[],
+            senders: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -421,6 +423,7 @@ mod tests {
 
         let execution_ctx = TempoBlockExecutionCtx {
             transactions: &[],
+            senders: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -615,6 +618,7 @@ mod tests {
                     };
                     let ctx = TempoBlockExecutionCtx {
                         transactions: &[],
+                        senders: &[],
                         inner: inner.clone(),
                         general_gas_limit: 50_000_000,
                         shared_gas_limit: 10_000_000,
