@@ -1,30 +1,30 @@
 # Sample historical Zone PCRs by hardfork
 
-`tempo pcr-history` reports one successful direct Nitro submission's
+`tempo zone-pcr-history` reports one successful direct Nitro submission's
 PCR0/1/2 tuple per T13-or-later hardfork interval, newest first.
 
 ```sh
-tempo pcr-history --rpc-url http://localhost:8545 > pcr-history.json
+tempo zone-pcr-history --rpc-url http://localhost:8545 > pcr-history.json
 ```
 
 The RPC must provide `tempo_forkSchedule` and historical transactions, blocks,
 and logs. Intervals use the node's activation schedule, including custom chains;
-future and empty intervals are skipped.
+future and empty intervals are skipped. Portal discovery reads the factory at the
+upper block bound using `nextZoneId()` and Multicall3 `zones(id)` calls; Multicall3
+must be deployed unless `--portal` is supplied.
 
 ## Optional filters
 
 ```sh
-tempo pcr-history \
+tempo zone-pcr-history \
   --rpc-url "$RPC_URL" \
   --portal "$PORTAL" \
   --from-block 100000 \
   --to-block 110000
 ```
 
-- `--portal`: inspect one portal instead of discovering portals from ZoneFactory
-  events. Required for genesis portals without a creation event.
-- `--from-block`: inclusive lower bound; defaults to zero. Discovery may raise it
-  to the earliest portal creation.
+- `--portal`: inspect one portal instead of querying all registered factory portals.
+- `--from-block`: inclusive lower bound; defaults to zero.
 - `--to-block`: inclusive upper bound; defaults to latest at startup. Use a
   finalized block for stable results; the scanner does not detect reorgs.
 

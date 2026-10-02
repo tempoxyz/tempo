@@ -36,7 +36,7 @@ mod snapshot_download;
 mod snapshot_manifest;
 pub mod tempo_cmd;
 mod utils;
-pub mod zone_batches;
+pub mod zone_checks;
 
 pub use crate::{
     cli::{TempoArgs, TempoCli, TempoRpcModuleValidator},

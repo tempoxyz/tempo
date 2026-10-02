@@ -69,7 +69,7 @@ pub enum TempoSubcommand {
     Consensus(ConsensusSubcommand),
 
     /// Sample observed PCRs from historical Nitro submissions per hardfork interval.
-    PcrHistory(crate::zone_batches::PcrHistory),
+    ZonePcrHistory(crate::zone_checks::ZonePcrHistory),
 
     /// Run a proxy P2P node that serves cached block data fetched from an RPC endpoint.
     P2pProxy(P2pProxyArgs),
@@ -119,7 +119,7 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(cmd.run())?;
                 Ok(())
             }
-            Self::PcrHistory(cmd) => runner.run_command_until_exit(|_| cmd.run()),
+            Self::ZonePcrHistory(cmd) => runner.run_command_until_exit(|_| cmd.run()),
             Self::P2pProxy(cmd) => runner.run_command_until_exit(|_| cmd.run()),
             Self::InitFromBinaryDump(cmd) => {
                 let runtime = runner.runtime();

@@ -100,11 +100,13 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IZoneVerifier {
+        #[derive(Default)]
         struct BlockTransition {
             bytes32 prevBlockHash;
             bytes32 nextBlockHash;
         }
 
+        #[derive(Default)]
         struct DepositQueueTransition {
             bytes32 prevProcessedHash;
             bytes32 nextProcessedHash;
@@ -112,11 +114,13 @@ crate::sol! {
             uint64 nextDepositNumber;
         }
 
+        #[derive(Default)]
         struct TokenEnablementTransition {
             uint64 prevProcessedTokenCount;
             uint64 nextProcessedTokenCount;
         }
 
+        #[derive(Default)]
         function verify(
             uint32 zoneId,
             uint64 tempoBlockNumber,
@@ -151,6 +155,7 @@ crate::sol! {
         }
 
         /// T13 batch submission ABI.
+        #[derive(Default)]
         function submitBatch(
             uint64 tempoBlockNumber,
             uint64 recentTempoBlockNumber,
@@ -165,6 +170,7 @@ crate::sol! {
         ) external;
 
         /// T13 settlement event used to discover successful batch submissions.
+        #[derive(Default)]
         event BatchSubmitted(
             uint64 indexed withdrawalBatchIndex,
             uint256 indexed withdrawalQueueIndex,
@@ -188,7 +194,7 @@ crate::sol! {
     }
 
     /// EIP-712 statement committed to a Nitro attestation's `user_data`.
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Default)]
     struct NitroBatchAttestation {
         uint256 parentChainId;
         address verifier;
@@ -211,7 +217,7 @@ crate::sol! {
     }
 
     /// Zone metadata recorded by the native factory.
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Default)]
     struct ZoneInfo {
         uint32 zoneId;
         address portal;
@@ -228,6 +234,7 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IZoneFactory {
+        #[derive(Default)]
         struct CreateZoneParams {
             address initialToken;
             bool accessMode;

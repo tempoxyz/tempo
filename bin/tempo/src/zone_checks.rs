@@ -6,8 +6,9 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader;
+use alloy_network::TransactionBuilder;
 use alloy_primitives::{Address, FixedBytes, TxKind};
-use alloy_provider::{Provider, ProviderBuilder};
+use alloy_provider::{CallItem, Provider, ProviderBuilder};
 use alloy_rpc_types_eth::Filter;
 use alloy_sol_types::{SolCall, SolEvent};
 use eyre::{OptionExt, WrapErr, ensure, eyre};
@@ -15,11 +16,13 @@ use serde::Serialize;
 use tempo_alloy::{
     TempoNetwork,
     provider::TempoProviderExt,
-    rpc::{ForkSchedule, TempoHeaderResponse},
+    rpc::{ForkSchedule, TempoHeaderResponse, TempoTransactionRequest},
 };
 use tempo_contracts::precompiles::{IZoneFactory, IZonePortal, ZONE_FACTORY_ADDRESS};
 use tempo_nitro_attestation::{SHA384_SIZE, parse_attestation, to_measurements};
 use tempo_primitives::TempoTxEnvelope;
+
+use tracing::info;
 
 const LOG_QUERY_BLOCKS: u64 = 1_000;
 
@@ -28,14 +31,14 @@ type Pcrs = [FixedBytes<SHA384_SIZE>; 3];
 /// Inspect observed PCRs without changing or inferring the approved PCR policy.
 #[derive(Debug, clap::Args)]
 #[command(after_help = "Samples direct Nitro PCRs by hardfork as JSON from settled zone batches.")]
-pub struct PcrHistory {
+pub struct ZonePcrHistory {
     /// Historical RPC endpoint serving `tempo_forkSchedule`, transactions, blocks, and logs.
     #[arg(long)]
     rpc_url: String,
-    /// ZonePortal to inspect. Defaults to all portals discovered from factory events.
+    /// ZonePortal to inspect. Defaults to all portals registered in the factory.
     #[arg(long)]
     portal: Option<Address>,
-    /// First block to scan (inclusive). Factory discovery may raise this to the first creation.
+    /// First block to scan (inclusive). Defaults to zero.
     #[arg(long)]
     from_block: Option<u64>,
     /// Last block to scan (inclusive). Defaults to latest at startup.
@@ -43,8 +46,9 @@ pub struct PcrHistory {
     to_block: Option<u64>,
 }
 
-impl PcrHistory {
+impl ZonePcrHistory {
     pub async fn run(self) -> eyre::Result<()> {
+        info!(rpc_url = %self.rpc_url, "Connecting for PCR history scan");
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
             .await?;
@@ -60,35 +64,36 @@ impl PcrHistory {
         &self,
         provider: &impl Provider<TempoNetwork>,
     ) -> eyre::Result<Vec<ForkInterval>> {
-        let mut from = self.from_block.unwrap_or(0);
-        let to = match self.to_block {
+        let from_block = self.from_block.unwrap_or(0);
+        let to_block = match self.to_block {
             Some(to) => to,
             None => provider.get_block_number().await?,
         };
-        ensure!(from <= to, "from-block must not exceed to-block");
+        ensure!(from_block <= to_block, "from-block can't exceed to-block");
+        info!(from_block, to_block, "Fetching fork schedule");
         let schedule = provider.get_fork_schedule().await?;
 
-        // With only the T13 topic enabled, an unscheduled T13 has no covered intervals.
+        // Sampling starts at T13, so an unscheduled T13 has no covered intervals.
         if !schedule.schedule.iter().any(|fork| fork.name == "T13") {
+            info!("T13 not scheduled yet");
             return Ok(Vec::new());
         }
         let portals = match self.portal {
             Some(portal) => BTreeSet::from([portal]),
-            None => {
-                let (portals, first_creation) = discover_portals(provider, to).await?;
-                from = from.max(first_creation);
-                portals
-            }
+            None => discover_portals(provider, to_block).await?,
         };
-        if portals.is_empty() || from > to {
+        if portals.is_empty() {
+            info!("no portals to scan");
             return Ok(Vec::new());
         }
-        let mut intervals = fork_intervals(provider, schedule, from, to).await?;
+        let mut intervals = fork_intervals(provider, schedule, from_block, to_block).await?;
         for interval in &mut intervals {
+            info!(hardfork = %interval.hardfork, "sampling hardfork interval");
             interval.observed_pcrs = sample_interval(provider, interval, &portals)
                 .await
                 .wrap_err_with(|| format!("sampling {} interval", interval.hardfork))?;
         }
+        info!(intervals = intervals.len(), "PCR history scan complete");
         Ok(intervals)
     }
 }
@@ -184,7 +189,6 @@ async fn fetch_header(
     provider: &impl Provider<TempoNetwork>,
     number: u64,
 ) -> eyre::Result<TempoHeaderResponse> {
-    // Standard RPC returns transaction hashes, not full transactions, with this request.
     let block = provider
         .get_block_by_number(number.into())
         .await?
@@ -201,16 +205,19 @@ async fn sample_interval(
     interval: &ForkInterval,
     portals: &BTreeSet<Address>,
 ) -> eyre::Result<Option<Pcrs>> {
-    let mut end = interval.to_block;
+    let mut filter = Filter::new()
+        .address(portals.iter().copied().collect::<Vec<_>>())
+        .event_signature(IZonePortal::BatchSubmitted::SIGNATURE_HASH);
+    let mut end_block = interval.to_block;
     loop {
-        let start = end
+        let start = end_block
             .saturating_sub(LOG_QUERY_BLOCKS - 1)
             .max(interval.from_block);
-        let filter = Filter::new()
-            .address(portals.iter().copied().collect::<Vec<_>>())
-            .event_signature(IZonePortal::BatchSubmitted::SIGNATURE_HASH)
-            .from_block(start)
-            .to_block(end);
+        if ((interval.to_block - end_block) / LOG_QUERY_BLOCKS) % 10 == 0 {
+            info!(hardfork = %interval.hardfork, from_block = start, to_block = end_block, end_block = end_block, "Sampling progress");
+        }
+        filter = filter.from_block(start).to_block(end_block);
+
         // Retain one window only. Hash order within a block is immaterial: PCRs are constant
         // throughout the hardfork interval, across all accepted direct Nitro submissions.
         let mut transactions = BTreeSet::new();
@@ -231,43 +238,49 @@ async fn sample_interval(
                 .ok_or_eyre(format!("transaction {hash} is unavailable"))?;
             // Persisted events establish success; Tempo AA direct calls are atomic.
             if let Some(pcrs) = nitro_submission(transaction.inner.inner(), portals)? {
+                info!(hardfork = %interval.hardfork, transaction = %hash, "found Nitro PCRs");
                 return Ok(Some(pcrs));
             }
         }
         if start == interval.from_block {
+            info!(hardfork = %interval.hardfork, "no Nitro submission found");
             return Ok(None);
         }
-        end = start - 1;
+        end_block = start - 1;
     }
 }
 
-/// Discover portals including creations before the requested submission range.
+/// Read registered portals at the selected upper block bound.
 async fn discover_portals(
     provider: &impl Provider<TempoNetwork>,
     to: u64,
-) -> eyre::Result<(BTreeSet<Address>, u64)> {
-    let (mut portals, mut first, mut end) = (BTreeSet::new(), to, to);
-    loop {
-        let start = end.saturating_sub(LOG_QUERY_BLOCKS - 1);
-        let filter = Filter::new()
-            .address(ZONE_FACTORY_ADDRESS)
-            .event_signature(IZoneFactory::ZoneCreated::SIGNATURE_HASH)
-            .from_block(start)
-            .to_block(end);
-        for log in provider.get_logs(&filter).await? {
-            let event = log.log_decode::<IZoneFactory::ZoneCreated>()?;
-            let block = log
-                .block_number
-                .ok_or_eyre("ZoneCreated event is missing its block number")?;
-            first = first.min(block);
-            portals.insert(event.inner.data.portal);
-        }
-        if start == 0 {
-            break;
-        }
-        end = start - 1;
-    }
-    Ok((portals, first))
+) -> eyre::Result<BTreeSet<Address>> {
+    let output = provider
+        .call(
+            TempoTransactionRequest::default()
+                .with_to(ZONE_FACTORY_ADDRESS)
+                .with_input(IZoneFactory::nextZoneIdCall {}.abi_encode()),
+        )
+        .block(to.into())
+        .await?;
+    let next = IZoneFactory::nextZoneIdCall::abi_decode_returns(&output)?;
+    let zones = provider
+        .multicall()
+        .dynamic::<IZoneFactory::zonesCall>()
+        .block(to.into())
+        .extend_calls((1..next).map(|id| {
+            CallItem::new(
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::zonesCall { id }.abi_encode().into(),
+            )
+        }))
+        .aggregate()
+        .await?;
+    let portals = zones
+        .into_iter()
+        .map(|zone| zone.portal)
+        .collect::<BTreeSet<_>>();
+    Ok(portals)
 }
 
 /// Find one qualifying direct call; subsequent proofs need not be decoded.
@@ -308,15 +321,12 @@ mod tests {
     use clap::Parser;
     use serde_json::json;
     use tempo_alloy::rpc::ForkInfo;
-    use tempo_contracts::precompiles::IZoneVerifier::{
-        BlockTransition, DepositQueueTransition, TokenEnablementTransition,
-    };
     use tempo_primitives::{TempoTransaction, transaction::Call};
 
     const PORTAL: Address = address!("5ad0000000000000000000000000000000000001");
 
-    fn command(from: u64, to: u64) -> PcrHistory {
-        PcrHistory {
+    fn command(from: u64, to: u64) -> ZonePcrHistory {
+        ZonePcrHistory {
             rpc_url: String::new(),
             portal: Some(PORTAL),
             from_block: Some(from),
@@ -342,26 +352,11 @@ mod tests {
             value: U256::ZERO,
             input: IZonePortal::submitBatchCall {
                 tempoBlockNumber: 1,
-                recentTempoBlockNumber: 0,
-                blockTransition: BlockTransition {
-                    prevBlockHash: B256::ZERO,
-                    nextBlockHash: B256::ZERO,
-                },
-                depositQueueTransition: DepositQueueTransition {
-                    prevProcessedHash: B256::ZERO,
-                    nextProcessedHash: B256::ZERO,
-                    prevDepositNumber: 0,
-                    nextDepositNumber: 0,
-                },
-                tokenEnablementTransition: TokenEnablementTransition {
-                    prevProcessedTokenCount: 0,
-                    nextProcessedTokenCount: 0,
-                },
-                withdrawalQueueHash: B256::ZERO,
                 verifierConfig: config.to_vec().into(),
                 proof,
-                nextZoneHeight: U256::from(1),
+                nextZoneHeight: U256::ONE,
                 signatures: Vec::new(),
+                ..Default::default()
             }
             .abi_encode()
             .into(),
@@ -390,15 +385,7 @@ mod tests {
     }
 
     fn batch_log(number: u64, tx_hash: B256) -> Log {
-        let event = IZonePortal::BatchSubmitted {
-            withdrawalBatchIndex: 0,
-            withdrawalQueueIndex: U256::ZERO,
-            nextProcessedDepositQueueHash: B256::ZERO,
-            nextBlockHash: B256::ZERO,
-            withdrawalQueueHash: B256::ZERO,
-            lastProcessedDepositNumber: 0,
-            lastProcessedEnabledTokenCount: 0,
-        };
+        let event = IZonePortal::BatchSubmitted::default();
         Log {
             inner: alloy_primitives::Log {
                 address: PORTAL,
@@ -593,54 +580,52 @@ mod tests {
 
     #[tokio::test]
     async fn portal_discovery() {
-        let event = IZoneFactory::ZoneCreated {
+        use alloy_provider::bindings::IMulticall3;
+        use tempo_contracts::precompiles::ZoneInfo;
+        let zone = ZoneInfo {
             zoneId: 1,
             portal: PORTAL,
-            initialToken: Address::ZERO,
             accessMode: false,
             gatewayMode: false,
             admin: Address::ZERO,
-            sequencers: Vec::new(),
+            sequencers: vec![],
             threshold: 1,
             verifier: Address::ZERO,
+            rpcUrl: String::new(),
         };
-        let log = Log {
-            inner: alloy_primitives::Log {
-                address: ZONE_FACTORY_ADDRESS,
-                data: event.encode_log_data(),
-            },
-            block_number: Some(0),
-            ..Default::default()
-        };
-        for number in [Some(0), None] {
+        for next in [1u32, 3] {
             let asserter = Asserter::new();
-            let mut log = log.clone();
-            log.block_number = number;
-            asserter.push_success(&Vec::<Log>::new());
-            asserter.push_success(&vec![log.clone(), log]);
-            let result = discover_portals(&mock_provider(&asserter), LOG_QUERY_BLOCKS).await;
-            if number.is_some() {
-                assert_eq!(result.unwrap(), (BTreeSet::from([PORTAL]), 0));
-            } else {
-                assert!(result.is_err());
+            asserter.push_success(&Bytes::from(
+                IZoneFactory::nextZoneIdCall::abi_encode_returns(&next),
+            ));
+            if next > 1 {
+                let encoded = Bytes::from(IZoneFactory::zonesCall::abi_encode_returns(&zone));
+                asserter.push_success(&Bytes::from(
+                    IMulticall3::aggregateCall::abi_encode_returns(&IMulticall3::aggregateReturn {
+                        blockNumber: U256::from(10),
+                        returnData: vec![encoded.clone(), encoded],
+                    }),
+                ));
             }
+            let portals = discover_portals(&mock_provider(&asserter), 10)
+                .await
+                .unwrap();
+            assert_eq!(
+                portals,
+                if next == 1 {
+                    BTreeSet::new()
+                } else {
+                    BTreeSet::from([PORTAL])
+                }
+            );
             assert!(asserter.read_q().is_empty());
         }
         let asserter = Asserter::new();
-        asserter.push_success(&"0xa");
-        asserter.push_success(&schedule(&[("T13", 0)]));
-        asserter.push_success(&Vec::<Log>::new());
-        let cmd = PcrHistory {
-            portal: None,
-            from_block: None,
-            to_block: None,
-            ..command(0, 0)
-        };
+        asserter.push_failure_msg("factory unavailable");
         assert!(
-            cmd.scan(&mock_provider(&asserter))
+            discover_portals(&mock_provider(&asserter), 10)
                 .await
-                .unwrap()
-                .is_empty()
+                .is_err()
         );
         assert!(asserter.read_q().is_empty());
     }
@@ -718,10 +703,15 @@ mod tests {
                 (Some(PORTAL), Some(10), Some(20)),
             ),
         ] {
-            let args = ["tempo", "pcr-history", "--rpc-url", "http://localhost:8545"]
-                .into_iter()
-                .chain(extra);
-            let crate::tempo_cmd::TempoSubcommand::PcrHistory(cmd) =
+            let args = [
+                "tempo",
+                "zone-pcr-history",
+                "--rpc-url",
+                "http://localhost:8545",
+            ]
+            .into_iter()
+            .chain(extra);
+            let crate::tempo_cmd::TempoSubcommand::ZonePcrHistory(cmd) =
                 Cli::try_parse_from(args).unwrap().command
             else {
                 panic!("wrong subcommand")
@@ -734,7 +724,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .to_string(),
-            "from-block must not exceed to-block"
+            "from-block can't exceed to-block"
         );
     }
 }
