@@ -38,11 +38,17 @@ impl PrewarmingState {
                 prefix.code.insert(account.info.code_hash, code.clone());
             }
             let cached = prefix.accounts.entry(address).or_default();
-            if account.is_created() || account.is_selfdestructed() {
+            // Match revm State's commit semantics. In particular, AA callers
+            // can be touched while retaining zero nonce/balance/code, so EIP-161
+            // removes them even though execution returns an Account value.
+            // Created accounts take precedence over empty-account clearing;
+            // the journal also uses that flag to normalize pre-EIP-161 output.
+            let removed = account_is_removed(account);
+            if account.is_created() || removed {
                 cached.storage.clear();
                 cached.cleared = true;
             }
-            if account.is_selfdestructed() {
+            if removed {
                 cached.info = None;
                 continue;
             }
@@ -95,6 +101,10 @@ impl PrewarmingState {
         Some((ptr, offset.checked_sub(next_offset)?))
     }
 }
+
+#[cfg(test)]
+#[path = "prewarming_state_tests.rs"]
+mod state_tests;
 
 /// A successful speculative execution, including every database read. Fields are
 /// private so callers cannot construct an unchecked result.

@@ -14,6 +14,9 @@ use revm::{
 
 type TestDB = CacheDB<EmptyDB>;
 
+#[path = "prewarming_bench.rs"]
+mod prewarming_bench;
+
 fn address(index: u64) -> Address {
     Address::from_word(B256::from(U256::from(index + 0x10000)))
 }
@@ -1678,6 +1681,7 @@ fn expiring_nonce_predictions_preserve_order_and_rejections() {
     let prewarmed = differential_preexecuted(db.clone(), &txs, TempoHardfork::T14, None);
     assert_eq!(prewarmed.reused, txs.len() as u64);
     assert!(prewarmed.fees_rebased > 0);
+    prewarming_bench::assert_matches(db.clone(), txs.clone(), TempoHardfork::T14);
     let reordered = differential_preexecuted(
         db.clone(),
         &txs,
@@ -2449,6 +2453,25 @@ fn execution_throughput() {
     let forwarding = std::env::var("TEMPO_BENCH_FORWARDING").is_ok_and(|value| value != "0");
     let nonce_prediction =
         std::env::var("TEMPO_BENCH_NONCE_PREDICTION").map_or(true, |value| value != "0");
+    let prewarming = std::env::var("TEMPO_BENCH_PREWARMING").is_ok_and(|value| value != "0");
+    let publish_prefix =
+        std::env::var("TEMPO_BENCH_PREWARMING_PREFIX").map_or(true, |value| value != "0");
+    let mut worker_counts = workers
+        .split(',')
+        .map(|s| s.parse::<usize>().unwrap())
+        .collect::<Vec<_>>();
+    if prewarming {
+        assert!(
+            streaming && fee_rebasing && chained && !forwarding && nonce_prediction,
+            "prewarming mode does not support changing the lookahead scheduler's streaming, fee, chaining, forwarding or nonce-prediction controls"
+        );
+        println!("# executor=prewarming prefix={publish_prefix} lookahead=2*workers");
+        // Always validate this diagnostic against the sequential executor, even
+        // when the caller requests only a parallel worker count.
+        if worker_counts.first() != Some(&0) {
+            worker_counts.insert(0, 0);
+        }
+    }
     println!(
         "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused\tfees_rebased"
     );
@@ -2508,6 +2531,13 @@ fn execution_throughput() {
             } else {
                 (funded_tip20_db(users), vec![PATH_USD_ADDRESS])
             };
+            // Native precompiles have marker code in node genesis. Without it,
+            // State would delete their touched empty accounts and stored nonces.
+            for &(address, activation) in tempo_precompiles::SYSTEM_PRECOMPILES {
+                if hardfork.unwrap_or_default() >= activation {
+                    contract(&mut db, address, &[0xef]);
+                }
+            }
             let target = address(count + 900);
             if workload == "storage" {
                 contract(&mut db, target, &[0x60, 0x20, 0x35, 0x60, 0, 0x35, 0x55, 0]);
@@ -2597,8 +2627,10 @@ fn execution_throughput() {
                     }
                 })
                 .collect::<Vec<_>>();
+            let txs = Arc::new(txs);
+            let parent = prewarming.then(|| Arc::new(db.clone()));
             let mut baseline = None;
-            for threads in workers.split(',').map(|s| s.parse::<usize>().unwrap()) {
+            for &threads in &worker_counts {
                 let mut env = test_evm_with_basefee(TestDB::default(), 0).finish().1;
                 env.block_env.inner.gas_limit = block_gas_limit;
                 if let Some(spec) = hardfork {
@@ -2607,7 +2639,23 @@ fn execution_throughput() {
                         tempo_revm::gas_params::tempo_gas_params(spec),
                     );
                 }
-                let mut evm = TempoEvm::new(db.clone(), env);
+                let mut pipeline = (prewarming && threads > 0).then(|| {
+                    prewarming_bench::Pipeline::new(
+                        parent.as_ref().unwrap().clone(),
+                        txs.clone(),
+                        env.clone(),
+                        threads,
+                        publish_prefix,
+                    )
+                });
+                // Use the node's commit semantics, including EIP-161 deletion
+                // of touched empty accounts (not implemented by CacheDB).
+                let mut evm = TempoEvm::new(
+                    revm::database::State::builder()
+                        .with_database(db.clone())
+                        .build(),
+                    env,
+                );
                 if threads > 0 {
                     evm.set_speculative_executor(Some(
                         SpeculativeExecutor::new(threads, batch_size)
@@ -2625,7 +2673,7 @@ fn execution_throughput() {
                 let start = Instant::now();
                 for batch in txs.chunks(batch_size) {
                     let preparation_start = profile.then(Instant::now);
-                    if threads > 0 {
+                    if threads > 0 && !prewarming {
                         evm.prepare_transactions(
                             batch.iter().cloned().map(|tx| (tx, Address::ZERO)),
                         );
@@ -2634,6 +2682,15 @@ fn execution_throughput() {
                         phases[0] += start.elapsed();
                     }
                     for tx in batch {
+                        if let Some(pipeline) = &mut pipeline {
+                            let preparation_start = profile.then(Instant::now);
+                            if let Some(candidate) = pipeline.take_next() {
+                                evm.set_preexecuted_transaction(candidate);
+                            }
+                            if let Some(start) = preparation_start {
+                                phases[0] += start.elapsed();
+                            }
+                        }
                         let execution_start = profile.then(Instant::now);
                         let result = evm.transact_raw(tx.clone()).unwrap();
                         if let Some(start) = execution_start {
@@ -2648,6 +2705,9 @@ fn execution_throughput() {
                             logs: result.result.into_logs(),
                         });
                         let commit_start = profile.then(Instant::now);
+                        if let Some(pipeline) = &pipeline {
+                            pipeline.record(&result.state);
+                        }
                         evm.db_mut().commit(result.state);
                         if let Some(start) = commit_start {
                             phases[2] += start.elapsed();
@@ -2655,16 +2715,25 @@ fn execution_throughput() {
                     }
                 }
                 let elapsed = start.elapsed().as_secs_f64();
+                drop(pipeline);
                 let stats = evm.execution_stats();
                 if profile {
+                    let batch_size = if prewarming && threads > 0 {
+                        threads * 2
+                    } else {
+                        batch_size
+                    };
                     eprintln!(
                         "PHASES workload={workload} count={count} workers={threads} batch={batch_size} prepare={:.6} ordered={:.6} commit={:.6}",
                         phases[0].as_secs_f64(),
                         phases[1].as_secs_f64(),
                         phases[2].as_secs_f64()
                     );
+                    eprintln!(
+                        "STATS workload={workload} count={count} workers={threads} {stats:?}"
+                    );
                 }
-                let output = (root(evm.db()), receipts);
+                let output = (prewarming_bench::state_root(evm.db()), receipts);
                 if let Some(baseline) = &baseline {
                     assert_eq!(&output, baseline);
                 } else {

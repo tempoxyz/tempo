@@ -31,12 +31,23 @@ TEMPO_BENCH_HARDFORK=T14 TEMPO_BENCH_COUNTS=10000,25000,50000,100000 \
 
 `workers=0` selects sequential execution. Counts are transactions per run,
 not offered TPS. The harness compares complete receipts and final trie roots
-against sequential execution. The funded multi-token fixture uses 1,000 senders,
+against sequential execution and uses `revm::State` for the node's account
+deletion rules. The funded multi-token fixture uses 1,000 senders,
 four TIP-20 transfer tokens, explicit pathUSD fees and expiring AA nonces (T12+).
 `TEMPO_BENCH_BATCH_SIZE` sets the speculative window, and
 `TEMPO_BENCH_PHASES=1` adds preparation, ordered-execution and commit timings.
 Compare equally instrumented runs. Signing, initial state setup, disk I/O,
 networking, consensus and trie hashing are excluded from execution throughput.
+
+`TEMPO_BENCH_PREWARMING=1` instead exercises the builder's recorded-execution
+path with persistent workers and twice as many pending candidates as workers.
+`TEMPO_BENCH_PREWARMING_PREFIX=0` disables accepted-prefix hints for comparison.
+This mode always includes a sequential receipt/root comparison. It models the
+ordered reuse path with an in-memory provider and a standard thread queue;
+it excludes the node's provider I/O, shared Rayon pool, pool coordinator, bundle
+transitions and state hooks. Regular scheduler tuning switches are unsupported
+in this mode. Results before the switch from `CacheDB` commits to `State` also
+used different account-deletion rules and are not comparable throughput figures.
 
 For historical data, use the read-only differential replay command:
 
@@ -107,6 +118,11 @@ with workers confirmed active: 1,207 results reused and 25 conflicts per pass.
 Canonical checks pass, but newPayload gas throughput regresses 14.93%. This is
 sparse correctness coverage, not a capacity measurement.
 
+[Expanded replay 37041568715](https://github.com/tempoxyz/tempo/actions/runs/37041568715)
+completed 24,458 measured blocks (8,107 transactions) before the source RPC ran
+out of blocks. All submitted payloads were valid; no paired comparison completed.
+Replay now selects an older snapshot when needed to fit the source's available range.
+
 [Prewarming reuse comparison 37035535006](https://github.com/tempoxyz/tempo/actions/runs/37035535006)
 measures 15,334 baseline versus 14,298 feature TPS (-6.76%); builder gas
 throughput falls 20.58% and validation throughput falls 34.20%. Only 12.42% of
@@ -115,10 +131,18 @@ The recorded fatal engine-stop follows graceful shutdown. Workflow Slack
 notifications were suppressed. This change has not demonstrated a net gain.
 
 [Prefix-state comparison 37038805662](https://github.com/tempoxyz/tempo/actions/runs/37038805662)
-measures `43dd0364e236` against the same main at a 50k target; results are pending.
-Workers consult advisory values from the accepted prefix, and exact read
-validation still gates reuse. Generated differential tests compare outcomes,
-receipts, roots and nonce-order changes; real-node AA and Engine observer tests
-pass. Builder concurrency follows `--engine.prewarming-threads`, with twice that
-many admitted candidates; `--execution.threads` controls the separate Engine
-execution pool. Further optimization remains in progress.
+measures 16,325 baseline versus 14,402 feature TPS (-11.78%); builder gas
+throughput falls 27.46% and validation throughput falls 32.71%. Builder reuse
+remains low at 13.63%; recording accepted-prefix hints takes 7.30% of sampled
+builder CPU. Validator reuse is 76.88%. Slack notifications were suppressed.
+Builder concurrency follows `--engine.prewarming-threads`, with twice that many
+admitted candidates; `--execution.threads` controls the separate Engine pool.
+Generated differential and real-node AA/Engine observer tests pass. Further
+optimization remains in progress.
+
+[Recovery/channel comparison 37041564867](https://github.com/tempoxyz/tempo/actions/runs/37041564867)
+measures 15,984 baseline versus 13,747 feature TPS (-14.00%). Builder gas
+throughput falls 26.09% and validator gas throughput falls 29.19%. Engine signature
+crypto falls below 0.1% of sampled CPU, but 90.84% of builder conflicts concern
+account/code/block metadata. A State-backed reproduction identified incorrect
+empty-account hints for repeated AA senders; the correction awaits node benchmarks.

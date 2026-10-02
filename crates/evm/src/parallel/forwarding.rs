@@ -1,7 +1,7 @@
 //! Bounded, advisory predecessor dependencies. These values are predictions:
 //! the ordinary ordered read validation remains the authority for every result.
 
-use super::{Env, ReadKey, ReadValue, TempoTxEnv};
+use super::{Env, ReadKey, ReadValue, TempoTxEnv, account_is_removed};
 use alloy_primitives::{U256, map::HashMap};
 use alloy_sol_types::SolCall;
 use reth_revm::state::EvmState;
@@ -129,7 +129,7 @@ impl Forwarding {
                 match hint.key {
                     ReadKey::Account(address) => {
                         match state.get(&address).filter(|account| account.is_touched()) {
-                            Some(account) if account.is_selfdestructed() => {
+                            Some(account) if account_is_removed(account) => {
                                 Some(ReadValue::Account(None))
                             }
                             Some(account) => Some(ReadValue::Account(Some(account.info.clone()))),
@@ -138,7 +138,7 @@ impl Forwarding {
                     }
                     ReadKey::Storage(address, slot) => {
                         match state.get(&address).filter(|account| account.is_touched()) {
-                            Some(account) if account.is_selfdestructed() => {
+                            Some(account) if account_is_removed(account) => {
                                 Some(ReadValue::Storage(U256::ZERO))
                             }
                             Some(account) => account

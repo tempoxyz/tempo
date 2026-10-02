@@ -377,6 +377,34 @@ struct Work {
     forwarding: Option<forwarding::Forwarding>,
 }
 
+/// Account removal after journal finalization, matching revm `State` commits.
+/// Pre-EIP-161 journals preserve empty accounts through their status flags.
+fn account_is_removed(account: &reth_revm::state::Account) -> bool {
+    account.is_touched()
+        && (account.is_selfdestructed() || (!account.is_created() && account.is_empty()))
+}
+
+fn commit_prediction<DB>(overlay: &mut CacheDB<DB>, state: &reth_revm::state::EvmState) {
+    overlay.commit_iter(&mut state.iter().filter_map(|(&address, account)| {
+        if !account.is_touched() {
+            return None;
+        }
+        let mut prediction = account.clone();
+        // CacheDB does not implement EIP-161 clearing. Its selfdestruct path
+        // has the required account/storage removal semantics for this private
+        // copy; the actual execution result retains its original status flags.
+        if account_is_removed(account) {
+            prediction.mark_selfdestruct();
+        } else if account.is_loaded_as_not_existing() {
+            // A balance transfer can revive a previously deleted account
+            // without CREATE. CacheDB would forget that its parent storage is
+            // gone; preserve that known-zero storage using its created path.
+            prediction.mark_created();
+        }
+        Some((address, prediction))
+    }));
+}
+
 fn run_worker<E: DBErrorMarker>(
     shared: &Work,
     sender: &mpsc::Sender<Message<E>>,
@@ -470,7 +498,7 @@ fn run_worker<E: DBErrorMarker>(
             // served from it are recorded by the outer database just like remote
             // reads, so any skipped, failed or conflicting predecessor is checked
             // against the real committed prefix before a later result is reused.
-            overlay.commit(result.state.clone());
+            commit_prediction(overlay, &result.state);
         }
         if let Some(forwarding) = &shared.forwarding {
             forwarding.complete(
