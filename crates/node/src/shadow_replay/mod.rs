@@ -41,6 +41,7 @@ use reth_provider::{
     CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
 };
 use reth_revm::{
+    context::result::ResultGas,
     database::StateProviderDatabase,
     database_interface::bal::BalState,
     db::{CacheState, State, TransitionState, states::CacheAccount},
@@ -554,8 +555,8 @@ enum TxOutcome {
 struct ObservedTx {
     /// Whether execution succeeded, reverted, or halted.
     outcome: TxOutcome,
-    /// Gas consumed by the transaction for its receipt and fee charge.
-    gas_used: u64,
+    /// Execution gas accounting for receipt validation, fee charges, and headroom checks.
+    gas: ResultGas,
     /// Hash of the unmodified ordered logs, used to validate canonical receipts.
     receipt_logs_hash: B256,
     /// Hash of the transaction's output bytes (empty when there is no output).
@@ -579,7 +580,7 @@ impl ObservedTx {
                 reth_revm::context::result::ExecutionResult::Revert { .. } => TxOutcome::Revert,
                 reth_revm::context::result::ExecutionResult::Halt { .. } => TxOutcome::Halt,
             },
-            gas_used: execution.tx_gas_used(),
+            gas: *execution.gas(),
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
             fee_normalized,
@@ -643,7 +644,7 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
         let gas_used = receipt.cumulative_gas_used - previous_gas;
         previous_gas = receipt.cumulative_gas_used;
         (tx.outcome == TxOutcome::Success) == receipt.success
-            && tx.gas_used == gas_used
+            && tx.gas.tx_gas_used() == gas_used
             && tx.receipt_logs_hash == hash_logs(&receipt.logs)
     })
 }

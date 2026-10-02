@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full commit SHA from the protected main branch
+        description: Full commit SHA from main or a protected release/* branch
         required: true
         type: string
       version:
@@ -88,11 +88,18 @@ jobs:
           fi
 
           # A valid Git commit is not necessarily an approved release source.
-          # Require it to be part of the protected main branch's history.
+          # Require it to be part of a protected branch's history: main for
+          # regular releases, or a release/* branch for patch releases that
+          # backport fixes onto an earlier release.
           git fetch --no-tags origin \
-            "+refs/heads/main:refs/remotes/origin/main"
-          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
-            echo "::error::source_sha must be an ancestor of origin/main"
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/release/*:refs/remotes/origin/release/*"
+          source_branches="$(
+            git for-each-ref --contains "$SOURCE_SHA" --format='%(refname:short)' \
+              refs/remotes/origin/main 'refs/remotes/origin/release/*'
+          )"
+          if [[ -z "$source_branches" ]]; then
+            echo "::error::source_sha must be an ancestor of origin/main or an origin/release/* branch"
             exit 1
           fi
 
