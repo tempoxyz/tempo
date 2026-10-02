@@ -34,7 +34,7 @@ use reth_revm::{
 };
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
+    BestTransactions, BestTransactionsAttributes, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -177,7 +177,10 @@ where
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         self.build_payload(
             args,
-            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            |attributes, preview| {
+                self.pool
+                    .best_transactions_with_preview(attributes, preview)
+            },
             false,
         )
     }
@@ -202,7 +205,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| core::iter::empty(),
+            |_, _| (core::iter::empty(), None),
             true,
         )?
         .into_payload()
@@ -226,7 +229,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl Fn(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes, bool) -> (Txs, Option<Txs>),
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
@@ -432,10 +435,9 @@ where
         // A separate iterator provides speculative candidates. The authoritative
         // iterator is still advanced one transaction at a time: mark_invalid and
         // payment-lane switching must retain their original ordering semantics.
-        let mut speculative_txs = (batch_size > 0).then(|| best_txs(pool_attributes));
+        let (mut best_txs, mut speculative_txs) = best_txs(pool_attributes, batch_size > 0);
         let mut pool_position = 0;
         let mut preview_position = 0;
-        let mut best_txs = best_txs(pool_attributes);
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());

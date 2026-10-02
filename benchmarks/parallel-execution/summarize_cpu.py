@@ -14,17 +14,7 @@ import pathlib
 import re
 
 
-def payload_timings(directory):
-    names = {
-        "successful_transaction_execution": "transaction_execution",
-        "execution_loop": "total_transaction_execution",
-        "pool_snapshot": "pool_fetch",
-        "finalization": "payload_finalization",
-        "state_root": "state_root_with_updates",
-        "background_state_root_wait": "background_state_root_wait",
-        "hashed_post_state": "hashed_post_state",
-        "payload_build": "payload_build",
-    }
+def payload_metric_deltas(directory):
     readings = []
     for suffix in ("before", "after"):
         path = directory / f"metrics-{suffix}.prom"
@@ -36,12 +26,44 @@ def payload_timings(directory):
             if len(fields) == 2 and fields[0].startswith("reth_tempo_payload_builder_"):
                 values[fields[0]] = float(fields[1])
         readings.append(values)
+    return {key: value - readings[0].get(key, 0) for key, value in readings[1].items()}
+
+
+def payload_timings(directory):
+    names = {
+        "successful_transaction_execution": "transaction_execution",
+        "execution_loop": "total_transaction_execution",
+        "pool_snapshot": "pool_fetch",
+        "finalization": "payload_finalization",
+        "state_root": "state_root_with_updates",
+        "background_state_root_wait": "background_state_root_wait",
+        "hashed_post_state": "hashed_post_state",
+        "payload_build": "payload_build",
+    }
+    deltas = payload_metric_deltas(directory)
     result = {}
     for label, name in names.items():
         key = f"reth_tempo_payload_builder_{name}_duration_seconds_sum"
-        if key in readings[1]:
-            result[label] = round(readings[1][key] - readings[0].get(key, 0), 6)
+        if key in deltas:
+            result[label] = round(deltas[key], 6)
     return result
+
+
+def execution_counts(directory):
+    # Counts span all recorded payload attempts, including cancelled work. They
+    # describe scheduler activity, not distinct committed transactions.
+    names = {
+        "speculated": "speculated_transactions",
+        "reused": "reused_transactions",
+        "bodies_reused": "reused_call_bodies",
+        "fees_rebased": "rebased_fee_transactions",
+        "conflicts": "conflicting_transactions",
+        "retries": "speculative_retries",
+        "backoff": "speculative_backoff",
+    }
+    deltas = payload_metric_deltas(directory)
+    return {label: int(deltas.get(f"reth_tempo_payload_builder_{name}_total", 0))
+            for label, name in names.items()}
 
 
 def summarize(directory):
@@ -95,6 +117,7 @@ def summarize(directory):
     result["accepted_tps"] = round(report["sending"]["accepted"] /
                                    report["sending"]["send_duration_secs"])
     result["payload_timing_seconds"] = payload_timings(directory)
+    result["speculative_execution_counts"] = execution_counts(directory)
     # These isolated dev trials contain one system transaction per block. Check
     # all accepted user transactions before deriving the canonical completion rate.
     included = sum(block["tx_count"] - 1 for block in report["blocks"])

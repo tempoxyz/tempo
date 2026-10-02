@@ -529,6 +529,22 @@ impl AA2dPool {
         }
     }
 
+    /// Build the authoritative and speculative iterators from the same snapshot.
+    /// The caller holds the pool read lock across construction, so both live feeds
+    /// subscribe before any admission can change the snapshot. Iteration, updates
+    /// and invalidation remain private to each consumer.
+    pub(crate) fn best_transactions_pair(&self) -> (BestAA2dTransactions, BestAA2dTransactions) {
+        let best = self.best_transactions();
+        let preview = BestAA2dTransactions {
+            independent: best.independent.clone(),
+            by_id: best.by_id.clone(),
+            invalid: Default::default(),
+            new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
+            last_priority: None,
+        };
+        (best, preview)
+    }
+
     /// Returns the transaction by hash.
     pub(crate) fn get(
         &self,
@@ -1517,7 +1533,7 @@ enum IncomingAA2dTransaction {
 /// Most candidates are present when the iterator is created. Sorting them once
 /// allows constant-time removal without allocating or rebalancing tree nodes for
 /// the snapshot. Arrivals and unlocked descendants retain ordered-set semantics.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct IndependentTransactions {
     snapshot: Vec<PendingTransaction<TxOrdering>>,
     max_snapshot_submission_id: u64,
@@ -3766,6 +3782,9 @@ mod tests {
     fn best_transactions_throughput() {
         use std::time::Instant;
         let scattered = std::env::var_os("TEMPO_POOL_BENCH_SCATTERED").is_some();
+        // Compare two independent constructions (0) with a paired snapshot (1).
+        // Unset retains the original single-iterator benchmark.
+        let pair = std::env::var("TEMPO_POOL_BENCH_PAIR").ok();
         let counts = std::env::var("TEMPO_POOL_BENCH_COUNTS")
             .unwrap_or_else(|_| "10000,25000,50000,100000".into());
         println!("transactions\trepeat\tsnapshot_seconds\tdrain_seconds\tselected_per_second");
@@ -3815,18 +3834,87 @@ mod tests {
             for repeat in 0..5 {
                 selected.clear();
                 let start = Instant::now();
-                let best = pool.best_transactions();
+                let (best, preview) = match pair.as_deref() {
+                    Some("1") => {
+                        let (best, preview) = pool.best_transactions_pair();
+                        (best, Some(preview))
+                    }
+                    Some("0") => (pool.best_transactions(), Some(pool.best_transactions())),
+                    None => (pool.best_transactions(), None),
+                    Some(value) => panic!("unsupported TEMPO_POOL_BENCH_PAIR={value}"),
+                };
                 let snapshot = start.elapsed().as_secs_f64();
                 let start = Instant::now();
                 selected.extend(best.map(|tx| *tx.hash()));
+                if let Some(preview) = preview {
+                    assert_eq!(selected, expected);
+                    selected.clear();
+                    selected.extend(preview.map(|tx| *tx.hash()));
+                }
                 let drain = start.elapsed().as_secs_f64();
                 assert_eq!(selected, expected);
                 println!(
                     "{count}\t{repeat}\t{snapshot:.6}\t{drain:.6}\t{:.0}",
-                    count as f64 / (snapshot + drain)
+                    (count * if pair.is_some() { 2 } else { 1 }) as f64 / (snapshot + drain)
                 );
             }
         }
+    }
+
+    #[test_case::test_case(false ; "both live")]
+    #[test_case::test_case(true ; "frozen preview")]
+    fn paired_best_transactions_keep_independent_selection_state(freeze_preview: bool) {
+        use reth_primitives_traits::transaction::error::InvalidTransactionError;
+        let mut pool = AA2dPool::default();
+        let sender = Address::repeat_byte(1);
+        for nonce in 0..3 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(1))
+                .nonce(nonce)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let (mut best, mut preview) = pool.best_transactions_pair();
+        let mut expected = pool.best_transactions();
+        let mut expected_preview = pool.best_transactions();
+        if freeze_preview {
+            preview.no_updates();
+            expected_preview.no_updates();
+        }
+        let first = best.next().unwrap();
+        assert_eq!(first.hash(), expected.next().unwrap().hash());
+        let error =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        best.mark_invalid(&first, &error);
+        expected.mark_invalid(&first, &error);
+
+        // Admission after snapshot creation must reach each live subscription.
+        // Invalidating the authoritative sequence must not invalidate lookahead.
+        let incoming = TxBuilder::aa(Address::repeat_byte(2))
+            .nonce_key(U256::from(2))
+            .build();
+        let incoming_hash = *incoming.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(incoming, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        let preview_hashes = preview.map(|tx| *tx.hash()).collect::<Vec<_>>();
+        assert_eq!(
+            preview_hashes,
+            expected_preview.map(|tx| *tx.hash()).collect::<Vec<_>>()
+        );
+        assert_eq!(preview_hashes.len(), if freeze_preview { 3 } else { 4 });
+        assert_eq!(preview_hashes.contains(&incoming_hash), !freeze_preview);
+        let selected = best.map(|tx| *tx.hash()).collect::<Vec<_>>();
+        assert_eq!(selected, expected.map(|tx| *tx.hash()).collect::<Vec<_>>());
+        assert_eq!(selected, vec![incoming_hash]);
     }
 
     #[test]

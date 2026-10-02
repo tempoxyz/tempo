@@ -1216,6 +1216,76 @@ workload. Offered 75k also exceeds client/admission capacity: those trials accep
 rates include draining the backlog. The execution bottleneck and sustained 50k+
 node-throughput goal remain unresolved.
 
+## Paired AA selection snapshots
+
+The payload builder now creates its authoritative AA iterator and speculative
+lookahead from one collected/sorted pool snapshot. Each iterator retains its own
+candidate index, live subscription and invalidation state. Both subscriptions
+start under the same pool read lock, preventing admissions between snapshot
+construction and subscription. Protocol-nonce iterators retain the Reth path.
+The authoritative iterator still advances and processes invalidation one
+transaction at a time, including payment-lane transitions.
+
+`paired-snapshot-micro.tsv` compares two independent constructions against the
+paired path in an off/on/on/off sequence, with five measurements per size per run.
+Both iterators must select the exact expected transaction order. At 100k candidates,
+mean construction time falls from 42.96 ms to 25.89 ms (40% less); at 50k it falls
+from 16.42 ms to 10.21 ms. This benchmark includes both iterators' selection and
+destruction separately in `drain_seconds`. To reproduce, set
+`TEMPO_POOL_BENCH_SCATTERED=1` and `TEMPO_POOL_BENCH_PAIR=0` or `1` when running
+the ignored `best_transactions_throughput` test in release mode.
+
+`paired-snapshot-node.json` and `paired-snapshot-node-followup.json` retain five
+paired comparisons, all with 16 workers, shared trie roots and 5B block gas:
+
+| Workload | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: |
+| 2D, existing recipients | 50,000 | 5 | 27,585 | 27,344 |
+| 2D, new recipients | 50,000 | 5 | 20,017 | 21,444 |
+| 2D, existing recipients | 75,000 | 10 | 24,442 | 24,718 |
+| 2D, new recipients | 50,000 | 10 | 15,810 | 17,568 |
+| Expiring, existing recipients | 50,000 | 5 | 26,708 | 26,994 |
+
+All 3,031,532 accepted transactions confirm without execution failures or rejected
+dev payloads. The two new-recipient comparisons improve by 7% and 11%; the other
+workloads show little throughput change. In the longer new-recipient pair, pool
+snapshot time falls from 4.96 s to 2.70 s, while the execution loop stays near
+16.5 s. Thus the remaining execution/preparation cost still limits throughput.
+
+The summary tool now retains scheduler counters separately from confirmed
+transactions. In the short existing-recipient pair, the fraction of scheduled
+candidates reaching reuse/conflict/retry handling increases from 45% to 99%; in
+the short new-recipient pair it increases from 69% to 98%. These counters span
+recorded payload attempts, including abandoned work; they are not counts of
+distinct committed transactions.
+
+The 228 pool tests pass, including new checks that paired iterators preserve live
+arrivals, independent invalidation and preview-only disabling of updates. Release
+Clippy passes for the pool and builder; node checks cover post-block root proofs,
+TIP-20 transfers and mixed payment lanes. `paired-snapshot-canonical-*.tsv` verifies
+15 busy generated blocks (255,590 user transactions and 15 system transactions)
+against full sequential results, state deltas, stored receipts, gas and both
+canonical roots. Replay timings overlap correctness builds
+and are diagnostic only. Public historical replay and sustained 50k+ node TPS
+remain outstanding.
+
+`paired-snapshot-profile.json` records a follow-up CPU profile with the built-in
+Pyroscope feature at 199 Hz. `profile_node.py` captures this profiler locally and
+retains raw protobuf profiles alongside normal node trial artifacts. Only the
+complete ten-second profile inside the twenty-second submission window is used.
+The profiled new-recipient run leaves 133,566 of 808,741 accepted transactions
+unconfirmed at the benchmark's drain deadline, so it is diagnostic evidence, not
+a successful throughput result.
+
+Within sampled builder CPU, merged transaction selection accounts for 47.6%,
+paired snapshot construction for 16.1%, and skipped-transaction metric updates
+for 14.5% (inclusive samples). Whole-trial counters record 19,388,134 candidates
+skipped for the remaining non-shared gas limit. The unprofiled ten-second
+new-recipient trial also records 6,649,645 such skips. Repeatedly draining candidates
+after the block fills is therefore the next selection cost to address. Any early
+termination must still allow cheaper candidates, nonce dependencies and live
+arrivals, and preserve payment-lane handling.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed

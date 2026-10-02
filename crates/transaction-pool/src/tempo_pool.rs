@@ -56,6 +56,10 @@ pub struct TempoTransactionPool<Client> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
+/// A live, priority-ordered iterator across protocol and AA nonce transactions.
+pub type TempoBestTransactions =
+    Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>>;
+
 impl<Client> TempoTransactionPool<Client> {
     pub fn new(
         protocol_pool: Pool<
@@ -75,6 +79,30 @@ impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
+    /// Return the authoritative iterator and an optional independent lookahead.
+    /// AA candidates are collected and sorted once when lookahead is requested.
+    pub fn best_transactions_with_preview(
+        &self,
+        attributes: BestTransactionsAttributes,
+        preview: bool,
+    ) -> (TempoBestTransactions, Option<TempoBestTransactions>) {
+        if !preview {
+            return (self.best_transactions_with_attributes(attributes), None);
+        }
+        // Reth's protocol iterator owns private selection state and cannot be
+        // forked. Keep its ordinary path; the AA iterators can share construction.
+        let protocol = self.protocol_pool.inner().best_transactions();
+        let protocol_preview = self.protocol_pool.inner().best_transactions();
+        let (aa, aa_preview) = self.aa_2d_pool.read().best_transactions_pair();
+        (
+            Box::new(MergeBestTransactions::new(protocol, aa)),
+            Some(Box::new(MergeBestTransactions::new(
+                protocol_preview,
+                aa_preview,
+            ))),
+        )
+    }
+
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
         self.protocol_pool
