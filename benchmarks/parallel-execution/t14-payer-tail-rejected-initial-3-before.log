@@ -1,0 +1,20 @@
+
+running 1 test
+# hardfork=T14
+workload	transactions	workers	seconds	tps	reused	conflicts	retries	backoff	bodies_reused	fees_rebased
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=0 batch=128 prepare=0.000015 ordered=0.612806 commit=0.041206
+tip20_paid_aa_expiring_funded	100000	0	0.660411	151421	0	0	0	0	0	0
+PHASES workload=tip20_paid_aa_expiring_funded count=100000 workers=8 batch=128 prepare=0.243375 ordered=0.212080 commit=0.106048
+tip20_paid_aa_expiring_funded	100000	8	0.576287	173525	99932	68	0	0	0	99150
+PHASES workload=tip20_paid_aa_expiring_multitoken count=100000 workers=0 batch=128 prepare=0.000015 ordered=0.618938 commit=0.043905
+tip20_paid_aa_expiring_multitoken	100000	0	0.668616	149563	0	0	0	0	0	0
+PHASES workload=tip20_paid_aa_expiring_multitoken count=100000 workers=8 batch=128 prepare=0.262138 ordered=0.240090 commit=0.139399
+tip20_paid_aa_expiring_multitoken	100000	8	0.657390	152117	99978	22	0	0	0	99196
+PHASES workload=compute_paid_chains count=100000 workers=0 batch=128 prepare=0.000015 ordered=1.676679 commit=0.031765
+compute_paid_chains	100000	0	1.713474	58361	0	0	0	0	0	0
+PHASES workload=compute_paid_chains count=100000 workers=8 batch=128 prepare=0.062114 ordered=0.323557 commit=0.098622
+compute_paid_chains	100000	8	0.489929	204111	99993	7	0	0	0	99211
+test parallel::tests::execution_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 146 filtered out; finished in 8.14s
+

@@ -1,0 +1,90 @@
+{
+  "target_tps": 50000,
+  "scope": "Raw sender pipeline counters, not confirmed canonical transaction throughput or proof of sustained target input rate. Generator and sender stream through a pipe; backpressure may throttle either stage.",
+  "runs": [
+    {
+      "role": "baseline",
+      "pair": 1,
+      "raw_sent_count": 1604066,
+      "raw_sender_elapsed_seconds": 95.914781196,
+      "raw_sent_divided_by_sender_elapsed": 16723.86654067554,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 16594.47142857143,
+        "minimum_sent_per_second": 0,
+        "maximum_sent_per_second": 37612,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 2,
+      "raw_sent_count": 1556956,
+      "raw_sender_elapsed_seconds": 91.950786293,
+      "raw_sent_divided_by_sender_elapsed": 16932.492507881117,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 18002.914285714287,
+        "minimum_sent_per_second": 3610,
+        "maximum_sent_per_second": 30052,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 3,
+      "raw_sent_count": 1683650,
+      "raw_sender_elapsed_seconds": 100.747496169,
+      "raw_sent_divided_by_sender_elapsed": 16711.58156799989,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 18053.814285714285,
+        "minimum_sent_per_second": 0,
+        "maximum_sent_per_second": 35809,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 1,
+      "raw_sent_count": 1241258,
+      "raw_sender_elapsed_seconds": 93.393023848,
+      "raw_sent_divided_by_sender_elapsed": 13290.692911069946,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 13189.42857142857,
+        "minimum_sent_per_second": 7423,
+        "maximum_sent_per_second": 21108,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 2,
+      "raw_sent_count": 1254383,
+      "raw_sender_elapsed_seconds": 92.777328508,
+      "raw_sent_divided_by_sender_elapsed": 13520.361279769304,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 13451.442857142858,
+        "minimum_sent_per_second": 8485,
+        "maximum_sent_per_second": 19682,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 3,
+      "raw_sent_count": 1241909,
+      "raw_sender_elapsed_seconds": 92.974914367,
+      "raw_sent_divided_by_sender_elapsed": 13357.463230326957,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 13265.614285714286,
+        "minimum_sent_per_second": 8525,
+        "maximum_sent_per_second": 19483,
+        "seconds_at_or_above_target_50000": 0
+      }
+    }
+  ]
+}

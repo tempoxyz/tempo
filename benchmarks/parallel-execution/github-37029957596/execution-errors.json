@@ -1,0 +1,304 @@
+[
+  {
+    "file": "logs-feature-1-a/dev/reth.log",
+    "shutdown_and_errors": [
+      {
+        "timestamp": "2026-10-02T15:56:02.083589Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "shutdown signal received, terminating engine"
+        },
+        "target": "reth::cli"
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.083630Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "persisting remaining blocks before shutdown",
+          "count": 10
+        },
+        "target": "engine::tree"
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.087842Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "gracefully shut down"
+        },
+        "target": "reth_tasks::runtime"
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.234447Z",
+        "level": "ERROR",
+        "fields": {
+          "error": "[failed delivering block `0x9cdea9f435e32ae39338c5860a5bd711c0faa0ff2567461457720208ceb17255` for verification (0, 396), failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+        },
+        "target": "tempo_consensus::executor::actor",
+        "span": {
+          "outcome": "delivered",
+          "target": "None",
+          "task_type": "verify",
+          "name": "handle_execution_task_finished"
+        },
+        "spans": [
+          {
+            "current.finalized_digest": "0x5860101ff0531966f9abb5a49c94d34507f2a1273eaf49be90dda76b06224af7",
+            "current.finalized_height": "394",
+            "current.head_digest": "0x5860101ff0531966f9abb5a49c94d34507f2a1273eaf49be90dda76b06224af7",
+            "current.head_height": "394",
+            "name": "start_next_execution_task"
+          },
+          {
+            "task_type": "verify",
+            "name": "set_execution_task"
+          },
+          {
+            "outcome": "delivered",
+            "target": "None",
+            "task_type": "verify",
+            "name": "handle_execution_task_finished"
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.234462Z",
+        "level": "ERROR",
+        "fields": {
+          "message": "executor encountered fatal execution-layer update error; shutting down to prevent consensus-execution divergence",
+          "error": "[failed delivering block `0x9cdea9f435e32ae39338c5860a5bd711c0faa0ff2567461457720208ceb17255` for verification (0, 396), failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+        },
+        "target": "tempo_consensus::executor::actor",
+        "span": {
+          "name": "shutdown"
+        },
+        "spans": [
+          {
+            "name": "shutdown"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "file": "logs-feature-1-b/dev/reth.log",
+    "shutdown_and_errors": [
+      {
+        "timestamp": "2026-10-02T15:56:02.086848Z",
+        "level": "INFO",
+        "fields": {
+          "message": "received shutdown signal"
+        },
+        "target": "tempo"
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.086931Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "shutdown signal received, terminating engine"
+        },
+        "target": "reth::cli"
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.086997Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "persisting remaining blocks before shutdown",
+          "count": 10
+        },
+        "target": "engine::tree"
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.091550Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "gracefully shut down"
+        },
+        "target": "reth_tasks::runtime"
+      },
+      {
+        "timestamp": "2026-10-02T15:56:02.235128Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "peer shutdown",
+          "error": "ReceiveFailed(RecvFailed(RecvFailed))",
+          "peer": "66ffb822372e78b234ff9304201ff758861f7a8e7b8e43937d8b1a97071f538b"
+        },
+        "target": "commonware_p2p::authenticated::lookup::actors::spawner::actor"
+      }
+    ]
+  },
+  {
+    "file": "logs-feature-2-a/dev/reth.log",
+    "shutdown_and_errors": [
+      {
+        "timestamp": "2026-10-02T16:01:24.565329Z",
+        "level": "INFO",
+        "fields": {
+          "message": "received shutdown signal"
+        },
+        "target": "tempo"
+      },
+      {
+        "timestamp": "2026-10-02T16:01:24.565401Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "shutdown signal received, terminating engine"
+        },
+        "target": "reth::cli"
+      },
+      {
+        "timestamp": "2026-10-02T16:01:24.565452Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "persisting remaining blocks before shutdown",
+          "count": 14
+        },
+        "target": "engine::tree"
+      },
+      {
+        "timestamp": "2026-10-02T16:01:24.569350Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "gracefully shut down"
+        },
+        "target": "reth_tasks::runtime"
+      }
+    ]
+  },
+  {
+    "file": "logs-feature-2-b/dev/reth.log",
+    "shutdown_and_errors": [
+      {
+        "timestamp": "2026-10-02T16:01:24.568616Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "shutdown signal received, terminating engine"
+        },
+        "target": "reth::cli"
+      },
+      {
+        "timestamp": "2026-10-02T16:01:24.568688Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "persisting remaining blocks before shutdown",
+          "count": 14
+        },
+        "target": "engine::tree"
+      },
+      {
+        "timestamp": "2026-10-02T16:01:24.571962Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "gracefully shut down"
+        },
+        "target": "reth_tasks::runtime"
+      },
+      {
+        "timestamp": "2026-10-02T16:01:24.733880Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "peer shutdown",
+          "error": "ReceiveFailed(RecvFailed(RecvFailed))",
+          "peer": "66ffb822372e78b234ff9304201ff758861f7a8e7b8e43937d8b1a97071f538b"
+        },
+        "target": "commonware_p2p::authenticated::lookup::actors::spawner::actor"
+      }
+    ]
+  },
+  {
+    "file": "logs-feature-3-a/dev/reth.log",
+    "shutdown_and_errors": [
+      {
+        "timestamp": "2026-10-02T16:06:48.339795Z",
+        "level": "INFO",
+        "fields": {
+          "message": "received shutdown signal"
+        },
+        "target": "tempo"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.339875Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "shutdown signal received, terminating engine"
+        },
+        "target": "reth::cli"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.339917Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "persisting remaining blocks before shutdown",
+          "count": 15
+        },
+        "target": "engine::tree"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.343123Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "gracefully shut down"
+        },
+        "target": "reth_tasks::runtime"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.521323Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "peer shutdown",
+          "error": "ReceiveFailed(RecvFailed(RecvFailed))",
+          "peer": "9bdb607f02802cdd126290cfa1e025e4c13bbdbb347a70edeace584159303454"
+        },
+        "target": "commonware_p2p::authenticated::lookup::actors::spawner::actor"
+      }
+    ]
+  },
+  {
+    "file": "logs-feature-3-b/dev/reth.log",
+    "shutdown_and_errors": [
+      {
+        "timestamp": "2026-10-02T16:04:53.056691Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "peer shutdown",
+          "error": "ReceiveFailed(RecvFailed(RecvFailed))",
+          "peer": "66ffb822372e78b234ff9304201ff758861f7a8e7b8e43937d8b1a97071f538b"
+        },
+        "target": "commonware_p2p::authenticated::lookup::actors::spawner::actor"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.343243Z",
+        "level": "INFO",
+        "fields": {
+          "message": "received shutdown signal"
+        },
+        "target": "tempo"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.343322Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "shutdown signal received, terminating engine"
+        },
+        "target": "reth::cli"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.343410Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "persisting remaining blocks before shutdown",
+          "count": 15
+        },
+        "target": "engine::tree"
+      },
+      {
+        "timestamp": "2026-10-02T16:06:48.347048Z",
+        "level": "DEBUG",
+        "fields": {
+          "message": "gracefully shut down"
+        },
+        "target": "reth_tasks::runtime"
+      }
+    ]
+  }
+]

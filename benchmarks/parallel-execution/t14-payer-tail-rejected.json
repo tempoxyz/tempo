@@ -1,0 +1,1632 @@
+{
+  "status": "rejected_optimization",
+  "source_commit": "79542df563944df7a19d1039f9ed4e84ce124d2f",
+  "change": "Skip copying a worker result into the private write overlay unless the payer has a later candidate in the window. Exact transaction and read checks still gate reuse.",
+  "reason": "Initial 100k runs gained about 10% on funded transfers and 7% on chained compute, but 500k runs did not confirm this (-0.8% one token, -3.5% four tokens). Broader results are mixed, with high parallel-run variance. Reverted rather than claiming a gain.",
+  "scope": "Local warm-memory diagnostic on AMD EPYC 4585PX, 16 physical/32 logical CPUs, unpinned process. Excludes fixture setup, disk, networking, signatures and trie hashing. A profile JSON analysis process also ran briefly during the larger sweep; this is exploratory evidence, not a controlled node acceptance comparison.",
+  "hardfork": "T14",
+  "batch_size": 128,
+  "gas_limit": 5000000000,
+  "compiler": "Rust 1.98.1 release, matching strip=none and force-frame-pointers=yes on test crate",
+  "phase_timing": true,
+  "binary_sha256": {
+    "before": "f9fd7238ec70587062194ba6b4d484dc5baeb9b77619eb16323287b7d1eeb276",
+    "after": "db002e8c5f515b4443974c6ce42f73c5118f472d6327e167b172fc1f449bcb9e"
+  },
+  "validation": "EVM 145 passed, 2 ignored with experiment. Every benchmark run compared full receipts and state trie root against workers=0. Source reverted after measurement.",
+  "summary": [
+    {
+      "group": "initial",
+      "workload": "compute_paid_chains",
+      "means_tps": {
+        "before_workers_0": 58243.5,
+        "before_workers_8": 204795,
+        "after_workers_0": 58443.5,
+        "after_workers_8": 218563
+      },
+      "eight_worker_delta_pct": 6.722820381356964
+    },
+    {
+      "group": "initial",
+      "workload": "tip20_paid_aa_expiring_funded",
+      "means_tps": {
+        "before_workers_0": 152335.5,
+        "before_workers_8": 169278.5,
+        "after_workers_0": 151920.5,
+        "after_workers_8": 186059
+      },
+      "eight_worker_delta_pct": 9.912954096355996
+    },
+    {
+      "group": "initial",
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "means_tps": {
+        "before_workers_0": 149774.5,
+        "before_workers_8": 152408,
+        "after_workers_0": 149962,
+        "after_workers_8": 167453.5
+      },
+      "eight_worker_delta_pct": 9.871857120361138
+    },
+    {
+      "group": "larger",
+      "workload": "tip20_paid_aa_expiring_funded",
+      "means_tps": {
+        "before_workers_0": 149580.5,
+        "before_workers_8": 180682.5,
+        "after_workers_0": 149262,
+        "after_workers_8": 179238
+      },
+      "eight_worker_delta_pct": -0.7994686812502594
+    },
+    {
+      "group": "larger",
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "means_tps": {
+        "before_workers_0": 142821.5,
+        "before_workers_8": 158730,
+        "after_workers_0": 141845.5,
+        "after_workers_8": 153143.5
+      },
+      "eight_worker_delta_pct": -3.5194985194985207
+    },
+    {
+      "group": "broader",
+      "workload": "compute_paid",
+      "means_tps": {
+        "before_workers_0": 56327,
+        "before_workers_8": 214149,
+        "after_workers_0": 56075,
+        "after_workers_8": 217525.5
+      },
+      "eight_worker_delta_pct": 1.5767059383887005
+    },
+    {
+      "group": "broader",
+      "workload": "storage",
+      "means_tps": {
+        "before_workers_0": 407833.5,
+        "before_workers_8": 252799,
+        "after_workers_0": 411108.5,
+        "after_workers_8": 265752.5
+      },
+      "eight_worker_delta_pct": 5.124031345060698
+    },
+    {
+      "group": "broader",
+      "workload": "tip20_paid",
+      "means_tps": {
+        "before_workers_0": 157850,
+        "before_workers_8": 178625,
+        "after_workers_0": 157418.5,
+        "after_workers_8": 173406
+      },
+      "eight_worker_delta_pct": -2.921763470958716
+    },
+    {
+      "group": "broader",
+      "workload": "tip20_paid_aa_existing",
+      "means_tps": {
+        "before_workers_0": 173966,
+        "before_workers_8": 165749.5,
+        "after_workers_0": 175431,
+        "after_workers_8": 165785.5
+      },
+      "eight_worker_delta_pct": 0.021719522532492874
+    }
+  ],
+  "rows": [
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.652529,
+      "tps": 153250,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.607896,
+        "commit": 0.038303
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.605943,
+      "tps": 165032,
+      "reused": 99932,
+      "conflicts": 68,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99150,
+      "group": "initial",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.251197,
+        "ordered": 0.222551,
+        "commit": 0.115823
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.66673,
+      "tps": 149986,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.617785,
+        "commit": 0.043177
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.654882,
+      "tps": 152699,
+      "reused": 99978,
+      "conflicts": 22,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99196,
+      "group": "initial",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.262412,
+        "ordered": 0.236033,
+        "commit": 0.140707
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.720414,
+      "tps": 58126,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.684297,
+        "commit": 0.031109
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.486669,
+      "tps": 205479,
+      "reused": 99993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99211,
+      "group": "initial",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.065761,
+        "ordered": 0.305051,
+        "commit": 0.11031
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.663674,
+      "tps": 150676,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.617536,
+        "commit": 0.039697
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.519138,
+      "tps": 192627,
+      "reused": 98837,
+      "conflicts": 139,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98063,
+      "group": "initial",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.226843,
+        "ordered": 0.194004,
+        "commit": 0.085616
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.663773,
+      "tps": 150654,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.616279,
+        "commit": 0.041713
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.594856,
+      "tps": 168108,
+      "reused": 98887,
+      "conflicts": 89,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98113,
+      "group": "initial",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.249468,
+        "ordered": 0.218668,
+        "commit": 0.11333
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.729529,
+      "tps": 57819,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.689672,
+        "commit": 0.034822
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.471753,
+      "tps": 211975,
+      "reused": 99993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99211,
+      "group": "initial",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.059575,
+        "ordered": 0.309679,
+        "commit": 0.097005
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.65289,
+      "tps": 153165,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.608418,
+        "commit": 0.038061
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.557131,
+      "tps": 179491,
+      "reused": 98837,
+      "conflicts": 139,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98063,
+      "group": "initial",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.237712,
+        "ordered": 0.208616,
+        "commit": 0.096695
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.669928,
+      "tps": 149270,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.621601,
+        "commit": 0.042546
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.599525,
+      "tps": 166799,
+      "reused": 98887,
+      "conflicts": 89,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98113,
+      "group": "initial",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.248437,
+        "ordered": 0.222695,
+        "commit": 0.114913
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.692975,
+      "tps": 59068,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.654345,
+        "commit": 0.033627
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.444146,
+      "tps": 225151,
+      "reused": 99993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99211,
+      "group": "initial",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.05808,
+        "ordered": 0.284693,
+        "commit": 0.095469
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.660411,
+      "tps": 151421,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.612806,
+        "commit": 0.041206
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.576287,
+      "tps": 173525,
+      "reused": 99932,
+      "conflicts": 68,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99150,
+      "group": "initial",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.243375,
+        "ordered": 0.21208,
+        "commit": 0.106048
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.668616,
+      "tps": 149563,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.618938,
+        "commit": 0.043905
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.65739,
+      "tps": 152117,
+      "reused": 99978,
+      "conflicts": 22,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99196,
+      "group": "initial",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.262138,
+        "ordered": 0.24009,
+        "commit": 0.139399
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.713474,
+      "tps": 58361,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "initial",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.676679,
+        "commit": 0.031765
+      }
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.489929,
+      "tps": 204111,
+      "reused": 99993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 99211,
+      "group": "initial",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.062114,
+        "ordered": 0.323557,
+        "commit": 0.098622
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.372945,
+      "tps": 148238,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 0,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.130651,
+        "commit": 0.210625
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 2.807485,
+      "tps": 178095,
+      "reused": 498838,
+      "conflicts": 138,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 494938,
+      "group": "larger",
+      "run": 0,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.293939,
+        "ordered": 0.997833,
+        "commit": 0.4478
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.477411,
+      "tps": 143785,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 0,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.205393,
+        "commit": 0.243247
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.109923,
+      "tps": 160776,
+      "reused": 498890,
+      "conflicts": 86,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 494990,
+      "group": "larger",
+      "run": 0,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.400141,
+        "ordered": 1.084422,
+        "commit": 0.558781
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.338095,
+      "tps": 149786,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 1,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.089277,
+        "commit": 0.217021
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 2.805492,
+      "tps": 178222,
+      "reused": 499936,
+      "conflicts": 64,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496028,
+      "group": "larger",
+      "run": 1,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.292176,
+        "ordered": 0.987949,
+        "commit": 0.458634
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.519387,
+      "tps": 142070,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 1,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 7.4e-05,
+        "ordered": 3.239744,
+        "commit": 0.250873
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.217039,
+      "tps": 155422,
+      "reused": 499979,
+      "conflicts": 21,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496071,
+      "group": "larger",
+      "run": 1,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.424206,
+        "ordered": 1.111511,
+        "commit": 0.611663
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.347277,
+      "tps": 149375,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 2,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.102498,
+        "commit": 0.212975
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 2.730111,
+      "tps": 183143,
+      "reused": 499936,
+      "conflicts": 64,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496028,
+      "group": "larger",
+      "run": 2,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.275819,
+        "ordered": 0.947856,
+        "commit": 0.441978
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.482559,
+      "tps": 143573,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 2,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.205086,
+        "commit": 0.24869
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.085705,
+      "tps": 162038,
+      "reused": 499979,
+      "conflicts": 21,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 496071,
+      "group": "larger",
+      "run": 2,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.395291,
+        "ordered": 1.057926,
+        "commit": 0.567219
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.326982,
+      "tps": 150286,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 3,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 7.3e-05,
+        "ordered": 3.08319,
+        "commit": 0.21189
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_funded",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 2.771904,
+      "tps": 180381,
+      "reused": 498838,
+      "conflicts": 138,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 494938,
+      "group": "larger",
+      "run": 3,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.284819,
+        "ordered": 0.986505,
+        "commit": 0.434097
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 0,
+      "seconds": 3.573824,
+      "tps": 139906,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "larger",
+      "run": 3,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 7.4e-05,
+        "ordered": 3.304765,
+        "commit": 0.240132
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_expiring_multitoken",
+      "transactions": 500000,
+      "workers": 8,
+      "seconds": 3.436163,
+      "tps": 145511,
+      "reused": 498890,
+      "conflicts": 86,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 494990,
+      "group": "larger",
+      "run": 3,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.502223,
+        "ordered": 1.200002,
+        "commit": 0.657412
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.244675,
+      "tps": 408706,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.217326,
+        "commit": 0.022006
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.34329,
+      "tps": 291299,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.125579,
+        "ordered": 0.142909,
+        "commit": 0.069973
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.778639,
+      "tps": 56223,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.740103,
+        "commit": 0.03356
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.458671,
+      "tps": 218021,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.147675,
+        "ordered": 0.220479,
+        "commit": 0.084698
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.633336,
+      "tps": 157894,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.580493,
+        "commit": 0.047064
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.55401,
+      "tps": 180502,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.218244,
+        "ordered": 0.246515,
+        "commit": 0.076698
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.575784,
+      "tps": 173676,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.535019,
+        "commit": 0.034956
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.595169,
+      "tps": 168020,
+      "reused": 2904,
+      "conflicts": 8232,
+      "retries": 0,
+      "backoff": 88864,
+      "bodies_reused": 0,
+      "fees_rebased": 2817,
+      "group": "broader",
+      "run": 0,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.029651,
+        "ordered": 0.518893,
+        "commit": 0.04047
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.244422,
+      "tps": 409128,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.216406,
+        "commit": 0.022604
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.373418,
+      "tps": 267796,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.13102,
+        "ordered": 0.159025,
+        "commit": 0.078544
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.781473,
+      "tps": 56133,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.741261,
+        "commit": 0.035234
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.458363,
+      "tps": 218168,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.148527,
+        "ordered": 0.220688,
+        "commit": 0.083786
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.638011,
+      "tps": 156737,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.585354,
+        "commit": 0.046873
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.612977,
+      "tps": 163138,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.225129,
+        "ordered": 0.280642,
+        "commit": 0.091619
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.57218,
+      "tps": 174770,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.531967,
+        "commit": 0.033795
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.607654,
+      "tps": 164567,
+      "reused": 2750,
+      "conflicts": 8386,
+      "retries": 0,
+      "backoff": 88864,
+      "bodies_reused": 0,
+      "fees_rebased": 2663,
+      "group": "broader",
+      "run": 1,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.033094,
+        "ordered": 0.527893,
+        "commit": 0.040399
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.242078,
+      "tps": 413089,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.214526,
+        "commit": 0.022136
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.379206,
+      "tps": 263709,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.130262,
+        "ordered": 0.166314,
+        "commit": 0.07769
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.785183,
+      "tps": 56017,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.747227,
+        "commit": 0.032955
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.461077,
+      "tps": 216883,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.14751,
+        "ordered": 0.224039,
+        "commit": 0.083801
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.632511,
+      "tps": 158100,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.581051,
+        "commit": 0.045672
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.544443,
+      "tps": 183674,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.215527,
+        "ordered": 0.238947,
+        "commit": 0.077732
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.567886,
+      "tps": 176092,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.528751,
+        "commit": 0.033314
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.598787,
+      "tps": 167004,
+      "reused": 2750,
+      "conflicts": 8386,
+      "retries": 0,
+      "backoff": 88864,
+      "bodies_reused": 0,
+      "fees_rebased": 2663,
+      "group": "broader",
+      "run": 2,
+      "variant": "after",
+      "phases_seconds": {
+        "prepare": 0.032947,
+        "ordered": 0.521453,
+        "commit": 0.038277
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.245724,
+      "tps": 406961,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.217875,
+        "commit": 0.022416
+      }
+    },
+    {
+      "workload": "storage",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.466637,
+      "tps": 214299,
+      "reused": 100000,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.143263,
+        "ordered": 0.204947,
+        "commit": 0.113648
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 1.772079,
+      "tps": 56431,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 1.732127,
+        "commit": 0.034953
+      }
+    },
+    {
+      "workload": "compute_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.475564,
+      "tps": 210277,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.153178,
+        "ordered": 0.229092,
+        "commit": 0.087533
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.633689,
+      "tps": 157806,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.580234,
+        "commit": 0.047661
+      }
+    },
+    {
+      "workload": "tip20_paid",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.565778,
+      "tps": 176748,
+      "reused": 98849,
+      "conflicts": 127,
+      "retries": 0,
+      "backoff": 1024,
+      "bodies_reused": 0,
+      "fees_rebased": 98075,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.22142,
+        "ordered": 0.249831,
+        "commit": 0.081094
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 0,
+      "seconds": 0.573868,
+      "tps": 174256,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 1.5e-05,
+        "ordered": 0.531561,
+        "commit": 0.036369
+      }
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 100000,
+      "workers": 8,
+      "seconds": 0.611699,
+      "tps": 163479,
+      "reused": 2904,
+      "conflicts": 8232,
+      "retries": 0,
+      "backoff": 88864,
+      "bodies_reused": 0,
+      "fees_rebased": 2817,
+      "group": "broader",
+      "run": 3,
+      "variant": "before",
+      "phases_seconds": {
+        "prepare": 0.029179,
+        "ordered": 0.531964,
+        "commit": 0.044175
+      }
+    }
+  ]
+}

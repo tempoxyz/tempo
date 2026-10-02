@@ -1,0 +1,98 @@
+diff --git a/crates/evm/src/parallel.rs b/crates/evm/src/parallel.rs
+index 90d9005c0..cb8c55b7a 100644
+--- a/crates/evm/src/parallel.rs
++++ b/crates/evm/src/parallel.rs
+@@ -257,32 +257,44 @@ impl SpeculativeExecutor {
+         let forwarding = self
+             .state_forwarding
+             .then(|| forwarding::Forwarding::new(&inputs));
+-        let shared = Arc::new(Work {
+-            inputs,
+-            nonce_ptrs,
+-            prefetched,
+-            cache: RwLock::new(HashMap::default()),
+-            next: AtomicUsize::new(0),
+-            cancelled: AtomicBool::new(false),
+-            forwarding,
+-        });
+         let (sender, receiver) = mpsc::channel();
+         let workers = count.min(self.pool.current_num_threads());
+         let mut lanes = vec![Vec::new(); workers];
++        let mut carry_writes = vec![false; count];
+         let mut chained_workers = false;
+-        if self.chained_workers && shared.forwarding.is_none() {
+-            let mut payers: HashMap<Address, usize> = HashMap::default();
+-            for (index, (tx, _)) in shared.inputs.iter().enumerate() {
++        if self.chained_workers && forwarding.is_none() {
++            use std::collections::hash_map::Entry;
++            let mut payers: HashMap<Address, (usize, usize)> = HashMap::default();
++            for (index, (tx, _)) in inputs.iter().enumerate() {
+                 let next_lane = payers.len() % workers;
+-                let lane = *payers
+-                    .entry(tx.fee_payer().unwrap_or(tx.inner.caller))
+-                    .or_insert(next_lane);
++                let lane = match payers.entry(tx.fee_payer().unwrap_or(tx.inner.caller)) {
++                    Entry::Vacant(entry) => {
++                        entry.insert((next_lane, index));
++                        next_lane
++                    }
++                    Entry::Occupied(mut entry) => {
++                        let (lane, previous) = entry.get_mut();
++                        carry_writes[*previous] = true;
++                        *previous = index;
++                        *lane
++                    }
++                };
+                 lanes[lane].push(index);
+             }
+             // Independent payers need neither a private write overlay nor fixed
+             // assignment. Preserve dynamic worker balancing for those windows.
+             chained_workers = payers.len() < count;
+         }
++        let shared = Arc::new(Work {
++            inputs,
++            nonce_ptrs,
++            carry_writes,
++            prefetched,
++            cache: RwLock::new(HashMap::default()),
++            next: AtomicUsize::new(0),
++            cancelled: AtomicBool::new(false),
++            forwarding,
++        });
+         let mut batch = SpeculativeBatch {
+             shared: shared.clone(),
+             receiver,
+@@ -355,6 +367,7 @@ fn prefetch<'a, DB: Database>(
+ struct Work {
+     inputs: Vec<(TempoTxEnv, Env)>,
+     nonce_ptrs: Vec<Option<U256>>,
++    carry_writes: Vec<bool>,
+     prefetched: HashMap<ReadKey, ReadValue>,
+     cache: RwLock<HashMap<ReadKey, ReadValue>>,
+     next: AtomicUsize,
+@@ -448,9 +461,12 @@ fn run_worker<E: DBErrorMarker>(
+         if let Some(body) = &mut body {
+             body.set_database_reads(body_reads);
+         }
+-        if let Ok(result) = &result
++        if shared.carry_writes[index]
++            && let Ok(result) = &result
+             && let Some(overlay) = &mut evm.ctx_mut().journaled_state.database.overlay
+         {
++            // Only retain writes needed by a later candidate from this payer.
++            // Cross-payer dependencies still replay when their actual reads differ.
+             // This is a private prediction, not an authoritative commit. Reads
+             // served from it are recorded by the outer database just like remote
+             // reads, so any skipped, failed or conflicting predecessor is checked
+diff --git a/crates/evm/src/parallel/tests.rs b/crates/evm/src/parallel/tests.rs
+index 4ca74da4b..961986377 100644
+--- a/crates/evm/src/parallel/tests.rs
++++ b/crates/evm/src/parallel/tests.rs
+@@ -2937,6 +2937,7 @@ fn worker_panic_releases_other_workers_waiting_for_reads() {
+     let shared = Arc::new(Work {
+         inputs: vec![(tx.clone(), env)],
+         nonce_ptrs: vec![None],
++        carry_writes: vec![false],
+         prefetched: HashMap::default(),
+         cache: RwLock::default(),
+         next: AtomicUsize::new(0),

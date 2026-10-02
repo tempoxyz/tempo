@@ -1,0 +1,96 @@
+{
+  "scope": "Raw sender counters, distinct from trimmed canonical node throughput",
+  "target_tps": 10000,
+  "runs": [
+    {
+      "role": "baseline",
+      "pair": 1,
+      "sent": 888940,
+      "success": 888940,
+      "failed": 0,
+      "elapsed_secs": 90.536067622,
+      "tps": 9818.62834722888,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 9856.214285714286,
+        "min": 8044,
+        "max": 10066
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 2,
+      "sent": 892211,
+      "success": 892211,
+      "failed": 0,
+      "elapsed_secs": 90.579317637,
+      "tps": 9850.052123107936,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 9901.1,
+        "min": 9520,
+        "max": 10010
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 3,
+      "sent": 893269,
+      "success": 893269,
+      "failed": 0,
+      "elapsed_secs": 90.369790175,
+      "tps": 9884.597477433503,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 9910.271428571428,
+        "min": 9438,
+        "max": 10049
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 1,
+      "sent": 891097,
+      "success": 891097,
+      "failed": 0,
+      "elapsed_secs": 90.499802233,
+      "tps": 9846.397207651233,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 9881.07142857143,
+        "min": 9276,
+        "max": 10014
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 2,
+      "sent": 892721,
+      "success": 892721,
+      "failed": 0,
+      "elapsed_secs": 90.304927769,
+      "tps": 9885.628858300848,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 9899.485714285714,
+        "min": 9318,
+        "max": 10037
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 3,
+      "sent": 886194,
+      "success": 886194,
+      "failed": 0,
+      "elapsed_secs": 90.302407188,
+      "tps": 9813.625434757663,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 9809.214285714286,
+        "min": 6766,
+        "max": 10010
+      }
+    }
+  ]
+}

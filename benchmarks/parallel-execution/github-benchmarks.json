@@ -1,14 +1,14 @@
 {
-  "status": "recovered_sender_throughput_pending",
+  "status": "25k_and_75k_target_comparisons_running",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
     "performance_gate": "Periodically run the real GitHub benchmark workflows after substantial scheduler changes; local measurements are diagnostic.",
-    "slack": "Use workflow on-win notifications for future runs. No direct Slack fallback."
+    "slack": "Workflow on-win only: significant improvement and no significant noninformational regressions. No direct Slack fallback."
   },
   "repository": "tempoxyz/tempo",
   "published_branch": "onbjerg/parallel-execution",
-  "published_commit": "c83b280859983fd3cc02f025d2e9817c662f236a",
+  "published_commit": "a58e6311027e073dacc442e80eccd9e7659cc244",
   "source_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
   "publication": "Git push; original local history linked to earlier API snapshot and latest main",
   "workflow": ".github/workflows/bench-e2e.yml",
@@ -350,7 +350,7 @@
       "created_at": "2026-10-02T15:31:55Z",
       "harness_sha": "c83b280859983fd3cc02f025d2e9817c662f236a",
       "workflow": ".github/workflows/bench-e2e.yml",
-      "status": "in_progress",
+      "status": "completed",
       "inputs": {
         "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
         "feature": "c83b280859983fd3cc02f025d2e9817c662f236a",
@@ -373,7 +373,196 @@
         "no-slack": "false",
         "run-pairs": "3"
       },
-      "purpose": "Measure lookahead reuse of recovered senders and shared sender recovery cache; removes repeated serial signature recovery found in Engine profile. Includes explicit-fee prefetch optimization. Normal roots and builder prewarming, profiling on; paired main baseline."
+      "purpose": "Measure lookahead reuse of recovered senders and shared sender recovery cache; removes repeated serial signature recovery found in Engine profile. Includes explicit-fee prefetch optimization. Normal roots and builder prewarming, profiling on; paired main baseline.",
+      "conclusion": "success",
+      "runner": "ghr-euw-05",
+      "result": "Throughput regression despite lower block latency; no acceptance gain.",
+      "baseline_tps": 16745,
+      "feature_tps": 13330,
+      "delta_pct": -20.39,
+      "builder_gas_throughput_delta_pct": -41.09,
+      "validator_gas_throughput_delta_pct": -30.85,
+      "artifact_id": 11237003121,
+      "report": "github-37027627722/summary.md",
+      "sender_report_failures": {
+        "baseline": [
+          6399,
+          9381,
+          20703
+        ],
+        "feature": [
+          13637,
+          21148,
+          16708
+        ]
+      },
+      "speculative_stats_by_role": {
+        "validator": {
+          "speculated": 3686057,
+          "nonce_filtered": 0,
+          "reused": 2832171,
+          "bodies_reused": 0,
+          "fees_rebased": 2802981,
+          "conflicts": 853886,
+          "retries": 0,
+          "backoff": 0,
+          "events": 662
+        },
+        "builder": {
+          "speculated": 3718307,
+          "nonce_filtered": 0,
+          "reused": 2818248,
+          "bodies_reused": 0,
+          "fees_rebased": 2789200,
+          "conflicts": 849764,
+          "retries": 0,
+          "backoff": 2625,
+          "events": 660
+        }
+      },
+      "shutdown": "Two engine-stop fatal updates occurred after shutdown signals and graceful engine termination; no canonical mismatch observed.",
+      "slack": "Workflow success notifier ran with on-win. Existing any-improvement filter accepts mixed results; no API error or skip was logged. Delivery is not independently verified. Future policy requires improvement without significant regressions."
+    },
+    {
+      "id": 37029957596,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37029957596",
+      "created_at": "2026-10-02T15:51:54Z",
+      "harness_sha": "79542df563944df7a19d1039f9ed4e84ce124d2f",
+      "workflow": ".github/workflows/bench-e2e.yml",
+      "status": "completed",
+      "inputs": {
+        "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
+        "feature": "c83b280859983fd3cc02f025d2e9817c662f236a",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "10000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "off",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "false",
+        "run-pairs": "3"
+      },
+      "purpose": "Begin lower-load matrix with same c83b28085 runtime as the 50k profile run, profiling off. Compare against paired main; check achieved submission rate separately from configured target.",
+      "conclusion": "success",
+      "result": "10k input-limited: neutral confirmed TPS, improved builder latency, validator regression. No saturation acceptance claim.",
+      "baseline_tps": 9915,
+      "feature_tps": 9924,
+      "delta_pct": 0.09,
+      "builder_gas_throughput_delta_pct": 6.05,
+      "validator_gas_throughput_delta_pct": -27.74,
+      "artifact_id": 11237577411,
+      "report": "github-37029957596/summary.md",
+      "sender_report_failures": {
+        "baseline": [
+          0,
+          0,
+          0
+        ],
+        "feature": [
+          0,
+          0,
+          0
+        ]
+      },
+      "slack": "Uses prior any-improvement on-win filter; notifier ran without skip/error. Future policy suppresses mixed results.",
+      "runner": "ghr-euw-04",
+      "speculative_stats_by_role": {
+        "validator": {
+          "speculated": 2670012,
+          "nonce_filtered": 0,
+          "reused": 2052327,
+          "bodies_reused": 0,
+          "fees_rebased": 2031141,
+          "conflicts": 617685,
+          "retries": 0,
+          "backoff": 0,
+          "events": 628
+        },
+        "builder": {
+          "speculated": 1096016,
+          "nonce_filtered": 1180131,
+          "reused": 812923,
+          "bodies_reused": 0,
+          "fees_rebased": 797913,
+          "conflicts": 243368,
+          "retries": 0,
+          "backoff": 402776,
+          "events": 625
+        }
+      },
+      "shutdown": "One fatal engine-stop update after shutdown signal and graceful engine termination. No canonical mismatch observed."
+    },
+    {
+      "id": 37033132058,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37033132058",
+      "created_at": "2026-10-02T16:19:21Z",
+      "status": "in_progress",
+      "workflow": ".github/workflows/bench-e2e.yml",
+      "harness_sha": "a58e6311027e073dacc442e80eccd9e7659cc244",
+      "inputs": {
+        "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
+        "feature": "c83b280859983fd3cc02f025d2e9817c662f236a",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "25000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "off",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "false",
+        "run-pairs": "3"
+      },
+      "purpose": "Measure 25000 target TPS against the same main and sender-reuse snapshots as the 10k and 50k runs. Profiling off; normal roots and prewarming; Slack requires significant improvement without significant noninformational regressions."
+    },
+    {
+      "id": 37033133677,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37033133677",
+      "created_at": "2026-10-02T16:19:22Z",
+      "status": "in_progress",
+      "workflow": ".github/workflows/bench-e2e.yml",
+      "harness_sha": "a58e6311027e073dacc442e80eccd9e7659cc244",
+      "inputs": {
+        "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
+        "feature": "c83b280859983fd3cc02f025d2e9817c662f236a",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "75000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "off",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "false",
+        "run-pairs": "3"
+      },
+      "purpose": "Measure 75000 target TPS against the same main and sender-reuse snapshots as the 10k and 50k runs. Profiling off; normal roots and prewarming; Slack requires significant improvement without significant noninformational regressions."
     }
   ],
   "replay_retry": {
@@ -444,5 +633,6 @@
     "run_id": 37027627722,
     "inputs_file": "/tmp/tempo-main-github-50k-recovered-lookahead-inputs.json",
     "notification": "Manual workflow on-win; no-slack=false"
-  }
+  },
+  "offered_load_caveat": "Configured tps values are targets. Raw sender time series from run 37022356052 did not sustain 50k submissions/s; generator CPU limits vs sender backpressure are not distinguished. Preserve both actual submissions and canonical block throughput."
 }

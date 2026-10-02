@@ -64,8 +64,17 @@ senders or the existing ingress sender cache, with ordinary recovery on a miss.
 The unchanged authoritative transaction and read checks still gate result reuse.
 Uncached, cold-cache, warm-cache and recovered-block differential checks preserve
 receipts, intermediate state hooks and roots; real-node observer and AA tests
-pass. See `lookahead-sender-validation.json`. GitHub run 37027627722 measures this
-change against main; its result is pending.
+pass. See `lookahead-sender-validation.json`. GitHub run 37027627722 still
+regresses: 16,745 baseline versus 13,330 feature TPS (-20.39%), builder gas
+throughput -41.09%, validator gas throughput -30.85%. The feature profile places
+5.1% of Engine samples under signature recovery, versus 53.4% in the preceding
+feature capture; these captures use different runners and are not a paired
+wall-time comparison. Serial preparation accounts for 24.9% of builder samples,
+and prewarming consumes 119,023 samples versus 33,875 on speculative workers.
+Reuse is 76.8% in validation and 75.8% in building; all speculative retry counters
+are zero. Two engine-stop errors follow graceful engine termination during
+shutdown. See `github-37027627722/` for reports, profiles and shutdown context.
+Raw sender samples average 13,189–18,054 submissions/s; 50k remains a target.
 
 Historical run 37025825306 passes the same 5,000 mainnet blocks per pair with
 workers confirmed active: 1,232 candidates, 1,207 reused, 25 conflicts and zero
@@ -73,6 +82,12 @@ retries in each measured pass. Normal canonical state-root and receipt checks
 remain enabled. This window is sparse, and newPayload gas throughput regresses
 14.93%; it is correctness coverage, not a saturation result. See
 `github-37025825306/`. The workflow's on-win policy correctly skipped Slack.
+
+At the 10k target, run 37029957596 sustains 9,915 baseline versus 9,924 feature
+TPS (statistically neutral), with zero raw sender failures. Builder gas
+throughput improves 6.05%, while validator gas throughput regresses 27.74% and
+validator P50 rises 35.10%. This is input-limited performance, not evidence of
+saturation capacity. See `github-37029957596/`.
 
 Target rate is distinct from actual submission rate. In the fourth run, raw
 sender samples from seconds 10–79 average 8,496–11,317 submissions/s, and none
@@ -118,6 +133,12 @@ to 156,788 TPS (-2.85%) across alternating 500,000-transaction runs; preparation
 time also increased. The production change was reverted. The fixture and the
 expanded T7/T8/T13/T14 prefetch coverage check remain; see
 `t14-token-prefetch-rejected.*` for the patch and measurements.
+
+Skipping the private payer-state copy for a lane's final transaction was also
+rejected. Initial 100k runs improved transfer throughput about 10%, but alternating
+500k runs measured -0.8% for one token and -3.5% for four. Broader workloads were
+mixed. These unpinned local diagnostics do not justify retaining the change;
+source and measurements remain in `t14-payer-tail-rejected.*`.
 
 An experiment sharing immutable environments between candidates was rejected:
 eight-worker storage throughput fell 24.6% and paid compute fell 7.3% in the
@@ -1986,14 +2007,18 @@ loads with normal state-root computation.
 Future runs notify Slack through the workflow's existing win-only policy.
 Replay uses `slack=on-win`; manual e2e dispatch uses this branch's workflow with
 `no-slack=false` (its `BENCH_SLACK=on-win` also suppresses failure notifications).
-The reusable e2e workflow caller policy is unchanged. Already-running comparison
-37022356052 predates this preference and retains `no-slack=true`.
+The on-win filter requires a significant improvement and no significant
+noninformational regressions. This prevents smaller blocks and lower latency
+from classifying a throughput loss as a win. The always-mode policy is unchanged.
+Fourteen mocked notifier tests cover both workflows without sending messages.
+Run 37027627722 and the already-dispatched 10k run 37029957596 use the earlier
+any-improvement filter, which can notify on mixed results.
 
 `github-benchmarks.json` records pinned snapshots, workflow revisions, inputs and
 results. The current-main port retains the harness's regenesis and encrypted
-consensus key interfaces. All three completed throughput comparisons regress.
-Historical replay is being retried with Rust 1.98.1 after an LLVM compiler crash;
-the engine-cache integration gap above also needs explicit worker coverage.
+consensus key interfaces. All five completed 50k-target comparisons regress.
+Historical replay with Rust 1.98.1 now verifies active workers and canonical
+outputs, as described above; that sparse window is not a saturation benchmark.
 Local in-memory TPS is not
 the GitHub performance gate, and forwarding remains opt-in pending measurement.
 
@@ -2042,11 +2067,10 @@ differential check also compares actual receipts and ordered state hooks.
 - Reduce the remaining serial fee-processing and partial-replay overhead.
 - Expand AMM liquidity, authorization/delegation, hardfork-boundary and adversarial
   differential coverage, including independent implementations or state-test corpora.
-- Replay historical blocks against verified parent state and canonical receipts and
-  roots. The public Moderato endpoint returned HTTP 403 from this host; no historical
-  mainnet/testnet replay is claimed. The local replay harness is available.
-  The snapshot metadata API configured in the node also returns HTTP 403
-  (`historical-snapshot-access.json`, checked 2026-10-02).
+- Expand historical replay beyond the sparse 5,000-block mainnet window already
+  checked with active workers, including busier blocks and additional transaction
+  shapes. GitHub's replay workflow provides access despite direct public RPC and
+  snapshot access returning HTTP 403 from this host.
 - Sustain 50k+ actual node TPS, measure transaction confirmation latency, and profile
   execution separately from pool iteration and block finishing on a larger host.
   The 5B-gas follow-up removes the original benchmark's block-gas ceiling, but
