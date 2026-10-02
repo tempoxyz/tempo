@@ -51,8 +51,8 @@ use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
-    transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
+    TempoSignature, TempoTransaction, TempoTxEnvelope,
+    transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
 };
 use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
@@ -315,10 +315,7 @@ pub(crate) fn sign_precompile_call(
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
         .expect("failed to sign generated benchmark transaction");
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed = tx.into_signed(TempoSignature::from(signature));
     TempoTxEnvelope::from(signed)
         .try_into_recovered()
         .expect("generated benchmark transaction should recover")
@@ -339,7 +336,7 @@ pub(crate) fn fixture_from_seeded_db(seeded: CacheDB<EmptyDB>) -> ExecutionFixtu
     for (address, account) in state_cache.accounts {
         insert_account(&execution_cache, &mut accounts, address, &account);
         for (slot, value) in account.storage {
-            let storage_key = B256::new(slot.to_be_bytes());
+            let storage_key = B256::from(slot);
             execution_cache.insert_storage(address, storage_key, Some(value));
             storage.insert((address, storage_key), value);
         }

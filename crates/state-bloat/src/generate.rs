@@ -306,17 +306,13 @@ mod tests {
         let addr = token_address(0);
         assert_eq!(
             addr,
-            "0x20C0000000000000000000000000000000000000"
-                .parse::<Address>()
-                .unwrap()
+            alloy_primitives::address!("0x20C0000000000000000000000000000000000000")
         );
 
         let addr = token_address(1);
         assert_eq!(
             addr,
-            "0x20C0000000000000000000000000000000000001"
-                .parse::<Address>()
-                .unwrap()
+            alloy_primitives::address!("0x20C0000000000000000000000000000000000001")
         );
     }
 
@@ -350,7 +346,7 @@ mod tests {
     #[test]
     fn test_entry_size() {
         let slot = U256::ZERO.to_be_bytes::<32>();
-        let value = U256::from(1).to_be_bytes::<32>();
+        let value = alloy_primitives::B256::with_last_byte(1).0;
         assert_eq!(slot.len() + value.len(), 64);
     }
 

@@ -119,7 +119,7 @@ fn an_in_flight_ancestor_can_become_the_finalized_tip() {
             let (a, t) = (ancestor.digest(), target.digest());
             h.marshal.add_block(ancestor.clone());
             h.marshal.add_block(target);
-            let syncing = status == PayloadStatusEnum::Syncing;
+            let syncing = status.is_syncing();
             let release = h.execution.script_delayed_new_payload(a, Ok(status));
             if syncing {
                 h.execution
@@ -174,7 +174,7 @@ fn finality_overtaking_an_in_flight_ancestor_reprobes_the_target() {
             for block in [&b1, &b2, &b3, &target] {
                 h.marshal.add_block(block.clone());
             }
-            let needs_finalization = status != PayloadStatusEnum::Valid;
+            let needs_finalization = !status.is_valid();
             let release = h.execution.script_delayed_new_payload(d1, Ok(status));
             if needs_finalization {
                 h.execution

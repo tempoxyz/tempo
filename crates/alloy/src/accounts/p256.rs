@@ -264,9 +264,7 @@ mod tests {
         let signer = TempoP256Signer::from_webcrypto_jwk(&webcrypto_vector_jwk()).unwrap();
         assert_eq!(
             signer.address(),
-            "0xf0159a522607cd6ab1097204c9fafb7bbe6afb6c"
-                .parse::<Address>()
-                .unwrap()
+            alloy_primitives::address!("0xf0159a522607cd6ab1097204c9fafb7bbe6afb6c")
         );
         assert!(signer.pre_hash());
     }

@@ -4043,7 +4043,7 @@ pub(crate) mod tests {
                 ITIP20::BurnAt::SIGNATURE_HASH,
                 MULTICALL3_ADDRESS.into_word(),
                 fixture.holder.into_word(),
-                B256::from(amount.to_be_bytes::<32>()),
+                B256::from(amount),
             ]
         );
         assert!(logs[1].data.data.is_empty());

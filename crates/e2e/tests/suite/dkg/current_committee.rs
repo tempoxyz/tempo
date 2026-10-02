@@ -49,7 +49,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
             .unwrap_or_default()
             .to::<usize>();
         let public_keys_data_slot =
-            U256::from_be_bytes(keccak256(U256::from(1).to_be_bytes::<32>()).0);
+            U256::from_be_bytes(keccak256(alloy_primitives::B256::with_last_byte(1).0).0);
         let public_keys = (0..public_keys_len)
             .map(|index| {
                 state
@@ -60,7 +60,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
                     .unwrap()
                     .unwrap_or_default()
             })
-            .map(|value| B256::from(value.to_be_bytes::<32>()))
+            .map(B256::from)
             .collect::<Vec<_>>();
         let expected_public_keys = outcome
             .players()

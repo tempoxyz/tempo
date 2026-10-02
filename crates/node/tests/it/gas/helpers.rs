@@ -2,7 +2,6 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
-    network::EthereumWallet,
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     rpc::client::RpcClient,
@@ -117,7 +116,7 @@ impl TempoTxSender<()> {
         signer: PrivateKeySigner,
     ) -> eyre::Result<TempoTxSender<impl Provider + Clone>> {
         let provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(signer.clone()))
+            .wallet(signer.clone())
             .connect_http(http_url);
         let chain_id = provider.get_chain_id().await?;
         let nonce = provider.get_transaction_count(signer.address()).await?;
@@ -129,7 +128,7 @@ impl TempoTxSender<()> {
         signer: PrivateKeySigner,
     ) -> eyre::Result<TempoTxSender<impl Provider + Clone>> {
         let provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(signer.clone()))
+            .wallet(signer.clone())
             .connect_http(http_url);
         let chain_id = provider.get_chain_id().await?;
         Ok(TempoTxSender::new(provider, chain_id, signer, 0))

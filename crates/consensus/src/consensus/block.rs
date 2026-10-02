@@ -408,7 +408,7 @@ impl commonware_consensus::CertifiableBlock for Block {
                 Context {
                     leader,
                     round: Round::new(Epoch::new(0), View::new(0)),
-                    parent: (View::new(0), Digest(B256::ZERO)),
+                    parent: (View::zero(), Digest(B256::ZERO)),
                 }
             }
         }

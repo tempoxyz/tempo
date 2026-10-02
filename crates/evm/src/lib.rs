@@ -168,7 +168,7 @@ impl ConfigureEvm for TempoEvmConfig {
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
-            self.chain_spec().chain().id(),
+            self.chain_spec().chain_id(),
             self.chain_spec()
                 .blob_params_at_timestamp(header.timestamp()),
         );
@@ -226,7 +226,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .next_block_base_fee(parent, attributes.timestamp)
                 .unwrap_or_default(),
             self.chain_spec(),
-            self.chain_spec().chain().id(),
+            self.chain_spec().chain_id(),
             self.chain_spec()
                 .blob_params_at_timestamp(attributes.timestamp),
         );
