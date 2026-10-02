@@ -31,6 +31,15 @@ use tempo_revm::IntoAddress;
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
 
+/// First block of the `LAST_SEEN_WINDOW`-block lookback window ending at `tip`.
+///
+/// The window is inclusive of `tip`, so it reaches only `LAST_SEEN_WINDOW - 1` blocks back —
+/// one fewer than [`LAST_SEEN_WINDOW`]. Saturates at zero so a chain shorter than the window is
+/// still read from genesis instead of underflowing.
+const fn last_seen_window_start(tip: u64) -> u64 {
+    tip.saturating_sub(LAST_SEEN_WINDOW.saturating_sub(1) as u64)
+}
+
 #[derive(Debug, Clone)]
 pub struct AmmLiquidityCache {
     inner: Arc<RwLock<AmmLiquidityCacheInner>>,
@@ -189,8 +198,7 @@ impl AmmLiquidityCache {
     {
         self.clear();
         let tip = client.best_block_number()?;
-        let headers =
-            client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?;
+        let headers = client.sealed_headers_range(last_seen_window_start(tip)..=tip)?;
         self.on_new_blocks(headers.iter(), client)
     }
 
@@ -776,6 +784,34 @@ mod tests {
         assert_eq!(inner.last_seen_tokens.len(), LAST_SEEN_WINDOW);
         assert_eq!(inner.last_seen_tokens.back(), Some(&new_token));
         assert_eq!(inner.last_seen_tokens.front(), Some(&Address::new([1; 20])));
+    }
+
+    #[test]
+    fn test_repopulate_lookback_window_matches_cache_capacity() {
+        // `repopulate` must read exactly the block window the cache retains. A longer range
+        // makes `on_new_blocks` process blocks that `pop_front` immediately drops (wasted
+        // SLOADs per header); a shorter one leaves the cache under-populated.
+        let window = LAST_SEEN_WINDOW as u64;
+
+        // Once the chain is at least a full window deep, exactly `LAST_SEEN_WINDOW` blocks
+        // are read. The previous `tip - (LAST_SEEN_WINDOW + 1)` range read two extra.
+        for tip in [window, window + 1, 1_000, u64::MAX] {
+            let from = last_seen_window_start(tip);
+            assert_eq!(
+                tip.saturating_sub(from).saturating_add(1),
+                window,
+                "tip {tip} must read exactly {window} blocks",
+            );
+        }
+
+        // Chains shorter than the window are read from genesis rather than underflowing.
+        for tip in [0, 1, window - 2, window - 1] {
+            assert_eq!(
+                last_seen_window_start(tip),
+                0,
+                "tip {tip} must clamp the window to genesis",
+            );
+        }
     }
 
     #[test]
