@@ -727,7 +727,7 @@ mod tests {
             .unwrap();
         db.insert_account_storage(
             TOKENS[0],
-            tip20_slots::CURRENCY.into(),
+            tip20_slots::CURRENCY,
             alloy_primitives::uint!(
                 0x5553440000000000000000000000000000000000000000000000000000000006_U256
             ),

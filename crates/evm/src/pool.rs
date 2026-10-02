@@ -24,6 +24,12 @@ pub type TempoPoolValidationResult<DBError> =
 /// Owning the complete lifecycle lets custom EVMs additionally clear adapter-specific state without
 /// exposing their internal contexts or databases to the transaction pool.
 pub trait TempoPoolValidationEvm: Evm<Tx = TempoTxEnv> {
+    /// Test-only ordered candidates, delegated to the shared production selector.
+    #[cfg(feature = "test-utils")]
+    fn with_test_fallback_tokens(self, tokens: Vec<alloy_primitives::Address>) -> Self
+    where
+        Self: Sized;
+
     /// Configures this EVM for transaction-pool validation.
     fn configure_for_pool(&mut self);
 

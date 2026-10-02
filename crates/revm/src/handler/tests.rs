@@ -452,6 +452,7 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() ->
 
                 let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
                     .with_issuer(admin)
+                    .with_mint(fee_payer, fee)
                     .apply()?;
 
                 TipFeeManager::new().set_validator_token(
@@ -489,6 +490,18 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() ->
             ),
             "expected pair-aware insufficient liquidity error, got: {result:?}"
         );
+        if spec.is_t14() {
+            // The later token is the validator token itself, so it can pay without a swap.
+            // Selection must stop at the funded user token even though its AMM is illiquid.
+            let selection = test.evm.fallback_selection.as_ref().unwrap();
+            assert!(selection.used_fallback);
+            assert_eq!(selection.token, user_token);
+            let slot = TIP20Token::from_address_unchecked(user_token).balances[fee_payer].slot();
+            assert_eq!(
+                selection.balance_slots,
+                vec![(PATH_USD_ADDRESS, slot), (user_token, slot)]
+            );
+        }
     }
     Ok(())
 }

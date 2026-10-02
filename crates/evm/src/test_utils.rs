@@ -268,6 +268,13 @@ pub(crate) fn fallback_payment_fixture(
         Ok::<_, tempo_precompiles::error::TempoPrecompileError>(tokens)
     })
     .unwrap();
+    // Match genesis: fixed storage precompiles are initialized, making their accounts
+    // nonempty. State (unlike CacheDB) clears touched empty accounts under EIP-161.
+    StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        TipFeeManager::new().initialize()?;
+        tempo_precompiles::nonce::NonceManager::new().initialize()
+    })
+    .unwrap();
     let setup = evm.ctx_mut().journaled_state.finalize();
     evm.db_mut().commit(setup);
     let mut tx = TempoTransaction {

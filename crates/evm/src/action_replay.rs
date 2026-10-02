@@ -730,7 +730,11 @@ mod tests {
                 for (token, account) in expected_state {
                     for (key, value) in account.storage {
                         if value.is_changed() {
-                            assert_eq!(state.storage(token, key).unwrap(), value.present_value());
+                            assert_eq!(
+                                state.storage(token, key).unwrap(),
+                                value.present_value(),
+                                "changed storage mismatch at {token} slot {key}, commit_reads={commit_reads}, changed_index={changed_index}"
+                            );
                         }
                     }
                 }

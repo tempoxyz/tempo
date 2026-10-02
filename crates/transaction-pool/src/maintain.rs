@@ -482,11 +482,24 @@ where
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
+    let chain_events = pool.client().canonical_state_stream();
+    maintain_tempo_pool_with_events(pool, chain_events).await;
+}
+
+// The same event loop accepts a supplied stream so mock providers can exercise canonical
+// maintenance (MockEthProvider's subscription immediately closes).
+pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
+    pool: TempoTransactionPool<Client, EvmConfig>,
+    mut chain_events: impl futures::Stream<Item = CanonStateNotification<TempoPrimitives>> + Unpin,
+) where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + HeaderProvider<Header = TempoHeader>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
     let mut pending_staleness = PendingStalenessTracker::default();
     let metrics = TempoPoolMaintenanceMetrics::default();
-
-    // Subscribe to canonical chain events.
-    let mut chain_events = pool.client().canonical_state_stream();
 
     let amm_cache = pool.amm_liquidity_cache();
     let mut previous_spec = None;
