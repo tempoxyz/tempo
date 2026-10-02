@@ -79,7 +79,7 @@ use tempo_transaction_pool::{
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, field::Empty, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -284,7 +284,13 @@ where
         fields(
             id = %args.config.payload_id,
             parent_number = %args.config.parent_header.number(),
-            parent_hash = %args.config.parent_header.hash()
+            parent_hash = %args.config.parent_header.hash(),
+            number = args.config.parent_header.number() + 1,
+            hash = Empty,
+            gas_used = Empty,
+            transactions = Empty,
+            payment_transactions = Empty,
+            stop_reason = Empty,
         )
     )]
     fn build_payload<Txs>(
@@ -321,6 +327,7 @@ where
 
         check_cancel!();
 
+        let build_payload_span = Span::current();
         let start = Instant::now();
 
         let block_time_millis =
@@ -496,7 +503,8 @@ where
             .record(pool_fetch_start.elapsed());
 
         let execution_start = Instant::now();
-        let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
+        let _block_fill_span =
+            debug_span!(target: "payload_builder", "block_fill", stop_reason = Empty).entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
@@ -565,6 +573,27 @@ where
             let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
 
+            let tx_span = debug_span!(
+                target: "payload_builder",
+                "execute_tx",
+                tx_hash = %tx.hash(),
+                tx_index = executor.receipts().len(),
+                sender = %tx.sender(),
+                gas_limit = tx.gas_limit(),
+                is_payment = Empty,
+                replayed = pool_tx.replay.is_some(),
+                outcome = Empty,
+                skip_reason = Empty,
+                gas_used = Empty,
+                success = Empty,
+            )
+            .entered();
+            let skip_tx = |reason: &'static str| {
+                tx_span.record("outcome", "skipped");
+                tx_span.record("skip_reason", reason);
+                self.metrics.inc_pool_tx_skipped(reason);
+            };
+
             let max_regular_gas_used = core::cmp::min(
                 tx.gas_limit(),
                 executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
@@ -581,7 +610,7 @@ where
                         block_gas_limit - cumulative_gas_used,
                     ),
                 );
-                self.metrics.inc_pool_tx_skipped("exceeds_block_gas_limit");
+                skip_tx("exceeds_block_gas_limit");
                 continue;
             }
 
@@ -590,6 +619,7 @@ where
             } else {
                 tx.transaction.inner().is_payment_v1()
             };
+            tx_span.record("is_payment", is_payment);
 
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
@@ -600,8 +630,7 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                skip_tx("exceeds_general_gas_limit");
                 continue;
             }
 
@@ -621,7 +650,7 @@ where
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
+                skip_tx("oversized_block");
                 skipped_oversized_block = true;
                 continue;
             }
@@ -630,6 +659,7 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
+            let gas_used_before = cumulative_gas_used;
             let result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
@@ -674,7 +704,7 @@ where
                         if error.is_nonce_too_low() {
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                            skip_tx("nonce_too_low");
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
@@ -685,7 +715,7 @@ where
                                     InvalidTransactionError::TxTypeNotSupported,
                                 ),
                             );
-                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                            skip_tx("invalid_tx");
                         }
                         continue;
                     }
@@ -700,7 +730,7 @@ where
                                     InvalidTransactionError::TxTypeNotSupported,
                                 ),
                             );
-                            self.metrics.inc_pool_tx_skipped("invalid_replay");
+                            skip_tx("invalid_replay");
                             trace!(
                                 target: "payload_builder",
                                 tx_hash = ?tx.hash(),
@@ -717,6 +747,8 @@ where
             }
 
             trace!("Transaction executed");
+            tx_span.record("outcome", "included");
+            tx_span.record("gas_used", cumulative_gas_used - gas_used_before);
             if let Some(bal_task_handle) = &bal_task_handle {
                 bal_task_handle.bump_bal_index();
             }
@@ -724,6 +756,7 @@ where
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
+            tx_span.record("success", receipt.success);
             if !receipt.success {
                 reverted_transactions += 1;
             }
@@ -736,6 +769,8 @@ where
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let stop_reason = block_build_stop_reason.as_str();
+        _block_fill_span.record("stop_reason", stop_reason);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -1017,6 +1052,11 @@ where
             .rlp_block_size_bytes_last
             .set(recorded_block_size_bytes as f64);
 
+        build_payload_span.record("hash", tracing::field::display(block.hash()));
+        build_payload_span.record("gas_used", gas_used);
+        build_payload_span.record("transactions", total_transactions);
+        build_payload_span.record("payment_transactions", payment_transactions);
+        build_payload_span.record("stop_reason", stop_reason);
         info!(
             parent_hash = ?block.parent_hash(),
             number = block.number(),

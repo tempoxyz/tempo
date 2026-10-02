@@ -15,7 +15,7 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
-use tracing::{instrument, trace};
+use tracing::{Span, field::Empty, instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -168,7 +168,13 @@ impl BestTransactionsPrewarming {
     ///
     /// If [`PrewarmingExecutionContext::parallel`] is enabled and prewarming was successful,
     /// a [`PrewarmedTransaction`] with populated replay data is returned.
-    #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
+    #[instrument(
+        parent = &prewarm.span,
+        level = "debug",
+        target = "payload_builder",
+        skip_all,
+        fields(parallel = prewarm.parallel, tx_hash = %tx.hash(), outcome = Empty)
+    )]
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
@@ -179,12 +185,17 @@ impl BestTransactionsPrewarming {
     {
         let replay = WorkerPool::with_worker_mut(|worker| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
+                Span::current().record("outcome", "not_parallel_candidate");
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut() else {
+                Span::current().record("outcome", "no_evm");
+                return None;
+            };
 
             if prewarm.is_stopped() {
+                Span::current().record("outcome", "stopped");
                 return None;
             }
 
@@ -198,6 +209,7 @@ impl BestTransactionsPrewarming {
                 Err(err) => {
                     // Discard actions recorded by the failed transaction before reusing this worker.
                     evm.clear_actions();
+                    Span::current().record("outcome", "failed");
                     trace!(
                         target: "payload_builder",
                         %err,
@@ -209,6 +221,7 @@ impl BestTransactionsPrewarming {
             };
 
             trace!(target: "payload_builder", "Prewarmed transaction");
+            Span::current().record("outcome", "executed");
 
             if !prewarm.parallel {
                 return None;
@@ -227,6 +240,7 @@ impl BestTransactionsPrewarming {
                 })
                 .flatten();
 
+            Span::current().record("outcome", "replay");
             trace!(
                 target: "payload_builder",
                 actions = actions.len(),
@@ -336,6 +350,8 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// Span of the payload build, used as the parent of per-transaction prewarm spans.
+    span: Span,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -358,6 +374,7 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            span: Span::current(),
         }
     }
 
@@ -713,6 +730,7 @@ mod tests {
             evm_env,
             stop: Arc::default(),
             parallel,
+            span: Span::none(),
         }
     }
 
