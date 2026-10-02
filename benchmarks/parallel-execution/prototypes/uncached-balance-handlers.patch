@@ -1,0 +1,96 @@
+diff --git a/crates/precompiles/src/storage/types/mapping.rs b/crates/precompiles/src/storage/types/mapping.rs
+index b0e607ac..ba7c2391 100644
+--- a/crates/precompiles/src/storage/types/mapping.rs
++++ b/crates/precompiles/src/storage/types/mapping.rs
+@@ -66,6 +66,22 @@ impl<K, V: StorableType> Mapping<K, V> {
+         self.base_slot
+     }
+ 
++    /// Computes an owned handler without adding it to this mapping's cache.
++    ///
++    /// Useful for short-lived leaf accesses that do not need a stable reference:
++    /// no box or cache entry is allocated. Repeated accesses can use [`Self::at`].
++    #[inline]
++    pub fn at_uncached(&self, key: &K) -> V::Handler
++    where
++        K: StorageKey,
++    {
++        V::handle(
++            key.mapping_slot(self.base_slot),
++            LayoutCtx::FULL,
++            self.address,
++        )
++    }
++
+     /// Returns a `Handler` for the given key.
+     ///
+     /// This enables the composable pattern: `mapping.at(&key).read()`
+diff --git a/crates/precompiles/src/tip20/mod.rs b/crates/precompiles/src/tip20/mod.rs
+index 7e988731..a848d8dd 100644
+--- a/crates/precompiles/src/tip20/mod.rs
++++ b/crates/precompiles/src/tip20/mod.rs
+@@ -888,11 +888,11 @@ impl TIP20Token {
+     }
+ 
+     fn get_balance(&self, account: Address) -> Result<U256> {
+-        self.balances[account].read()
++        self.balances.at_uncached(&account).read()
+     }
+ 
+     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+-        self.balances[account].write(amount)
++        self.balances.at_uncached(&account).write(amount)
+     }
+ 
+     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
+@@ -1061,7 +1061,10 @@ impl TIP20Token {
+         self.set_balance(from, new_from_balance)?;
+ 
+         let key = fee_updates::recording_key(|| {
+-            (self.address, self.balances[TIP_FEE_MANAGER_ADDRESS].slot())
++            (
++                self.address,
++                self.balances.at_uncached(&TIP_FEE_MANAGER_ADDRESS).slot(),
++            )
+         });
+         fee_updates::update(key, FeeDelta::Add(amount), || {
+             let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
+@@ -1113,7 +1116,10 @@ impl TIP20Token {
+         }
+ 
+         let key = fee_updates::recording_key(|| {
+-            (self.address, self.balances[TIP_FEE_MANAGER_ADDRESS].slot())
++            (
++                self.address,
++                self.balances.at_uncached(&TIP_FEE_MANAGER_ADDRESS).slot(),
++            )
+         });
+         fee_updates::update(key, FeeDelta::Sub(refund), || {
+             let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
+diff --git a/crates/revm/src/handler.rs b/crates/revm/src/handler.rs
+index 2df11ac8..00021054 100644
+--- a/crates/revm/src/handler.rs
++++ b/crates/revm/src/handler.rs
+@@ -44,7 +44,8 @@ use tempo_precompiles::{
+         NonceManager,
+     },
+     storage::{
+-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
++        Handler as _, PrecompileStorageProvider, StorageCtx, StorageKey,
++        evm::EvmPrecompileStorageProvider,
+     },
+     tip_fee_manager::TipFeeManager,
+     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+@@ -2061,10 +2062,8 @@ where
+ {
+     // Address has already been validated as having TIP20 prefix
+     journal.load_account(token)?;
+-    let balance_slot = TIP20Token::from_address(token)
+-        .expect("TIP20 prefix already validated")
+-        .balances[sender]
+-        .slot();
++    assert!(token.is_tip20(), "TIP20 prefix already validated");
++    let balance_slot = sender.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
+     tempo_precompiles::storage::access::storage(token, balance_slot);
+     let balance = journal.sload(token, balance_slot)?.data;
+ 

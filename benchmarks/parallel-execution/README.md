@@ -52,6 +52,8 @@ Workloads:
 - `compute_paid`: the same compute loop with shared fee collection and settlement.
 - `tip20`: independent funded pathUSD transfers, with no fees.
 - `tip20_paid`: the same transfers with a nonzero gas price, sharing fee state.
+- `tip20_paid_aa_existing`: paid two-dimensional AA transfers among 100 funded
+  accounts, with deterministic pseudorandom recipients and shared balance dependencies.
 
 ## Host and results
 
@@ -1623,8 +1625,9 @@ against sequential execution and canonical receipts, gas, receipt roots and stat
 roots: 18 blocks with 217,775 user transactions plus 18 system transactions.
 Replay timings are diagnostic. Disposable 512/1,024 databases with clean shutdown
 were removed after replay; reports, logs and metrics remain, with retention
-metadata in the JSON results. The two 128 controls and the anomalous 512 database
-are retained.
+metadata in the JSON results. The two 128 controls were subsequently removed
+after their recorded replays to free benchmark space. The anomalous 512 database
+is retained.
 
 ## Grouping repeated prefetch keys (2026-10-02)
 
@@ -1726,6 +1729,87 @@ and state roots match sequential execution. Replay timings are diagnostic, with
 backoff/minimum body-duration gates disabled and sequential execution warming the
 provider caches. Before databases were removed after replay; reports, metrics,
 logs and retention metadata remain. After databases are retained.
+
+## Balance contention experiments (2026-10-02)
+
+`balance-conflict-trace.json` traces canonical block 9 from the retained
+`prefetch-plan` existing-recipient node trial. All 11,469 first failed dependencies
+are ordinary storage reads in pathUSD; 11,369 (99.1%) match the 99 genesis slots
+prefunded with `uint64::MAX`. The other 100 failures are left unclassified. The
+15,755-transaction block still matches full sequential execution and canonical
+receipts/gas/roots (`balance-conflict-canonical.tsv`). This replay disables
+adaptive backoff and emits trace logs, so its timings are diagnostic. It shows
+why the existing-recipient workload falls back frequently, without authorizing
+any relaxation of balance-read validation.
+
+The new `tip20_paid_aa_existing` benchmark keeps the 100 senders and two-dimensional
+nonces of the existing AA benchmark, but draws recipients from those funded
+accounts using a fixed xorshift sequence. `contention-window-sweep.{json,tsv}`
+compares 50,000 transactions at 0/16 workers, a 5B block-gas budget and seven
+window sizes in forward then reverse order. All parallel outputs match sequential
+receipts and final roots. These are generated T0 in-memory results, with phase
+clocks enabled and no overlapping builds or throughput runs.
+
+| Window | 16-worker execution TPS | Fully reused | Conflicts | Sequential backoff |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 81,660 | 47,748 | 2,252 | 0 |
+| 8 | 98,217 | 44,973 | 5,027 | 0 |
+| 16 | 94,538 | 40,032 | 9,968 | 0 |
+| 32 | 93,612 | 30,388 | 17,052 | 2,560 |
+| 64 | 104,721 | 2,436 | 3,388 | 44,176 |
+| 128 | 104,860 | 1,346 | 4,286 | 44,368 |
+| 256 | 104,658 | 672 | 4,960 | 44,368 |
+
+Sequential execution averages 109,605 TPS across the fourteen controls. A smaller
+window recovers more reusable results, but preparing and scheduling cheap native
+transfers costs more than it saves here. Neither the default window nor its
+backoff policy changes. Native balance-dependent work remains a parallel-scaling
+limit; lowering replay counts alone is not sufficient evidence of a speedup.
+
+Two allocation experiments were also rejected and reverted:
+
+- `prototypes/uncached-balance-handlers.patch` returns owned balance handlers
+  without populating mapping caches and computes the fee-validation balance slot
+  directly. In the two-pair phase-instrumented comparison, sequential AA execution
+  drops from 105,052 to 98,536 TPS for new recipients and 109,736 to 103,152 TPS for
+  existing recipients. Existing-recipient execution with 16 workers drops from
+  104,118 to 98,134 TPS (`uncached-balance-micro.{json,tsv}`).
+- `prototypes/direct-balance-slot.patch` retains only the direct fee-validation
+  slot calculation. The initial measurements are mixed
+  (`direct-balance-slot-micro.{json,tsv}`). Six additional before/after repeats per
+  executable, without phase timers, show the tradeoff below
+  (`direct-balance-slot-repeat.{json,tsv}`). The parallel new-recipient regression
+  prevents adopting this change.
+
+| Direct-slot repeat workload | Workers | Before mean TPS | After mean TPS |
+| --- | ---: | ---: | ---: |
+| AA, new recipients | 0 | 107,208 | 108,542 |
+| AA, new recipients | 16 | 131,240 | 126,849 |
+| AA, existing recipients | 0 | 111,394 | 114,012 |
+| AA, existing recipients | 16 | 106,100 | 107,884 |
+
+Both patches apply to `77f5953e` and are independent alternatives. Each passed the
+93-test EVM suite and all measured receipt/root comparisons, but neither changes
+the retained production executor. No full-node throughput gain is claimed from
+these experiments. The saved executables, hashes, run order and patch hashes are
+recorded with the measurements.
+
+The retained differential regression uses 128 AA transactions among 16 funded
+accounts, mixing zero/paid fees, sponsors, zero/nonzero transfers, insufficient-
+balance reverts and multicall balance queries. A sequential preflight requires
+exactly 109 successes and 19 reverts at each fork, preventing an accidentally
+invalid workload from making the differential checks vacuous. Eight forks from
+T0 through T4, 1/4 workers and windows of 8/32/128 give 48 combinations; each runs
+all eight streaming/fee-rebasing/payer-chaining configurations. Full outcomes,
+state deltas, receipts including logs/cumulative gas, and final roots match in
+all 384 comparisons. The final EVM suite passes 94 tests, and release EVM Clippy
+passes with warnings denied.
+
+Completed `window` 128 controls and the three initial `nonce-filter-early` after
+databases were removed only after their previously recorded canonical replays
+and confirmation checks. Their reports, metrics, logs and retention metadata
+remain; the latest `prefetch-plan` after databases are available for further
+replay. The separate shutdown-anomaly database remains retained.
 
 ## Correctness model and integration
 

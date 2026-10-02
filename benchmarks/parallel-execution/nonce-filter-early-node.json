@@ -133,7 +133,10 @@
       "source": "ae5c08d9 plus nonce filtering before worker input conversion"
     },
     "retention": {
-      "canonical_database_retained": true
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after previously recorded canonical replay to make room for further executor benchmarks. Reports, logs, metrics and CPU samples retained."
     }
   },
   {
@@ -553,7 +556,10 @@
       "source": "ae5c08d9 plus nonce filtering before worker input conversion"
     },
     "retention": {
-      "canonical_database_retained": true
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after previously recorded canonical replay to make room for further executor benchmarks. Reports, logs, metrics and CPU samples retained."
     }
   },
   {
@@ -691,7 +697,10 @@
       "source": "ae5c08d9 plus nonce filtering before worker input conversion"
     },
     "retention": {
-      "canonical_database_retained": true
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after previously recorded canonical replay to make room for further executor benchmarks. Reports, logs, metrics and CPU samples retained."
     }
   },
   {

@@ -136,6 +136,12 @@
       "to": 10,
       "output": "benchmarks/parallel-execution/window-canonical-new-128.tsv",
       "timing": "diagnostic; overlaps correctness build"
+    },
+    "retention": {
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after previously recorded canonical replay to make room for further executor benchmarks. Reports, logs, metrics and CPU samples retained."
     }
   },
   {
@@ -835,6 +841,12 @@
       "to": 13,
       "output": "benchmarks/parallel-execution/window-canonical-existing-128.tsv",
       "timing": "diagnostic; overlaps correctness build"
+    },
+    "retention": {
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after previously recorded canonical replay to make room for further executor benchmarks. Reports, logs, metrics and CPU samples retained."
     }
   }
 ]

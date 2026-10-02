@@ -795,6 +795,108 @@ fn fee_rebasing_replays_intermediate_and_accumulator_overflow() {
 }
 
 #[test]
+fn generated_existing_recipient_balances_match_across_forks_and_windows() {
+    use alloy_evm::FromRecoveredTx;
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+
+    let users = 16;
+    let db = funded_tip20_db(users);
+    let mut seed = 0x9e3779b97f4a7c15_u64;
+    let transactions = (0..128)
+        .map(|i| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let recipient = address(seed % users);
+            let mut calls = vec![Call {
+                to: PATH_USD_ADDRESS.into(),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: recipient,
+                    amount: match i % 7 {
+                        0 => U256::ZERO,
+                        1 => U256::MAX, // Reverts with the observed available balance.
+                        _ => U256::from(17),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            }];
+            if i % 3 == 0 {
+                // Returned balances must reflect earlier credits and fee debits,
+                // including earlier transactions whose transfer call reverted.
+                calls.push(Call {
+                    to: PATH_USD_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: ITIP20::balanceOfCall { account: recipient }
+                        .abi_encode()
+                        .into(),
+                });
+            }
+            let paid = u128::from(i % 5 != 0);
+            let signed = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 2_000_000,
+                max_fee_per_gas: paid,
+                max_priority_fee_per_gas: paid,
+                nonce_key: U256::from(1 + i / users),
+                calls,
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::default());
+            let mut tx = TempoTxEnv::from_recovered_tx(&signed, address(i % users));
+            if i % 4 == 0 {
+                let sponsor = (i % users + 1 + (i / 4) % (users - 1)) % users;
+                tx.fee_payer = Some(Some(address(sponsor)));
+            }
+            tx
+        })
+        .collect::<Vec<_>>();
+    for spec in FEE_SPECS {
+        let mut reference = TempoEvm::new(
+            db.clone(),
+            EvmEnv {
+                cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
+                    spec,
+                    tempo_revm::gas_params::tempo_gas_params(spec),
+                ),
+                block_env: TempoBlockEnv {
+                    inner: revm::context::BlockEnv {
+                        gas_limit: 500_000_000,
+                        basefee: 0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            },
+        );
+        let mut successes = 0;
+        let mut reverts = 0;
+        for tx in &transactions {
+            let result = reference.transact_raw(tx.clone()).unwrap();
+            if result.result.is_success() {
+                successes += 1;
+            } else {
+                assert!(matches!(
+                    result.result,
+                    revm::context::result::ExecutionResult::Revert { .. }
+                ));
+                reverts += 1;
+            }
+            reference.db_mut().commit(result.state);
+        }
+        assert_eq!((successes, reverts), (109, 19), "{spec:?}");
+        for workers in [1, 4] {
+            for window in [8, 32, 128] {
+                differential_at_spec(db.clone(), &transactions, workers, window, spec);
+            }
+        }
+    }
+}
+
+#[test]
 fn tip20_transfers_track_balances_and_fee_counters() {
     use alloy_sol_types::SolCall;
     use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
@@ -1842,8 +1944,12 @@ fn execution_throughput() {
                     | "tip20"
                     | "tip20_paid"
                     | "tip20_paid_aa"
+                    | "tip20_paid_aa_existing"
             ));
-            let users = if matches!(workload, "compute_paid_chains" | "tip20_paid_aa") {
+            let users = if matches!(
+                workload,
+                "compute_paid_chains" | "tip20_paid_aa" | "tip20_paid_aa_existing"
+            ) {
                 100
             } else {
                 count
@@ -1868,9 +1974,18 @@ fn execution_throughput() {
                     ],
                 );
             }
+            let mut recipient_seed = 0x9e3779b97f4a7c15_u64;
             let txs = (0..count)
                 .map(|i| {
-                    if workload == "tip20_paid_aa" {
+                    if workload.starts_with("tip20_paid_aa") {
+                        recipient_seed ^= recipient_seed << 13;
+                        recipient_seed ^= recipient_seed >> 7;
+                        recipient_seed ^= recipient_seed << 17;
+                        let recipient = if workload == "tip20_paid_aa_existing" {
+                            address(recipient_seed % users)
+                        } else {
+                            address(count + 1000 + i)
+                        };
                         let signed = TempoTransaction {
                             chain_id: 1,
                             gas_limit: 1_000_000,
@@ -1881,7 +1996,7 @@ fn execution_throughput() {
                                 to: PATH_USD_ADDRESS.into(),
                                 value: U256::ZERO,
                                 input: ITIP20::transferCall {
-                                    to: address(count + 1000 + i),
+                                    to: recipient,
                                     amount: U256::from(17),
                                 }
                                 .abi_encode()
