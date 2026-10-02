@@ -23,7 +23,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     sol_types::SolCall,
 };
-use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
+use alloy_eips::{BlockId, Encodable2718};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
 
@@ -36,7 +36,7 @@ async fn get_createx_deployed_address<P: Provider>(
     provider: &P,
     block_number: u64,
 ) -> eyre::Result<Address> {
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
+    let block_id = BlockId::number(block_number);
     for _ in 0..50 {
         if let Some(receipts) = provider.get_block_receipts(block_id).await? {
             let receipt = receipts
@@ -59,7 +59,7 @@ async fn total_receipt_gas_for_block<P: Provider>(
     provider: &P,
     block_number: u64,
 ) -> eyre::Result<u64> {
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
+    let block_id = BlockId::number(block_number);
     for _ in 0..50 {
         if let Some(receipts) = provider.get_block_receipts(block_id).await? {
             return Ok(receipts.iter().map(|r| r.gas_used).sum());
@@ -263,7 +263,7 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
         1,
         5_000_000,
         contract_addr,
-        calldata1.to_vec().into(),
+        calldata1.into(),
     );
     setup.node.rpc.inject_tx(call1_raw).await?;
     setup.node.advance_block().await?;
@@ -277,7 +277,7 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
         2,
         5_000_000,
         contract_addr,
-        calldata2.to_vec().into(),
+        calldata2.into(),
     );
     setup.node.rpc.inject_tx(call2_raw).await?;
     let call2_payload = setup.node.advance_block().await?;
@@ -439,7 +439,7 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_block_number).await?;
 
     // Verify the tx reverted by checking receipts
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(call_block_number));
+    let block_id = BlockId::number(call_block_number);
     let receipts = provider
         .get_block_receipts(block_id)
         .await?
@@ -736,10 +736,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 
     // Step 3: Call A, passing B's address as calldata.
     // A will CALL B, B does SSTORE + REVERT, A continues and STOPs.
-    let b_addr_calldata: Bytes = alloy_primitives::B256::left_padding_from(b_addr.as_slice())
-        .as_slice()
-        .to_vec()
-        .into();
+    let b_addr_calldata: Bytes = b_addr.into_word().as_slice().to_vec().into();
 
     let call_raw = build_call_tx(&signer, chain_id, 2, 5_000_000, a_addr, b_addr_calldata);
     setup.node.rpc.inject_tx(call_raw).await?;
@@ -750,7 +747,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_blk).await?;
 
     // Verify the tx succeeded (A ignores B's revert)
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(call_blk));
+    let block_id = BlockId::number(call_blk);
     let receipts = provider
         .get_block_receipts(block_id)
         .await?

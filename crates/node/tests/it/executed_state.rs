@@ -24,7 +24,7 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
         .await?
         .node;
     let chain_spec = producer.inner.chain_spec();
-    let chain_id = chain_spec.chain().id();
+    let chain_id = chain_spec.chain_id();
 
     let signer = Wallet::new(1)
         .with_chain_id(chain_id)

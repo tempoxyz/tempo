@@ -218,7 +218,7 @@ fn historical_tips_and_genesis_remain_allowed() {
 #[test]
 fn startup_rejects_malformed_or_invalid_tip_certificates() {
     Runner::default().start(|mut context| async move {
-        let fixture = dkg_fixture(&mut context, Epoch::new(0));
+        let fixture = dkg_fixture(&mut context, Epoch::zero());
         let configured_identity = identity(&fixture);
         let valid = tip(&fixture, 1);
         let mut altered_header = header(valid.0);

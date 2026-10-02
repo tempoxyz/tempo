@@ -471,11 +471,8 @@ mod tests {
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
-            Call, calc_gas_balance_spending,
-            tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-            validate_calls,
+            Call, calc_gas_balance_spending, tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
+            tt_signature::TempoSignature, tt_signed::AASigned, validate_calls,
         },
     };
 
@@ -577,10 +574,8 @@ mod tests {
                 }],
                 ..Default::default()
             };
-            let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                Signature::test_signature(),
-            ));
-            AASigned::new_unhashed(tx, sig)
+            let sig = TempoSignature::from(Signature::test_signature());
+            tx.into_signed(sig)
         };
 
         // Expiring nonce txs and channel opens share the same encode_for_signing||sender hash.
@@ -665,10 +660,8 @@ mod tests {
                 nonce,
                 ..Default::default()
             };
-            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                Signature::test_signature(),
-            ));
-            AASigned::new_unhashed(tx, signature)
+            let signature = TempoSignature::from(Signature::test_signature());
+            tx.into_signed(signature)
         };
         let signed = make_signed(0);
         let envelope = TempoTxEnvelope::AA(signed.clone());

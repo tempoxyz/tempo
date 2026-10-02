@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn test_webauthn_size_clamped_to_max() {
         // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
-        let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes().to_vec());
+        let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes());
         let sig =
             create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
 

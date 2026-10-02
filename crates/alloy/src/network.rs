@@ -514,11 +514,7 @@ mod tests {
                     address: Address::ZERO,
                     nonce: 0,
                 },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
-                    U256::ZERO,
-                    U256::ZERO,
-                    false,
-                ))),
+                TempoSignature::from(Signature::new(U256::ZERO, U256::ZERO, false)),
             )],
             ..Default::default()
         };

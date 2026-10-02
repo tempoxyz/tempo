@@ -1978,9 +1978,8 @@ mod tests {
             tempo_authorization_list: vec![],
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let signed = tx.into_signed(signature);
 
         // Test direct RLP encoding/decoding
         let mut buf = Vec::new();
@@ -2018,9 +2017,8 @@ mod tests {
             tempo_authorization_list: vec![],
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let signed = tx.into_signed(signature);
         let envelope = TempoTxEnvelope::AA(signed);
 
         // Encode and decode the envelope
@@ -2259,7 +2257,7 @@ mod tests {
                 address: Address::random(),
                 nonce: 1,
             },
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::from(Signature::test_signature()),
         );
 
         // Invalid: CREATE call with auth list
@@ -2470,11 +2468,7 @@ mod compact_tests {
                     address: address!("0x0000000000000000000000000000000000000099"),
                     nonce: 1,
                 },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
-                    U256::from(3u64),
-                    U256::from(4u64),
-                    true,
-                ))),
+                TempoSignature::from(Signature::new(U256::from(3u64), U256::from(4u64), true)),
             )],
         };
 

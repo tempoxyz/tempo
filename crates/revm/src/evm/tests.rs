@@ -2605,18 +2605,15 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     //   constructor: SSTORE(0, 1)
     //   runtime: setMode(Preserve); 500x clear/restore slot0; setMode(Direct); 500x create
     // Selector 0x21175b4a = setMode(uint8); precompile = 0x1060...0000.
-    let init = Bytes::from(
-        hex!(
-            "60016000556100a660136000396100a66000f3\
+    let init = Bytes::from(hex!(
+        "60016000556100a660136000396100a66000f3\
                 60216000536017600153605b600253604a6003536001602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b60006000556002600055600190038061003e5750\
                 60216000536017600153605b600253604a6003536002602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b8061010001600190556001900380610091575000"
-        )
-        .to_vec(),
-    );
+    ));
 
     let caller = Address::repeat_byte(0x11);
     let mut cfg = CfgEnv::<TempoHardfork>::default();

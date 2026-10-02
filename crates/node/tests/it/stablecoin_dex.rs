@@ -654,10 +654,8 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
     await_receipts(&mut pending).await?;
 
-    let expected_selector = format!(
-        "0x{}",
-        alloy::hex::encode(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR)
-    );
+    let expected_selector =
+        alloy::hex::encode_prefixed(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR);
 
     // Try to place a bid order below dust limit (should fail)
     let min_order_amount = MIN_ORDER_AMOUNT;
@@ -746,10 +744,8 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
     await_receipts(&mut pending).await?;
 
-    let expected_selector = format!(
-        "0x{}",
-        alloy::hex::encode(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR)
-    );
+    let expected_selector =
+        alloy::hex::encode_prefixed(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR);
 
     // Try to place a flip bid order below dust limit (should fail)
     let min_order_amount = MIN_ORDER_AMOUNT;

@@ -2601,12 +2601,7 @@ mod tests {
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_primitives::{
         TempoTxEnvelope,
-        transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-        },
+        transaction::{TempoTransaction, tempo_transaction::Call, tt_signature::TempoSignature},
     };
 
     #[test_case::test_case(U256::ZERO)]
@@ -5462,7 +5457,7 @@ mod tests {
         }
 
         // Stage a low-priority nonce chain with its root missing, so all descendants are queued.
-        let attacker = Address::from_word(B256::from(U256::from(1)));
+        let attacker = Address::from_word(B256::with_last_byte(1));
         let nonce_key = U256::from(1);
         for nonce in 1..=4 {
             let tx = TxBuilder::aa(attacker)
@@ -7118,10 +7113,8 @@ mod tests {
                 key_authorization: None,
             };
 
-            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                Signature::test_signature(),
-            ));
-            let aa_signed = AASigned::new_unhashed(tx, signature);
+            let signature = TempoSignature::from(Signature::test_signature());
+            let aa_signed = tx.into_signed(signature);
             let envelope: TempoTxEnvelope = aa_signed.into();
             let recovered = Recovered::new_unchecked(envelope, sender);
             TempoPooledTransaction::new(recovered)
@@ -7204,9 +7197,8 @@ mod tests {
             valid_after: None,
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let aa_signed = AASigned::new_unhashed(tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let aa_signed = tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
         let recovered = Recovered::new_unchecked(envelope, sender);
         let pooled = TempoPooledTransaction::new(recovered);

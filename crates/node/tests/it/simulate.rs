@@ -42,7 +42,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
             "calls": [{
                 "from": format!("{caller:#x}"),
                 "to": format!("{token_addr:#x}"),
-                "input": format!("0x{}", alloy::hex::encode(&calldata)),
+                "input": alloy::hex::encode_prefixed(&calldata),
             }]
         }],
         "traceTransfers": true,

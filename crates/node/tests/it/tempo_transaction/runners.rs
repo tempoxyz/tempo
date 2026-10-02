@@ -224,7 +224,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             name: "webauthn",
             auth: AuthKind::KeyType {
                 key_type: SignatureType::WebAuthn,
-                key_data: Some(Bytes::from(116u16.to_be_bytes().to_vec())),
+                key_data: Some(Bytes::from(116u16.to_be_bytes())),
             },
             noop_expected: ExpectedGasDiff::GreaterThan("p256::noop".into()),
         },
@@ -2006,10 +2006,7 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
     let auth1_addr = auth1_signer.address();
     let (auth1, sig_hash1) = build_authorization(chain_id, delegate_address);
     let sig1 = auth1_signer.sign_hash_sync(&sig_hash1)?;
-    let auth1_signed = TempoSignedAuthorization::new_unchecked(
-        auth1,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig1)),
-    );
+    let auth1_signed = TempoSignedAuthorization::new_unchecked(auth1, TempoSignature::from(sig1));
 
     // Authority 2: P256
     let (auth2_key, pub2_x, pub2_y, auth2_addr) = generate_p256_access_key();

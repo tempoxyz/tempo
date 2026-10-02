@@ -553,7 +553,7 @@ mod tests {
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
         let precompile_result = result.encode_precompile_result(0, 0, |val| {
-            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
+            alloy::primitives::Bytes::from(val.to_be_bytes())
         });
 
         let output = precompile_result.expect("success should be Ok");

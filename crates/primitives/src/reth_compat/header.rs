@@ -297,7 +297,7 @@ mod codec {
 
             // Presto block 1 on-chain hash. If this changes, RLP encoding has broken.
             let expected = "0x76e86f9739fbe17669b01b24e976ac214742c4b1bbc6ae0c083a87e43a5e9b0f";
-            assert_eq!(format!("{hash:#x}"), expected);
+            assert_eq!(hash.to_string(), expected);
         }
 
         #[test]

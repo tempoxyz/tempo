@@ -489,7 +489,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
             .build()?;
 
         let sender_provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(sender.clone()))
+            .wallet(sender.clone())
             .connect_http(http_url.clone());
 
         let token =
@@ -502,7 +502,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
     // Inject payment transactions from multiple senders
     for (sender, token) in payment_senders.iter().zip(payment_tokens.iter()) {
         let sender_provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(sender.clone()))
+            .wallet(sender.clone())
             .connect_http(http_url.clone());
 
         inject_payment_txs_from_sender(
@@ -609,7 +609,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .build()?;
     let user_address = user_signer.address();
     let user_provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(user_signer.clone()))
+        .wallet(user_signer.clone())
         .connect_http(setup.node.rpc_url());
     let chain_id = user_provider.get_chain_id().await?;
 
@@ -762,7 +762,7 @@ async fn fund_path_usd(
     funder_nonce: u64,
 ) -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(funder.clone()))
+        .wallet(funder.clone())
         .connect_http(node.rpc_url());
     let token = ITIP20::new(PATH_USD_ADDRESS, provider);
 
@@ -820,7 +820,7 @@ async fn inject_reserve_payment_txs(
     start_nonce: u64,
 ) -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(sender.clone()))
+        .wallet(sender.clone())
         .connect_http(node.rpc_url());
     let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, provider);
 
@@ -887,7 +887,7 @@ async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
         .build()?;
 
     let provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(payer.clone()))
+        .wallet(payer.clone())
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -930,7 +930,7 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
         .build()?;
 
     let tip20_provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(tip20_sender.clone()))
+        .wallet(tip20_sender.clone())
         .connect_http(setup.node.rpc_url());
     let chain_id = tip20_provider.get_chain_id().await?;
 
@@ -938,7 +938,7 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
         setup_token_manual(&mut setup.node, &tip20_provider, &tip20_sender, chain_id).await?;
 
     let funder_nonce = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(funder.clone()))
+        .wallet(funder.clone())
         .connect_http(setup.node.rpc_url())
         .get_transaction_count(funder.address())
         .await?;
@@ -953,7 +953,7 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
 
     // open is committed in its own setup block; topUp + requestClose are queued as payment txs.
     let reserve_nonce = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(reserve_sender.clone()))
+        .wallet(reserve_sender.clone())
         .connect_http(setup.node.rpc_url())
         .get_transaction_count(reserve_sender.address())
         .await?;
