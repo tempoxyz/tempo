@@ -1,0 +1,53 @@
+{
+  "runs": [
+    {
+      "label": "feature-1",
+      "side": "feature",
+      "total": 1,
+      "files": [
+        "feature-1/tempo-logs/tempo/reth.log"
+      ],
+      "missing_node_logs": []
+    },
+    {
+      "label": "baseline-1",
+      "side": "baseline",
+      "total": 1,
+      "files": [
+        "baseline-1/tempo-logs/tempo/reth.log"
+      ],
+      "missing_node_logs": []
+    },
+    {
+      "label": "baseline-2",
+      "side": "baseline",
+      "total": 1,
+      "files": [
+        "baseline-2/tempo-logs/tempo/reth.log"
+      ],
+      "missing_node_logs": []
+    },
+    {
+      "label": "feature-2",
+      "side": "feature",
+      "total": 1,
+      "files": [
+        "feature-2/tempo-logs/tempo/reth.log"
+      ],
+      "missing_node_logs": []
+    }
+  ],
+  "messages": [
+    {
+      "message": "Error updating fork choice: Invalid fork choice update ForkchoiceState { head_block_hash: 0x36aee690f4e045c3ff3c3989daaab202ae13b8265847760c3b3b4a68bba0f0bd, safe_block_hash: 0x36aee690f4e045c3ff3c3989daaab202ae13b8265847760c3b3b4a68bba0f0bd, finalized_block_hash: 0x36aee690f4e045c3ff3c3989daaab202ae13b8265847760c3b3b4a68bba0f0bd }: ForkchoiceUpdated { payload_status: PayloadStatus { status: Syncing, latest_valid_hash: None }, payload_id: None }",
+      "baseline": 2,
+      "feature": 2,
+      "per_run": {
+        "feature-1": 1,
+        "baseline-1": 1,
+        "baseline-2": 1,
+        "feature-2": 1
+      }
+    }
+  ]
+}

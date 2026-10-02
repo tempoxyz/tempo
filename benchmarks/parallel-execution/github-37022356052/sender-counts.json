@@ -1,0 +1,42 @@
+{
+  "baseline": [
+    {
+      "sent": 862290,
+      "success": 858714,
+      "failed": 92753,
+      "success_rate": 99.58529033155898
+    },
+    {
+      "sent": 920240,
+      "success": 881591,
+      "failed": 120461,
+      "success_rate": 95.80011736068852
+    },
+    {
+      "sent": 839420,
+      "success": 836238,
+      "failed": 92734,
+      "success_rate": 99.62092873650855
+    }
+  ],
+  "feature": [
+    {
+      "sent": 877273,
+      "success": 865057,
+      "failed": 53862,
+      "success_rate": 98.6075030235742
+    },
+    {
+      "sent": 843420,
+      "success": 834383,
+      "failed": 9037,
+      "success_rate": 98.92852908396765
+    },
+    {
+      "sent": 796003,
+      "success": 780013,
+      "failed": 26647,
+      "success_rate": 97.99121360095377
+    }
+  ]
+}

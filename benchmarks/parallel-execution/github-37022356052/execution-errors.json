@@ -1,0 +1,174 @@
+[
+  {
+    "log": "logs-feature-2-a",
+    "timestamp": "2026-10-02T15:02:09.794599Z",
+    "level": "ERROR",
+    "fields": {
+      "error": "[failed delivering build parent, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "target": "tempo_consensus::executor::actor",
+    "span": {
+      "name": "handle_build"
+    },
+    "spans": [
+      {
+        "current.finalized_digest": "0xf3fde58d14613ee86993f90c118b5f2ffbd86aeb5f037e11993ae704b399fcd3",
+        "current.finalized_height": "174",
+        "current.head_digest": "0x7af36fdd4c1c8f79c7fb793a4303e21e5d62e94c8cc05a804f5ff9e4c594a214",
+        "current.head_height": "175",
+        "name": "start_next_execution_task"
+      },
+      {
+        "task_type": "build",
+        "name": "set_execution_task"
+      },
+      {
+        "outcome": "build",
+        "target": "None",
+        "task_type": "build",
+        "name": "handle_execution_task_finished"
+      },
+      {
+        "name": "handle_build"
+      }
+    ]
+  },
+  {
+    "log": "logs-feature-2-a",
+    "timestamp": "2026-10-02T15:02:09.794618Z",
+    "level": "ERROR",
+    "fields": {
+      "error": "[failed delivering build parent, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "target": "tempo_consensus::executor::actor",
+    "span": {
+      "outcome": "build",
+      "target": "None",
+      "task_type": "build",
+      "name": "handle_execution_task_finished"
+    },
+    "spans": [
+      {
+        "current.finalized_digest": "0xf3fde58d14613ee86993f90c118b5f2ffbd86aeb5f037e11993ae704b399fcd3",
+        "current.finalized_height": "174",
+        "current.head_digest": "0x7af36fdd4c1c8f79c7fb793a4303e21e5d62e94c8cc05a804f5ff9e4c594a214",
+        "current.head_height": "175",
+        "name": "start_next_execution_task"
+      },
+      {
+        "task_type": "build",
+        "name": "set_execution_task"
+      },
+      {
+        "outcome": "build",
+        "target": "None",
+        "task_type": "build",
+        "name": "handle_execution_task_finished"
+      }
+    ]
+  },
+  {
+    "log": "logs-feature-2-a",
+    "timestamp": "2026-10-02T15:02:09.794641Z",
+    "level": "ERROR",
+    "fields": {
+      "message": "executor encountered fatal execution-layer update error; shutting down to prevent consensus-execution divergence",
+      "error": "[failed delivering build parent, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "target": "tempo_consensus::executor::actor",
+    "span": {
+      "name": "shutdown"
+    },
+    "spans": [
+      {
+        "name": "shutdown"
+      }
+    ]
+  },
+  {
+    "log": "logs-feature-2-b",
+    "timestamp": "2026-10-02T15:02:09.797788Z",
+    "level": "ERROR",
+    "fields": {
+      "error": "[failed delivering build parent, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "target": "tempo_consensus::executor::actor",
+    "span": {
+      "name": "handle_build"
+    },
+    "spans": [
+      {
+        "current.finalized_digest": "0xf3fde58d14613ee86993f90c118b5f2ffbd86aeb5f037e11993ae704b399fcd3",
+        "current.finalized_height": "174",
+        "current.head_digest": "0xf3fde58d14613ee86993f90c118b5f2ffbd86aeb5f037e11993ae704b399fcd3",
+        "current.head_height": "174",
+        "name": "start_next_execution_task"
+      },
+      {
+        "task_type": "build",
+        "name": "set_execution_task"
+      },
+      {
+        "outcome": "build",
+        "target": "None",
+        "task_type": "build",
+        "name": "handle_execution_task_finished"
+      },
+      {
+        "name": "handle_build"
+      }
+    ]
+  },
+  {
+    "log": "logs-feature-2-b",
+    "timestamp": "2026-10-02T15:02:09.797806Z",
+    "level": "ERROR",
+    "fields": {
+      "error": "[failed delivering build parent, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "target": "tempo_consensus::executor::actor",
+    "span": {
+      "outcome": "build",
+      "target": "None",
+      "task_type": "build",
+      "name": "handle_execution_task_finished"
+    },
+    "spans": [
+      {
+        "current.finalized_digest": "0xf3fde58d14613ee86993f90c118b5f2ffbd86aeb5f037e11993ae704b399fcd3",
+        "current.finalized_height": "174",
+        "current.head_digest": "0xf3fde58d14613ee86993f90c118b5f2ffbd86aeb5f037e11993ae704b399fcd3",
+        "current.head_height": "174",
+        "name": "start_next_execution_task"
+      },
+      {
+        "task_type": "build",
+        "name": "set_execution_task"
+      },
+      {
+        "outcome": "build",
+        "target": "None",
+        "task_type": "build",
+        "name": "handle_execution_task_finished"
+      }
+    ]
+  },
+  {
+    "log": "logs-feature-2-b",
+    "timestamp": "2026-10-02T15:02:09.797826Z",
+    "level": "ERROR",
+    "fields": {
+      "message": "executor encountered fatal execution-layer update error; shutting down to prevent consensus-execution divergence",
+      "error": "[failed delivering build parent, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "target": "tempo_consensus::executor::actor",
+    "span": {
+      "name": "shutdown"
+    },
+    "spans": [
+      {
+        "name": "shutdown"
+      }
+    ]
+  }
+]

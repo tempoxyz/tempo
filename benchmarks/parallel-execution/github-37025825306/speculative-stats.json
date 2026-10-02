@@ -1,0 +1,50 @@
+{
+  "feature-1": {
+    "all_logged": {
+      "speculated": 1503,
+      "nonce_filtered": 0,
+      "reused": 1475,
+      "bodies_reused": 0,
+      "fees_rebased": 91,
+      "conflicts": 28,
+      "retries": 0,
+      "backoff": 0,
+      "events": 1282
+    },
+    "measured_blocks": {
+      "speculated": 1232,
+      "nonce_filtered": 0,
+      "reused": 1207,
+      "bodies_reused": 0,
+      "fees_rebased": 74,
+      "conflicts": 25,
+      "retries": 0,
+      "backoff": 0,
+      "events": 1042
+    }
+  },
+  "feature-2": {
+    "all_logged": {
+      "speculated": 1503,
+      "nonce_filtered": 0,
+      "reused": 1475,
+      "bodies_reused": 0,
+      "fees_rebased": 91,
+      "conflicts": 28,
+      "retries": 0,
+      "backoff": 0,
+      "events": 1282
+    },
+    "measured_blocks": {
+      "speculated": 1232,
+      "nonce_filtered": 0,
+      "reused": 1207,
+      "bodies_reused": 0,
+      "fees_rebased": 74,
+      "conflicts": 25,
+      "retries": 0,
+      "backoff": 0,
+      "events": 1042
+    }
+  }
+}

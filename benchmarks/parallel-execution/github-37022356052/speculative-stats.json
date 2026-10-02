@@ -1,0 +1,24 @@
+{
+  "validator": {
+    "speculated": 2434703,
+    "nonce_filtered": 0,
+    "reused": 1871892,
+    "bodies_reused": 0,
+    "fees_rebased": 1852582,
+    "conflicts": 562811,
+    "retries": 0,
+    "backoff": 0,
+    "events": 450
+  },
+  "builder": {
+    "speculated": 2467962,
+    "nonce_filtered": 13512,
+    "reused": 1865838,
+    "bodies_reused": 0,
+    "fees_rebased": 1846577,
+    "conflicts": 560949,
+    "retries": 3704,
+    "backoff": 32377,
+    "events": 452
+  }
+}

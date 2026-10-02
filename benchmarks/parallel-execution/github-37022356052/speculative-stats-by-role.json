@@ -1,0 +1,146 @@
+{
+  "logs-feature-1-a": {
+    "validator": {
+      "speculated": 363040,
+      "nonce_filtered": 0,
+      "reused": 278965,
+      "bodies_reused": 0,
+      "fees_rebased": 276081,
+      "conflicts": 84075,
+      "retries": 0,
+      "backoff": 0,
+      "events": 70
+    },
+    "builder": {
+      "speculated": 471770,
+      "nonce_filtered": 5798,
+      "reused": 354531,
+      "bodies_reused": 0,
+      "fees_rebased": 350867,
+      "conflicts": 106253,
+      "retries": 3647,
+      "backoff": 29696,
+      "events": 83
+    }
+  },
+  "logs-feature-1-b": {
+    "builder": {
+      "speculated": 368264,
+      "nonce_filtered": 0,
+      "reused": 278257,
+      "bodies_reused": 0,
+      "fees_rebased": 275380,
+      "conflicts": 83833,
+      "retries": 0,
+      "backoff": 702,
+      "events": 70
+    },
+    "validator": {
+      "speculated": 467924,
+      "nonce_filtered": 0,
+      "reused": 359976,
+      "bodies_reused": 0,
+      "fees_rebased": 356264,
+      "conflicts": 107948,
+      "retries": 0,
+      "backoff": 0,
+      "events": 83
+    }
+  },
+  "logs-feature-2-a": {
+    "validator": {
+      "speculated": 362610,
+      "nonce_filtered": 0,
+      "reused": 278649,
+      "bodies_reused": 0,
+      "fees_rebased": 275775,
+      "conflicts": 83961,
+      "retries": 0,
+      "backoff": 0,
+      "events": 70
+    },
+    "builder": {
+      "speculated": 482892,
+      "nonce_filtered": 0,
+      "reused": 366021,
+      "bodies_reused": 0,
+      "fees_rebased": 362248,
+      "conflicts": 109977,
+      "retries": 0,
+      "backoff": 0,
+      "events": 85
+    }
+  },
+  "logs-feature-2-b": {
+    "builder": {
+      "speculated": 372232,
+      "nonce_filtered": 0,
+      "reused": 281880,
+      "bodies_reused": 0,
+      "fees_rebased": 278972,
+      "conflicts": 84894,
+      "retries": 0,
+      "backoff": 325,
+      "events": 71
+    },
+    "validator": {
+      "speculated": 471773,
+      "nonce_filtered": 0,
+      "reused": 362819,
+      "bodies_reused": 0,
+      "fees_rebased": 359080,
+      "conflicts": 108954,
+      "retries": 0,
+      "backoff": 0,
+      "events": 84
+    }
+  },
+  "logs-feature-3-a": {
+    "validator": {
+      "speculated": 316112,
+      "nonce_filtered": 0,
+      "reused": 243050,
+      "bodies_reused": 0,
+      "fees_rebased": 240537,
+      "conflicts": 73062,
+      "retries": 0,
+      "backoff": 0,
+      "events": 64
+    },
+    "builder": {
+      "speculated": 462011,
+      "nonce_filtered": 7714,
+      "reused": 350465,
+      "bodies_reused": 0,
+      "fees_rebased": 346853,
+      "conflicts": 105434,
+      "retries": 0,
+      "backoff": 0,
+      "events": 80
+    }
+  },
+  "logs-feature-3-b": {
+    "builder": {
+      "speculated": 310793,
+      "nonce_filtered": 0,
+      "reused": 234684,
+      "bodies_reused": 0,
+      "fees_rebased": 232257,
+      "conflicts": 70558,
+      "retries": 57,
+      "backoff": 1654,
+      "events": 63
+    },
+    "validator": {
+      "speculated": 453244,
+      "nonce_filtered": 0,
+      "reused": 348433,
+      "bodies_reused": 0,
+      "fees_rebased": 344845,
+      "conflicts": 104811,
+      "retries": 0,
+      "backoff": 0,
+      "events": 79
+    }
+  }
+}

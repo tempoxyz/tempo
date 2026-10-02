@@ -50,8 +50,29 @@ but predates this finding and cannot establish speculative historical coverage.
 The node now disables this optional engine cache when speculation is enabled,
 preserving standard precompile outputs and gas. A validator-only integration
 test asserts that workers actually run while importing canonical blocks. See
-`engine-speculation-validation.json`. The next profiled throughput comparison
-and historical retry use this behavior.
+`engine-speculation-validation.json`. The fourth profiled throughput comparison
+confirms worker activity in both Engine validation and building, but still
+regresses: 10,717 baseline versus 8,142 feature TPS (-24.03%), builder gas
+throughput -38.60%, validator gas throughput -59.30%. See `github-37022356052/`.
+Raw sender failures are nonzero on both sides. Feature pair 2 reports engine-stop
+errors after a shutdown signal and graceful-shutdown timeout; no canonical root
+or receipt mismatch was observed.
+
+That profile places 53.4% of Engine-thread CPU samples under repeated signature
+recovery in speculative lookahead. Lookahead now reuses the payload's recovered
+senders or the existing ingress sender cache, with ordinary recovery on a miss.
+The unchanged authoritative transaction and read checks still gate result reuse.
+Uncached, cold-cache, warm-cache and recovered-block differential checks preserve
+receipts, intermediate state hooks and roots; real-node observer and AA tests
+pass. See `lookahead-sender-validation.json`. GitHub run 37027627722 measures this
+change against main; its result is pending.
+
+Historical run 37025825306 passes the same 5,000 mainnet blocks per pair with
+workers confirmed active: 1,232 candidates, 1,207 reused, 25 conflicts and zero
+retries in each measured pass. Normal canonical state-root and receipt checks
+remain enabled. This window is sparse, and newPayload gas throughput regresses
+14.93%; it is correctness coverage, not a saturation result. See
+`github-37025825306/`. The workflow's on-win policy correctly skipped Slack.
 
 Workers also predict expiring-nonce ring positions in candidate order and
 prefetch those slots. Predicted values remain ordinary validated reads; skipped,
@@ -69,7 +90,8 @@ transfers improves eight-worker throughput from 139,886 to 165,147 TPS (+18.1%),
 with preparation time falling 31.9%. All four runs preserve sequential receipts
 and roots; EVM and revm tests and all-target Clippy pass. These warm-memory results
 exclude trie hashing and are not the public-mix node workload. See
-`t14-reward-prefetch.json` and its raw logs; GitHub measurement is still required.
+`t14-reward-prefetch.json` and its raw logs. The fourth GitHub comparison above
+includes this optimization and still regresses against main.
 
 The funded-recipient variant `tip20_paid_aa_expiring_funded` uses 1,000 randomly
 selected senders, explicit pathUSD fees and opaque expiring nonces (T12+ required).

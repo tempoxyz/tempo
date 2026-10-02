@@ -1,0 +1,21 @@
+{
+  "status": "historical_canonical_checks_passed_with_workers",
+  "runner": "ghr-euw-07",
+  "measured_blocks_per_pair": 5000,
+  "warmup_blocks": 1250,
+  "pairs": 2,
+  "heights": [
+    42230064,
+    42235063
+  ],
+  "transactions_per_pair": 1232,
+  "gas_per_pair": 150962575,
+  "validation": "Both node binaries accepted the historical payloads with normal canonical state-root and receipt checks. Each feature run logs 1232 worker candidates over the measured heights, 1207 reused, 25 conflicts, zero retries/backoff. This confirms worker execution and selective replay rather than an entirely sequential fallback.",
+  "limitations": [
+    "Sparse mainnet window: about one transaction per four blocks, not a saturation benchmark.",
+    "Full per-block reports remain in the GitHub artifact and /tmp/tempo-github-37025825306-results; compact metadata and file hashes retained here.",
+    "Baseline and feature each log an initial forkchoice Syncing response; it does not prevent replay."
+  ],
+  "notification": "Workflow BENCH_SLACK=on-win logged no significant improvement and skipped all notifications.",
+  "timing": "The summary wall clock is the sum of newPayload call latency across both pairs, not total job or replay duration. Per-run total replay durations are in report-metadata.json."
+}

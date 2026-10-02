@@ -1,5 +1,5 @@
 {
-  "status": "reward_prefetch_throughput_and_engine_replay_pending",
+  "status": "recovered_sender_throughput_pending",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
@@ -8,7 +8,7 @@
   },
   "repository": "tempoxyz/tempo",
   "published_branch": "onbjerg/parallel-execution",
-  "published_commit": "2855d574f564ef6776ae6c95cd1dab0d71e58877",
+  "published_commit": "c83b280859983fd3cc02f025d2e9817c662f236a",
   "source_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
   "publication": "Git push; original local history linked to earlier API snapshot and latest main",
   "workflow": ".github/workflows/bench-e2e.yml",
@@ -263,7 +263,7 @@
       "id": 37022356052,
       "url": "https://github.com/tempoxyz/tempo/actions/runs/37022356052",
       "created_at": "2026-10-02T14:47:36Z",
-      "status": "in_progress",
+      "status": "completed",
       "workflow": ".github/workflows/bench-e2e.yml",
       "harness_sha": "61c979a524f9af5de9c540a0088c429a44741e4c",
       "runner": "ghr-euw-02",
@@ -289,7 +289,91 @@
         "no-slack": "true",
         "run-pairs": "3"
       },
-      "purpose": "Profile and measure T8+ reward-prefetch removal with normal builder prewarming; explicit engine cache disable enables actual validator speculation. Cache-off setting differs from prior runs; compare against paired baseline."
+      "purpose": "Profile and measure T8+ reward-prefetch removal with normal builder prewarming; explicit engine cache disable enables actual validator speculation. Cache-off setting differs from prior runs; compare against paired baseline.",
+      "conclusion": "success",
+      "result": "throughput regression",
+      "baseline_tps": 10717,
+      "feature_tps": 8142,
+      "delta_pct": -24.03,
+      "builder_gas_delta_pct": -38.6,
+      "validator_gas_delta_pct": -59.3,
+      "artifact_id": 11234538651,
+      "artifact_bytes": 1332283553,
+      "report": "github-37022356052/summary.md",
+      "validation_scope": "Scheduler events confirm both Engine API and builder workers; canonical roots checked by normal node execution. No state-root or receipt mismatch found. Feature-2 nodes report fatal engine-stop errors after sender report finalization during shutdown; preserved in execution-errors.json.",
+      "profile_finding": "Repeated signature recovery in block lookahead accounts for 53.4% of sampled Engine-thread CPU. This is whole-profile inclusive CPU, not a measured wall-time fraction.",
+      "sender_report_failures": {
+        "baseline": [
+          92753,
+          120461,
+          92734
+        ],
+        "feature": [
+          53862,
+          9037,
+          26647
+        ]
+      }
+    },
+    {
+      "id": 37025825306,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37025825306",
+      "created_at": "2026-10-02T15:16:39Z",
+      "harness_sha": "273c3dfa182a27c2844f4ece71aa21738eb6a432",
+      "workflow": ".github/workflows/bench-replay.yml",
+      "status": "completed",
+      "conclusion": "success",
+      "inputs": {
+        "chain": "mainnet",
+        "blocks": "5000",
+        "warmup": "1250",
+        "run-pairs": "2",
+        "samply": "false",
+        "otlp": "true",
+        "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
+        "feature": "2855d574f564ef6776ae6c95cd1dab0d71e58877",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "slack": "on-win"
+      },
+      "artifact_id": 11235981161,
+      "artifact_bytes": 53683226,
+      "validation_scope": "Both node binaries accepted the historical payloads with normal canonical state-root and receipt checks. Each feature run logs 1232 worker candidates over the measured heights, 1207 reused, 25 conflicts, zero retries/backoff. This confirms worker execution and selective replay rather than an entirely sequential fallback.",
+      "runner": "ghr-euw-07",
+      "result": "canonical parity with worker reuse; sparse replay performance regression",
+      "report": "github-37025825306/comment.md",
+      "validator_mgas_delta_pct": -14.9302,
+      "notification": "on-win suppressed all notifications; no statistically significant improvement"
+    },
+    {
+      "id": 37027627722,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37027627722",
+      "created_at": "2026-10-02T15:31:55Z",
+      "harness_sha": "c83b280859983fd3cc02f025d2e9817c662f236a",
+      "workflow": ".github/workflows/bench-e2e.yml",
+      "status": "in_progress",
+      "inputs": {
+        "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
+        "feature": "c83b280859983fd3cc02f025d2e9817c662f236a",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "50000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "samply",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "false",
+        "run-pairs": "3"
+      },
+      "purpose": "Measure lookahead reuse of recovered senders and shared sender recovery cache; removes repeated serial signature recovery found in Engine profile. Includes explicit-fee prefetch optimization. Normal roots and builder prewarming, profiling on; paired main baseline."
     }
   ],
   "replay_retry": {
@@ -301,7 +385,7 @@
     "run_id": 37020751576
   },
   "reward_prefetch_comparison": {
-    "state": "in_progress",
+    "state": "completed_regression",
     "inputs_file": "/tmp/tempo-main-github-50k-reward-prefetch-inputs.json",
     "inputs": {
       "baseline": "4caada90d070419af2e72900914849867f4bb5e8",
@@ -338,7 +422,7 @@
     "workflow_commit": "defc78a54"
   },
   "parallel_historical_replay": {
-    "state": "scheduled_after_run_37022356052",
+    "state": "completed_canonical_checks_and_worker_activation_verified",
     "workflow_ref": "onbjerg/parallel-execution",
     "inputs": {
       "chain": "mainnet",
@@ -352,6 +436,13 @@
       "feature-args": "--execution.threads 8 --execution.batch-size 128",
       "slack": "on-win"
     },
-    "purpose": "Historical canonical root/receipt validation with verified Engine API worker activation. Collect scheduler events to confirm the path actually runs."
+    "purpose": "Historical canonical root/receipt validation with verified Engine API worker activation. Collect scheduler events to confirm the path actually runs.",
+    "run_id": 37025825306
+  },
+  "sender_lookahead_comparison": {
+    "state": "in_progress",
+    "run_id": 37027627722,
+    "inputs_file": "/tmp/tempo-main-github-50k-recovered-lookahead-inputs.json",
+    "notification": "Manual workflow on-win; no-slack=false"
   }
 }
