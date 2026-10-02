@@ -53,5 +53,22 @@
   "finalVaultAssets": 1000000,
   "lastTransferZoneBlock": "0x57b",
   "settledZoneBlock": "0x5f0",
-  "settledZoneBlockHash": "0xcdcf8c6bfaa5fecb49e3679cfb7f1b13aae7a266b0a8277eae13c431dd9e25b0"
+  "settledZoneBlockHash": "0xcdcf8c6bfaa5fecb49e3679cfb7f1b13aae7a266b0a8277eae13c431dd9e25b0",
+  "burstLatencySeconds": {
+    "deposit": {
+      "p50": 0.898235559463501,
+      "p95": 1.013303518295288,
+      "p99": 1.0154812335968018
+    },
+    "zone": {
+      "p50": 0.8965327739715576,
+      "p95": 1.0098028182983398,
+      "p99": 1.017998456954956
+    },
+    "redeem": {
+      "p50": 0.9061369895935059,
+      "p95": 1.0240044593811035,
+      "p99": 1.0298199653625488
+    }
+  }
 }

@@ -5,6 +5,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import math
 import os
 import runpy
 from pathlib import Path
@@ -106,6 +107,17 @@ def main():
     assert earn_gas == summary["earnPaymentGas"] and earn_block_gas == summary["earnBlockGas"]
     assert zone_gas == summary["zoneTransferGas"]
     assert earn_matches == summary["earnMatchingMetricSamples"]
+
+    for mode in ("deposit", "zone", "redeem"):
+        durations = sorted(
+            item["record"]["finishedAt"] - item["record"][
+                "startedAt" if mode == "zone" else "submittedAt"
+            ] for item in records if item["mode"] == mode
+        )
+        assert len(durations) == summary["cycles"]
+        for label, quantile in (("p50", 0.50), ("p95", 0.95), ("p99", 0.99)):
+            observed = durations[math.ceil(quantile * len(durations)) - 1]
+            assert abs(observed - summary["burstLatencySeconds"][mode][label]) < 1e-9
 
     assert len(settlements) == summary["settlementCount"] == 26
     sampled = 0

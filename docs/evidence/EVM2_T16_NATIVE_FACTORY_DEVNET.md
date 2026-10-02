@@ -229,6 +229,11 @@ accounts for Earn receipt gas separately from full L1 block gas. All 120 Earn
 blocks had captured payment-lane samples with zero general-lane gas; 1,708
 samples matched the full L1 block gas. Twenty-six NoProof Zone settlements
 succeeded during the window, with two matching zero-general-lane samples.
+Per 100-transaction leg, client-observed submission-to-receipt p50/p95/p99
+latencies were 0.898/1.013/1.015 seconds for deposits,
+0.897/1.010/1.018 for private transfers, and 0.906/1.024/1.030 for
+redemptions. These are burst completion times, not individual transaction
+latencies.
 The final settled Zone block follows the last transfer. The private sender
 lost exactly 6,000 units, the recipient gained 6,000, and Zone supply equals
 portal custody at 1,000,000. EarnShare supply equals vault assets at 1,000,000.
