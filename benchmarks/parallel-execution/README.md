@@ -19,6 +19,18 @@ compute workload from 48,905 to 209,232 TPS with eight workers; native-transfer
 results were broadly unchanged relative to their sequential references. This is
 an in-memory diagnostic, not a node throughput claim. See `t14-worker-hash.json`.
 
+The first current-main GitHub comparison at 50,000 offered TPS measured **17,176
+TPS on main versus 11,489 TPS with eight speculative workers (-33.11%)**.
+Builder gas throughput fell 61.88%. This run predates the T14 fee-rebase and
+worker hash-cache changes. The default preset resolved to public-mix (80%
+transfers, 15% MPP opens, 5% mints), with a 100,000 MiB bloat input and three
+interleaved pairs. The trimmed summary contains no included-transaction errors;
+raw sender reports do contain failures on both sides. Preserve that distinction
+when reading the reports. See [the workflow run](https://github.com/tempoxyz/tempo/actions/runs/37009502041)
+and `github-37009502041/` for the exact reports and configuration. A second
+profiled run measures the newer revision with duplicate builder prewarming
+disabled; its result is pending in `github-benchmarks.json`.
+
 Enable node validation and payload building with:
 
 ```sh

@@ -1,5 +1,5 @@
 {
-  "status": "in_progress",
+  "status": "optimized_rerun_in_progress",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
@@ -7,7 +7,7 @@
   },
   "repository": "tempoxyz/tempo",
   "published_branch": "onbjerg/parallel-execution",
-  "published_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
+  "published_commit": "17f6165d95f50f91be9a9e00760b0cd0edce0b5e",
   "source_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
   "publication": "Git push; original local history linked to earlier API snapshot and latest main",
   "workflow": ".github/workflows/bench-e2e.yml",
@@ -30,7 +30,7 @@
     "Runner gives each validator eight physical cores / sixteen logical CPUs; start with eight execution workers and measure scaling.",
     "Pin both baseline and feature SHAs, record harness SHA, build features, hardfork, workload, runner, input rate, confirmed TPS and failures.",
     "Run root computation normally. Do not use skip-state-root for acceptance measurements.",
-    "First current-main benchmark dispatched with pinned baseline, feature, txgen and T14; results pending."
+    "First 50k offered-TPS GitHub run: 17176 baseline vs 11489 feature (-33.11%); builder gas throughput -61.88%; zero included-transaction errors in the trimmed summary; raw sender reports contain failures. Feature was c60f368 before T14 fee-rebase and hash-cache fixes. No acceptance claim."
   ],
   "previous_publication": {
     "published_commit": "816a7a153f6b2fce043f8fd3503ef7010589fb54",
@@ -46,7 +46,7 @@
       "created_at": "2026-10-02T12:54:02Z",
       "harness_sha": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
       "runner": "ghr-euw-05",
-      "status": "in_progress",
+      "status": "completed",
       "inputs": {
         "baseline": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
         "feature": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
@@ -68,7 +68,65 @@
         "general-gas-limit": "1500000000",
         "no-slack": "true",
         "run-pairs": "3"
+      },
+      "conclusion": "success",
+      "result": "throughput regression",
+      "baseline_tps": 17176,
+      "feature_tps": 11489,
+      "delta_pct": -33.11,
+      "artifact_id": 11228502922,
+      "report": "github-37009502041/summary.md",
+      "measured_tx_errors": 0,
+      "sender_report_failures": {
+        "baseline": [
+          7321,
+          27996,
+          31170
+        ],
+        "feature": [
+          559,
+          320,
+          1382
+        ]
+      },
+      "actual_preset": "public-mix",
+      "workload_mix_weights": {
+        "mpp_open_only": 15,
+        "public_mint": 5,
+        "public_transfer": 80
       }
+    },
+    {
+      "id": 37013292128,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37013292128",
+      "created_at": "2026-10-02T13:29:09Z",
+      "status": "in_progress",
+      "harness_sha": "b13a6ba5d8e0ad7d3ac69ddd95e51a6b1b041f11",
+      "feature_sha": "17f6165d95f50f91be9a9e00760b0cd0edce0b5e",
+      "inputs": {
+        "baseline": "9de35499af7dd84c889fae8edbf8d0db0331b8eb",
+        "feature": "17f6165d9",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "50000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "samply",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128 --builder.disable-prewarming",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "true",
+        "run-pairs": "3"
+      },
+      "purpose": "Measure newer T14 fee rebasing and worker hash cache with duplicate builder prewarming disabled. Sampler profiles enabled on both sides.",
+      "runner": "ghr-euw-07"
     }
   ]
 }
