@@ -499,36 +499,6 @@ async fn run_p2p_network(
     Ok(())
 }
 
-/// Fetch a single block by number and insert it into the cache.
-#[cfg(test)]
-async fn fetch_and_cache_block(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &mut BlockCache,
-    number: u64,
-) -> Result<()> {
-    let block = provider
-        .get_block_by_number(number.into())
-        .full()
-        .await
-        .context("rpc request failed")?
-        .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
-
-    let hash = block.header.hash();
-    let header: TempoHeader = block.header.inner.inner.clone();
-    let body = tempo_primitives::BlockBody {
-        transactions: block
-            .transactions
-            .into_transactions()
-            .map(|tx| tx.into_inner())
-            .collect(),
-        ommers: vec![],
-        withdrawals: block.withdrawals,
-    };
-
-    cache.insert_block(number, hash, header, body);
-    Ok(())
-}
-
 async fn fetch_and_cache_header_by_hash(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
@@ -777,16 +747,16 @@ async fn resolve_bodies(
 mod tests {
     use super::*;
     use alloy::{
-        consensus::{BlockHeader, Header},
-        primitives::Sealable,
+        consensus::{BlockHeader, Header, SignableTransaction, TxLegacy, transaction::Recovered},
+        network::primitives::BlockTransactions,
+        primitives::{Address, Sealable, Signature},
     };
+    use alloy_provider::mock::Asserter;
     use reth_eth_wire_types::GetBlockHeaders;
+    use tempo_alloy::rpc::TempoHeaderResponse;
 
-    const MODERATO_RPC: &str = "https://rpc.moderato.tempo.xyz";
-
-    fn moderato_provider() -> impl Provider<TempoNetwork> {
-        ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_http(MODERATO_RPC.parse().unwrap())
+    fn mock_provider(asserter: Asserter) -> impl Provider<TempoNetwork> {
+        ProviderBuilder::<_, _, TempoNetwork>::default().connect_mocked_client(asserter)
     }
 
     fn cached_body_with_min_size(min_size: usize) -> tempo_primitives::BlockBody {
@@ -863,7 +833,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_headers_serves_more_than_rpc_batch_size_when_cached() {
-        let provider = moderato_provider();
+        let provider = mock_provider(Asserter::new());
         let mut cache = BlockCache::new(MAX_HEADERS_SERVE as u64);
 
         for number in 1..=1_000 {
@@ -885,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_bodies_stops_after_reaching_soft_size_limit() {
-        let provider = moderato_provider();
+        let provider = mock_provider(Asserter::new());
         let mut cache = BlockCache::new(100);
         let body = cached_body_with_min_size(SOFT_BODY_RESPONSE_SIZE_LIMIT / 2 + 1);
         let first_hash = B256::with_last_byte(1);
@@ -907,7 +877,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_bodies_serves_body_exceeding_soft_size_limit() {
-        let provider = moderato_provider();
+        let provider = mock_provider(Asserter::new());
         let mut cache = BlockCache::new(100);
         let body = cached_body_with_min_size(8 * SOFT_BODY_RESPONSE_SIZE_LIMIT);
         let first_hash = B256::with_last_byte(1);
@@ -942,11 +912,14 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_headers_and_bodies() {
-        let provider = moderato_provider();
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
         let mut cache = BlockCache::new(100);
-
-        let latest = provider.get_block_number().await.unwrap();
-        let start = latest.saturating_sub(4);
+        let blocks = rpc_blocks(10, 5);
+        for block in &blocks {
+            asserter.push_success(&Some(block));
+        }
+        let start = blocks[0].number();
 
         // Fetch 5 rising headers
         let request = GetBlockHeaders {
@@ -964,49 +937,74 @@ mod tests {
         for pair in headers.windows(2) {
             assert_eq!(pair[1].parent_hash(), pair[0].hash_slow());
         }
+        assert!(asserter.read_q().is_empty());
 
-        // Fetch bodies for the cached blocks
-        let hashes: Vec<B256> = (start..=latest)
-            .map(|n| cache.get_by_number(n).unwrap().hash)
-            .collect();
+        // Headers are cached, but bodies must still be fetched from RPC.
+        for block in &blocks {
+            asserter.push_success(&Some(block));
+        }
+        let hashes: Vec<_> = blocks.iter().map(|block| block.header.hash()).collect();
         let bodies = resolve_bodies(&provider, &mut cache, &hashes).await;
         assert_eq!(bodies.len(), 5);
+        for (block, body) in blocks.iter().zip(&bodies) {
+            assert_eq!(
+                cache
+                    .get_by_hash(&block.header.hash())
+                    .unwrap()
+                    .body
+                    .as_ref(),
+                Some(body)
+            );
+            let transactions: Vec<_> = block
+                .transactions
+                .clone()
+                .into_transactions()
+                .map(|tx| tx.into_inner())
+                .collect();
+            assert_eq!(body.transactions, transactions);
+            assert_eq!(body.withdrawals, block.withdrawals);
+        }
+        assert!(asserter.read_q().is_empty());
+
+        // Repeating both requests must work with no RPC responses left.
+        assert_eq!(
+            resolve_headers(&provider, &mut cache, &request).await,
+            headers
+        );
+        assert_eq!(resolve_bodies(&provider, &mut cache, &hashes).await, bodies);
     }
 
     #[tokio::test]
     async fn fetch_body_by_hash_from_rpc() {
-        let provider = moderato_provider();
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
         let mut cache = BlockCache::new(100);
-
-        // Learn a hash, then clear cache to force RPC fetch
-        let latest = provider.get_block_number().await.unwrap();
-        fetch_and_cache_block(&provider, &mut cache, latest)
-            .await
-            .unwrap();
-        let hash = cache.get_by_number(latest).unwrap().hash;
-        cache = BlockCache::new(100);
+        let blocks = rpc_blocks(10, 1);
+        let block = &blocks[0];
+        let hash = block.header.hash();
+        asserter.push_success(&Some(block));
 
         let bodies = resolve_bodies(&provider, &mut cache, &[hash]).await;
         assert_eq!(bodies.len(), 1);
-        assert!(
-            cache.get_by_hash(&hash).is_some(),
-            "should be cached after fetch"
+        assert_eq!(
+            cache.get_by_hash(&hash).unwrap().body.as_ref(),
+            Some(&bodies[0])
         );
+        assert!(asserter.read_q().is_empty());
+        assert_eq!(resolve_bodies(&provider, &mut cache, &[hash]).await, bodies);
     }
 
     #[tokio::test]
     async fn fetch_headers_by_hash_from_rpc_when_not_cached() {
-        let provider = moderato_provider();
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
         let mut cache = BlockCache::new(100);
-
-        let latest = provider.get_block_number().await.unwrap();
-        let start = latest.saturating_sub(2);
-        let start_block = provider
-            .get_block_by_number(start.into())
-            .await
-            .unwrap()
-            .unwrap();
-        let start_hash = start_block.header.hash();
+        let blocks = rpc_blocks(10, 3);
+        // Resolve the starting hash, then fetch the two remaining headers in a batch.
+        for block in &blocks {
+            asserter.push_success(&Some(block));
+        }
+        let start_hash = blocks[0].header.hash();
 
         let request = GetBlockHeaders {
             start_block: BlockHashOrNumber::Hash(start_hash),
@@ -1016,16 +1014,24 @@ mod tests {
         };
         let headers = resolve_headers(&provider, &mut cache, &request).await;
 
-        assert_eq!(headers.len(), 3);
-        assert_eq!(headers[0].number(), start);
+        let expected: Vec<_> = blocks
+            .iter()
+            .map(|block| block.header.inner.inner.clone())
+            .collect();
+        assert_eq!(headers, expected);
         assert_eq!(headers[0].hash_slow(), start_hash);
         assert!(cache.get_by_hash(&start_hash).is_some());
+        assert!(asserter.read_q().is_empty());
     }
 
     #[tokio::test]
     async fn resolve_headers_serves_headers_older_than_cached_blocks() {
-        let provider = moderato_provider();
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
         let mut cache = BlockCache::new(2);
+        for block in rpc_blocks(1, 3) {
+            asserter.push_success(&Some(block));
+        }
 
         // A full cache of newer blocks evicts each fetched header as soon as it's inserted.
         insert_test_header(&mut cache, 1 << 40);
@@ -1042,5 +1048,121 @@ mod tests {
         assert_eq!(headers.len(), 3);
         assert_eq!(headers[0].number(), 1);
         assert_eq!(headers[2].number(), 3);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    fn rpc_blocks(start: u64, count: u64) -> Vec<TempoRpcBlock> {
+        let mut parent_hash = B256::ZERO;
+        (start..start + count)
+            .map(|number| {
+                let header = TempoHeader {
+                    inner: Header {
+                        number,
+                        parent_hash,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                parent_hash = header.hash_slow();
+                let transaction = TempoTxEnvelope::Legacy(
+                    TxLegacy {
+                        nonce: number,
+                        ..Default::default()
+                    }
+                    .into_signed(Signature::test_signature()),
+                );
+                TempoRpcBlock::new(
+                    TempoHeaderResponse {
+                        timestamp_millis: header.timestamp_millis(),
+                        inner: alloy_rpc_types_eth::Header {
+                            hash: parent_hash,
+                            inner: header,
+                            total_difficulty: None,
+                            size: None,
+                        },
+                    },
+                    BlockTransactions::Full(vec![alloy_rpc_types_eth::Transaction {
+                        inner: Recovered::new_unchecked(transaction, Address::ZERO),
+                        block_hash: Some(parent_hash),
+                        block_number: Some(number),
+                        transaction_index: Some(0),
+                        effective_gas_price: Some(0),
+                        block_timestamp: None,
+                    }]),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn resolve_headers_retries_failed_batch_item() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let mut cache = BlockCache::new(100);
+        let blocks = rpc_blocks(10, 2);
+        asserter.push_failure_msg("header unavailable");
+        asserter.push_success(&Some(&blocks[1]));
+        asserter.push_success(&Some(&blocks[0]));
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(10),
+            limit: 2,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+        let headers = resolve_headers(&provider, &mut cache, &request).await;
+        let expected: Vec<_> = blocks
+            .iter()
+            .map(|block| block.header.inner.inner.clone())
+            .collect();
+        assert_eq!(headers, expected);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_headers_stops_at_missing_block() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let mut cache = BlockCache::new(100);
+        let blocks = rpc_blocks(10, 3);
+        asserter.push_success(&Some(&blocks[0]));
+        asserter.push_success(&None::<TempoRpcBlock>);
+        asserter.push_success(&Some(&blocks[2]));
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(10),
+            limit: 3,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+        let headers = resolve_headers(&provider, &mut cache, &request).await;
+        assert_eq!(headers, vec![blocks[0].header.inner.inner.clone()]);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_does_not_cache_failed_fetch() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let mut cache = BlockCache::new(100);
+        let blocks = rpc_blocks(10, 1);
+        let hash = blocks[0].header.hash();
+        asserter.push_failure_msg("body unavailable");
+
+        assert!(
+            resolve_bodies(&provider, &mut cache, &[hash])
+                .await
+                .is_empty()
+        );
+        assert!(cache.get_by_hash(&hash).is_none());
+        assert!(asserter.read_q().is_empty());
+
+        asserter.push_success(&Some(&blocks[0]));
+        assert_eq!(
+            resolve_bodies(&provider, &mut cache, &[hash]).await.len(),
+            1
+        );
+        assert!(cache.get_by_hash(&hash).unwrap().body.is_some());
+        assert!(asserter.read_q().is_empty());
     }
 }
