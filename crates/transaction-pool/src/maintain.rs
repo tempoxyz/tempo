@@ -643,10 +643,6 @@ where
             .invalidation_eviction_duration_seconds
             .record(invalidation_start.elapsed());
 
-        metrics
-            .expired_eviction_duration_seconds
-            .record(invalidation_start.elapsed());
-
         // 6. Evict stale pending transactions (must happen after AA pool promotions in step 1)
         // Only runs once per interval (~30 min) to avoid overhead on every block.
         // Transactions pending across two consecutive snapshots are considered stale.

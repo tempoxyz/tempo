@@ -81,10 +81,8 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Total time spent processing a block update in seconds.
     pub block_update_duration_seconds: Histogram,
 
-    /// Time spent evicting expired AA transactions in seconds.
-    pub expired_eviction_duration_seconds: Histogram,
-
-    /// Time spent evicting invalidated transactions (revoked keys, validator tokens, blacklist) in seconds.
+    /// Time spent evicting invalidated and expired transactions (revoked keys, validator tokens,
+    /// blacklist, expired `valid_before` / key expiry) in seconds.
     pub invalidation_eviction_duration_seconds: Histogram,
 
     /// Time spent updating the AMM liquidity cache in seconds.
