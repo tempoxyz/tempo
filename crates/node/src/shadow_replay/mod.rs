@@ -21,7 +21,7 @@
 
 mod analysis;
 mod expectations;
-mod fees;
+mod inspector;
 mod rules;
 
 use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
@@ -32,7 +32,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
-use fees::{FeeWrites, RecordingFeeManager};
+use inspector::{FeeWrites, ObservedCall, Recorded, ReplayInspector};
 use metrics::{Counter, Gauge, Histogram};
 use reth_chainspec::ForkCondition;
 use reth_ethereum::tasks::TaskExecutor;
@@ -307,8 +307,8 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
     /// effects; candidate pre-block changes are preserved across control commits.
     fn execute(&self, block: &RecoveredBlock<Block>) -> Result<(Evidence, Evidence), String> {
         let mut db = self.parent_state(block)?;
-        let fees = RecordingFeeManager::default();
-        let mut executor = executor(&self.real_config, &mut db, block, &fees, "control")?;
+        let inspector = ReplayInspector::default();
+        let mut executor = executor(&self.real_config, &mut db, block, &inspector, "control")?;
         let mut real = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
             return Ok((
@@ -317,7 +317,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             ));
         }
         real.pre_block = Some(drain(executor.evm_mut().db_mut()));
-        fees.take();
+        inspector.take();
 
         // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
         // control results when one arm runs ahead.
@@ -329,7 +329,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             let mut results = Some(results);
             for (index, tx) in block.transactions_recovered().enumerate() {
                 let result = executor.execute_transaction_without_commit(tx);
-                let recorded = fees.take();
+                let recorded = inspector.take();
                 let result = match result {
                     Ok(result) => result,
                     Err(e) => {
@@ -369,20 +369,20 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
         let mut db = self.parent_state(block)?;
-        let fees = RecordingFeeManager::default();
-        let mut executor = executor(&self.shadow_config, &mut db, block, &fees, "shadow")?;
+        let inspector = ReplayInspector::default();
+        let mut executor = executor(&self.shadow_config, &mut db, block, &inspector, "shadow")?;
         let mut shadow = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
             return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
         }
         shadow.pre_block = Some(drain(executor.evm_mut().db_mut()));
-        fees.take();
+        inspector.take();
         // Keep candidate pre-block changes in the cache; only transaction results are discarded.
         executor.evm_mut().db_mut().bal_state = canonical_bal;
 
         for tx in block.transactions_recovered() {
             let result = executor.execute_transaction_without_commit(tx);
-            let recorded = fees.take();
+            let recorded = inspector.take();
             shadow.txs.push(match result {
                 Ok(result) => Ok(ObservedTx::from_result(&result, recorded)
                     .with_state(transition(result.into_result().state))),
@@ -415,18 +415,19 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
 
 type ReplayDb = State<StateProviderDatabase<EvmStateProviderAdapter<StateProviderBox>>>;
 
-/// Builds one arm's block executor with fee-hook recording and no call inspector.
+/// Builds one arm's block executor with the replay inspector as inspector and fee manager.
 fn executor<'a>(
     config: &'a TempoEvmConfig,
     db: &'a mut ReplayDb,
     block: &'a RecoveredBlock<Block>,
-    fees: &RecordingFeeManager,
+    inspector: &ReplayInspector,
     arm: &str,
-) -> Result<TempoBlockExecutor<'a, &'a mut ReplayDb, reth_revm::inspector::NoOpInspector>, String> {
+) -> Result<TempoBlockExecutor<'a, &'a mut ReplayDb, ReplayInspector>, String> {
     let evm = config
         .evm_for_block(db, block.header())
         .map_err(|e| format!("failed to configure {arm} EVM: {e}"))?
-        .with_fee_manager(fees.clone());
+        .with_inspector(inspector.clone())
+        .with_fee_manager(inspector.clone());
     let context = config
         .context_for_block(block.sealed_block())
         .map_err(|e| format!("failed to configure {arm} executor: {e}"))?;
@@ -560,13 +561,15 @@ struct ObservedTx {
     fee: FeeWrites,
     /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
+    /// Top-level calls actually entered, in envelope order.
+    calls: Vec<ObservedCall>,
 }
 
 impl ObservedTx {
-    fn from_result(result: &TempoTxResult, fee: FeeWrites) -> Self {
+    fn from_result(result: &TempoTxResult, recorded: Recorded) -> Self {
         let execution = &result.result().result;
         let logs = execution.logs();
-        let fee_normalized = normalized_fee_transfer(logs, &fee);
+        let fee_normalized = normalized_fee_transfer(logs, &recorded.fee);
         Self {
             outcome: match execution {
                 reth_revm::context::result::ExecutionResult::Success { .. } => TxOutcome::Success,
@@ -577,9 +580,15 @@ impl ObservedTx {
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
             fee_normalized,
-            fee,
+            fee: recorded.fee,
             state: TransitionState::default(),
+            calls: recorded.calls,
         }
+    }
+
+    /// Projects one value from each entered top-level call.
+    fn call_values<T>(&self, get: impl Fn(&ObservedCall) -> T) -> Vec<T> {
+        self.calls.iter().map(get).collect()
     }
 
     fn with_state(mut self, state: TransitionState) -> Self {

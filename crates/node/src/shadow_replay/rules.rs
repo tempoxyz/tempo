@@ -2,7 +2,7 @@
 //!
 //! A rule accepts one difference when its boundary matches, its `when` condition holds, and one
 //! `accept` entry covers the changed field. `call` rules bind `call.*` references to each
-//! envelope call in turn, matching its target and selector without observing execution.
+//! envelope call in turn; the call filter matches message calls made at any depth within it.
 //! Unavailable operands and failed checked arithmetic propagate as unavailable. Only true
 //! conditions accept. `code_upgrade` rules verify canonical pre-block runtime upgrades.
 
@@ -153,14 +153,12 @@ impl Rule {
             (Some(RuleBoundary::PreBlock), Boundary::PreBlock)
             | (Some(RuleBoundary::Transaction), Boundary::Transaction(_))
             | (Some(RuleBoundary::PostBlock), Boundary::PostBlock) => holds(None),
-            (Some(RuleBoundary::Call), Boundary::Transaction(_)) => {
-                ctx.tx.into_iter().flat_map(|tx| tx.calls()).any(|call| {
-                    self.call
-                        .as_ref()
-                        .is_none_or(|filter| filter.matches(&call))
-                        && holds(Some(call))
-                })
-            }
+            (Some(RuleBoundary::Call), Boundary::Transaction(_)) => ctx.calls().any(|call| {
+                self.call
+                    .as_ref()
+                    .is_none_or(|filter| filter.matches(&call))
+                    && holds(Some(call))
+            }),
             _ => false,
         }
     }
@@ -175,7 +173,7 @@ enum RuleBoundary {
     PostBlock,
 }
 
-/// Matches an envelope target and selector, including AA subcalls that may not be reached.
+/// Matches a message call made at any depth within an envelope call, in either arm.
 /// An empty filter matches every envelope call.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -188,12 +186,21 @@ struct CallFilter {
 }
 
 impl CallFilter {
-    fn matches(&self, (kind, input): &EnvelopeCall<'_>) -> bool {
-        self.to.is_none_or(|to| kind.to() == Some(&to))
-            && (self.functions.is_empty()
-                || input
-                    .first_chunk::<4>()
-                    .is_some_and(|selector| self.functions.contains(&Selector::from(*selector))))
+    fn matches(&self, (.., real, shadow): &EnvelopeCall<'_>) -> bool {
+        if self.to.is_none() && self.functions.is_empty() {
+            return true;
+        }
+        [real, shadow]
+            .into_iter()
+            .flatten()
+            .flat_map(|call| &call.invocations)
+            .any(|invocation| {
+                self.to.is_none_or(|to| invocation.to == to)
+                    && (self.functions.is_empty()
+                        || invocation
+                            .selector
+                            .is_some_and(|selector| self.functions.contains(&selector)))
+            })
     }
 }
 
@@ -265,7 +272,7 @@ enum Expr {
     Lte(Box<Self>, Box<Self>),
     Sub(Box<Self>, Box<Self>),
     ToU256(Box<Self>),
-    TxChangedStorage(Address),
+    CallChangedStorage(Address),
     Ref(Ref),
     Bool(bool),
     U256(U256),
@@ -302,14 +309,17 @@ impl Expr {
                 expect(e, Ty::Address, call)?;
                 Ty::U256
             }
-            Self::TxChangedStorage(_) | Self::Bool(_) => Ty::Bool,
+            Self::CallChangedStorage(_) if !call => return Err("requires `boundary: call`".into()),
+            Self::CallChangedStorage(_) | Self::Bool(_) => Ty::Bool,
             Self::Ref(r) => match r {
-                Ref::CallRejectsOnlyAbiSuffix if !call => {
+                Ref::RealCallOutcome | Ref::RealCallOutputHash | Ref::CallRejectsOnlyAbiSuffix
+                    if !call =>
+                {
                     return Err(format!("{r:?} requires `boundary: call`"));
                 }
-                Ref::RealOutcome | Ref::ShadowOutcome => Ty::Outcome,
+                Ref::RealOutcome | Ref::ShadowOutcome | Ref::RealCallOutcome => Ty::Outcome,
                 Ref::RealGasTotalSpent | Ref::TxGasLimit => Ty::U256,
-                Ref::RealOutputHash => Ty::B256,
+                Ref::RealCallOutputHash => Ty::B256,
                 Ref::CallRejectsOnlyAbiSuffix => Ty::Bool,
             },
             Self::U256(_) => Ty::U256,
@@ -349,13 +359,14 @@ impl Expr {
                 Value::Address(a) => Value::U256(U256::from_be_slice(a.as_slice())),
                 _ => return None,
             },
-            Self::TxChangedStorage(address) => {
-                let (real, shadow) = env.ctx.observed_txs()?;
-                Value::Bool([real, shadow].into_iter().any(|tx| {
-                    tx.state.transitions.get(address).is_some_and(|account| {
-                        account.storage.values().any(|slot| slot.is_changed())
-                    })
-                }))
+            Self::CallChangedStorage(address) => {
+                let (.., real, shadow) = env.call?;
+                Value::Bool(
+                    [real, shadow]
+                        .into_iter()
+                        .flatten()
+                        .any(|c| c.changed_storage(*address)),
+                )
             }
             Self::Ref(r) => env.get(*r)?,
             Self::Bool(b) => Value::Bool(*b),
@@ -388,8 +399,10 @@ enum Ref {
     RealGasTotalSpent,
     #[serde(rename = "tx.gas_limit")]
     TxGasLimit,
-    #[serde(rename = "real.output_hash")]
-    RealOutputHash,
+    #[serde(rename = "real.call.outcome")]
+    RealCallOutcome,
+    #[serde(rename = "real.call.output_hash")]
+    RealCallOutputHash,
     #[serde(rename = "call.rejects_only_abi_suffix")]
     CallRejectsOnlyAbiSuffix,
 }
@@ -424,6 +437,7 @@ struct Env<'a> {
 impl Env<'_> {
     fn get(&self, r: Ref) -> Option<Value> {
         let ctx = self.ctx;
+        let real_call = || self.call.and_then(|(.., real, _)| real);
         Some(match r {
             Ref::RealOutcome => Value::Outcome(ctx.observed_txs()?.0.outcome),
             Ref::ShadowOutcome => Value::Outcome(ctx.observed_txs()?.1.outcome),
@@ -431,9 +445,10 @@ impl Env<'_> {
                 Value::U256(U256::from(ctx.observed_txs()?.0.gas.total_gas_spent()))
             }
             Ref::TxGasLimit => Value::U256(U256::from(ctx.tx?.gas_limit())),
-            Ref::RealOutputHash => Value::B256(ctx.observed_txs()?.0.output_hash),
+            Ref::RealCallOutcome => Value::Outcome(real_call()?.outcome),
+            Ref::RealCallOutputHash => Value::B256(real_call()?.output_hash),
             Ref::CallRejectsOnlyAbiSuffix => {
-                let (kind, calldata) = self.call?;
+                let (kind, calldata, ..) = self.call?;
                 Value::Bool(
                     kind.to()
                         .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata)),
@@ -458,6 +473,24 @@ mod tests {
 
     fn load_t12(json: &str) -> Result<Vec<(TempoHardfork, Rule)>, String> {
         load(&[(TempoHardfork::T12, json)])
+    }
+
+    #[test]
+    fn call_filter_matches_recorded_nested_selectors_not_envelope_calldata() {
+        use super::super::inspector::{Invocation, ObservedCall};
+        use alloy_primitives::TxKind;
+        let dex = tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
+        let filter: CallFilter = serde_json::from_str(&format!(r#"{{"to":"{dex}","functions":["swapExactAmountIn(address,address,uint128,uint128)"]}}"#)).unwrap();
+        let mut observed = ObservedCall::default();
+        let matches = |observed: &ObservedCall| filter.matches(&(TxKind::Call(Address::repeat_byte(1)), &[], None, Some(observed)));
+        assert!(!matches(&observed));
+        observed.invocations.push(Invocation { to: dex, selector: Some(filter.functions[0]) });
+        assert!(matches(&observed));
+        observed.invocations[0].selector = Some(Selector::ZERO);
+        assert!(!matches(&observed));
+        observed.invocations[0].selector = Some(filter.functions[0]);
+        observed.invocations[0].to = Address::ZERO;
+        assert!(!matches(&observed));
     }
 
     #[test]
@@ -486,7 +519,7 @@ mod tests {
             (r#""boundary": "transaction", "accept": [{"fields": ["execution"], "address": "any"}]"#, "unacceptable field"),
             (r#""boundary": "transaction", "accept": [{"fields": ["storage"], "address": "any"}]"#, "requires `slot`"),
             (r#""boundary": "transaction", "accept": [{"fields": ["code"], "address": "any", "slot": "any"}]"#, "requires `storage`"),
-            (&format!(r#""boundary": "transaction", "when": {{"ref": "call.rejects_only_abi_suffix"}}, {storage}"# ), "requires `boundary: call`"),
+            (&format!(r#""boundary": "transaction", "when": {{"ref": "real.call.outcome"}}, {storage}"# ), "requires `boundary: call`"),
             (
                 &format!(r#""boundary": "transaction", "call": {{"functions": []}}, {storage}"#),
                 "`call` requires",

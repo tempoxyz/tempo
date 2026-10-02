@@ -5,12 +5,12 @@
 use super::analysis::{AccountDelta, Field};
 use crate::shadow_replay::{
     Boundary, Evidence, ObservedTx,
-    fees::post_fee_slot_change,
+    inspector::{ObservedCall, post_fee_slot_change},
     rules::{self, Rule},
 };
 use alloy::{
     consensus::Transaction as _,
-    primitives::{Address, B256, Bytes, TxKind, U256},
+    primitives::{Address, B256, TxKind, U256},
 };
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -48,8 +48,13 @@ impl Expectation {
     }
 }
 
-/// An envelope target and calldata; it may not have been reached during execution.
-pub(super) type EnvelopeCall<'a> = (TxKind, &'a Bytes);
+/// An envelope call with its observed `(real, shadow)` results; `None` when not reached.
+pub(super) type EnvelopeCall<'a> = (
+    TxKind,
+    &'a [u8],
+    Option<&'a ObservedCall>,
+    Option<&'a ObservedCall>,
+);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Context<'a> {
@@ -83,6 +88,23 @@ impl Context<'_> {
             && real_amount == calc_gas_balance_spending(real.gas.tx_gas_used(), price)
             && shadow_amount == calc_gas_balance_spending(shadow.gas.tx_gas_used(), price))
         .then_some((real_hash, shadow_hash))
+    }
+
+    /// Pairs envelope calls with reached top-level results; internal calls belong to their frame.
+    pub(super) fn calls(&self) -> impl Iterator<Item = EnvelopeCall<'_>> + '_ {
+        let (real, shadow) = self.observed_txs().unzip();
+        self.tx
+            .into_iter()
+            .flat_map(TempoTxEnvelope::calls)
+            .enumerate()
+            .map(move |(index, (kind, input))| {
+                (
+                    kind,
+                    input.as_ref(),
+                    real.and_then(|tx| tx.calls.get(index)),
+                    shadow.and_then(|tx| tx.calls.get(index)),
+                )
+            })
     }
 }
 
@@ -592,6 +614,34 @@ mod tests {
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
+    }
+
+    #[test]
+    fn equal_transaction_outcomes_still_compare_call_results() {
+        let (mut real, mut shadow) = (evidence(&[21_000]), evidence(&[21_000]));
+        for (evidence, outcomes) in [
+            (&mut real, &[TxOutcome::Success, TxOutcome::Revert][..]),
+            (&mut shadow, &[TxOutcome::Revert][..]),
+        ] {
+            let tx = tx_mut(evidence, 0);
+            tx.outcome = TxOutcome::Revert;
+            tx.calls = outcomes
+                .iter()
+                .map(|&outcome| ObservedCall {
+                    outcome,
+                    ..Default::default()
+                })
+                .collect();
+        }
+        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        assert_eq!(report.unexplained, 2);
+        let mut fields: Vec<_> = report
+            .samples
+            .iter()
+            .map(|(_, diff, _)| diff.field.name)
+            .collect();
+        fields.sort();
+        assert_eq!(fields, ["outcome", "output"]);
     }
 
     #[test]

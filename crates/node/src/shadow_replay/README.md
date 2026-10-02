@@ -50,10 +50,12 @@ that could not execute are reported as incomplete coverage.
 
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
 changes in order. Transaction comparisons cover the full success/revert/halt outcome, output,
-ordered receipt logs, and net account and storage transitions. EVM calls are not inspected:
-equal transaction outcomes and outputs can hide different failing or unreached AA calls.
-Gas-only differences are not findings, although gas is still checked against canonical receipts
-and used to validate fee-derived effects. This compares
+ordered receipt logs, and net account and storage transitions. A replay-only inspector also
+records each top-level call actually entered (every AA envelope call up to the first failure, or
+the single call of a regular transaction): its outcome, output, and net state relative to call
+entry. Outcome and output comparisons include these per-call values, so a batch that fails at a
+different call is a difference even when both transactions revert. Gas-only differences are not findings, although gas is still
+checked against canonical receipts and used to validate fee-derived effects. This compares
 observable effects at completed boundaries, not opcode traces or internal write history.
 
 Because every shadow transaction starts from the same canonical prefix, findings at later
@@ -76,16 +78,14 @@ transaction invalidation (`execution`), failed boundaries, or missing coverage.
 A generic rule has a `boundary` (`pre_block`, `transaction`, `call`, `post_block`), an optional `when`
 condition, and `accept` entries listing explicit `fields`, an `address` (`"any"` or an address),
 a `slot` (required for `storage`), and an optional `where` condition. A `call` rule is evaluated
-against every envelope call, including every AA subcall: its `call` filter (`to`, `functions`
-signatures) matches the envelope target and first four calldata bytes. Nested EVM calls are not
-matched. `tx_changed_storage` requires the transaction to have changed the address's storage in
-either arm, not the matching call. This is a heuristic: the matching AA call may be unreached or
-unrelated to the write or revert. `call.*` references inspect envelope calldata; `real.*` and
-`shadow.*` references read transaction evidence.
+once per envelope call: `real.call.*` and `call.*` refer to that call, and its `call` filter
+(`to`, `functions` signatures) matches message calls made at any depth within it, as
+recorded by the replay inspector. `call_changed_storage` requires that same envelope call to
+have changed the address's storage in either arm.
 
 Conditions use a closed vocabulary: `all`, `any`, `not`, `eq`, `lte`, `sub` (checked),
-`to_u256`, `tx_changed_storage`, typed literals (`u256`, `b256`, `address`, `bool`, `outcome`),
-and `ref`s such as `real.outcome`, `tx.gas_limit`, or `real.output_hash`. Unknown keys,
+`to_u256`, `call_changed_storage`, typed literals (`u256`, `b256`, `address`, `bool`, `outcome`),
+and `ref`s such as `real.outcome`, `tx.gas_limit`, or `real.call.output_hash`. Unknown keys,
 references, and type mismatches fail at load; unavailable operands and failed checked arithmetic
 never accept a difference.
 

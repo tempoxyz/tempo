@@ -781,6 +781,59 @@ fn test_inspector_calls() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Shadow replay records AA calls through the inspected loop; it must match plain execution.
+#[test]
+fn test_inspected_aa_batches_match_plain_execution() -> eyre::Result<()> {
+    let store = Address::repeat_byte(0x51);
+    let revert = Address::repeat_byte(0x52);
+    // SSTORE(0, 1); STOP
+    let store_code = [0x60, 0x01, 0x60, 0x00, 0x55, 0x00];
+    // REVERT(0, 0)
+    let revert_code = [0x60, 0x00, 0x60, 0x00, 0xfd];
+
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    for tx in [
+        TxBuilder::new().call(store, &[]).call_identity(&[1]),
+        TxBuilder::new()
+            .call(store, &[])
+            .call(revert, &[])
+            .call_identity(&[1]),
+        TxBuilder::new().create(&store_code).call(store, &[]),
+        TxBuilder::new().create(&revert_code).call(store, &[]),
+    ] {
+        let signed_tx = key_pair.sign_tx(tx.build())?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let mut evms = [(); 2].map(|()| {
+            let inspector = revm::inspector::NoOpInspector;
+            let mut evm = create_evm_with_inspector(inspector);
+            let db = evm.ctx.db_mut();
+            db.insert_account_info(
+                caller,
+                AccountInfo {
+                    balance: U256::from(DEFAULT_BALANCE),
+                    ..Default::default()
+                },
+            );
+            for (address, code) in [(store, &store_code[..]), (revert, &revert_code[..])] {
+                db.insert_account_info(
+                    address,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(Bytes::copy_from_slice(code))),
+                        ..Default::default()
+                    },
+                );
+            }
+            evm
+        });
+        let plain = evms[0].transact(tx_env.clone())?;
+        let inspected = evms[1].inspect_tx(tx_env)?;
+        assert_eq!(plain.result, inspected.result);
+        assert_eq!(plain.state, inspected.state);
+    }
+    Ok(())
+}
+
 #[test]
 fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();

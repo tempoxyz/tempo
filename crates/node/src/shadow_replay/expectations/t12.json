@@ -1,15 +1,15 @@
 [
   {
     "id": "t12.allow-abi-suffix",
-    "description": "T11 rejected precompile calldata with trailing bytes via an empty revert; T12 accepts it (TIP-1116). Matches any envelope call and an empty-reverting control transaction.",
+    "description": "T11 rejected precompile calldata with trailing bytes via an empty revert; T12 accepts it (TIP-1116). Matches the control's reached, empty-reverting call.",
     "boundary": "call",
     "when": {
       "all": [
         { "ref": "call.rejects_only_abi_suffix" },
-        { "eq": [{ "ref": "real.outcome" }, { "outcome": "revert" }] },
+        { "eq": [{ "ref": "real.call.outcome" }, { "outcome": "revert" }] },
         {
           "eq": [
-            { "ref": "real.output_hash" },
+            { "ref": "real.call.output_hash" },
             { "b256": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470" }
           ]
         }
@@ -25,10 +25,10 @@
   },
   {
     "id": "t12.tip20-channel-reserve",
-    "description": "Channel Reserve storage, including its TIP-1060 credit balance, when an envelope call targets it and the transaction changed its storage.",
+    "description": "Channel Reserve storage, including its TIP-1060 credit balance, when a reached call targets it and that top-level call changed its storage.",
     "boundary": "call",
     "call": { "to": "0x4D50500000000000000000000000000000000000" },
-    "when": { "tx_changed_storage": "0x4D50500000000000000000000000000000000000" },
+    "when": { "call_changed_storage": "0x4D50500000000000000000000000000000000000" },
     "accept": [
       { "fields": ["storage"], "address": "0x4D50500000000000000000000000000000000000", "slot": "any" },
       {
@@ -40,7 +40,7 @@
   },
   {
     "id": "t12.stablecoin-dex",
-    "description": "DEX storage, including its TIP-1060 credit balance, when an envelope call targets a DEX swap and the transaction changed DEX storage. Includes any AA call, even if unreached.",
+    "description": "DEX storage, including its TIP-1060 credit balance, when a swap reached the DEX at any depth and that top-level call changed DEX storage.",
     "boundary": "call",
     "call": {
       "to": "0xdec0000000000000000000000000000000000000",
@@ -49,7 +49,7 @@
         "swapExactAmountOut(address,address,uint128,uint128)"
       ]
     },
-    "when": { "tx_changed_storage": "0xdec0000000000000000000000000000000000000" },
+    "when": { "call_changed_storage": "0xdec0000000000000000000000000000000000000" },
     "accept": [
       { "fields": ["storage"], "address": "0xdec0000000000000000000000000000000000000", "slot": "any" },
       {

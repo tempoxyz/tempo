@@ -82,8 +82,12 @@ impl Report {
             match shadow {
                 Ok(shadow) => {
                     let mut diff = Comparison::new(&mut report, &ctx, rules, None, real, shadow);
-                    diff.record("outcome", |tx| tx.outcome);
-                    diff.record("output", |tx| tx.output_hash);
+                    // Include top-level call results: equal transaction outcomes can hide a
+                    // different failing or unreached AA call.
+                    diff.record("outcome", |tx| (tx.outcome, tx.call_values(|c| c.outcome)));
+                    diff.record("output", |tx| {
+                        (tx.output_hash, tx.call_values(|c| c.output_hash))
+                    });
                     // Keep all logs, in order; mask only a verified gas-derived fee amount.
                     let (real_logs, shadow_logs) = ctx
                         .verified_fee_log_hashes()
