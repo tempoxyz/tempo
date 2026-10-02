@@ -18,7 +18,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
+        PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
@@ -34,7 +34,10 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
+use reth_transaction_pool::{
+    CoinbaseTipOrdering, Pool, blobstore::InMemoryBlobStore,
+    validate::EthTransactionValidatorBuilder,
+};
 use std::default::Default;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
@@ -45,6 +48,7 @@ use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxTyp
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
+    validation_task::TempoValidationTaskExecutor,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -466,19 +470,17 @@ where
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
-        let validator =
-            TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
-                .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
-                .with_local_transactions_config(pool_config.local_transactions_config.clone())
-                .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
-                .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
-                .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
-                .disable_balance_check()
-                .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
-                .with_custom_tx_type(TempoTxType::AA as u8)
-                .no_eip4844()
-                .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
+        let validator = EthTransactionValidatorBuilder::new(ctx.provider().clone(), evm_config)
+            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
+            .with_local_transactions_config(pool_config.local_transactions_config.clone())
+            .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
+            .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
+            .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
+            .disable_balance_check()
+            .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
+            .build(blob_store.clone());
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
@@ -489,17 +491,26 @@ where
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
-        let validator = validator.map(|v| {
-            TempoTransactionValidator::new(
-                v,
-                self.aa_valid_after_max_secs,
-                self.max_tempo_authorizations,
-                amm_liquidity_cache.clone(),
-            )
-        });
-        let protocol_pool = TxPoolBuilder::new(ctx)
-            .with_validator(validator)
-            .build(blob_store, pool_config.clone());
+        let validator = TempoTransactionValidator::new(
+            validator,
+            self.aa_valid_after_max_secs,
+            self.max_tempo_authorizations,
+            amm_liquidity_cache,
+        );
+        let additional_tasks = ctx.config().txpool.additional_validation_tasks;
+        let (validator, task) =
+            TempoValidationTaskExecutor::new(validator, additional_tasks.saturating_add(1));
+        for _ in 0..additional_tasks {
+            ctx.task_executor().spawn_blocking_task(task.clone().run());
+        }
+        ctx.task_executor()
+            .spawn_critical_blocking_task("transaction-validation-service", task.run());
+        let protocol_pool = Pool::new(
+            validator,
+            CoinbaseTipOrdering::default(),
+            blob_store,
+            pool_config.clone(),
+        );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
         let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);

@@ -4,6 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod transaction;
+pub mod validation_task;
 pub mod validator;
 
 pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};
