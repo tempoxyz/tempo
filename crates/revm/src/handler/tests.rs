@@ -583,7 +583,8 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
+        // dummy secp256k1 sig
+        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,

@@ -299,21 +299,16 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::{B256, address};
     use clap::Parser;
 
     #[test]
     fn test_token_address() {
         let addr = token_address(0);
-        assert_eq!(
-            addr,
-            alloy_primitives::address!("0x20C0000000000000000000000000000000000000")
-        );
+        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000000"));
 
         let addr = token_address(1);
-        assert_eq!(
-            addr,
-            alloy_primitives::address!("0x20C0000000000000000000000000000000000001")
-        );
+        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000001"));
     }
 
     #[test]
@@ -346,7 +341,7 @@ mod tests {
     #[test]
     fn test_entry_size() {
         let slot = U256::ZERO.to_be_bytes::<32>();
-        let value = alloy_primitives::B256::with_last_byte(1).0;
+        let value = B256::with_last_byte(1);
         assert_eq!(slot.len() + value.len(), 64);
     }
 

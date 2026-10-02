@@ -48,8 +48,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
             .unwrap()
             .unwrap_or_default()
             .to::<usize>();
-        let public_keys_data_slot =
-            U256::from_be_bytes(keccak256(alloy_primitives::B256::with_last_byte(1).0).0);
+        let public_keys_data_slot = U256::from_be_bytes(keccak256(B256::with_last_byte(1)).0);
         let public_keys = (0..public_keys_len)
             .map(|index| {
                 state
