@@ -100,6 +100,13 @@ function hasImprovement(changes) {
   return Object.values(changes || {}).some(v => !v.informational && v.sig === 'good');
 }
 
+function shouldNotifyImprovement(changes, slackMode) {
+  // A lower latency from smaller blocks must not turn a throughput regression
+  // into an on-win notification. Preserve the existing always-mode policy.
+  return hasImprovement(changes) && (slackMode !== 'on-win' ||
+    !Object.values(changes || {}).some(v => !v.informational && v.sig === 'bad'));
+}
+
 function e2eChanges(summary) {
   if (summary.results?.changes) {
     return Object.fromEntries(
@@ -314,7 +321,7 @@ async function success({ core, context }) {
   let postedToChannel = false;
 
   // Match reth-bench: post to the public channel only for significant improvements.
-  if (channel && hasImprovement(changes)) {
+  if (channel && shouldNotifyImprovement(changes, slackMode)) {
     await postToSlack(token, channel, blocks, text, core);
     postedToChannel = true;
   } else if (channel) {
@@ -323,7 +330,7 @@ async function success({ core, context }) {
 
   if (slackMode === 'on-win') {
     if (!postedToChannel) {
-      core.info('on-win mode: no improvement detected, skipping all notifications');
+      core.info('on-win mode: no improvement without regressions, skipping all notifications');
     }
     return;
   }
@@ -571,7 +578,7 @@ async function replaySuccess({ core, context }) {
   const slackMode = process.env.BENCH_SLACK || 'always';
   const channel = process.env.SLACK_BENCH_CHANNEL;
   let postedToChannel = false;
-  if (channel && hasImprovement(summary.changes || {})) {
+  if (channel && shouldNotifyImprovement(summary.changes || {}, slackMode)) {
     await sendWithThread(channel);
     postedToChannel = true;
   } else if (channel) {
@@ -580,7 +587,7 @@ async function replaySuccess({ core, context }) {
 
   if (slackMode === 'on-win') {
     if (!postedToChannel) {
-      core.info('on-win mode: no replay improvement detected, skipping all notifications');
+      core.info('on-win mode: no replay improvement without regressions, skipping all notifications');
     }
     return;
   }
