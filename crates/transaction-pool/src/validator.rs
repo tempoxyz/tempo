@@ -20,8 +20,8 @@ use reth_storage_api::{
     errors::{ProviderError, ProviderResult},
 };
 use reth_transaction_pool::{
-    EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
-    TransactionValidator, error::InvalidPoolTransactionError,
+    BlockGasLimitPolicy, EthTransactionValidator, PoolTransaction, TransactionOrigin,
+    TransactionValidationOutcome, TransactionValidator, error::InvalidPoolTransactionError,
 };
 use std::{
     cell::RefCell,
@@ -766,8 +766,8 @@ where
         )
     }
 
-    fn check_block_gas_limit(&self) -> bool {
-        self.inner.check_block_gas_limit()
+    fn block_gas_limit_policy(&self) -> BlockGasLimitPolicy {
+        self.inner.block_gas_limit_policy()
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
@@ -1117,12 +1117,23 @@ mod tests {
             DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             AmmLiquidityCache::new(provider).unwrap(),
         );
-        assert!(validator.check_block_gas_limit());
+        assert_eq!(
+            validator.block_gas_limit_policy(),
+            BlockGasLimitPolicy::TotalGas
+        );
         // Also exercise a reorg back across the activation boundary.
-        for (timestamp, check) in [(99, true), (100, false), (101, false), (99, true)] {
+        let execution_policy = BlockGasLimitPolicy::ExecutionGas {
+            tx_gas_limit_cap: 16_777_216,
+        };
+        for (timestamp, policy) in [
+            (99, BlockGasLimitPolicy::TotalGas),
+            (100, execution_policy),
+            (101, execution_policy),
+            (99, BlockGasLimitPolicy::TotalGas),
+        ] {
             let head = create_mock_block(timestamp);
             validator.on_new_head_block(&head);
-            assert_eq!(validator.check_block_gas_limit(), check);
+            assert_eq!(validator.block_gas_limit_policy(), policy);
             assert_eq!(
                 validator.inner.block_gas_limit(),
                 head.header().inner.gas_limit
