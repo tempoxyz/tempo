@@ -356,9 +356,14 @@ impl NativeEarnRegistrar {
         snapshot_bytes[..4].copy_from_slice(&[0x5a, 0xec, 0x00, 0x01]);
         snapshot_bytes[4..].copy_from_slice(&snapshot_hash[16..]);
         let snapshot = Address::from(snapshot_bytes);
-        if !self
+        let nonce = self
             .storage
-            .with_account_info(snapshot, |info| Ok(info.is_empty()))?
+            .with_account_info(snapshot, |info| Ok(info.nonce))?;
+        let (snapshot_code_hash, snapshot_code) = self.storage.account_code(snapshot)?;
+        if nonce != 0
+            || !snapshot_code.is_empty()
+            || (snapshot_code_hash != B256::ZERO
+                && snapshot_code_hash != alloy::primitives::KECCAK256_EMPTY)
         {
             return Err(TempoPrecompileError::OutOfGas);
         }
