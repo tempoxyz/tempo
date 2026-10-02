@@ -607,6 +607,12 @@ where
                         .tx()
                         .tempo_authorization_list
                         .iter()
+                        // Execution skips keychain-signed entries from T0 on
+                        // (`TempoEvmHandler::apply_eip7702_auth_list`), and their recovered
+                        // authority is whatever account the signer claims.
+                        .filter(|authorization| {
+                            !(spec.is_t0() && authorization.signature().is_keychain())
+                        })
                         .filter_map(|authorization| authorization.recover_authority().ok())
                         .collect::<Vec<_>>();
 
@@ -1269,6 +1275,68 @@ mod tests {
                 );
             }
             other => panic!("Expected Valid outcome with recovered authorities, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_aa_keychain_authorization_authority_not_tracked() {
+        use alloy_eips::eip7702::Authorization;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{
+            TempoSignedAuthorization,
+            tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Any key can sign a keychain authorization that names an arbitrary account.
+        let claimed_authority = Address::random();
+        let authorization = Authorization {
+            chain_id: U256::from(1),
+            nonce: 0,
+            address: Address::random(),
+        };
+        let signature = PrivateKeySigner::random()
+            .sign_hash_sync(&KeychainSignature::signing_hash(
+                authorization.signature_hash(),
+                claimed_authority,
+            ))
+            .expect("authorization signing should succeed");
+        let tempo_authorization = TempoSignedAuthorization::new_unchecked(
+            authorization,
+            TempoSignature::Keychain(KeychainSignature::new(
+                claimed_authority,
+                PrimitiveSignature::Secp256k1(signature),
+            )),
+        );
+        assert_eq!(
+            tempo_authorization.recover_authority().unwrap(),
+            claimed_authority
+        );
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .authorization_list(vec![tempo_authorization])
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Valid { authorities, .. } => {
+                assert!(
+                    !authorities
+                        .is_some_and(|authorities| authorities.contains(&claimed_authority)),
+                    "keychain-signed authorizations are skipped by execution and must not be tracked"
+                );
+            }
+            other => panic!("Expected Valid outcome, got: {other:?}"),
         }
     }
 
