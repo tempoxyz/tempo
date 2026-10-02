@@ -46,6 +46,30 @@ pub struct NativeEarnStack {
     pub engine_hash: B256,
 }
 
+/// Factory and contract identities authorized to register new Earn stacks at T16.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEarnFactoryConfig {
+    pub address: Address,
+    pub code_hash: B256,
+    pub governor: Address,
+    pub vault_runtime_hash: B256,
+    pub vault_implementation: Address,
+    pub vault_implementation_hash: B256,
+    pub fees_implementation: Address,
+    pub fees_implementation_hash: B256,
+    #[serde(default)]
+    pub approved_engines: Vec<NativeEarnApprovedEngine>,
+}
+
+/// One pre-approved engine instance and its immutable runtime identity.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEarnApprovedEngine {
+    pub address: Address,
+    pub code_hash: B256,
+}
+
 /// Generates [`TempoGenesisInfo`] with one `<fork>_time` field per post-Genesis hardfork.
 macro_rules! tempo_genesis_info {
     ($($variant:ident),* $(,)?) => {
@@ -63,6 +87,9 @@ macro_rules! tempo_genesis_info {
                 /// Canonical legacy Earn accounts migrated at T16 activation.
                 #[serde(default, skip_serializing_if = "Vec::is_empty")]
                 native_earn_manifest: Vec<NativeEarnStack>,
+                /// Optional T16 factory for atomic admission of new Earn stacks.
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                native_earn_factory: Option<NativeEarnFactoryConfig>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,8 +123,13 @@ impl TempoGenesisInfo {
             .extra_fields
             .get("nativeEarnManifest")
             .is_some()
+            || genesis
+                .config
+                .extra_fields
+                .get("nativeEarnFactory")
+                .is_some()
         {
-            decoded.expect("nativeEarnManifest and fork configuration must decode exactly")
+            decoded.expect("native Earn configuration and fork schedule must decode exactly")
         } else {
             decoded.unwrap_or_default()
         }
@@ -113,6 +145,10 @@ impl TempoGenesisInfo {
 
     pub fn native_earn_manifest(&self) -> &[NativeEarnStack] {
         &self.native_earn_manifest
+    }
+
+    pub fn native_earn_factory(&self) -> Option<&NativeEarnFactoryConfig> {
+        self.native_earn_factory.as_ref()
     }
 }
 
@@ -242,6 +278,10 @@ impl TempoChainSpec {
         assert!(
             info.native_earn_manifest().is_empty() || info.fork_time(TempoHardfork::T16).is_some(),
             "nativeEarnManifest requires scheduled T16 activation"
+        );
+        assert!(
+            info.native_earn_factory().is_none() || info.fork_time(TempoHardfork::T16).is_some(),
+            "nativeEarnFactory requires scheduled T16 activation"
         );
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)

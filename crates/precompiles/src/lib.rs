@@ -40,7 +40,7 @@ use crate::{
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
     native_call::{NativeCallExt, NativeCallLimits},
-    native_earn::NativeEarnExecution,
+    native_earn::{NativeEarnExecution, NativeEarnRegistrar},
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -77,6 +77,7 @@ use evm2::{
     precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 
+pub use tempo_contracts::earn::NATIVE_EARN_REGISTRY_ADDRESS;
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
@@ -294,6 +295,8 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             ZoneFactory::new().call(calldata, caller)
         } else if address == ZONE_VERIFIER_ADDRESS {
             ZoneVerifier::new().call(calldata, caller)
+        } else if address == NATIVE_EARN_REGISTRY_ADDRESS {
+            NativeEarnRegistrar::new().call(calldata, caller)
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }

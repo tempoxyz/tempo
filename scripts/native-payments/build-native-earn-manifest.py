@@ -45,8 +45,15 @@ def main():
     parser.add_argument("--rpc-url", required=True)
     parser.add_argument("--vault", required=True)
     parser.add_argument("--block", default="latest", help="pre-T16 block number or tag")
+    parser.add_argument("--factory", help="predeployed NativeEarnFactory admitted at T16")
+    parser.add_argument("--governor", help="engine approval and migration authority")
+    parser.add_argument("--approved-engine", action="append", default=[], help="additional preapproved engine address")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    if bool(args.factory) != bool(args.governor):
+        parser.error("--factory and --governor must be supplied together")
+    if args.approved_engine and not args.factory:
+        parser.error("--approved-engine requires --factory")
 
     block = rpc(args.rpc_url, "eth_getBlockByNumber", [args.block, False])
     tag = block["number"]
@@ -119,6 +126,36 @@ def main():
         },
         "proofs": proofs,
     }
+    if args.factory:
+        factory = args.factory.lower()
+        governor = args.governor.lower()
+        if int(factory, 16) == 0 or int(governor, 16) == 0:
+            raise ValueError("factory and governor must be nonzero")
+        def factory_address(signature):
+            data = keccak_hex(signature.encode().hex())[:10]
+            return address_from_slot(rpc(args.rpc_url, "eth_call", [{"to": factory, "data": data}, tag]))
+        if factory_address("registrar()") != "0x5aea000000000000000000000000000000000000":
+            raise ValueError("NativeEarnFactory registrar is not the T16 registry precompile")
+        if factory_address("tip20Factory()") != "0x20fc000000000000000000000000000000000000":
+            raise ValueError("NativeEarnFactory is not bound to the canonical TIP20 factory")
+        factory_vault_impl = factory_address("earnVaultImplementation()")
+        factory_fees_impl = factory_address("earnFeesImplementation()")
+        approved = sorted(set([engine] + [address.lower() for address in args.approved_engine]))
+        result["nativeEarnFactory"] = {
+            "address": factory,
+            "codeHash": code_hash(code(factory)),
+            "governor": governor,
+            "vaultRuntimeHash": entry["vaultRuntimeHash"],
+            "vaultImplementation": factory_vault_impl,
+            "vaultImplementationHash": code_hash(code(factory_vault_impl)),
+            "feesImplementation": factory_fees_impl,
+            "feesImplementationHash": code_hash(code(factory_fees_impl)),
+            "approvedEngines": [
+                {"address": address, "codeHash": code_hash(code(address))} for address in approved
+            ],
+        }
+        for address in [factory, factory_vault_impl, factory_fees_impl] + approved:
+            proofs[address] = rpc(args.rpc_url, "eth_getProof", [address, [], tag])
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"blockNumber": tag, "vault": vault, "fees": fees, "manifestEntries": 1}))
 

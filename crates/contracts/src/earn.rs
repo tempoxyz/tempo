@@ -5,10 +5,48 @@
 //! nonpayment calls through the ERC-1967 implementation slot.
 
 use alloy_primitives::{Address, B256, U256, address, b256, keccak256};
+use alloy_sol_types::sol;
+
+sol! {
+    interface INativeEarnRegistrar {
+        function register(address vault, address fees, address asset, address earnShare, address engine) external;
+        function approveEngine(address engine) external;
+        function revokeEngine(address engine) external;
+        function updateVaultEngine(address vault, address engine) external;
+    }
+}
 
 /// System-owned storage account for approved native Earn identities.
 pub const NATIVE_EARN_REGISTRY_ADDRESS: Address =
     address!("0x5aea000000000000000000000000000000000000");
+
+/// Fixed registry slots for an approved T16 deployment factory and its code identities.
+/// Account registrations use domain-separated hashes and cannot overlap these slots.
+pub mod factory_slots {
+    use alloy_primitives::U256;
+    pub const ADDRESS: U256 = U256::ZERO;
+    pub const CODE_HASH: U256 = U256::from_limbs([1, 0, 0, 0]);
+    pub const VAULT_RUNTIME_HASH: U256 = U256::from_limbs([2, 0, 0, 0]);
+    pub const VAULT_IMPLEMENTATION: U256 = U256::from_limbs([3, 0, 0, 0]);
+    pub const VAULT_IMPLEMENTATION_HASH: U256 = U256::from_limbs([4, 0, 0, 0]);
+    pub const FEES_IMPLEMENTATION: U256 = U256::from_limbs([5, 0, 0, 0]);
+    pub const FEES_IMPLEMENTATION_HASH: U256 = U256::from_limbs([6, 0, 0, 0]);
+    pub const GOVERNOR: U256 = U256::from_limbs([7, 0, 0, 0]);
+}
+
+/// Domain-separated key input for a pre-approved engine instance.
+pub fn earn_engine_approval_preimage(engine: Address) -> [u8; 64] {
+    const DOMAIN: B256 =
+        b256!("0x0feec3ab3b2eb6b55e26b7a92ef4317f2a5ab2056ead2225f616139b7b5bfeba");
+    let mut input = [0u8; 64];
+    input[..32].copy_from_slice(DOMAIN.as_slice());
+    input[44..64].copy_from_slice(engine.as_slice());
+    input
+}
+
+pub fn earn_engine_approval_slot(engine: Address) -> U256 {
+    U256::from_be_bytes(keccak256(earn_engine_approval_preimage(engine)).0)
+}
 
 /// ERC-1967 implementation slot used by the v1 dispatcher.
 pub const EARN_IMPLEMENTATION_SLOT: U256 = U256::from_be_bytes([

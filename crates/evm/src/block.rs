@@ -21,12 +21,19 @@ use reth_evm::{
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::EvmState;
-use std::{collections::HashSet, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::NativeEarnStack};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::TempoHardforks,
+    spec::{NativeEarnFactoryConfig, NativeEarnStack},
+};
 use tempo_contracts::earn::{
     EARN_IMPLEMENTATION_SLOT, EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
-    NATIVE_EARN_REGISTRY_ADDRESS, earn_fees_clone_runtime, earn_registration_slot,
-    earn_share_issuer_role_slot,
+    NATIVE_EARN_REGISTRY_ADDRESS, earn_engine_approval_slot, earn_fees_clone_runtime,
+    earn_registration_slot, earn_share_issuer_role_slot, factory_slots,
 };
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
@@ -208,6 +215,7 @@ pub struct TempoBlockExecutor<'a> {
 
     t13_active_at_genesis: bool,
     native_earn_manifest: Vec<NativeEarnStack>,
+    native_earn_factory: Option<NativeEarnFactoryConfig>,
     section: BlockSection,
     extra_data: Bytes,
 
@@ -231,6 +239,7 @@ impl<'a> TempoBlockExecutor<'a> {
             t13_active_at_genesis: chain_spec
                 .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
             native_earn_manifest: chain_spec.info.native_earn_manifest().to_vec(),
+            native_earn_factory: chain_spec.info.native_earn_factory().cloned(),
             incentive_gas_used: 0,
             block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
@@ -400,6 +409,7 @@ impl<'a> TempoBlockExecutor<'a> {
             );
         }
         let mut seen = HashSet::new();
+        let mut approved_engines = BTreeMap::<Address, B256>::new();
         let mut previous_vault = None;
         let mut state = PendingState::default();
         let entries = self.native_earn_manifest.clone();
@@ -467,6 +477,14 @@ impl<'a> TempoBlockExecutor<'a> {
                 )
                 .into());
             }
+            if approved_engines
+                .insert(entry.engine, entry.engine_hash)
+                .is_some_and(|previous| previous != entry.engine_hash)
+            {
+                return Err(
+                    BlockValidationError::msg("conflicting native Earn engine identities").into(),
+                );
+            }
             let runtime =
                 Bytecode::new_raw(Bytes::copy_from_slice(NATIVE_EARN_DISPATCHER_V1_RUNTIME));
             state.insert_account(
@@ -533,6 +551,103 @@ impl<'a> TempoBlockExecutor<'a> {
                     state.insert_storage(NATIVE_EARN_REGISTRY_ADDRESS, slot, U256::ZERO, value);
                 }
             }
+        }
+        if let Some(factory) = self.native_earn_factory.clone() {
+            if factory.address == Address::ZERO
+                || factory.governor == Address::ZERO
+                || factory.vault_implementation == Address::ZERO
+                || factory.fees_implementation == Address::ZERO
+                || factory.code_hash == B256::ZERO
+                || factory.vault_runtime_hash == B256::ZERO
+                || factory.vault_implementation_hash == B256::ZERO
+                || factory.fees_implementation_hash == B256::ZERO
+                || factory.approved_engines.len() > 128
+            {
+                return Err(BlockValidationError::msg("invalid native Earn factory config").into());
+            }
+            self.earn_account(factory.address, factory.code_hash)?;
+            self.earn_account(
+                factory.vault_implementation,
+                factory.vault_implementation_hash,
+            )?;
+            self.earn_account(
+                factory.fees_implementation,
+                factory.fees_implementation_hash,
+            )?;
+            let mut previous_engine = None;
+            for engine in &factory.approved_engines {
+                if engine.address == Address::ZERO
+                    || engine.code_hash == B256::ZERO
+                    || previous_engine.is_some_and(|previous| engine.address <= previous)
+                {
+                    return Err(BlockValidationError::msg(
+                        "native Earn engines must be unique and sorted",
+                    )
+                    .into());
+                }
+                previous_engine = Some(engine.address);
+                self.earn_account(engine.address, engine.code_hash)?;
+                if approved_engines
+                    .insert(engine.address, engine.code_hash)
+                    .is_some_and(|previous| previous != engine.code_hash)
+                {
+                    return Err(BlockValidationError::msg(
+                        "conflicting native Earn engine identities",
+                    )
+                    .into());
+                }
+            }
+            let address_word = |address: Address| U256::from_be_slice(address.as_slice());
+            for (slot, value) in [
+                (factory_slots::ADDRESS, address_word(factory.address)),
+                (factory_slots::GOVERNOR, address_word(factory.governor)),
+                (
+                    factory_slots::CODE_HASH,
+                    U256::from_be_slice(factory.code_hash.as_slice()),
+                ),
+                (
+                    factory_slots::VAULT_RUNTIME_HASH,
+                    U256::from_be_slice(factory.vault_runtime_hash.as_slice()),
+                ),
+                (
+                    factory_slots::VAULT_IMPLEMENTATION,
+                    address_word(factory.vault_implementation),
+                ),
+                (
+                    factory_slots::VAULT_IMPLEMENTATION_HASH,
+                    U256::from_be_slice(factory.vault_implementation_hash.as_slice()),
+                ),
+                (
+                    factory_slots::FEES_IMPLEMENTATION,
+                    address_word(factory.fees_implementation),
+                ),
+                (
+                    factory_slots::FEES_IMPLEMENTATION_HASH,
+                    U256::from_be_slice(factory.fees_implementation_hash.as_slice()),
+                ),
+            ] {
+                if self.earn_slot(NATIVE_EARN_REGISTRY_ADDRESS, slot)? != U256::ZERO {
+                    return Err(BlockValidationError::msg(
+                        "native Earn factory config slot occupied",
+                    )
+                    .into());
+                }
+                state.insert_storage(NATIVE_EARN_REGISTRY_ADDRESS, slot, U256::ZERO, value);
+            }
+        }
+        for (engine, code_hash) in approved_engines {
+            let slot = earn_engine_approval_slot(engine);
+            if self.earn_slot(NATIVE_EARN_REGISTRY_ADDRESS, slot)? != U256::ZERO {
+                return Err(
+                    BlockValidationError::msg("native Earn engine approval slot occupied").into(),
+                );
+            }
+            state.insert_storage(
+                NATIVE_EARN_REGISTRY_ADDRESS,
+                slot,
+                U256::ZERO,
+                U256::from_be_slice(code_hash.as_slice()),
+            );
         }
         let marker = Bytecode::new_raw(Bytes::from_static(&[0xef]));
         state.insert_account(
@@ -2112,6 +2227,7 @@ mod tests {
             let earn_share =
                 alloy_primitives::address!("0x20c0000000000000000000000000000000000097");
             let unrelated = Address::with_last_byte(0x98);
+            let factory_address = Address::with_last_byte(0x99);
             let vault_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x00, 0x56]));
             let fees_code = Bytecode::new_raw(Bytes::copy_from_slice(&earn_fees_clone_runtime(
                 fees_implementation,
@@ -2120,6 +2236,7 @@ mod tests {
             let fees_impl_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x02, 0x56]));
             let engine_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x03, 0x56]));
             let unrelated_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x04, 0x56]));
+            let factory_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x05, 0x56]));
             let entry = NativeEarnStack {
                 vault: vault_address,
                 vault_runtime_hash: vault_code.hash_slow(),
@@ -2134,6 +2251,20 @@ mod tests {
                 engine,
                 engine_hash: engine_code.hash_slow(),
             };
+            let factory = NativeEarnFactoryConfig {
+                address: factory_address,
+                code_hash: factory_code.hash_slow(),
+                governor: unrelated,
+                vault_runtime_hash: vault_code.hash_slow(),
+                vault_implementation,
+                vault_implementation_hash: vault_impl_code.hash_slow(),
+                fees_implementation,
+                fees_implementation_hash: fees_impl_code.hash_slow(),
+                approved_engines: vec![tempo_chainspec::spec::NativeEarnApprovedEngine {
+                    address: engine,
+                    code_hash: engine_code.hash_slow(),
+                }],
+            };
             let mut genesis = DEV.genesis().clone();
             genesis
                 .config
@@ -2141,6 +2272,14 @@ mod tests {
                 .insert_value(
                     "nativeEarnManifest".into(),
                     serde_json::to_value([&entry]).unwrap(),
+                )
+                .unwrap();
+            genesis
+                .config
+                .extra_fields
+                .insert_value(
+                    "nativeEarnFactory".into(),
+                    serde_json::to_value(&factory).unwrap(),
                 )
                 .unwrap();
             genesis
@@ -2154,7 +2293,11 @@ mod tests {
                 .insert_value("t16Time".into(), 10)
                 .unwrap();
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-            assert_eq!(chainspec.info.native_earn_manifest(), &[entry]);
+            assert_eq!(
+                chainspec.info.native_earn_manifest(),
+                std::slice::from_ref(&entry)
+            );
+            assert_eq!(chainspec.info.native_earn_factory(), Some(&factory));
             let mut db = InMemoryDB::default();
             for (address, code) in [
                 (vault_address, vault_code.clone()),
@@ -2163,6 +2306,7 @@ mod tests {
                 (fees_implementation, fees_impl_code),
                 (engine, engine_code),
                 (unrelated, unrelated_code.clone()),
+                (factory_address, factory_code),
             ] {
                 db.insert_account_info(
                     &address,
@@ -2238,6 +2382,12 @@ mod tests {
                         .unwrap(),
                     U256::ZERO
                 );
+                assert_eq!(
+                    executor
+                        .earn_slot(NATIVE_EARN_REGISTRY_ADDRESS, factory_slots::ADDRESS)
+                        .unwrap(),
+                    U256::ZERO
+                );
                 continue;
             }
             result.unwrap();
@@ -2277,6 +2427,21 @@ mod tests {
                     )
                     .unwrap(),
                 U256::from(2)
+            );
+            assert_eq!(
+                executor
+                    .earn_slot(NATIVE_EARN_REGISTRY_ADDRESS, factory_slots::ADDRESS)
+                    .unwrap(),
+                word(factory_address)
+            );
+            assert_eq!(
+                executor
+                    .earn_slot(
+                        NATIVE_EARN_REGISTRY_ADDRESS,
+                        earn_engine_approval_slot(engine)
+                    )
+                    .unwrap(),
+                U256::from_be_slice(entry.engine_hash.as_slice())
             );
             executor
                 .earn_account(unrelated, unrelated_code.hash_slow())
