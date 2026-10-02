@@ -741,92 +741,98 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
     /// Read values, rather than touched addresses, determine dependencies. Two transfers
     /// touching distinct balances in the same TIP-20 therefore need not conflict.
     pub(crate) fn validate<DB: Database<Error = E>>(&mut self, db: &mut DB) -> Result<bool, E> {
-        self.validate_with(|key, expected| {
-            let actual = read(db, key)?;
-            Ok((actual != *expected).then_some(actual))
+        self.validate_with(|reads| {
+            for (offset, (key, expected)) in reads.iter().enumerate() {
+                let actual = read(db, *key)?;
+                if actual != *expected {
+                    return Ok(Some((offset, actual)));
+                }
+            }
+            Ok(None)
         })
     }
 
     /// Both validators use identical dependency checks and defer all fee patches
-    /// until every read validates. The matcher returns only differing values.
+    /// until every read validates. The matcher scans in order and stops at the
+    /// first difference, so fee validation precedes any later database reads.
     fn validate_with(
         &mut self,
-        mut differing_value: impl FnMut(ReadKey, &ReadValue) -> Result<Option<ReadValue>, E>,
+        mut first_difference: impl FnMut(
+            &[(ReadKey, ReadValue)],
+        ) -> Result<Option<(usize, ReadValue)>, E>,
     ) -> Result<bool, E> {
         let mut patches = Vec::new();
-        for (key, expected) in &self.reads {
-            if let Some(actual) = differing_value(*key, expected)? {
-                let (
-                    ReadKey::Storage(address, slot),
-                    ReadValue::Storage(old),
-                    ReadValue::Storage(new),
-                ) = (key, expected, actual)
-                else {
-                    return Ok(Self::conflict(
-                        &mut self.conflict,
-                        key,
-                        "account, code or block hash",
-                        false,
-                    ));
-                };
-                let Some(update) = self
-                    .fee_updates
-                    .iter()
-                    .find(|update| update.address == *address && update.slot == *slot)
-                else {
-                    tracing::trace!(target: "tempo::execution::conflicts", ?key, expected = %old, actual = %new, "Storage values differ");
-                    return Ok(Self::conflict(
-                        &mut self.conflict,
-                        key,
-                        "ordinary storage",
-                        false,
-                    ));
-                };
-                let Some(account) = self
-                    .result
-                    .as_ref()
-                    .ok()
-                    .and_then(|result| result.state.get(address))
-                else {
-                    return Ok(Self::conflict(
-                        &mut self.conflict,
-                        key,
-                        "missing result account",
-                        true,
-                    ));
-                };
-                let Some(storage) = account.storage.get(slot) else {
-                    return Ok(Self::conflict(
-                        &mut self.conflict,
-                        key,
-                        "missing result storage",
-                        true,
-                    ));
-                };
-                if account.is_created()
-                    || account.is_selfdestructed()
-                    || storage.original_value != *old
-                    || update.apply(*old) != Some(storage.present_value)
-                {
-                    return Ok(Self::conflict(
-                        &mut self.conflict,
-                        key,
-                        "fee journal mismatch",
-                        true,
-                    ));
-                }
-                let Some(present) = update.apply(new) else {
-                    // Including intermediate maximum-fee overflow: the ordinary
-                    // executor must produce the canonical error or result.
-                    return Ok(Self::conflict(
-                        &mut self.conflict,
-                        key,
-                        "fee arithmetic overflow",
-                        true,
-                    ));
-                };
-                patches.push((*address, *slot, new, present));
+        let mut remaining = self.reads.as_slice();
+        while let Some((offset, actual)) = first_difference(remaining)? {
+            let (key, expected) = &remaining[offset];
+            remaining = &remaining[offset + 1..];
+            let (ReadKey::Storage(address, slot), ReadValue::Storage(old), ReadValue::Storage(new)) =
+                (key, expected, actual)
+            else {
+                return Ok(Self::conflict(
+                    &mut self.conflict,
+                    key,
+                    "account, code or block hash",
+                    false,
+                ));
+            };
+            let Some(update) = self
+                .fee_updates
+                .iter()
+                .find(|update| update.address == *address && update.slot == *slot)
+            else {
+                tracing::trace!(target: "tempo::execution::conflicts", ?key, expected = %old, actual = %new, "Storage values differ");
+                return Ok(Self::conflict(
+                    &mut self.conflict,
+                    key,
+                    "ordinary storage",
+                    false,
+                ));
+            };
+            let Some(account) = self
+                .result
+                .as_ref()
+                .ok()
+                .and_then(|result| result.state.get(address))
+            else {
+                return Ok(Self::conflict(
+                    &mut self.conflict,
+                    key,
+                    "missing result account",
+                    true,
+                ));
+            };
+            let Some(storage) = account.storage.get(slot) else {
+                return Ok(Self::conflict(
+                    &mut self.conflict,
+                    key,
+                    "missing result storage",
+                    true,
+                ));
+            };
+            if account.is_created()
+                || account.is_selfdestructed()
+                || storage.original_value != *old
+                || update.apply(*old) != Some(storage.present_value)
+            {
+                return Ok(Self::conflict(
+                    &mut self.conflict,
+                    key,
+                    "fee journal mismatch",
+                    true,
+                ));
             }
+            let Some(present) = update.apply(new) else {
+                // Including intermediate maximum-fee overflow: the ordinary
+                // executor must produce the canonical error or result.
+                return Ok(Self::conflict(
+                    &mut self.conflict,
+                    key,
+                    "fee arithmetic overflow",
+                    true,
+                ));
+            };
+            patches.push((*address, *slot, new, present));
         }
         // All dependency and arithmetic checks precede mutations. Preserve every
         // other account field, storage slot, receipt, log and gas value.

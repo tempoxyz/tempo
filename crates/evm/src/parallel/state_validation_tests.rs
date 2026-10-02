@@ -283,3 +283,127 @@ fn canonical_cache_validation_preserves_cold_provider_errors() {
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
     }
 }
+
+#[test]
+fn canonical_cache_validation_scans_warm_runs_across_cold_reads_and_revisits() {
+    let (mut parent, address, hash, _) = fixture();
+    let other = Address::with_last_byte(214);
+    parent.insert_account_info(
+        other,
+        AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        },
+    );
+    parent
+        .insert_account_storage(other, U256::ONE, U256::from(91))
+        .unwrap();
+    for slot in 2..=8 {
+        parent
+            .insert_account_storage(address, U256::from(slot), U256::from(slot + 10))
+            .unwrap();
+    }
+    let mut keys = vec![ReadKey::Account(address)];
+    keys.extend((1..=8).map(|slot| ReadKey::Storage(address, U256::from(slot))));
+    keys.extend([
+        ReadKey::Account(other),
+        ReadKey::Storage(other, U256::ONE),
+        ReadKey::Storage(address, U256::ONE),
+        ReadKey::Storage(address, U256::from(9)),
+        ReadKey::Storage(address, U256::from(2)),
+        ReadKey::BlockHash(55),
+        ReadKey::Storage(address, U256::from(3)),
+        ReadKey::Code(hash),
+    ]);
+    let mut oracle = State::builder().with_database(parent.clone()).build();
+    let reads = keys
+        .into_iter()
+        .map(|key| (key, read(&mut oracle, key).unwrap()))
+        .collect::<Vec<_>>();
+    let mut canonical = State::builder().with_database(parent.clone()).build();
+    let mut cached = State::builder().with_database(parent).build();
+    for db in [&mut canonical, &mut cached] {
+        db.basic(address).unwrap();
+        for slot in 1..=8 {
+            db.storage(address, U256::from(slot)).unwrap();
+        }
+    }
+    assert_eq!(compare(&mut canonical, &mut cached, &reads), Ok(true));
+    for db in [&mut canonical, &mut cached] {
+        assert!(db.cache.accounts.contains_key(&other));
+        let storage = &mut db
+            .cache
+            .accounts
+            .get_mut(&address)
+            .unwrap()
+            .account
+            .as_mut()
+            .unwrap()
+            .storage;
+        assert_eq!(storage.get(&U256::from(9)), Some(&U256::ZERO));
+        storage.insert(U256::from(6), U256::MAX);
+    }
+    // A later validation must observe direct changes even in a previously
+    // accepted warm run. No borrowed account survives the previous call.
+    assert_eq!(compare(&mut canonical, &mut cached, &reads), Ok(false));
+}
+
+#[test]
+fn canonical_cache_validation_stops_warm_runs_before_later_provider_errors() {
+    let address = Address::with_last_byte(215);
+    for conflict in [false, true] {
+        let mut canonical = State::builder().with_database(FailingProvider).build();
+        let mut cached = State::builder().with_database(FailingProvider).build();
+        for db in [&mut canonical, &mut cached] {
+            db.insert_account(
+                address,
+                AccountInfo {
+                    nonce: 1,
+                    ..Default::default()
+                },
+            );
+            db.cache
+                .accounts
+                .get_mut(&address)
+                .unwrap()
+                .account
+                .as_mut()
+                .unwrap()
+                .storage
+                .extend([(U256::ONE, U256::from(7)), (U256::from(2), U256::from(8))]);
+        }
+        let reads = vec![
+            (
+                ReadKey::Storage(address, U256::ONE),
+                ReadValue::Storage(U256::from(7)),
+            ),
+            (
+                ReadKey::Storage(address, U256::from(2)),
+                ReadValue::Storage(U256::from(if conflict { 9 } else { 8 })),
+            ),
+            (
+                ReadKey::Storage(address, U256::from(3)),
+                ReadValue::Storage(U256::ZERO),
+            ),
+        ];
+        let mut normal = candidate(reads.clone());
+        let mut fast = candidate(reads);
+        let expected = normal
+            .validate(&mut canonical)
+            .map_err(|error| format!("{error:?}"));
+        let actual = fast
+            .validate_state(&mut cached)
+            .map_err(|error| format!("{error:?}"));
+        assert_eq!(actual, expected);
+        if conflict {
+            // The mismatching second warm slot must stop validation before
+            // the third slot would consult the failing provider.
+            assert_eq!(actual, Ok(false));
+            assert!(matches!(fast.conflict, Some(ConflictKind::Storage)));
+        } else {
+            // With no conflict, a cold read inside the same account run must
+            // still reach the provider and return its error.
+            assert!(actual.is_err());
+        }
+    }
+}

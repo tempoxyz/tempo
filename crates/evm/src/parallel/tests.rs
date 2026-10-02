@@ -2420,6 +2420,54 @@ fn body_replay_preserves_storage_gas_and_warmness() {
     }
 }
 
+/// Collect existing ordered-validator trace events only in explicit diagnostic runs.
+#[derive(Clone, Debug, Default)]
+struct BenchmarkConflictCounts(Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>);
+
+impl tracing::Subscriber for BenchmarkConflictCounts {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.target() == "tempo::execution::conflicts"
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        #[derive(Default)]
+        struct Fields {
+            key: Option<String>,
+            reason: Option<String>,
+        }
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                match field.name() {
+                    "key" => self.key = Some(format!("{value:?}")),
+                    "reason" => self.reason = Some(format!("{value:?}")),
+                    _ => {}
+                }
+            }
+        }
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        // Only the final replay event has both fields. Do not double count the
+        // preceding ordinary-storage value comparison or caller/payer event.
+        if let (Some(key), Some(reason)) = (fields.key, fields.reason) {
+            *self
+                .0
+                .lock()
+                .unwrap()
+                .entry(format!("{key} reason={reason}"))
+                .or_default() += 1;
+        }
+    }
+}
+
 /// In-memory execution benchmark. This includes scheduling, read validation, replay,
 /// receipt construction and commits, but excludes signing, networking and trie hashing.
 /// Run with `cargo test -p tempo-evm --release execution_throughput -- --ignored --nocapture`.
@@ -2429,7 +2477,11 @@ fn execution_throughput() {
     use alloy_evm::FromRecoveredTx;
     use alloy_sol_types::SolCall;
     use std::time::Instant;
-    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+        tip20::{ITIP20, slots as tip20_slots},
+        tip20_channel_reserve::ITIP20ChannelReserve,
+    };
     use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
     let counts =
         std::env::var("TEMPO_BENCH_COUNTS").unwrap_or_else(|_| "10000,25000,50000,100000".into());
@@ -2446,7 +2498,15 @@ fn execution_throughput() {
     if let Some(hardfork) = hardfork {
         println!("# hardfork={hardfork}");
     }
-    let profile = std::env::var_os("TEMPO_BENCH_PHASES").is_some();
+    let conflicts = std::env::var("TEMPO_BENCH_CONFLICTS")
+        .is_ok_and(|value| value == "1")
+        .then(BenchmarkConflictCounts::default);
+    let _conflict_guard = conflicts
+        .as_ref()
+        .map(|counts| tracing::subscriber::set_default(counts.clone()));
+    // Trace formatting/locking changes execution cost. Diagnostic runs verify
+    // results and print conflict counts, but never report benchmark timings.
+    let profile = conflicts.is_none() && std::env::var_os("TEMPO_BENCH_PHASES").is_some();
     let streaming = std::env::var("TEMPO_BENCH_STREAMING").map_or(true, |value| value != "0");
     let fee_rebasing = std::env::var("TEMPO_BENCH_FEE_REBASING").map_or(true, |value| value != "0");
     let chained = std::env::var("TEMPO_BENCH_CHAINED").map_or(true, |value| value != "0");
@@ -2475,9 +2535,13 @@ fn execution_throughput() {
             worker_counts.insert(0, 0);
         }
     }
-    println!(
-        "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused\tfees_rebased"
-    );
+    if conflicts.is_some() {
+        println!("# conflict_diagnostics=true timings_suppressed=true");
+    } else {
+        println!(
+            "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused\tfees_rebased"
+        );
+    }
     for count in counts.split(',').map(|s| s.parse::<u64>().unwrap()) {
         for workload in workloads.split(',') {
             assert!(matches!(
@@ -2493,10 +2557,21 @@ fn execution_throughput() {
                     | "tip20_paid_aa_expiring"
                     | "tip20_paid_aa_expiring_funded"
                     | "tip20_paid_aa_expiring_multitoken"
+                    | "tip20_paid_aa_expiring_public_mix"
             ));
+            let public_mix = workload == "tip20_paid_aa_expiring_public_mix";
+            if public_mix {
+                assert_eq!(
+                    hardfork,
+                    Some(TempoHardfork::T14),
+                    "public mix requires T14"
+                );
+            }
             let funded_expiring = matches!(
                 workload,
-                "tip20_paid_aa_expiring_funded" | "tip20_paid_aa_expiring_multitoken"
+                "tip20_paid_aa_expiring_funded"
+                    | "tip20_paid_aa_expiring_multitoken"
+                    | "tip20_paid_aa_expiring_public_mix"
             );
             if funded_expiring {
                 assert!(
@@ -2525,7 +2600,7 @@ fn execution_throughput() {
                         .chain(count + 1000..count * 2 + 1000)
                         .map(address)
                         .collect(),
-                    if workload.ends_with("multitoken") {
+                    if workload.ends_with("multitoken") || public_mix {
                         4
                     } else {
                         1
@@ -2556,10 +2631,93 @@ fn execution_throughput() {
                     ],
                 );
             }
+            let initial_supply = public_mix.then(|| {
+                db.storage(PATH_USD_ADDRESS, tip20_slots::TOTAL_SUPPLY)
+                    .unwrap()
+            });
             let mut recipient_seed = 0x9e3779b97f4a7c15_u64;
+            let mut mix_order = [0u8; 20];
+            mix_order[16] = 1;
+            mix_order[17..].fill(2);
+            let mut mix_counts = [0u64; 3];
+            let next_random = |seed: &mut u64| {
+                *seed ^= *seed << 13;
+                *seed ^= *seed >> 7;
+                *seed ^= *seed << 17;
+                *seed
+            };
             let txs = (0..count)
                 .map(|i| {
-                    if workload.starts_with("tip20_paid_aa") {
+                    if public_mix {
+                        // Reproducible shuffled groups of 20 preserve the preset's
+                        // exact 80/5/15 shares without clustering all mints/opens.
+                        if i % 20 == 0 {
+                            for slot in (1..mix_order.len()).rev() {
+                                let other = next_random(&mut recipient_seed) as usize % (slot + 1);
+                                mix_order.swap(slot, other);
+                            }
+                        }
+                        let kind = mix_order[(i % 20) as usize] as usize;
+                        mix_counts[kind] += 1;
+                        let sender = if kind == 1 {
+                            999 // funded_tip20_tokens grants this account the issuer role.
+                        } else {
+                            next_random(&mut recipient_seed) % users
+                        };
+                        let recipient =
+                            address(count + 1000 + next_random(&mut recipient_seed) % count);
+                        let (to, input, gas_limit) = match kind {
+                            0 => (
+                                transfer_tokens[next_random(&mut recipient_seed) as usize % 4],
+                                ITIP20::transferCall {
+                                    to: recipient,
+                                    amount: U256::ONE,
+                                }
+                                .abi_encode(),
+                                300_000,
+                            ),
+                            1 => (
+                                PATH_USD_ADDRESS,
+                                ITIP20::mintCall {
+                                    to: recipient,
+                                    amount: U256::ONE,
+                                }
+                                .abi_encode(),
+                                300_000,
+                            ),
+                            _ => (
+                                TIP20_CHANNEL_RESERVE_ADDRESS,
+                                ITIP20ChannelReserve::openCall {
+                                    payee: address(next_random(&mut recipient_seed) % users),
+                                    operator: Address::ZERO,
+                                    token: transfer_tokens[1],
+                                    deposit: alloy_primitives::aliases::U96::ONE,
+                                    salt: B256::from(U256::from(i + 1)),
+                                    authorizedSigner: Address::ZERO,
+                                }
+                                .abi_encode(),
+                                1_000_000,
+                            ),
+                        };
+                        let signed = TempoTransaction {
+                            chain_id: 1,
+                            gas_limit,
+                            max_fee_per_gas: 1,
+                            max_priority_fee_per_gas: 1,
+                            fee_token: Some(PATH_USD_ADDRESS),
+                            nonce: next_random(&mut recipient_seed),
+                            nonce_key: U256::MAX,
+                            valid_before: std::num::NonZeroU64::new(25),
+                            calls: vec![Call {
+                                to: to.into(),
+                                value: U256::ZERO,
+                                input: input.into(),
+                            }],
+                            ..Default::default()
+                        }
+                        .into_signed(TempoSignature::default());
+                        TempoTxEnv::from_recovered_tx(&signed, address(sender))
+                    } else if workload.starts_with("tip20_paid_aa") {
                         recipient_seed ^= recipient_seed << 13;
                         recipient_seed ^= recipient_seed >> 7;
                         recipient_seed ^= recipient_seed << 17;
@@ -2630,6 +2788,19 @@ fn execution_throughput() {
                     }
                 })
                 .collect::<Vec<_>>();
+            if public_mix {
+                println!(
+                    "# public_mix transfers={} mints={} opens={} senders={users} tokens={transfer_tokens:?}",
+                    mix_counts[0], mix_counts[1], mix_counts[2]
+                );
+                println!(
+                    "# public_mix_shared_slots mint_supply=({PATH_USD_ADDRESS},{:?}) issuer_balance=({PATH_USD_ADDRESS},{:?}) reserve_balance=({},{:?})",
+                    tip20_slots::TOTAL_SUPPLY,
+                    address(999).mapping_slot(tip20_slots::BALANCES),
+                    transfer_tokens[1],
+                    TIP20_CHANNEL_RESERVE_ADDRESS.mapping_slot(tip20_slots::BALANCES)
+                );
+            }
             let txs = Arc::new(txs);
             let parent = prewarming.then(|| Arc::new(db.clone()));
             let mut baseline = None;
@@ -2674,6 +2845,9 @@ fn execution_throughput() {
                 let mut receipts = Vec::with_capacity(txs.len());
                 let mut cumulative_gas = 0;
                 let mut phases = [Duration::ZERO; 3];
+                if let Some(conflicts) = &conflicts {
+                    conflicts.0.lock().unwrap().clear();
+                }
                 let start = Instant::now();
                 for batch in txs.chunks(batch_size) {
                     let preparation_start = profile.then(Instant::now);
@@ -2721,6 +2895,28 @@ fn execution_throughput() {
                 let elapsed = start.elapsed().as_secs_f64();
                 drop(pipeline);
                 let stats = evm.execution_stats();
+                if let Some(initial_supply) = initial_supply {
+                    // Native reserve initialization is its genesis marker above;
+                    // the real AA handler supplies transient open-context entropy.
+                    // Check workload effects after timing, in addition to roots/receipts.
+                    assert_eq!(
+                        evm.db_mut()
+                            .storage(PATH_USD_ADDRESS, tip20_slots::TOTAL_SUPPLY)
+                            .unwrap(),
+                        initial_supply + U256::from(mix_counts[1]),
+                        "every mint must increase pathUSD supply"
+                    );
+                    assert_eq!(
+                        evm.db_mut()
+                            .storage(
+                                transfer_tokens[1],
+                                TIP20_CHANNEL_RESERVE_ADDRESS.mapping_slot(tip20_slots::BALANCES),
+                            )
+                            .unwrap(),
+                        U256::from(mix_counts[2]),
+                        "every open must deposit one unit in the shared reserve balance"
+                    );
+                }
                 if profile {
                     let batch_size = if prewarming && threads > 0 {
                         threads * 2
@@ -2743,16 +2939,30 @@ fn execution_throughput() {
                 } else {
                     baseline = Some(output);
                 }
-                println!(
-                    "{workload}\t{count}\t{threads}\t{elapsed:.6}\t{:.0}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    count as f64 / elapsed,
-                    stats.reused,
-                    stats.conflicts,
-                    stats.retries,
-                    stats.backoff,
-                    stats.bodies_reused,
-                    stats.fees_rebased
-                );
+                if let Some(conflicts) = &conflicts {
+                    let counts = conflicts.0.lock().unwrap();
+                    let mut ranked = counts.iter().collect::<Vec<_>>();
+                    ranked.sort_unstable_by_key(|(_, count)| std::cmp::Reverse(**count));
+                    eprintln!(
+                        "CONFLICTS workload={workload} count={count} workers={threads} total={} keys={} {stats:?}",
+                        counts.values().sum::<u64>(),
+                        counts.len()
+                    );
+                    for (key, count) in ranked.into_iter().take(30) {
+                        eprintln!("CONFLICT_KEY count={count} {key}");
+                    }
+                } else {
+                    println!(
+                        "{workload}\t{count}\t{threads}\t{elapsed:.6}\t{:.0}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        count as f64 / elapsed,
+                        stats.reused,
+                        stats.conflicts,
+                        stats.retries,
+                        stats.backoff,
+                        stats.bodies_reused,
+                        stats.fees_rebased
+                    );
+                }
             }
         }
     }

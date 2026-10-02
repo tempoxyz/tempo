@@ -41,6 +41,11 @@ not offered TPS. The harness compares complete receipts and final trie roots
 against sequential execution and uses `revm::State` for the node's account
 deletion rules. The funded multi-token fixture uses 1,000 senders,
 four TIP-20 transfer tokens, explicit pathUSD fees and expiring AA nonces (T12+).
+The T14 `tip20_paid_aa_expiring_public_mix` fixture models the GitHub preset's
+80% transfers, 5% issuer mints and 15% native MPP opens, with existing recipients
+and a shared channel-reserve balance. It also checks minted supply and deposits.
+Set `TEMPO_BENCH_CONFLICTS=1` to count conflicting read keys; this diagnostic
+suppresses throughput and phase timings because tracing changes execution cost.
 `TEMPO_BENCH_BATCH_SIZE` sets the speculative window, and
 `TEMPO_BENCH_PHASES=1` adds preparation, ordered-execution and commit timings.
 Compare equally instrumented runs. Signing, initial state setup, disk I/O,
@@ -63,6 +68,12 @@ A final paired 1,000,000-transaction T14 diagnostic with eight workers measures
 155,245 TPS with generic validation versus 168,645 with State-cache validation
 (+8.63%), with matching sequential receipts and roots. This is an in-memory
 result; the node benchmark remains the performance gate.
+
+Scanning consecutive warm reads under one account lookup further raises median
+throughput from 167,594 to 188,014 TPS (+12.18%) in three paired million-transaction
+T14 runs with eight workers. All receipts and roots match; sequential controls
+remain approximately 129k TPS. These local results exclude node I/O and do not
+establish a GitHub throughput improvement.
 
 For historical data, use the read-only differential replay command:
 
@@ -199,3 +210,11 @@ skips worker dispatch for singleton lookahead. Against its own paired main
 baseline, validation throughput falls 2.74%, p90 latency rises 1.25%, and p99
 rises 8.01%. It still does not satisfy the on-win Slack gate. Different runners
 and paired baselines prevent attributing the entire cross-run change to this edit.
+
+[Engine-prewarming comparison 37065073109](https://github.com/tempoxyz/tempo/actions/runs/37065073109)
+measures 13,755 baseline versus 13,929 feature TPS (+1.27%, neutral); builder and
+validator gas throughput still fall 27.37% and 18.40%. Engine candidates are
+available for 78.69% of canonical transactions, but only 9.37% of all transactions
+are reused: stale storage reads dominate conflicts. Full execution after misses
+or conflicts takes 41.74% of sampled Engine CPU. Builder reuse remains 85.88%.
+This is not a win, and the workflow suppresses Slack.
