@@ -4,13 +4,11 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{
-    ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder, make_genesis_at,
-};
+use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
     signers::{
         SignerSync,
@@ -23,11 +21,16 @@ use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, account_keychain::IAccountKeychain::revokeKeyCall,
+    DEFAULT_FEE_TOKEN,
+    account_keychain::IAccountKeychain::{
+        IAccountKeychainInstance, authorizeAdminKeyCall, burnKeyAuthorizationWitnessCall,
+        revokeKeyCall,
+    },
 };
+use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     tip20::ITIP20::{self},
@@ -35,6 +38,7 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{
+        KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
         tt_signed::AASigned,
@@ -42,6 +46,40 @@ use tempo_primitives::{
 };
 
 use super::helpers::*;
+
+fn test_secp256k1_access_key_signature() -> TempoSignature {
+    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+}
+
+fn create_admin_key_authorization(
+    signer: &impl SignerSync,
+    admin_account: Address,
+    key_id: Address,
+    chain_id: u64,
+) -> eyre::Result<SignedKeyAuthorization> {
+    let key_auth = KeyAuthorization::unrestricted(
+        chain_id,
+        tempo_primitives::SignatureType::Secp256k1,
+        key_id,
+    )
+    .into_admin(admin_account);
+    let signature = signer.sign_hash_sync(&key_auth.signature_hash())?;
+    Ok(key_auth.into_signed(PrimitiveSignature::Secp256k1(signature)))
+}
+
+fn authorize_admin_key_call(key_id: Address, witness: B256) -> Call {
+    Call {
+        to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+        value: U256::ZERO,
+        input: authorizeAdminKeyCall {
+            keyId: key_id,
+            signatureType: tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
+            witness,
+        }
+        .abi_encode()
+        .into(),
+    }
+}
 
 /// Single-node local test environment with direct node access.
 pub(crate) struct Localnet {
@@ -1337,6 +1375,344 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse() -> eyre::Result<()>
+{
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+    let witness = B256::with_last_byte(0x53);
+
+    let access_key = PrivateKeySigner::random().address();
+    let key_auth = create_key_authorization_with_witness(
+        &root_signer,
+        access_key,
+        test_secp256k1_access_key_signature(),
+        chain_id,
+        None,
+        None,
+        witness,
+    )?;
+
+    let tx_nonce = provider.get_transaction_count(root_addr).await?;
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        tx_nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    tx.key_authorization = Some(key_auth);
+    let sig = sign_aa_tx_secp256k1(&tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, tx, sig).await?;
+
+    let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
+    assert!(
+        !keychain
+            .isKeyAuthorizationWitnessBurned(root_addr, witness)
+            .call()
+            .await?
+    );
+
+    let replay_auth = create_key_authorization_with_witness(
+        &root_signer,
+        PrivateKeySigner::random().address(),
+        test_secp256k1_access_key_signature(),
+        chain_id,
+        None,
+        None,
+        witness,
+    )?;
+    let mut replay_tx = create_basic_aa_tx(
+        chain_id,
+        tx_nonce + 1,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    replay_tx.key_authorization = Some(replay_auth);
+    let replay_sig = sign_aa_tx_secp256k1(&replay_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, replay_tx, replay_sig).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+    let witness = B256::with_last_byte(0x54);
+
+    for _ in 0..2 {
+        setup.node.advance_block().await?;
+    }
+    let current_timestamp = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_else(|| eyre::eyre!("latest block missing"))?
+        .header
+        .timestamp();
+
+    let key_auth = create_key_authorization_with_witness(
+        &root_signer,
+        PrivateKeySigner::random().address(),
+        test_secp256k1_access_key_signature(),
+        chain_id,
+        None,
+        None,
+        witness,
+    )?;
+    let mut delayed_tx = create_basic_aa_tx(
+        chain_id,
+        provider.get_transaction_count(root_addr).await?,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    delayed_tx.valid_after = Some(nonzero_timestamp(current_timestamp + 60));
+    delayed_tx.key_authorization = Some(key_auth);
+    let delayed_sig = sign_aa_tx_secp256k1(&delayed_tx, &root_signer)?;
+    let delayed_envelope: TempoTxEnvelope = delayed_tx.into_signed(delayed_sig).into();
+    let delayed_hash = *delayed_envelope.tx_hash();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(delayed_envelope.encoded_2718().into())
+        .await?;
+    assert!(setup.node.inner.pool.contains(&delayed_hash));
+
+    let mut burn_tx = create_basic_aa_tx(
+        chain_id,
+        0,
+        vec![Call {
+            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+            value: U256::ZERO,
+            input: burnKeyAuthorizationWitnessCall { witness }
+                .abi_encode()
+                .into(),
+        }],
+        2_000_000,
+    );
+    burn_tx.nonce_key = U256::from(1);
+    let burn_sig = sign_aa_tx_secp256k1(&burn_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, burn_tx, burn_sig).await?;
+
+    let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
+    assert!(
+        keychain
+            .isKeyAuthorizationWitnessBurned(root_addr, witness)
+            .call()
+            .await?
+    );
+
+    setup.node.advance_block().await?;
+    wait_until_pool_not_contains(
+        &setup.node.inner.pool,
+        &delayed_hash,
+        "key authorization nonce eviction",
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    let admin_signer = PrivateKeySigner::random();
+    let admin_key = admin_signer.address();
+    let witness = B256::repeat_byte(0xa1);
+    let nonce = provider.get_transaction_count(root_addr).await?;
+    let tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![authorize_admin_key_call(admin_key, witness)],
+        2_000_000,
+    );
+
+    let sig = sign_aa_tx_secp256k1(&tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, tx, sig).await?;
+
+    let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
+    assert!(
+        keychain.isAdminKey(root_addr, admin_key).call().await?,
+        "ABI authorizeAdminKey should register an active admin key"
+    );
+    assert!(
+        !keychain
+            .isKeyAuthorizationWitnessBurned(root_addr, witness)
+            .call()
+            .await?,
+        "authorizeAdminKey should check but not burn the witness"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    let admin_key = PrivateKeySigner::random().address();
+    let admin_auth = create_admin_key_authorization(&root_signer, root_addr, admin_key, chain_id)?;
+    let nonce = provider.get_transaction_count(root_addr).await?;
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    tx.key_authorization = Some(admin_auth);
+
+    let sig = sign_aa_tx_secp256k1(&tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, tx, sig).await?;
+
+    let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
+    assert!(
+        keychain.isAdminKey(root_addr, admin_key).call().await?,
+        "inline admin_account authorization should register an active admin key"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    let admin_signer = PrivateKeySigner::random();
+    let admin_key = admin_signer.address();
+    let child_admin_key = PrivateKeySigner::random().address();
+
+    let root_nonce = provider.get_transaction_count(root_addr).await?;
+    let root_tx = create_basic_aa_tx(
+        chain_id,
+        root_nonce,
+        vec![authorize_admin_key_call(admin_key, B256::repeat_byte(0xa2))],
+        2_000_000,
+    );
+    let root_sig = sign_aa_tx_secp256k1(&root_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, root_tx, root_sig).await?;
+
+    let admin_signed_auth =
+        create_admin_key_authorization(&admin_signer, root_addr, child_admin_key, chain_id)?;
+    let mut admin_tx = create_basic_aa_tx(
+        chain_id,
+        provider.get_transaction_count(root_addr).await?,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    admin_tx.key_authorization = Some(admin_signed_auth);
+    let admin_sig = sign_aa_tx_with_secp256k1_access_key(&admin_tx, &admin_signer, root_addr)?;
+    submit_and_mine_aa_tx(&mut setup, admin_tx, admin_sig).await?;
+
+    let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
+    assert!(
+        keychain
+            .isAdminKey(root_addr, child_admin_key)
+            .call()
+            .await?,
+        "admin access key should authorize a different admin key end-to-end"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t6_admin_key_authorization_cross_account_replay_rejected_e2e() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let alice_addr = alice_signer.address();
+    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let bob_addr = bob_signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(alice_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    fund_address_with(
+        &mut setup,
+        &provider,
+        &alice_signer,
+        alice_addr,
+        bob_addr,
+        rand_funding_amount(),
+        DEFAULT_FEE_TOKEN,
+        chain_id,
+    )
+    .await?;
+
+    let replayed_admin_key = PrivateKeySigner::random().address();
+    let alice_bound_auth =
+        create_admin_key_authorization(&alice_signer, alice_addr, replayed_admin_key, chain_id)?;
+    let mut replay_tx = create_basic_aa_tx(
+        chain_id,
+        provider.get_transaction_count(bob_addr).await?,
+        vec![create_balance_of_call(bob_addr)],
+        2_000_000,
+    );
+    replay_tx.key_authorization = Some(alice_bound_auth);
+    let replay_sig = sign_aa_tx_secp256k1(&replay_tx, &bob_signer)?;
+    let replay_envelope: TempoTxEnvelope = replay_tx.into_signed(replay_sig).into();
+
+    let result = setup
+        .node
+        .rpc
+        .inject_tx(replay_envelope.encoded_2718().into())
+        .await;
+    assert!(
+        result.is_err(),
+        "admin_account-bound authorization for Alice must not be accepted by Bob"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("account mismatch") || err.contains("KeychainValidationFailed"),
+        "expected account mismatch rejection, got: {err}"
+    );
+
+    Ok(())
+}
+
 /// Verifies that transactions signed with a revoked access key cannot be executed.
 #[tokio::test]
 async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
@@ -1562,6 +1938,67 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 // Expiring Nonce Tests
 // ============================================================================
 
+#[test_case::test_case(TempoHardfork::T11, [true, false, false] ; "t11")]
+#[test_case::test_case(TempoHardfork::T12, [true, true, true] ; "t12")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_expiring_nonce_discriminators_across_t12(
+    hardfork: TempoHardfork,
+    expected_admission: [bool; 3],
+) -> eyre::Result<()> {
+    let mut localnet = Localnet::with_schedule(ForkSchedule::DevnetAt(hardfork)).await?;
+    let valid_before = super::types::TestEnv::current_block_timestamp(&mut localnet).await?
+        + localnet.setup.hardfork.expiring_nonce_max_expiry_secs();
+    let Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer,
+        funder_addr,
+    } = localnet;
+    let recipient = Address::random();
+    let protocol_nonce = provider.get_transaction_count(funder_addr).await?;
+    let tempo_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .with_expiring_nonces()
+        .wallet(funder_signer)
+        .connect_http(setup.node.rpc_url());
+    let mut accepted_hashes = Vec::new();
+
+    for (discriminator, should_accept) in [0, 1, u64::MAX].into_iter().zip(expected_admission) {
+        let mut tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
+        tx.nonce = discriminator;
+        let mut request = TempoTransactionRequest::from(tx);
+        request.inner.from = Some(funder_addr);
+        estimate_gas(&provider, &request).await?;
+
+        let submission = tempo_provider.send_transaction(request).await;
+        if should_accept {
+            accepted_hashes.push(*submission?.tx_hash());
+        } else {
+            assert!(
+                submission.is_err(),
+                "{hardfork:?} admitted discriminator {discriminator}"
+            );
+        }
+    }
+
+    assert!(
+        accepted_hashes
+            .iter()
+            .all(|hash| setup.node.inner.pool.contains(hash)),
+        "{hardfork:?} accepted discriminators must coexist in the pool"
+    );
+    setup.node.advance_block().await?;
+    for hash in accepted_hashes {
+        assert_receipt_status(&provider, hash, true).await?;
+    }
+    assert_eq!(
+        provider.get_transaction_count(funder_addr).await?,
+        protocol_nonce,
+        "expiring nonce discriminators must not change the protocol nonce"
+    );
+    Ok(())
+}
+
 /// Test expiring nonce replay protection - same tx hash should be rejected
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
@@ -1590,7 +2027,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     let current_timestamp = block.header.timestamp();
 
     // Create expiring nonce transaction
-    let valid_before = current_timestamp + 25;
+    let valid_before = current_timestamp + setup.hardfork.expiring_nonce_max_expiry_secs();
 
     let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
 
@@ -2054,121 +2491,6 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         .inject_tx(replay_env.encoded_2718().into())
         .await
         .expect_err("P256 cross-account replay must be rejected at pool level");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    // Pre-T1C genesis so V1 keychain sigs are accepted.
-    let mut setup = TestNodeBuilder::new()
-        .with_genesis(make_genesis_at(TempoHardfork::T1B))
-        .build_with_node_access()
-        .await?;
-
-    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let alice_addr = alice_signer.address();
-    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let bob_addr = bob_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(alice_signer.clone())
-        .connect_http(setup.node.rpc_url());
-    let chain_id = provider.get_chain_id().await?;
-
-    // Shared access key authorized on both accounts
-    let access_key_signer = alloy::signers::local::PrivateKeySigner::random();
-    let access_key_addr = access_key_signer.address();
-
-    let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
-
-    fund_address_with(
-        &mut setup,
-        &provider,
-        &alice_signer,
-        alice_addr,
-        bob_addr,
-        U256::from(100e6),
-        DEFAULT_FEE_TOKEN,
-        chain_id,
-    )
-    .await?;
-    nonce_alice += 1;
-
-    let secp_mock = || {
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        ))
-    };
-
-    // Authorize key on both accounts
-    authorize_access_key(
-        &mut setup,
-        &alice_signer,
-        alice_addr,
-        access_key_addr,
-        secp_mock(),
-        chain_id,
-        nonce_alice,
-    )
-    .await?;
-    nonce_alice += 1;
-    let nonce_bob = provider.get_transaction_count(bob_addr).await?;
-    authorize_access_key(
-        &mut setup,
-        &bob_signer,
-        bob_addr,
-        access_key_addr,
-        secp_mock(),
-        chain_id,
-        nonce_bob,
-    )
-    .await?;
-    let mut nonce_bob = nonce_bob + 1;
-
-    // Advance Bob's nonce to match Alice's — the replay needs identical sig_hash
-    let dummy_tx = create_basic_aa_tx(
-        chain_id,
-        nonce_bob,
-        vec![create_balance_of_call(bob_addr)],
-        2_000_000,
-    );
-    let dummy_sig = sign_aa_tx_secp256k1(&dummy_tx, &bob_signer)?;
-    submit_and_mine_aa_tx(&mut setup, dummy_tx, dummy_sig).await?;
-    nonce_bob += 1;
-    assert_eq!(nonce_alice, nonce_bob, "nonces must match for replay");
-
-    // Alice sends a V1 keychain tx, succeeds pre-T1C
-    let alice_tx = create_basic_aa_tx(
-        chain_id,
-        nonce_alice,
-        vec![create_balance_of_call(alice_addr)],
-        2_000_000,
-    );
-    let alice_v1_sig =
-        sign_aa_tx_with_secp256k1_access_key_v1(&alice_tx, &access_key_signer, alice_addr)?;
-    submit_and_mine_aa_tx(&mut setup, alice_tx.clone(), alice_v1_sig.clone()).await?;
-
-    // Extract Alice's inner sig, re-wrap for Bob with V1
-    let inner = alice_v1_sig.as_keychain().unwrap().signature.clone();
-    let bob_replay_sig = TempoSignature::Keychain(KeychainSignature::new_v1(bob_addr, inner));
-
-    // Replay Alice's EXACT tx body for Bob — V1 doesn't bind user_address in the
-    // inner sig, so the same sig verifies against the same sig_hash for any user.
-    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(alice_tx, bob_replay_sig).into();
-    setup
-        .node
-        .rpc
-        .inject_tx(replay_env.encoded_2718().into())
-        .await
-        .expect("V1 cross-account replay enters pool pre-T1C");
-    setup.node.advance_block().await?;
-    assert_receipt_status(&provider, *replay_env.tx_hash(), true).await?;
 
     Ok(())
 }

@@ -3,22 +3,39 @@ use alloy_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
-        context::result::{EVMError, ResultAndState, ResultGas},
+        context::{
+            ContextTr, DBErrorMarker, JournalTr,
+            result::{EVMError, ResultAndState, ResultGas},
+        },
         inspector::NoOpInspector,
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind, map::HashMap};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
-use std::ops::{Deref, DerefMut};
+use reth_revm::{
+    InspectSystemCallEvm, MainContext,
+    context::{
+        CfgEnv,
+        result::{ExecutionResult, HaltReason},
+    },
+};
+use std::{
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+    rc::Rc,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
-    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
+    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
 };
 
-use crate::TempoBlockEnv;
-use crate::parallel::{ExecutionStats, SpeculativeBatch, SpeculativeExecutor};
+use crate::{
+    TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult,
+    parallel::{ExecutionStats, SpeculativeBatch, SpeculativeExecutor},
+};
 
+/// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoEvmFactory;
@@ -27,9 +44,8 @@ impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
     type Context<DB: Database> = TempoContext<DB>;
     type Tx = TempoTxEnv;
-    type Error<DBError: std::error::Error + Send + Sync + 'static> =
-        EVMError<DBError, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type Error<DBError: DBErrorMarker> = EVMError<DBError, TempoInvalidTransaction>;
+    type HaltReason = HaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -67,11 +83,15 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     last_sample: ExecutionStats,
     backoff_remaining: usize,
     worker_cfg: reth_revm::context::CfgEnv<TempoHardfork>,
+    standard_configuration: bool,
 }
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The caller is responsible for setting the
+        // flag on the input `EvmEnv`; here we pass it through unchanged.
         let worker_cfg = input.cfg_env.clone();
         let ctx = Context::mainnet()
             .with_db(db)
@@ -88,6 +108,7 @@ impl<DB: Database> TempoEvm<DB> {
             last_sample: ExecutionStats::default(),
             backoff_remaining: 0,
             worker_cfg,
+            standard_configuration: true,
         }
     }
 }
@@ -103,7 +124,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Maximum lookahead, or zero when speculative execution is disabled.
     pub fn speculative_batch_size(&self) -> usize {
-        if self.inspect {
+        if self.inspect || !self.standard_configuration {
             return 0;
         }
         self.speculative
@@ -144,10 +165,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     ) {
         self.prepared = None;
         if self.inspect
+            || !self.standard_configuration
             // Instructions and precompiles were constructed with this configuration.
             // Mutating ctx.cfg alone does not reconstruct those components.
             || self.inner.ctx.cfg != self.worker_cfg
             || self.inner.ctx.cfg.disable_fee_charge
+            || self.inner.actions().is_enabled()
             || self.inner.skip_valid_after_check
             || self.inner.skip_liquidity_check
             || !self.inner.ctx.journaled_state.state.is_empty()
@@ -242,6 +265,19 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &self.inner.inner.ctx
     }
 
+    /// Consumes this EVM wrapper and returns the EVM context.
+    pub fn into_ctx(self) -> TempoContext<DB> {
+        self.inner.inner.ctx
+    }
+
+    /// Returns the [`EvmEnv`] for the current block.
+    pub fn evm_env(&self) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
+        EvmEnv {
+            cfg_env: self.ctx().cfg.clone(),
+            block_env: self.ctx().block.clone(),
+        }
+    }
+
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
         &mut self.inner.inner.ctx
@@ -251,7 +287,19 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
         // Custom instructions or precompiles must execute on this EVM.
         self.set_speculative_executor(None);
+        self.standard_configuration = false;
         &mut self.inner
+    }
+
+    /// Returns the validator-credited fee amount (post-feeAMM haircut) recorded by the most
+    /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
+    pub fn validator_fee(&self) -> alloy_primitives::U256 {
+        self.inner.validator_fee
+    }
+
+    /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.inner.non_creditable_slots()
     }
 
     /// Sets the inspector for the EVM.
@@ -265,7 +313,19 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             last_sample: self.last_sample,
             backoff_remaining: self.backoff_remaining,
             worker_cfg: self.worker_cfg,
+            standard_configuration: self.standard_configuration,
         }
+    }
+
+    /// Updates the protocol fee manager used by the EVM.
+    pub fn with_fee_manager<F>(mut self, fee_manager: F) -> Self
+    where
+        F: ProtocolFeeManager<DB> + 'static,
+    {
+        self.set_speculative_executor(None);
+        self.standard_configuration = false;
+        self.inner = self.inner.with_fee_manager(fee_manager);
+        self
     }
 
     /// Runs the full transaction validation pipeline without executing the transaction.
@@ -276,8 +336,62 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         tx: impl IntoTxEnv<TempoTxEnv>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.inner.inner.ctx.tx = tx.into_tx_env();
-        let mut handler = TempoEvmHandler::new();
+        let mut handler = TempoEvmHandler::<DB, I>::new();
         handler.validate_transaction(&mut self.inner)
+    }
+
+    /// Enables recording of storage actions.
+    pub fn with_actions(mut self) -> Self {
+        let mut actions = self.inner.actions().clone();
+        actions.enable();
+        self.inner = self.inner.with_actions(actions);
+        self
+    }
+
+    /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
+        self.inner.actions().take()
+    }
+
+    /// Clears the recorded storage actions without releasing the backing allocation.
+    pub fn clear_actions(&mut self) {
+        self.inner.actions().clear();
+    }
+
+    /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
+        self.inner.actions().replace(actions)
+    }
+}
+
+impl<DB, I> TempoPoolValidationEvm for TempoEvm<DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<DB>>,
+{
+    fn configure_for_pool(&mut self) {
+        // The pool admits future-time and future-nonce transactions and performs its own cached
+        // AMM liquidity check after EVM validation.
+        self.inner.skip_valid_after_check = true;
+        self.inner.skip_liquidity_check = true;
+        self.ctx_mut().cfg.disable_nonce_check = true;
+        // Pool admission enforces the T7 fee floor. The dynamic block base fee
+        // is checked during block selection/execution, once queued transactions can pay it.
+        self.ctx_mut().cfg.disable_base_fee = true;
+    }
+
+    fn validate_pool_transaction(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> (TempoPoolValidationResult<DB::Error>, TempoTxEnv) {
+        let result = self.validate_transaction(tx);
+        let tx = core::mem::take(&mut self.ctx_mut().tx);
+        // Discard this transaction's journaled writes (nonce bumps, fee deduction,
+        // key authorisation) while keeping loaded accounts and storage warm for the
+        // rest of the batch.
+        self.ctx_mut().journal_mut().discard_tx();
+        self.inner.clear();
+        (result, tx)
     }
 }
 
@@ -313,7 +427,7 @@ where
     type DB = DB;
     type Tx = TempoTxEnv;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -321,6 +435,10 @@ where
 
     fn block(&self) -> &Self::BlockEnv {
         &self.block
+    }
+
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        &self.cfg
     }
 
     fn chain_id(&self) -> u64 {
@@ -337,6 +455,8 @@ where
             self.execution_stats.backoff += 1;
         }
         if !self.inspect
+            && self.standard_configuration
+            && !self.inner.actions().is_enabled()
             && !self.inner.skip_valid_after_check
             && !self.inner.skip_liquidity_check
             && self.inner.ctx.journaled_state.state.is_empty()
@@ -358,6 +478,7 @@ where
                 self.execution_stats.reused += 1;
                 self.execution_stats.fees_rebased += u64::from(candidate.fees_rebased);
                 self.inner.ctx.tx = tx;
+                self.inner.validator_fee = candidate.validator_fee;
                 return candidate.result;
             } else {
                 self.execution_stats.conflicts += 1;
@@ -438,6 +559,7 @@ where
         // Access to the instruction/precompile or inspector configuration invalidates
         // the assumption that workers run the same standard Tempo EVM.
         self.set_speculative_executor(None);
+        self.standard_configuration = false;
         (
             &mut self.inner.inner.ctx.journaled_state.database,
             &mut self.inner.inner.inspector,
@@ -455,14 +577,161 @@ where
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
+    use alloy_primitives::{B256, U256, keccak256};
+    use alloy_sol_types::{SolCall, SolError, SolValue};
+    use indexmap::IndexMap;
     use revm::{
-        context::{CfgEnv, TxEnv},
+        DatabaseCommit, DatabaseRef,
+        bytecode::opcode,
+        context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
         database::{EmptyDB, in_memory_db::CacheDB},
+        state::{AccountInfo, Bytecode, EvmState},
     };
+    use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_revm::gas_params::tempo_gas_params;
+    use tempo_contracts::{
+        precompiles::{
+            IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
+    };
+    use tempo_precompiles::{
+        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
+        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        error::TempoPrecompileError,
+        storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
+        storage_credits::StorageCredits,
+        test_util::TIP20Setup,
+        tip_fee_manager::{
+            IFeeManager, TipFeeManager,
+            amm::{Pool, PoolKey, compute_amount_out},
+            slots as fee_manager_slots,
+        },
+        tip20::{
+            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
+            slots as tip20_slots,
+        },
+        tip403_registry::slots as tip403_registry_slots,
+        zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
+    };
+    use tempo_primitives::{TempoAddressExt, transaction::Call};
+    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
+
+    alloy_sol_types::sol! {
+        enum TestZonePortalRole {
+            None,
+            Sequencer,
+            Account,
+            CallbackGateway,
+            PauseGuardian
+        }
+
+        enum TestZonePortalCapability {
+            PausePortal,
+            AccessPolicy
+        }
+
+        struct TestBlockTransition {
+            bytes32 prevBlockHash;
+            bytes32 nextBlockHash;
+        }
+
+        struct TestDepositQueueTransition {
+            bytes32 prevProcessedHash;
+            bytes32 nextProcessedHash;
+            uint64 prevDepositNumber;
+            uint64 nextDepositNumber;
+        }
+
+        interface TestZonePortal {
+            error InvalidProof();
+
+            function enableToken(address token) external;
+            function tokenEnablementHash() external view returns (bytes32);
+            function hasRole(address account, TestZonePortalRole role) external view returns (bool);
+            function isSequencer(address account) external view returns (bool);
+            function setAllowedAccount(address account, bool allowed) external;
+            function paused() external view returns (bool);
+            function pauseExpiry() external view returns (uint64);
+            function abdicationEffectiveAt(TestZonePortalCapability capability)
+                external
+                view
+                returns (uint64);
+            function pause() external;
+            function resume() external;
+            function submitBatch(
+                uint64 tempoBlockNumber,
+                uint64 recentTempoBlockNumber,
+                TestBlockTransition calldata blockTransition,
+                TestDepositQueueTransition calldata depositQueueTransition,
+                bytes32 withdrawalQueueHash,
+                bytes calldata verifierConfig,
+                bytes calldata proof,
+                uint256 nextZoneHeight,
+                bytes[] calldata signatures
+            ) external;
+        }
+
+        interface TestZoneMessenger {
+            function relayMessage(
+                uint32 zoneId,
+                address token,
+                bytes32 senderTag,
+                address target,
+                uint128 amount,
+                uint64 gasLimit,
+                bytes calldata data
+            ) external;
+        }
+
+        interface TestWithdrawalReceiver {
+            function onWithdrawalReceived(
+                uint32 zoneId,
+                address portal,
+                bytes32 senderTag,
+                address token,
+                uint128 amount,
+                bytes calldata data
+            ) external returns (bytes4);
+        }
+    }
+
+    fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
+        const SELECTOR_SHIFT_BITS: u8 = 224;
+        const ABI_WORD_BYTES: u8 = 32;
+
+        let mut code = vec![opcode::PUSH4];
+        code.extend_from_slice(&selector);
+        code.extend_from_slice(&[
+            opcode::PUSH1,
+            SELECTOR_SHIFT_BITS,
+            opcode::SHL,
+            opcode::PUSH0,
+            opcode::MSTORE,
+            opcode::PUSH1,
+            ABI_WORD_BYTES,
+            opcode::PUSH0,
+            opcode::RETURN,
+        ]);
+        Bytecode::new_legacy(code.into())
+    }
+
+    fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
+        let code = Bytecode::new_legacy([0xef].into());
+        db.insert_account_info(
+            ZONE_FACTORY_ADDRESS,
+            AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        db.insert_account_storage(ZONE_FACTORY_ADDRESS, U256::ZERO, factory_config)
+            .unwrap();
+    }
 
     #[test]
     fn can_execute_system_tx() {
@@ -617,6 +886,1076 @@ mod tests {
         assert!(result.result.is_success());
     }
 
+    #[test]
+    fn zone_factory_created_portal_executes_deployed_runtime() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
+        let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
+            0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
+        ]));
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo {
+                code_hash: logic_runtime.hash_slow(),
+                code: Some(logic_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin).apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let result = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: true,
+                        gatewayMode: true,
+                        allowedAccounts: vec![admin],
+                        zoneGateways: vec![Address::repeat_byte(0x44)],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            result.result.is_success(),
+            "createZone failed: {:?}",
+            result.result
+        );
+        assert!(result.result.tx_gas_used() >= ZONE_CREATION_GAS);
+        assert!(result.result.gas().block_regular_gas_used() >= ZONE_CREATION_GAS);
+        let create_output = match &result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output.clone(),
+            result => panic!("unexpected createZone result: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&create_output).unwrap();
+        evm.db_mut().commit(result.state);
+
+        let result = evm
+            .transact_system_call(Address::ZERO, created.portal, Bytes::new())
+            .unwrap();
+        let output = match result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("portal call failed: {result:?}"),
+        };
+        assert_eq!(U256::from_be_slice(&output), U256::from(42));
+    }
+
+    #[test]
+    fn zone_portal_runtime_commits_subsequent_token_enablements() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let portal_runtime = Bytecode::new_legacy(tempo_contracts::zones::ZONE_PORTAL_RUNTIME);
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo {
+                code_hash: portal_runtime.hash_slow(),
+                code: Some(portal_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        let second_token = StorageCtx::enter_ctx(
+            evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> Result<_, TempoPrecompileError> {
+                TIP20Setup::path_usd(admin).apply()?;
+                Ok(TIP20Setup::create("Second Token", "SECOND", admin)
+                    .apply()?
+                    .address())
+            },
+        )
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let create = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: true,
+                        gatewayMode: true,
+                        allowedAccounts: vec![],
+                        zoneGateways: vec![],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match &create.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("createZone failed: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
+        evm.db_mut().commit(create.state);
+
+        let sequencer_status = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::isSequencerCall { account: sequencer }
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        let output = match sequencer_status.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("isSequencer failed: {result:?}"),
+        };
+        assert!(TestZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
+
+        let account = Address::repeat_byte(0x55);
+        let set_account = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::setAllowedAccountCall {
+                    account,
+                    allowed: true,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            set_account.result.is_success(),
+            "setAllowedAccount failed: {:?}",
+            set_account.result
+        );
+        evm.db_mut().commit(set_account.state);
+
+        let account_role = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::hasRoleCall {
+                    account,
+                    role: TestZonePortalRole::Account,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match account_role.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("hasRole failed: {result:?}"),
+        };
+        assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
+
+        for call in [
+            TestZonePortal::pausedCall {}.abi_encode(),
+            TestZonePortal::pauseExpiryCall {}.abi_encode(),
+            TestZonePortal::abdicationEffectiveAtCall {
+                capability: TestZonePortalCapability::PausePortal,
+            }
+            .abi_encode(),
+        ] {
+            let result = evm
+                .transact_system_call(Address::ZERO, created.portal, call.into())
+                .unwrap();
+            let output = match result.result {
+                ExecutionResult::Success {
+                    output: revm::context::result::Output::Call(output),
+                    ..
+                } => output,
+                result => panic!("pause ABI call failed: {result:?}"),
+            };
+            assert_eq!(U256::from_be_slice(&output), U256::ZERO);
+        }
+
+        let pause = evm
+            .transact_system_call(
+                sequencer,
+                created.portal,
+                TestZonePortal::pauseCall {}.abi_encode().into(),
+            )
+            .unwrap();
+        assert!(
+            pause.result.is_success(),
+            "pause failed: {:?}",
+            pause.result
+        );
+        evm.db_mut().commit(pause.state);
+
+        let submit = evm
+            .transact_system_call(
+                sequencer,
+                created.portal,
+                TestZonePortal::submitBatchCall {
+                    tempoBlockNumber: 0,
+                    recentTempoBlockNumber: 0,
+                    blockTransition: TestBlockTransition {
+                        prevBlockHash: B256::repeat_byte(1),
+                        nextBlockHash: B256::ZERO,
+                    },
+                    depositQueueTransition: TestDepositQueueTransition {
+                        prevProcessedHash: B256::ZERO,
+                        nextProcessedHash: B256::ZERO,
+                        prevDepositNumber: 0,
+                        nextDepositNumber: 0,
+                    },
+                    withdrawalQueueHash: B256::ZERO,
+                    verifierConfig: Bytes::new(),
+                    proof: Bytes::new(),
+                    nextZoneHeight: U256::ZERO,
+                    signatures: Vec::new(),
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        match submit.result {
+            ExecutionResult::Revert { output, .. } => {
+                assert_eq!(output.as_ref(), TestZonePortal::InvalidProof::SELECTOR)
+            }
+            result => panic!("paused submitBatch should reach proof validation: {result:?}"),
+        }
+
+        let resume = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::resumeCall {}.abi_encode().into(),
+            )
+            .unwrap();
+        assert!(
+            resume.result.is_success(),
+            "resume failed: {:?}",
+            resume.result
+        );
+        evm.db_mut().commit(resume.state);
+
+        let paused = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::pausedCall {}.abi_encode().into(),
+            )
+            .unwrap();
+        let output = match paused.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("paused failed after resume: {result:?}"),
+        };
+        assert_eq!(U256::from_be_slice(&output), U256::ZERO);
+
+        let enable = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::enableTokenCall {
+                    token: second_token,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            enable.result.is_success(),
+            "enableToken failed: {:?}",
+            enable.result
+        );
+        evm.db_mut().commit(enable.state);
+
+        let commitment = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::tokenEnablementHashCall {}
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        let output = match commitment.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("tokenEnablementHash failed: {result:?}"),
+        };
+        let actual = TestZonePortal::tokenEnablementHashCall::abi_decode_returns(&output).unwrap();
+        let initial = keccak256(
+            (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
+        );
+        let expected =
+            keccak256((initial, second_token, "Second Token", "SECOND", "USD").abi_encode_params());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn zone_messenger_runtime_authorizes_registered_callback_gateway() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let gateway = Address::repeat_byte(0x44);
+        let mut db = CacheDB::new(EmptyDB::default());
+        for (address, runtime) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        ] {
+            let code = Bytecode::new_legacy(runtime);
+            db.insert_account_info(
+                address,
+                AccountInfo {
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                },
+            );
+        }
+        let callback_runtime =
+            runtime_returning_selector(TestWithdrawalReceiver::onWithdrawalReceivedCall::SELECTOR);
+        db.insert_account_info(
+            gateway,
+            AccountInfo {
+                code_hash: callback_runtime.hash_slow(),
+                code: Some(callback_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(ZONE_MESSENGER_ADDRESS, U256::from(100))
+                .apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let create = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: false,
+                        gatewayMode: true,
+                        allowedAccounts: vec![],
+                        zoneGateways: vec![gateway],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match &create.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("createZone failed: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
+        evm.db_mut().commit(create.state);
+
+        let relay = evm
+            .transact_system_call(
+                created.portal,
+                ZONE_MESSENGER_ADDRESS,
+                TestZoneMessenger::relayMessageCall {
+                    zoneId: created.zoneId,
+                    token: PATH_USD_ADDRESS,
+                    senderTag: B256::ZERO,
+                    target: gateway,
+                    amount: 1,
+                    gasLimit: 100_000,
+                    data: Bytes::new(),
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            relay.result.is_success(),
+            "registered gateway callback failed: {:?}",
+            relay.result
+        );
+    }
+
+    #[test]
+    fn zone_factory_creation_oog_below_minimum_reverts_state() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let mut env = evm_env_with_spec(TempoHardfork::T10);
+        env.block_env.basefee = 0;
+        let mut db = CacheDB::new(EmptyDB::default());
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, env);
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin).apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let input = IZoneFactory::createZoneCall {
+            params: IZoneFactory::CreateZoneParams {
+                initialToken: PATH_USD_ADDRESS,
+                accessMode: true,
+                gatewayMode: true,
+                allowedAccounts: vec![admin],
+                zoneGateways: vec![Address::repeat_byte(0x44)],
+                admin,
+                sequencers: vec![sequencer],
+                threshold: 1,
+                rpcUrl: "https://zone.example".to_string(),
+            },
+        }
+        .abi_encode();
+
+        let result = evm
+            .transact_raw(TempoTxEnv {
+                inner: TxEnv {
+                    caller: owner,
+                    gas_price: 0,
+                    gas_limit: ZONE_CREATION_GAS - 1,
+                    kind: TxKind::Call(ZONE_FACTORY_ADDRESS),
+                    data: input.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert_matches!(
+            result.result,
+            ExecutionResult::Halt {
+                reason: HaltReason::OutOfGas(_),
+                ..
+            }
+        );
+        evm.db_mut().commit(result.state);
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            let factory = ZoneFactory::new();
+            assert_eq!(factory.next_zone_id()?, 1);
+            assert!(!factory.is_zone_portal(portal_address(1))?);
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .unwrap();
+    }
+
+    #[derive(Default)]
+    struct StorageState {
+        reconstructed: BTreeMap<(Address, U256), U256>,
+        first_loads: BTreeMap<(Address, U256), U256>,
+    }
+
+    impl StorageState {
+        fn apply_sload_value(
+            &mut self,
+            key: (Address, U256),
+            value: U256,
+            action: &str,
+            hardfork: TempoHardfork,
+        ) -> U256 {
+            match self.reconstructed.get(&key) {
+                Some(current) => {
+                    let (address, slot) = key;
+                    assert_eq!(
+                        *current, value,
+                        "{action} SLOAD value must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
+                    );
+                    *current
+                }
+                None => {
+                    self.first_loads.insert(key, value);
+                    self.reconstructed.insert(key, value);
+                    value
+                }
+            }
+        }
+    }
+
+    fn assert_storage_actions_reconstruct_evm_state(
+        actions: &[StorageAction],
+        state: &EvmState,
+        hardfork: TempoHardfork,
+    ) {
+        let mut storage_state = StorageState::default();
+
+        for action in actions {
+            match *action {
+                StorageAction::Sload(address, slot, value) => {
+                    let key = (address, slot);
+                    storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
+                }
+                StorageAction::Sstore(address, slot, sload_value, value) => {
+                    let key = (address, slot);
+                    storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
+                    storage_state.reconstructed.insert(key, value);
+                }
+                StorageAction::Sinc(address, slot, sload_value, delta) => {
+                    let key = (address, slot);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "SINC", hardfork);
+                    let value = current.checked_add(delta).unwrap_or_else(|| {
+                        panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
+                    });
+                    storage_state.reconstructed.insert(key, value);
+                }
+                StorageAction::Sdec(address, slot, sload_value, delta) => {
+                    let key = (address, slot);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "SDEC", hardfork);
+                    let value = current.checked_sub(delta).unwrap_or_else(|| {
+                        panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
+                    });
+                    storage_state.reconstructed.insert(key, value);
+                }
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
+                    let key = (action.address(), slot);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
+                    let mut pool = Pool::decode_from_slot(current);
+                    pool.apply_swap(
+                        amount_in,
+                        compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
+                    )
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "FeeAmmSwap invalid for {:?}:{slot:?} on {hardfork:?}: {err}",
+                            action.address()
+                        )
+                    });
+                    storage_state
+                        .reconstructed
+                        .insert(key, pool.encode_to_slot().unwrap());
+                }
+                StorageAction::FeeAmmLiquidityCheck(
+                    slot,
+                    sload_value,
+                    amount_out,
+                    has_enough_liquidity,
+                ) => {
+                    let key = (action.address(), slot);
+                    let current = storage_state.apply_sload_value(
+                        key,
+                        sload_value,
+                        "FeeAmmLiquidityCheck",
+                        hardfork,
+                    );
+                    let pool = Pool::decode_from_slot(current);
+                    assert_eq!(
+                        pool.has_enough_reserve_validator_token(amount_out),
+                        has_enough_liquidity,
+                        "FeeAmmLiquidityCheck mismatch for {:?}:{slot:?} on {hardfork:?}",
+                        action.address(),
+                    );
+                }
+            }
+        }
+
+        for (address, account) in state {
+            for (slot, storage_slot) in &account.storage {
+                let key = (*address, *slot);
+                let original_value = storage_state.first_loads.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
+                    )
+                });
+                assert_eq!(
+                    *original_value,
+                    storage_slot.original_value(),
+                    "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
+                );
+
+                let reconstructed_value = storage_state.reconstructed.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
+                    )
+                });
+                assert_eq!(
+                    *reconstructed_value,
+                    storage_slot.present_value(),
+                    "reconstructed present value mismatch for {address:?}:{slot:?} on {hardfork:?}",
+                );
+            }
+        }
+    }
+
+    struct StorageActionSnapshotLabels {
+        addresses: BTreeMap<Address, &'static str>,
+        slots: BTreeMap<(Address, U256), &'static str>,
+        tip20_slots: BTreeMap<U256, &'static str>,
+    }
+
+    fn snapshot_storage_actions(
+        actions: &[StorageAction],
+        labels: &StorageActionSnapshotLabels,
+    ) -> Vec<String> {
+        actions
+            .iter()
+            .map(|action| match *action {
+                StorageAction::Sload(address, slot, value) => {
+                    format!(
+                        "Sload({}, {}, {value})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::Sstore(address, slot, sload_value, value) => {
+                    format!(
+                        "Sstore({}, {}, {sload_value}, {value})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::Sinc(address, slot, sload_value, delta) => {
+                    format!(
+                        "Sinc({}, {}, {sload_value}, {delta})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::Sdec(address, slot, sload_value, delta) => {
+                    format!(
+                        "Sdec({}, {}, {sload_value}, {delta})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
+                    format!(
+                        "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
+                    )
+                }
+                StorageAction::FeeAmmLiquidityCheck(
+                    slot,
+                    slot_value,
+                    amount_out,
+                    has_enough_liquidity,
+                ) => {
+                    format!(
+                        "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
+                    )
+                }
+            })
+            .collect()
+    }
+
+    impl StorageActionSnapshotLabels {
+        fn address(&self, address: Address) -> String {
+            self.addresses
+                .get(&address)
+                .copied()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{address:?}"))
+        }
+
+        fn slot(&self, address: Address, slot: U256) -> String {
+            if address.is_tip20() {
+                self.tip20_slots.get(&slot)
+            } else {
+                self.slots.get(&(address, slot))
+            }
+            .copied()
+            .map(str::to_string)
+            .unwrap_or_else(|| slot.to_string())
+        }
+    }
+
+    #[test]
+    fn test_tip20_full_evm_storage_actions() {
+        for hardfork in TempoHardfork::VARIANTS {
+            // skip pre-T5 hardforks to avoid clutter
+            if !hardfork.is_t5() {
+                continue;
+            }
+
+            let sender = Address::repeat_byte(0x01);
+            let recipient = Address::repeat_byte(0x02);
+            let beneficiary = Address::repeat_byte(0x03);
+            let starting_balance = U256::from(1_000_000);
+            let transfer_amount = U256::from(100);
+            let gas_limit = 1_000_000;
+            let gas_price = 1_000_000_000u64;
+            let amm_liquidity_reserve = 500_000u128;
+            let amm_liquidity = U256::from(amm_liquidity_reserve);
+
+            let mut evm = TempoEvm::new(
+                CacheDB::new(EmptyDB::default()),
+                EvmEnv {
+                    block_env: TempoBlockEnv {
+                        inner: BlockEnv {
+                            beneficiary,
+                            basefee: gas_price,
+                            gas_limit: 30_000_000,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..evm_env_with_spec(*hardfork)
+                },
+            );
+
+            let (fee_token, two_hop_fee_token) =
+                StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                    TIP20Setup::path_usd(sender)
+                        .with_issuer(sender)
+                        .with_mint(sender, starting_balance)
+                        .apply()?;
+                    let fee_token = TIP20Setup::create("FeeToken", "FEE", sender)
+                        .with_salt(B256::ZERO)
+                        .with_issuer(sender)
+                        .with_mint(sender, starting_balance)
+                        .with_mint(recipient, starting_balance)
+                        .apply()?;
+                    let two_hop_fee_token = TIP20Setup::create("TwoHopFeeToken", "2HOP", sender)
+                        .with_salt(B256::repeat_byte(0x01))
+                        .quote_token(fee_token.address())
+                        .with_issuer(sender)
+                        .with_mint(sender, starting_balance)
+                        .apply()?;
+
+                    let mut fee_manager = TipFeeManager::new();
+                    fee_manager.set_user_token(
+                        sender,
+                        IFeeManager::setUserTokenCall {
+                            token: fee_token.address(),
+                        },
+                    )?;
+                    fee_manager.mint(
+                        sender,
+                        fee_token.address(),
+                        PATH_USD_ADDRESS,
+                        amm_liquidity,
+                        sender,
+                    )?;
+                    let two_hop_first_pool_id =
+                        PoolKey::new(two_hop_fee_token.address(), fee_token.address()).get_id();
+                    let two_hop_first_pool_slot =
+                        U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                            .mapping_slot(fee_manager_slots::POOLS);
+                    StorageCtx.sstore(
+                        TIP_FEE_MANAGER_ADDRESS,
+                        two_hop_first_pool_slot,
+                        Pool {
+                            reserve_user_token: 0,
+                            reserve_validator_token: amm_liquidity_reserve,
+                        }
+                        .encode_to_slot()?,
+                    )?;
+
+                    Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
+                        fee_token.address(),
+                        two_hop_fee_token.address(),
+                    ))
+                })
+                .expect("TIP20 setup should succeed");
+            let setup_state = evm.ctx_mut().journaled_state.finalize();
+            evm.db_mut().commit(setup_state);
+
+            let mut evm = evm.with_actions();
+            assert_eq!(evm.take_actions(), Some(vec![]));
+
+            let sender_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
+            let fee_manager_balance_slot =
+                TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
+            let recipient_balance_slot = recipient.mapping_slot(tip20_slots::BALANCES);
+            let sender_reward_info_slot = sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
+            let recipient_reward_info_slot = recipient.mapping_slot(tip20_slots::USER_REWARD_INFO);
+            let validator_token_slot =
+                beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
+            let user_token_slot = sender.mapping_slot(fee_manager_slots::USER_TOKENS);
+            let collected_fees_slot = PATH_USD_ADDRESS
+                .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
+            let pool_id = PoolKey::new(fee_token, PATH_USD_ADDRESS).get_id();
+            let pool_slot =
+                U256::from_be_bytes::<32>(pool_id.into()).mapping_slot(fee_manager_slots::POOLS);
+            let pending_pool_reservation_slot = U256::from_be_bytes::<32>(pool_id.into())
+                .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
+            let two_hop_direct_pool_id = PoolKey::new(two_hop_fee_token, PATH_USD_ADDRESS).get_id();
+            let two_hop_direct_pool_slot = U256::from_be_bytes::<32>(two_hop_direct_pool_id.into())
+                .mapping_slot(fee_manager_slots::POOLS);
+            let two_hop_first_pool_id = PoolKey::new(two_hop_fee_token, fee_token).get_id();
+            let two_hop_first_pool_slot = U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                .mapping_slot(fee_manager_slots::POOLS);
+            let two_hop_first_pending_pool_reservation_slot =
+                U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                    .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
+            let receive_policy_config_slot =
+                recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+            let nonce_key = U256::from(42);
+            let sender_nonce_key_slot = nonce_key
+                .mapping_slot(sender.mapping_slot(tempo_precompiles::nonce::slots::NONCES));
+
+            #[rustfmt::skip]
+            let labels = StorageActionSnapshotLabels {
+                addresses: BTreeMap::from([
+                    (PATH_USD_ADDRESS, "PATH_USD"),
+                    (fee_token, "FEE_TOKEN"),
+                    (two_hop_fee_token, "TWO_HOP_FEE_TOKEN"),
+                    (TIP_FEE_MANAGER_ADDRESS, "TIP_FEE_MANAGER"),
+                    (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
+                    (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
+                    (NONCE_PRECOMPILE_ADDRESS, "NONCE_MANAGER"),
+                ]),
+                slots: BTreeMap::from([
+                    ((TIP_FEE_MANAGER_ADDRESS, validator_token_slot), "validatorTokens[beneficiary]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, user_token_slot), "userTokens[sender]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, collected_fees_slot), "collectedFees[beneficiary][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, pool_slot), "pools[FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, pending_pool_reservation_slot), "pendingFeeSwapReservation[FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_direct_pool_slot), "pools[TWO_HOP_FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pool_slot), "pools[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pending_pool_reservation_slot), "pendingFeeSwapReservation[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
+                    ((TIP403_REGISTRY_ADDRESS, receive_policy_config_slot), "receivePolicies[recipient]"),
+                    ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
+                    ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(fee_token)), "storageCredits[FEE_TOKEN]"),
+                    ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(two_hop_fee_token)), "storageCredits[TWO_HOP_FEE_TOKEN]"),
+                    ((NONCE_PRECOMPILE_ADDRESS, sender_nonce_key_slot), "nonces[sender][42]"),
+                ]),
+                tip20_slots: BTreeMap::from([
+                    (tip20_slots::CURRENCY, "currency"),
+                    (tip20_slots::QUOTE_TOKEN, "quoteToken"),
+                    (tip20_slots::TRANSFER_POLICY_ID, "transferPolicyId"),
+                    (tip20_slots::PAUSED, "paused"),
+                    (tip20_slots::GLOBAL_REWARD_PER_TOKEN, "globalRewardPerToken"),
+                    (sender_balance_slot, "balances[sender]"),
+                    (fee_manager_balance_slot, "balances[FeeManager]"),
+                    (recipient_balance_slot, "balances[recipient]"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[sender].rewardRecipient"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[sender].rewardPerToken"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[sender].rewardBalance"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[recipient].rewardRecipient"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[recipient].rewardPerToken"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[recipient].rewardBalance"),
+                ]),
+            };
+
+            let run_transfer = |evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+                                caller: Address,
+                                to: Address,
+                                amount: U256,
+                                nonce: u64,
+                                nonce_key: U256,
+                                fee_token: Address|
+             -> eyre::Result<Vec<String>> {
+                let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
+                let tx = TempoTxEnv {
+                    inner: TxEnv {
+                        caller,
+                        gas_price: u128::from(gas_price),
+                        gas_limit,
+                        kind: TxKind::Call(PATH_USD_ADDRESS),
+                        data: calldata.clone(),
+                        nonce,
+                        ..Default::default()
+                    },
+                    fee_token: Some(fee_token),
+                    tempo_tx_env: (!nonce_key.is_zero()).then(|| {
+                        Box::new(TempoBatchCallEnv {
+                            aa_calls: vec![Call {
+                                to: TxKind::Call(PATH_USD_ADDRESS),
+                                value: U256::ZERO,
+                                input: calldata.clone(),
+                            }],
+                            nonce_key,
+                            ..Default::default()
+                        })
+                    }),
+                    ..Default::default()
+                };
+                let result = evm.transact_raw(tx)?;
+                assert_matches!(
+                    result.result,
+                    ExecutionResult::Success { .. },
+                    "hardfork: {hardfork:?}"
+                );
+                let actions = evm
+                    .take_actions()
+                    .expect("storage action recording should be enabled");
+                assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
+                evm.db_mut().commit(result.state);
+                Ok(snapshot_storage_actions(&actions, &labels))
+            };
+
+            let snapshot = IndexMap::from([
+                // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
+                (
+                    "direct_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
+                // and fee balances are no longer zero.
+                (
+                    "direct_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        1,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // Same as second transfer, but different fee token that requires a two-hop path.
+                (
+                    "twohop_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        2,
+                        U256::ZERO,
+                        two_hop_fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // Same as third transfer.
+                (
+                    "twohop_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        3,
+                        U256::ZERO,
+                        two_hop_fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // TIP-20 transfer with a 2D nonce.
+                (
+                    "2d_nonce_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        nonce_key,
+                        fee_token,
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "2d_nonce_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        1,
+                        nonce_key,
+                        fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // Clear sender balance, minting a storage credit for PATH_USD.
+                ("clear_balance_transfer", {
+                    let sender_balance = evm
+                        .db()
+                        .storage_ref(PATH_USD_ADDRESS, sender_balance_slot)
+                        .expect("sender balance slot should be available");
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        sender_balance,
+                        4,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap()
+                }),
+                // Recreate sender balance, consuming the PATH_USD storage credit through an SSTORE.
+                (
+                    "recreate_balance_transfer",
+                    run_transfer(
+                        &mut evm,
+                        recipient,
+                        sender,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
+                ),
+            ]);
+            insta::assert_yaml_snapshot!(
+                format!("tip20_full_evm_storage_actions_{}", hardfork.name()),
+                snapshot
+            );
+        }
+    }
+
     // ==================== TIP-1000 EVM Configuration Tests ====================
 
     /// Helper to create EvmEnv with a specific hardfork spec.
@@ -624,7 +1963,10 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
+            CfgEnv::new_with_spec_and_gas_params(
+                spec,
+                tempo_gas_params_with_amsterdam(spec, false),
+            ),
             TempoBlockEnv::default(),
         )
     }

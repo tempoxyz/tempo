@@ -25,6 +25,9 @@ echo "Testing: $TEMPO"
 run_ok "tempo --version" "$TEMPO" --version
 run_ok "tempo --help" "$TEMPO" --help
 run_ok "tempo node --help" "$TEMPO" node --help
+if ! grep -A 2 -- '--consensus.message-backlog' <<<"$OUT" | grep -q 'Deprecated:'; then
+    fail "message-backlog help must mark the flag as deprecated"
+fi
 
 # --- node --follow: verify it stays alive for 15s with no crashes ---
 echo "--- Test: tempo node --follow (no crash)"
@@ -47,8 +50,69 @@ for i in $(seq 1 15); do
 done
 
 if [[ $NODE_EXITED -eq 0 ]]; then
+    if grep -q -- '--consensus.message-backlog' "$NODE_LOG"; then
+        dump_log "$NODE_LOG"; fail "omitted message-backlog must not emit a warning"
+    fi
     if grep -qiE "panicked|SIGSEGV|SIGABRT|thread.*panicked" "$NODE_LOG"; then
         dump_log "$NODE_LOG"; fail "node output contains panic/crash indicators"
+    else
+        echo "PASS"
+    fi
+fi
+
+kill "$NODE_PID" 2>/dev/null || true
+wait "$NODE_PID" 2>/dev/null || true
+rm -rf "$DATADIR" "$NODE_LOG"
+
+# --- node --dev: verify a custom mnemonic owns the native ZoneFactory ---
+echo "--- Test: tempo node --dev (custom mnemonic owns ZoneFactory)"
+DATADIR=$(mktemp -d)
+NODE_LOG=$(mktemp)
+DEV_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+EXPECTED_OWNER="0x9858effd232b4033e47d90003d41ec34ecaeda94"
+EXPECTED_FACTORY_OWNER="0x000000000000000000000000${EXPECTED_OWNER#0x}"
+RPC_URL="http://127.0.0.1:18546"
+$TEMPO node --dev --dev.mnemonic "$DEV_MNEMONIC" --datadir "$DATADIR" \
+    --consensus.message-backlog 16384 \
+    --http --http.port 18546 --http.api eth --disable-discovery --ipcdisable \
+    --port 0 --authrpc.port 0 --log.file.max-files 0 >"$NODE_LOG" 2>&1 &
+NODE_PID=$!
+
+RPC_READY=0
+for _ in $(seq 1 40); do
+    if ! kill -0 "$NODE_PID" 2>/dev/null; then
+        EC=0; wait "$NODE_PID" || EC=$?
+        dump_log "$NODE_LOG"
+        fail "dev node exited before RPC was ready (exit code $EC)"
+        break
+    fi
+    if curl -sf -H "content-type: application/json" \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+        "$RPC_URL" >/dev/null; then
+        RPC_READY=1
+        break
+    fi
+    sleep 0.25
+done
+
+if [[ $RPC_READY -eq 0 && $FAILED -eq 0 ]]; then
+    dump_log "$NODE_LOG"
+    fail "dev node RPC did not become ready"
+elif [[ $RPC_READY -eq 1 ]]; then
+    if [[ $(grep -c -- 'deprecated flag ignored.*--consensus.message-backlog.*16384' "$NODE_LOG" || true) != 1 ]]; then
+        dump_log "$NODE_LOG"
+        fail "explicit message-backlog must emit exactly one deprecation event with its value"
+    fi
+    ACCOUNTS=$(curl -sf -H "content-type: application/json" \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_accounts","params":[]}' \
+        "$RPC_URL")
+    FACTORY_OWNER=$(curl -sf -H "content-type: application/json" \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x5af2000000000000000000000000000000000000","data":"0x8da5cb5b"},"latest"]}' \
+        "$RPC_URL")
+    if [[ "$ACCOUNTS" != *"\"result\":[\"$EXPECTED_OWNER\""* ||
+        "$FACTORY_OWNER" != *"\"result\":\"$EXPECTED_FACTORY_OWNER\""* ]]; then
+        dump_log "$NODE_LOG"
+        fail "custom mnemonic account zero does not own the ZoneFactory"
     else
         echo "PASS"
     fi

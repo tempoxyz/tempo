@@ -3,10 +3,17 @@
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// auto-generated sol! builders for events/errors with many fields trigger this
+#![allow(clippy::too_many_arguments)]
 
+#[cfg(test)]
 extern crate alloc;
 
+pub use tempo_hardfork::TempoHardfork;
+
 use alloy_primitives::{Address, B256, address, b256};
+
+pub mod zones;
 
 /// Default address for the Multicall3 contract on most chains. See: <https://github.com/mds1/multicall>
 pub const MULTICALL3_ADDRESS: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11");

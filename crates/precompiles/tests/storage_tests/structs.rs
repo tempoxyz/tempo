@@ -4,6 +4,7 @@
 //! verifying that multi-slot structs are correctly handled and that deletion works.
 
 use super::*;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::storage::{Mapping, StorableType, StorageCtx};
 
 #[test]
@@ -289,4 +290,72 @@ proptest! {
             Ok(())
         })?;
     }
+}
+
+// -- STRUCT OVERWRITE-CLEANUP TESTS ---------------------------------------------------
+
+/// Validator-config-shaped record: two long String fields plus static fields.
+#[derive(Default, Debug, Clone, PartialEq, Eq, Storable)]
+struct DynStringRecord {
+    pub static_a: U256,
+    pub inbound: String,
+    pub outbound: String,
+    pub static_b: u64,
+}
+
+#[test]
+fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
+    let address = Address::random();
+    let base_slot = U256::ONE;
+    for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = DynStringRecord::handle(base_slot, LayoutCtx::FULL, address);
+            let inbound_slot = base_slot + U256::from(1);
+            let outbound_slot = base_slot + U256::from(2);
+
+            // Initial: long strings in both dynamic fields.
+            handler.write(DynStringRecord {
+                static_a: U256::from(1),
+                inbound: "x".repeat(100), // 4 tail chunks
+                outbound: "y".repeat(80), // 3 tail chunks
+                static_b: 42,
+            })?;
+
+            // Overwrite with shorter strings (validator-config-shaped path).
+            handler.write(DynStringRecord {
+                static_a: U256::from(2),
+                inbound: "1.2.3.4:30303".to_string(),  // short
+                outbound: "5.6.7.8:30303".to_string(), // short
+                static_b: 84,
+            })?;
+
+            // Logical reads return the new values.
+            let loaded = handler.read()?;
+            assert_eq!(loaded.inbound, "1.2.3.4:30303");
+            assert_eq!(loaded.outbound, "5.6.7.8:30303");
+            assert_eq!(loaded.static_a, U256::from(2));
+            assert_eq!(loaded.static_b, 84);
+
+            // T5: stale tail chunks of both String fields are zeroed.
+            for i in 0..4 {
+                let tail = Slot::<U256>::new(dyn_tail_slot(inbound_slot, i), address).read()?;
+                if hardfork.is_t5() {
+                    assert_eq!(tail, U256::ZERO, "T5: inbound chunk {i} must clear");
+                } else {
+                    assert_ne!(tail, U256::ZERO, "T4: inbound chunk {i} shouldn't clear");
+                }
+            }
+            for i in 0..3 {
+                let tail = Slot::<U256>::new(dyn_tail_slot(outbound_slot, i), address).read()?;
+                if hardfork.is_t5() {
+                    assert_eq!(tail, U256::ZERO, "T5: outbound chunk {i} must clear");
+                } else {
+                    assert_ne!(tail, U256::ZERO, "T4: outbound chunk {i} shouldn't clear");
+                }
+            }
+            error::Result::Ok(())
+        })?;
+    }
+    Ok(())
 }

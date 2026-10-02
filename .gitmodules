@@ -1,9 +1,9 @@
-[submodule "tips/ref-impls/lib/forge-std"]
-	path = tips/ref-impls/lib/forge-std
+[submodule "tips/verify/lib/forge-std"]
+	path = tips/verify/lib/forge-std
 	url = https://github.com/foundry-rs/forge-std
-[submodule "tips/ref-impls/lib/tempo-std"]
-	path = tips/ref-impls/lib/tempo-std
+[submodule "tips/verify/lib/tempo-std"]
+	path = tips/verify/lib/tempo-std
 	url = https://github.com/tempoxyz/tempo-std
-[submodule "tips/ref-impls/lib/solady"]
-	path = tips/ref-impls/lib/solady
+[submodule "tips/verify/lib/solady"]
+	path = tips/verify/lib/solady
 	url = https://github.com/vectorized/solady

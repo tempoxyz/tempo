@@ -1,0 +1,12 @@
+services:
+  tempo:
+    image: ghcr.io/tempoxyz/tempo-localnet:latest
+    command: ["--block-time", "200ms"]
+    ports:
+      - "127.0.0.1:8545:8545"
+    stop_grace_period: 10s
+    volumes:
+      - tempo-localnet-data:/data
+
+volumes:
+  tempo-localnet-data:

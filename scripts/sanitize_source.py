@@ -283,8 +283,8 @@ def sanitize_chainspec(chainspec_dir):
     # Delete #[cfg(feature = "reth")] extern crate alloc;
     delete_lines(lib_rs, r'^#\[cfg\(feature = "reth"\)\]\nextern crate alloc;\n', expected=1)
 
-    # Delete #[cfg(feature = "reth")] gated mod/pub declarations (bootnodes, spec)
-    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "reth")]', expected=3)
+    # Delete #[cfg(feature = "reth")] gated mod/pub declarations and re-exports.
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "reth")]', expected=6)
 
     print(f"  chainspec/src/lib.rs: stripped reth-gated code", file=sys.stderr)
 
@@ -292,15 +292,24 @@ def sanitize_chainspec(chainspec_dir):
 def sanitize_alloy(alloy_dir):
     """Strip node-internal code from tempo-alloy source files.
 
-    The reth_compat.rs file is already deleted by the shell script (publish-crates.sh).
-    This function removes the cfg-gated `mod reth_compat;` declaration from rpc/mod.rs
-    so the crate compiles without the file.
+    The revm_compat.rs and reth_compat.rs files are already deleted by the shell
+    script (publish-crates.sh). This function removes their cfg-gated module
+    declarations from rpc/mod.rs so the crate compiles without those files.
     """
     src = f"{alloy_dir}/src"
 
-    # Delete the cfg-gated `mod reth_compat;` block from rpc/mod.rs
-    delete_lines(f"{src}/rpc/mod.rs", r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n', expected=1)
-    print(f"  rpc/mod.rs: deleted mod reth_compat declaration", file=sys.stderr)
+    # Delete the cfg-gated compatibility module blocks from rpc/mod.rs
+    delete_lines(
+        f"{src}/rpc/mod.rs",
+        r'^#\[cfg\(feature = "revm"\)\]\nmod revm_compat;\n',
+        expected=1,
+    )
+    delete_lines(
+        f"{src}/rpc/mod.rs",
+        r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n',
+        expected=1,
+    )
+    print(f"  rpc/mod.rs: deleted revm/reth compatibility declarations", file=sys.stderr)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,9 @@
+merge:
+  templates:
+    tip20_transfer:
+      gas_limit: 350000
+      nonce_key:
+        uniform:
+          - 1
+          - 18446744073709551615
+      nonce: 0

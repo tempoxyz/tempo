@@ -1,10 +1,14 @@
+#![allow(clippy::cast_lossless)]
+
 mod backfill;
 mod base_fee;
 mod block_building;
 mod createx;
 mod eth_call;
 mod eth_transactions;
+mod executed_state;
 mod fork_schedule;
+mod gas;
 mod key_authorization;
 mod liquidity;
 mod max_gas_limit;
@@ -14,6 +18,7 @@ mod pool;
 mod shared_trie;
 mod simulate;
 mod stablecoin_dex;
+mod storage_credits;
 mod tempo_transaction;
 mod tip20;
 mod tip20_factory;

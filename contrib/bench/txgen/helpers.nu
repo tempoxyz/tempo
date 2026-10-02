@@ -1,0 +1,965 @@
+const TXGEN_HELPER_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
+const TXGEN_HELPER_DEFAULT_SEED = 99
+const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
+const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
+const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
+const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
+const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "public" "tip20"]
+const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
+    "dex"
+    "neobank-deposit"
+    "neobank-swap"
+    "neobank-withdraw"
+    "vault-deposit"
+    "vault-withdraw"
+]
+const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
+const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
+const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_MIN_GAS_LIMIT = 3000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT = 2000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT = 2000000
+const TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT = "1000000000000000000000000000000000000"
+const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
+const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
+const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
+const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
+const TXGEN_HELPER_CLICKHOUSE_METRICS_FILE = "contrib/bench/clickhouse-metrics.txt"
+
+def txgen-tip20-base-scenario [] {
+    {
+        workload: "tip20"
+        recipient: "users"
+        auth: "direct"
+        nonce: "expiring"
+        fee_token: "pathusd"
+    }
+}
+
+def txgen-tip20-public-scenario [] {
+    {
+        workload: "tip20"
+        recipient: "users"
+        auth: "direct"
+        nonce: "expiring"
+        fee_token: "pathusd"
+    }
+}
+
+def txgen-tip20-scenario-alias [name: string] {
+    if $name == "public" {
+        return (txgen-tip20-public-scenario)
+    }
+
+    # Legacy preset names remain accepted, but active workflows should use scenario strings.
+    if $name == "tip20" {
+        return (txgen-tip20-base-scenario)
+    }
+    if $name == "tip20_random_recipients" {
+        return ((txgen-tip20-base-scenario) | merge { recipient: "random", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_existing_recipients" {
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain" {
+        return ((txgen-tip20-base-scenario) | merge { auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain_random_recipients" {
+        return ((txgen-tip20-base-scenario) | merge { recipient: "random", auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain_existing_recipients" {
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_key_authorization" {
+        return ((txgen-tip20-base-scenario) | merge { auth: "key_authorization", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_protocol_nonces" {
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", nonce: "protocol", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_2d_nonces" {
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", nonce: "2d", fee_token: "any_tip20" })
+    }
+
+    null
+}
+
+def txgen-scenario-field-name [field: string] {
+    $field | str trim | str replace -a "-" "_"
+}
+
+def txgen-parse-tip20-scenario [preset: string] {
+    let preset_name = ($preset | str trim)
+    let alias = (txgen-tip20-scenario-alias $preset_name)
+    if $alias != null {
+        return $alias
+    }
+
+    if not ($preset_name | str starts-with "tip20:") {
+        return null
+    }
+
+    let body = ($preset_name | str replace --regex '^tip20:' '')
+    mut scenario = (txgen-tip20-base-scenario)
+    if ($body | str trim) != "" {
+        for raw_part in ($body | split row "," | each { |part| $part | str trim } | where { |part| $part != "" }) {
+            let kv = ($raw_part | split row "=")
+            if ($kv | length) != 2 {
+                error make { msg: $"invalid tip20 scenario component '($raw_part)'; expected key=value" }
+            }
+
+            let key = (txgen-scenario-field-name ($kv | get 0))
+            let value = (($kv | get 1) | str trim)
+            if $key not-in ["recipient" "auth" "nonce" "fee_token"] {
+                error make { msg: $"unknown tip20 scenario field '($key)'" }
+            }
+            if $value == "" {
+                error make { msg: $"tip20 scenario field '($key)' must not be empty" }
+            }
+
+            $scenario = ($scenario | upsert $key $value)
+        }
+    }
+
+    txgen-validate-tip20-scenario $scenario
+    $scenario
+}
+
+def txgen-ensure-one-of [field: string, value: string, allowed: list<string>] {
+    if $value not-in $allowed {
+        error make { msg: $"invalid ($field)=($value); expected one of: ($allowed | str join ', ')" }
+    }
+}
+
+def txgen-validate-tip20-scenario [scenario: record] {
+    txgen-ensure-one-of "recipient" $scenario.recipient ["users" "random" "existing"]
+    txgen-ensure-one-of "auth" $scenario.auth ["direct" "keychain" "key_authorization"]
+    txgen-ensure-one-of "nonce" $scenario.nonce ["expiring" "protocol" "2d"]
+    txgen-ensure-one-of "fee_token" $scenario.fee_token ["pathusd" "any_tip20"]
+
+    if $scenario.auth != "direct" and $scenario.nonce != "expiring" {
+        error make { msg: $"auth=($scenario.auth) currently supports only nonce=expiring" }
+    }
+}
+
+def txgen-tip20-scenario-id [scenario: record] {
+    $"tip20:recipient=($scenario.recipient),auth=($scenario.auth),nonce=($scenario.nonce),fee_token=($scenario.fee_token)"
+}
+
+def txgen-scenario-file-stem [scenario_id: string] {
+    $scenario_id
+        | str replace -a ":" "-"
+        | str replace -a "," "-"
+        | str replace -a "=" "-"
+        | str replace -a "/" "-"
+}
+
+def txgen-tip20-uses-fee-amm [scenario: record] {
+    $scenario.fee_token == "any_tip20"
+}
+
+def txgen-tip20-pieces-dir [] {
+    [ (txgen-repo-root) $TXGEN_HELPER_TIP20_PIECES_DIR ] | path join
+}
+
+def txgen-tip20-piece-path [piece: string] {
+    [ (txgen-tip20-pieces-dir) $"($piece).yml" ] | path join
+}
+
+def txgen-tip20-piece-path-checked [piece: string] {
+    let piece_path = (txgen-tip20-piece-path $piece)
+    if not ($piece_path | path exists) {
+        error make { msg: $"missing tip20 txgen piece: ($piece)" }
+    }
+
+    $piece_path
+}
+
+def txgen-tip20-piece-name [dimension: string, value: string] {
+    $"($dimension)-($value | str replace -a '_' '-')"
+}
+
+def txgen-tip20-scenario-pieces [scenario: record] {
+    mut pieces = [
+        (txgen-tip20-piece-name "recipient" $scenario.recipient)
+        (txgen-tip20-piece-name "fee-token" $scenario.fee_token)
+    ]
+
+    if (txgen-tip20-uses-fee-amm $scenario) {
+        $pieces = ($pieces | append "fee-amm-liquidity")
+    }
+
+    $pieces = ($pieces | append (txgen-tip20-piece-name "auth" $scenario.auth))
+    $pieces = ($pieces | append (txgen-tip20-piece-name "nonce" $scenario.nonce))
+    $pieces
+}
+
+# Write a scenario spec that lists its pieces via txgen's native `include`
+# directive; txgen resolves the merge/append sections in each piece itself.
+def txgen-render-tip20-spec [scenario: record, out_dir: string] {
+    let out_dir = if ($out_dir | str trim) == "" {
+        [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR ] | path join
+    } else {
+        $out_dir | path expand
+    }
+    mkdir $out_dir
+
+    let uses_fee_amm = (txgen-tip20-uses-fee-amm $scenario)
+    let pieces = (["base"] | append (txgen-tip20-scenario-pieces $scenario))
+    let piece_paths = ($pieces | each { |piece| txgen-tip20-piece-path-checked $piece })
+
+    let scenario_id = (txgen-tip20-scenario-id $scenario)
+    let spec_path = ([ $out_dir $"(txgen-scenario-file-stem $scenario_id).yml" ] | path join)
+    [$"# ($scenario_id)" "include:"]
+        | append ($piece_paths | each { |piece_path| $"  - ($piece_path)" })
+        | append ""
+        | str join "\n"
+        | save -f $spec_path
+
+    {
+        kind: generated
+        scenario_id: $scenario_id
+        spec_path: ($spec_path | path expand)
+        rendered: true
+        requires_existing_recipients: ($scenario.recipient == "existing")
+        requires_keychain_setup: ($scenario.auth == "keychain")
+        uses_fee_amm: $uses_fee_amm
+    }
+}
+
+def txgen-tip20-token-address [token_id: int] {
+    ^printf "0x20c000000000000000000000%016x" $token_id
+}
+
+def txgen-tip20-token-choices [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count | each { |id| txgen-tip20-token-address $id } | to json -r
+}
+
+def --env txgen-configure-tip20-token-env [token_count: int] {
+    $env.TXGEN_TIP20_TOKENS = (txgen-tip20-token-choices $token_count)
+}
+
+def txgen-keychain-tip20-limits [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "keychain TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count
+        | each { |id|
+            {
+                token: (txgen-tip20-token-address $id)
+                amount: $TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT
+                period: 0
+            }
+        }
+        | to json -r
+}
+
+def txgen-keychain-tip20-allowed-calls [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "keychain TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count
+        | each { |id|
+            {
+                target: (txgen-tip20-token-address $id)
+                selectors: [
+                    {
+                        selector: $TXGEN_HELPER_TIP20_TRANSFER_SELECTOR
+                        recipients: []
+                    }
+                ]
+            }
+        }
+        | to json -r
+}
+
+def txgen-key-authorization-gas-limit [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "key authorization token count must be greater than zero" }
+    }
+
+    if $token_count == 1 {
+        return ($TXGEN_HELPER_KEY_AUTHORIZATION_MIN_GAS_LIMIT | into string)
+    }
+
+    ($TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT + ($token_count * $TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT)) | into string
+}
+
+def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
+    if $accounts <= 0 {
+        error make { msg: "keychain account count must be greater than zero" }
+    }
+
+    let access_keys_end = $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START + $accounts
+    $env.TXGEN_KEYCHAIN_ACCESS_KEYS_START = ($TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START | into string)
+    $env.TXGEN_KEYCHAIN_ACCESS_KEYS_END = ($access_keys_end | into string)
+    $env.TXGEN_KEYCHAIN_TIP20_LIMITS = (txgen-keychain-tip20-limits $token_count)
+    $env.TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS = (txgen-keychain-tip20-allowed-calls $token_count)
+    $env.TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = ($TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT | into string)
+    $env.TXGEN_KEY_AUTHORIZATION_GAS_LIMIT = (txgen-key-authorization-gas-limit $token_count)
+}
+
+# 2D-nonce specs mint deeper FeeAMM liquidity, matching the removed
+# tip20_2d_nonces preset. `nonce_key:` only appears in 2D-nonce specs.
+def --env txgen-configure-fee-amm-env [spec_path: string] {
+    let amount = if (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*nonce_key:\s*$' {
+        $TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT
+    } else {
+        $TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT
+    }
+    $env.TXGEN_FEE_AMM_LIQUIDITY_AMOUNT = ($amount | into string)
+}
+def txgen-shell-quote [value: any] {
+    let s = ($value | into string)
+    let escaped = ($s | str replace -a "'" "'\"'\"'")
+    $"'($escaped)'"
+}
+
+def txgen-shell-join [args: list<any>] {
+    $args | each { |arg| txgen-shell-quote $arg } | str join " "
+}
+
+def txgen-command-path [name: string] {
+    let path = (which $name | get -o 0.path | default "")
+    if $path == "" {
+        error make { msg: $"($name) not found in PATH" }
+    }
+    $path
+}
+
+def txgen-resolve-configured-bin [configured: string, fallback: string] {
+    if $configured == "" {
+        return (txgen-command-path $fallback)
+    }
+
+    if ($configured | path exists) {
+        return ($configured | path expand)
+    }
+
+    txgen-command-path $configured
+}
+
+def txgen-resolve-binaries [] {
+    let generator = (txgen-resolve-configured-bin ($env.TXGEN_TEMPO_BIN? | default "") "txgen-tempo")
+    let bench = (txgen-resolve-configured-bin ($env.TXGEN_BENCH_BIN? | default "") "bench")
+
+    {
+        txgen_tempo_bin: $generator
+        txgen_bench_bin: $bench
+    }
+}
+
+def txgen-repo-root [] {
+    let result = (git rev-parse --show-toplevel | complete)
+    if $result.exit_code == 0 {
+        return ($result.stdout | str trim)
+    }
+
+    "." | path expand
+}
+
+def txgen-presets-dir [] {
+    [ (txgen-repo-root) $TXGEN_HELPER_PRESETS_DIR ] | path join
+}
+
+def txgen-available-presets [] {
+    let presets_dir = (txgen-presets-dir)
+    if not ($presets_dir | path exists) {
+        return $TXGEN_HELPER_TIP20_SCENARIO_PRESETS
+    }
+
+    let static_presets = (glob ([ $presets_dir "*.yml" ] | path join)
+        | each { |preset_path| $preset_path | path basename | str replace --regex '\.yml$' '' }
+    )
+
+    $static_presets | append $TXGEN_HELPER_TIP20_SCENARIO_PRESETS | uniq | sort
+}
+
+def txgen-available-presets-message [] {
+    let presets = (txgen-available-presets)
+    if ($presets | is-empty) {
+        "none"
+    } else {
+        $"($presets | str join ', '), or tip20:<field>=<value>,..."
+    }
+}
+
+def txgen-static-preset-path [preset: string] {
+    let preset_name = ($preset | str trim)
+    if $preset_name == "" {
+        error make { msg: $"--preset is required; available txgen presets: (txgen-available-presets-message)" }
+    }
+
+    if not ($preset_name =~ '^[A-Za-z0-9][A-Za-z0-9_-]*$') {
+        error make { msg: $"invalid txgen preset name '($preset_name)'; use a preset basename like 'tip20'" }
+    }
+
+    let spec_path = ([ (txgen-presets-dir) $"($preset_name).yml" ] | path join)
+    if not ($spec_path | path exists) {
+        error make { msg: $"txgen preset not found: ($preset_name); available txgen presets: (txgen-available-presets-message)" }
+    }
+
+    $spec_path
+}
+
+def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
+    # Shared with the multi-region runner; keep workload selection in the assets.
+    let name = ($preset | str trim)
+    let aliases = (open ([ (txgen-presets-dir) "aliases.json" ] | path join))
+    let preset_name = ($aliases | get -o $name | default $name)
+    let tip20_scenario = (txgen-parse-tip20-scenario $preset_name)
+    if $tip20_scenario != null {
+        return (txgen-render-tip20-spec $tip20_scenario $out_dir)
+    }
+
+    let spec_path = (txgen-static-preset-path $preset_name)
+    {
+        kind: static
+        scenario_id: $preset_name
+        spec_path: $spec_path
+        rendered: false
+        requires_existing_recipients: false
+        requires_keychain_setup: (txgen-spec-has-keychain-setup $spec_path)
+        uses_fee_amm: false
+    }
+}
+
+def txgen-preset-path [preset: string] {
+    (txgen-resolve-bench-spec $preset).spec_path
+}
+
+# Store concrete workload identities; a moving CLI alias must not relabel history.
+def txgen-scenario-metadata-args [scenario: string, spec_path: string] {
+    let aliases = (open ([ (txgen-presets-dir) "aliases.json" ] | path join))
+    let resolved = ($aliases | get -o $scenario | default $scenario)
+    ["-m" $"preset=($spec_path | path basename | str replace --regex '\.yml$' '')"]
+        | append (if $resolved != "" { ["-m" $"scenario=($resolved)"] } else { [] })
+        | append (if $resolved != $scenario { ["-m" $"requested_preset=($scenario)"] } else { [] })
+}
+
+def txgen-account-mnemonic [] {
+    $TXGEN_HELPER_ACCOUNT_MNEMONIC
+}
+
+def txgen-parse-bench-args [bench_args: string] {
+    let trimmed = ($bench_args | str trim)
+    if $trimmed == "" {
+        return []
+    }
+
+    let args = ($trimmed | split row " " | where { |arg| $arg != "" })
+    for arg in $args {
+        if not ($arg =~ '^[A-Za-z0-9._/:=@,+-]+$') {
+            error make { msg: $"invalid --bench-args token: ($arg)" }
+        }
+    }
+
+    $args
+}
+
+def txgen-validate-bench-args [bench_args: string] {
+    txgen-parse-bench-args $bench_args | ignore
+}
+
+# Return the spec text with `include` entries expanded, so content checks see
+# included pieces. Pieces do not nest includes, so one level is enough.
+def txgen-spec-effective-text [spec_path: string] {
+    let path = ($spec_path | path expand)
+    let raw = (open --raw $path)
+    # Nushell's YAML parser panics on integers above i64::MAX (e.g. nonce bounds).
+    # Use the same pinned Python yq as workload metadata and only pass include
+    # paths back to Nushell. Keep the original spec text and numeric values intact.
+    let result = (^uv run --no-project --with yq==3.4.3 yq -c '
+        if type == "object" then (.include // .includes // []) else [] end
+    ' $path | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to read txgen spec includes: ($result.stderr)"}
+    }
+
+    let include_value = ($result.stdout | from json)
+    let includes = if $include_value == null {
+        []
+    } else if (($include_value | describe) == "string") {
+        [$include_value]
+    } else {
+        $include_value
+    }
+
+    let base_dir = ($path | path dirname)
+    $includes
+        | each { |include_path|
+            let resolved = if ($include_path | str starts-with "/") {
+                $include_path
+            } else {
+                [ $base_dir $include_path ] | path join
+            }
+            open --raw $resolved
+        }
+        | append $raw
+        | str join "\n"
+}
+
+def txgen-spec-has-keychain-setup [spec_path: string] {
+    (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*keychain_authorize_pool:\s*$'
+}
+
+def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
+    if $bloat_mib <= 0 {
+        error make { msg: "bloat size must be greater than zero" }
+    }
+    if $token_count <= 0 {
+        error make { msg: "bloat token count must be greater than zero" }
+    }
+
+    let target_bytes = $bloat_mib * 1024 * 1024
+    let overhead_per_token = 40 + 64
+    let available_for_balances = $target_bytes - ($token_count * $overhead_per_token)
+    if $available_for_balances <= 0 {
+        error make { msg: $"bloat size ($bloat_mib) MiB is too small for ($token_count) token\(s\)" }
+    }
+
+    (($available_for_balances / 64) / $token_count) | into int
+}
+
+def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
+    let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
+    let spec_uses_existing_recipients = if ($preset_path | path exists) {
+        (txgen-spec-effective-text $preset_path) =~ '(?m)^\s*existing_recipients:\s*$'
+    } else {
+        false
+    }
+    if not $spec_uses_existing_recipients {
+        return
+    }
+
+    if $bloat_mib <= 0 {
+        error make { msg: $"preset ($preset_name) requires state bloat" }
+    }
+
+    let recipient_end = (txgen-bloat-accounts-per-token $bloat_mib $token_count)
+    if $recipient_end <= $TXGEN_HELPER_EXISTING_RECIPIENTS_START {
+        error make { msg: $"preset ($preset_name) requires state bloat with more than ($TXGEN_HELPER_EXISTING_RECIPIENTS_START) accounts per token" }
+    }
+
+    $env.TXGEN_EXISTING_RECIPIENTS_START = ($TXGEN_HELPER_EXISTING_RECIPIENTS_START | into string)
+    $env.TXGEN_EXISTING_RECIPIENTS_END = ($recipient_end | into string)
+    print $"  Using existing recipient range ($TXGEN_HELPER_EXISTING_RECIPIENTS_START)..($recipient_end) from ($bloat_mib) MiB state bloat"
+}
+
+def txgen-rpc-call [rpc_url: string, payload: string] {
+    let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
+    if $result.exit_code != 0 {
+        error make { msg: $"RPC call failed: ($payload)" }
+    }
+    let response = ($result.stdout | from json)
+    if (($response | get -o error) != null) {
+        let rpc_error = ($response | get error)
+        error make { msg: $"RPC error: ($rpc_error | to json -r)" }
+    }
+    $response
+}
+
+def txgen-fetch-chain-id [rpc_url: string] {
+    let response = (txgen-rpc-call $rpc_url '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}')
+    $response.result | into int
+}
+
+def txgen-wait-for-txpool-drain [rpc_url: string, timeout_secs: int = $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS] {
+    mut zero_count = 0
+    mut waited = 0
+
+    while $waited < $timeout_secs {
+        let response = (txgen-rpc-call $rpc_url '{"jsonrpc":"2.0","method":"txpool_status","params":[],"id":1}')
+        let pending = ($response.result.pending | into int)
+
+        if $pending == 0 {
+            $zero_count = $zero_count + 1
+            if $zero_count >= 3 {
+                return
+            }
+        } else {
+            $zero_count = 0
+        }
+
+        sleep 1sec
+        $waited = $waited + 1
+    }
+
+    print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
+}
+
+def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
+    let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
+    if $result.exit_code != 0 {
+        error make { msg: $"failed to list txgen addresses for ($spec_path)" }
+    }
+
+    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
+    if ($addresses | is-empty) {
+        error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
+    }
+
+    print $"  Funding (($addresses | length)) txgen account\(s\)..."
+    $addresses | par-each { |address|
+        txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
+    } | ignore
+
+    print "  Waiting for faucet transactions to drain..."
+    txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
+}
+
+def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
+    if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
+    let spec = (open $spec_path)
+    let token = "0x20c0000000000000000000000000000000000000"
+    mut steps = [$spec.setup.steps.0]
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.1
+            | update id $"portal_($zone)"
+            | update deploy.constructor_args.0 {var: setup.settlement.sender}))
+    }
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
+            | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
+    }
+    let pairs = ([$accounts $zones] | math max)
+    let minimum_per_zone = ($pairs // $zones)
+    mut templates = {}
+    mut mix = []
+    for pair in 0..<$pairs {
+        let user = $pair mod $accounts
+        let zone = $pair mod $zones
+        let portal = {var: $"setup.portal_($zone).address"}
+        let account = {pool: users, select: {index: $user}}
+        let recipient = {pool: $account}
+        if $mode != withdraw {
+            $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
+                | update tx.from $account
+                | update tx.calls [{to: $token, abi: ERC20, function: approve,
+                    args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
+        }
+        let per_zone = $minimum_per_zone + (if $zone < ($pairs mod $zones) { 1 } else { 0 })
+        let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
+        for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
+            let name = $"zone_($kind)_($pair)"
+            mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
+            if $kind == deposit {
+                $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
+            }
+            let settlement_index = if $kind == deposit { 1 } else { 0 }
+            let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
+            $template = ($template | update calls ($template.calls | update $settlement_index $call))
+            $templates = ($templates | insert $name $template)
+            $mix = ($mix | append {template: $name, weight: $weight})
+        }
+    }
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join zones.yml)
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
+        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
+    $output
+}
+
+def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int] {
+    if $chain_id != 1337 or $accounts <= 0 or $accounts > 100000 {
+        error make { msg: "Vault presets require chain ID 1337 and 1..100000 user accounts" }
+    }
+    let operation = ($spec_path | path basename | str replace "vault-" "" | str replace ".yml" "")
+    let template_path = ([ ($spec_path | path dirname) "vault" $"user-($operation).yml" ] | path join)
+    let template = (open $template_path).setup.steps.0
+    let steps = (0..<$accounts | each { |index|
+        $template | update id $"($template.id)_($index)" | update bindings.user.account.select.index $index
+    })
+    let base = (open ([ ($template_path | path dirname) "base.yml" ] | path join))
+    let workload = ($base.templates | get $"vault_($operation)")
+    let templates = (0..<$accounts | each { |index|
+        { name: $"vault_($operation)_($index)", value: ($workload
+            | update from.select {index: $index}
+            | update calls.1.args.1 {pool: {pool: users, select: {index: $index}}}) }
+    } | transpose -r -d)
+    let mix = (0..<$accounts | each { |index| {template: $"vault_($operation)_($index)", weight: 1} })
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join ($spec_path | path basename))
+    { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: $steps } } } | to yaml | save -f $output
+    $output
+}
+
+# Only public-mix needs category metadata; other presets keep their existing metadata.
+def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
+    if $preset_name != "public-mix" { return [] }
+
+    # Read only the prepared file's mix, not its included setup/template specs.
+    # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
+    let result = (^uv run --no-project --with yq==3.4.3 yq -ceS '
+        .mix | if length > 0 then . else error("public-mix requires a mix") end
+        | map({key: ((.template // .sequence)
+            | sub("^(?<category>(zone|vault)_(deposit|withdraw))_[0-9]+$"; "\(.category)")), value: .weight})
+        | group_by(.key)
+        | map({key: .[0].key, value: (map(.value) | add)})
+        | from_entries
+    ' $spec_path | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to extract public-mix metadata: ($result.stderr)"}
+    }
+    ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
+}
+
+def txgen-run-preset-pipeline [
+    --txgen-tempo-bin: string
+    --txgen-bench-bin: string
+    --preset-path: string
+    --generate-rpc-url: string
+    --submit-rpc-url: string
+    --metrics-url: list<string>
+    --report-path: string
+    --tps: int
+    --duration: int
+    --accounts: int
+    --max-concurrent-requests: int
+    --bench-args: string = ""
+    --bench-env: string = ""
+    --git-ref: string = ""
+    --git-ref-label: string = ""
+    --build-profile: string = ""
+    --benchmark-mode: string = ""
+    --benchmark-id: string = ""
+    --benchmark-run: string = ""
+    --run-type: string = ""
+    --benchmark-start: int = 0
+    --platform: string = ""
+    --scenario: string = ""
+    --victoriametrics-url: string = ""
+    --clickhouse-url: string = ""
+    --bloat-mib: int = 0
+    --tip20-token-count: int = 0
+    --bloat-token-count: int = 4
+    --initial-db-size-bytes: int = 0
+    --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
+] {
+    let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
+    $env.TXGEN_ACCOUNTS = ($accounts | into string)
+    mut spec_path = ($preset_path | path expand)
+    if not ($spec_path | path exists) {
+        error make { msg: $"txgen preset file not found: ($spec_path)" }
+    }
+    let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
+    txgen-configure-tip20-token-env $tx_token_count
+    txgen-configure-keychain-env $accounts $tx_token_count
+    txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    txgen-configure-fee-amm-env $spec_path
+    let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let tx_count = [($tps * $duration) 1] | math max
+    mut zone_metadata = []
+    if $preset_name == "zones" {
+        if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
+            error make { msg: "zones requires local chain 1337 and 1–100000 accounts" }
+        }
+        let portal_code = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x5ad1000000000000000000000000000000000000","latest"]}')
+        if $portal_code.result == "0x" {
+            error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
+        }
+        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","latest"]}')
+        if $nonce_response.result != $latest_nonce.result {
+            error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
+        }
+        let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
+        # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
+        # This is a configurable sizing window, not a claimed mainnet settlement cadence.
+        let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
+        if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
+        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
+        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
+        $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
+        print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
+        $spec_path = (txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode)
+    }
+    let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
+    if $is_vault {
+        $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
+        # The checked-in deployments use fixed nonces and transfer policy 2.
+        # Check before funding or submitting any setup transactions.
+        let deployer_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let policy_counter = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x403c000000000000000000000000000000000000","data":"0x3cc32f9c"},"pending"]}')
+        if ($deployer_nonce.result | into int) != 0 or ($policy_counter.result | into int) != 2 {
+            error make { msg: "Vault presets require a fresh fixture: deployers[0] nonce must be 0 and TIP-403 policyIdCounter must be 2. Restore the benchmark snapshot before rerunning." }
+        }
+    }
+    let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
+    let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
+    let uses_existing_recipients = (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*existing_recipients:\s*$'
+    let recipient_accounts = if $uses_existing_recipients and $existing_recipient_end > $existing_recipient_start {
+        $existing_recipient_end - $existing_recipient_start
+    } else {
+        0
+    }
+    let total_accounts = $accounts + $recipient_accounts
+    let workload_metadata = (txgen-workload-metadata-args $preset_name $spec_path)
+    if not $skip_faucet_funding {
+        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+    }
+
+    let txgen_duration = $"($duration)s"
+    let txgen_cmd = [
+        $txgen_tempo_bin
+        "generate"
+        "-s" $spec_path
+        "-n" $tx_count
+        "--seed" $TXGEN_HELPER_DEFAULT_SEED
+        "--rpc" $generate_rpc_url
+    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    # Zones and vaults generate the full count: setup must not consume workload duration.
+    let txgen_setup_cmd = [
+        $txgen_tempo_bin
+        "generate"
+        "-s" $spec_path
+        "-n" 0
+        "--seed" $TXGEN_HELPER_DEFAULT_SEED
+        "--rpc" $generate_rpc_url
+    ]
+    let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
+    let bench_send_base_cmd = [
+        $txgen_bench_bin
+        "send"
+        "--rpc-url" $submit_rpc_url
+        "--tps" $tps
+        "--max-concurrent" $max_concurrent_requests
+        "--retries" 0
+        "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
+    ]
+    let bench_base_cmd = [
+        ...$bench_send_base_cmd
+        ...$metrics_url_args
+    ]
+        | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
+    let report_args = ["--report" $"json:($report_path)"]
+        | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
+        | append (if $clickhouse_url != "" {
+            ["--report" $"clickhouse:($clickhouse_url)" "--clickhouse-metrics-file" ([ (txgen-repo-root) $TXGEN_HELPER_CLICKHOUSE_METRICS_FILE ] | path join)]
+        } else { [] })
+    let pr_number = ($env | get --optional BENCH_PR | default "")
+    let metadata_args = [
+        "-m" "job=github-tempo-bench-e2e"
+        "-m" $"chain_id=($chain_id)"
+        "-m" $"target_tps=($tps)"
+        "-m" $"run_duration_secs=($duration)"
+        "-m" $"accounts=($total_accounts)"
+        "-m" $"total_connections=($max_concurrent_requests)"
+        "-m" $"bloat_mib=($bloat_mib)"
+        "-m" $"tip20_token_count=($tx_token_count)"
+        "-m" $"bloat_token_count=($bloat_token_count)"
+        "-m" "tip20_weight=1.0"
+        "-m" "place_order_weight=0.0"
+        "-m" "swap_weight=0.0"
+        "-m" "erc20_weight=0.0"
+        "-m" $"node_commit_sha=($git_ref)"
+        "-m" $"git-sha=($git_ref)"
+        "-m" $"git-ref=($git_ref_label)"
+        "-m" $"build_profile=($build_profile)"
+        "-m" $"mode=($benchmark_mode)"
+    ]
+        | append $workload_metadata
+        | append $zone_metadata
+        | append (if $recipient_accounts > 0 { ["-m" $"recipient_accounts=($recipient_accounts)"] } else { [] })
+        | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
+        | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
+        | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
+        | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
+        | append (txgen-scenario-metadata-args $scenario $spec_path)
+        | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
+        | append (if $initial_db_size_bytes > 0 { ["-m" $"initial_db_size_bytes=($initial_db_size_bytes)"] } else { [] })
+    let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
+
+    let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
+    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
+    let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
+    let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
+    let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
+    let bench_cmd_str = (txgen-shell-join $bench_cmd)
+    let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+
+    if $use_two_phase_setup {
+        let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
+        let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
+        let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
+
+        if $is_vault {
+            print "  Streaming vault setup transactions into bench send..."
+        } else {
+            print "  Streaming keychain setup transactions into bench send..."
+        }
+        let setup_result = (bash -lc $setup_pipeline | complete)
+        if $setup_result.stdout != "" { print $setup_result.stdout }
+        if $setup_result.stderr != "" { print $setup_result.stderr }
+
+        if $setup_result.exit_code != 0 {
+            return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
+        }
+        if $is_vault {
+            # Setup is complete. Do not reserve its nonces again when generating the workload.
+            open $spec_path | reject append | insert setup {steps: []} | to yaml | save -f $spec_path
+        }
+    }
+
+    if $is_vault or $preset_name == "zones" {
+        print $"  Streaming ($tx_count) ($preset_name) transactions at target ($tps) TPS into bench send..."
+    } else {
+        print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+    }
+    let vault_start_block = if $is_vault {
+        (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
+    } else { 0 }
+    let result = (bash -lc $pipeline | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+
+    if $result.exit_code != 0 {
+        return { ok: false, exit_code: $result.exit_code, report_path: $report_path }
+    }
+    if not ($report_path | path exists) {
+        print $"ERROR: txgen sender produced no ($report_path)"
+        return { ok: false, exit_code: 1, report_path: $report_path }
+    }
+
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
+        print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
+        return { ok: false, exit_code: 1, report_path: $report_path }
+    }
+    if $is_vault {
+        # Check block receipts after bench drains the pool, without polling every transaction.
+        let report = (open $report_path)
+        let deadline = (date now) + 60sec
+        mut next_block = $vault_start_block + 1
+        mut included = 0
+        mut reverted = 0
+        while $included < $tx_count and (date now) < $deadline {
+            let last = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
+            while $next_block <= $last {
+                let block = ($next_block | format number | get lowerhex)
+                let payload = ({jsonrpc: "2.0", id: 1, method: eth_getBlockReceipts, params: [$block]} | to json -r)
+                let receipts = (txgen-rpc-call $generate_rpc_url $payload).result | where type == "0x76"
+                $included = $included + ($receipts | length)
+                $reverted = $reverted + ($receipts | where status == "0x0" | length)
+                $next_block = $next_block + 1
+            }
+            # An empty pool can precede canonical inclusion of the last built block.
+            if $included < $tx_count { sleep 200ms }
+        }
+        print $"  Vault receipts: ($included) included, ($reverted) reverted, ($report.sent) submitted"
+        if $included != $tx_count or $reverted != 0 {
+            error make { msg: "Vault workload did not include the full transaction count successfully" }
+        }
+    }
+    print $"  Report saved: ($report_path)"
+    { ok: true, exit_code: 0, report_path: $report_path }
+}

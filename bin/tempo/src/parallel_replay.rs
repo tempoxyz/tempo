@@ -20,19 +20,18 @@ use reth_ethereum::{
     tasks::Runtime,
 };
 use reth_provider::{
-    BlockNumReader, BlockReader, ChainSpecProvider, DatabaseProviderFactory, ReceiptProvider,
-    TransactionVariant,
+    BlockNumReader, BlockReader, ChainSpecProvider, DatabaseProviderFactory,
+    EvmStateProviderAdapter, ReceiptProvider, TransactionVariant, providers::BlockchainProvider,
 };
-use reth_storage_api::{HashedPostStateProvider, StateRootProvider};
+use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use tempo_chainspec::spec::TempoChainSpecParser;
-use tempo_consensus::TempoConsensus;
-use tempo_evm::{TempoEvmConfig, parallel::SpeculativeExecutor};
+use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus, parallel::SpeculativeExecutor};
 use tempo_node::node::TempoNode;
 use tracing::info;
 
 /// Compare sequential and speculative execution with canonical receipts and state roots.
 #[derive(Debug, Parser)]
-pub(crate) struct ParallelReplay {
+pub struct ParallelReplay {
     #[command(flatten)]
     env: EnvironmentArgs<TempoChainSpecParser>,
     /// First block to replay (inclusive). Parent state must be retained.
@@ -65,6 +64,7 @@ impl ParallelReplay {
             self.from <= to && to <= head,
             "range must satisfy 1 <= from <= to <= head ({head})"
         );
+        let provider = BlockchainProvider::new(factory.clone())?;
         let chain = factory.chain_spec();
         let sequential = TempoEvmConfig::new(chain.clone());
         let speculative = sequential.clone().with_speculative_executor(
@@ -90,44 +90,59 @@ impl ParallelReplay {
             let block = factory
                 .recovered_block(number.into(), TransactionVariant::NoHash)?
                 .ok_or_eyre(format!("missing canonical block {number}"))?;
-            let parent = factory
+            let parent = provider
                 .history_by_block_number(number - 1)
                 .wrap_err_with(|| format!("parent state unavailable for block {number}"))?;
             let start = Instant::now();
-            let expected = sequential
-                .executor(StateProviderDatabase(&parent))
-                .execute(&block)
+            let mut sequential_executor =
+                sequential.executor(StateProviderDatabase(EvmStateProviderAdapter(&parent)));
+            let expected_result = sequential_executor
+                .execute_one(&block)
                 .wrap_err_with(|| format!("sequential execution failed at block {number}"))?;
             let sequential_seconds = start.elapsed().as_secs_f64();
+            let expected_bal = sequential_executor.take_bal();
+            let expected_state = sequential_executor.into_state().take_bundle();
             let start = Instant::now();
-            let actual = speculative
-                .executor(StateProviderDatabase(&parent))
-                .execute(&block)
+            let mut speculative_executor =
+                speculative.executor(StateProviderDatabase(EvmStateProviderAdapter(&parent)));
+            let actual_result = speculative_executor
+                .execute_one(&block)
                 .wrap_err_with(|| format!("speculative execution failed at block {number}"))?;
             let speculative_seconds = start.elapsed().as_secs_f64();
+            let actual_bal = speculative_executor.take_bal();
+            let actual_state = speculative_executor.into_state().take_bundle();
             ensure!(
-                actual.result == expected.result,
+                actual_bal == expected_bal,
+                "block access lists differ at block {number}"
+            );
+            let bal_hash = actual_bal.as_ref().map(|bal| {
+                let mut encoded = Vec::new();
+                alloy_rlp::encode_list(bal, &mut encoded);
+                alloy_primitives::keccak256(encoded)
+            });
+            ensure!(
+                actual_result == expected_result,
                 "execution results differ at block {number}"
             );
             // Compare the complete state delta, including account deletion and code.
             ensure!(
-                actual.state == expected.state,
+                actual_state == expected_state,
                 "state deltas differ at block {number}"
             );
             let receipts = factory
                 .receipts_by_block(number.into())?
                 .ok_or_eyre(format!("canonical receipts unavailable for block {number}"))?;
             ensure!(
-                actual.result.receipts == receipts,
+                actual_result.receipts == receipts,
                 "canonical receipts differ at block {number}"
             );
             consensus
-                .validate_block_post_execution(&block, &actual.result, None)
+                .validate_block_post_execution(&block, &actual_result, None, bal_hash)
                 .wrap_err_with(|| {
                     format!("canonical gas/receipt-root validation failed at block {number}")
                 })?;
             let root = parent
-                .state_root(parent.hashed_post_state(&actual.state))
+                .state_root(parent.hashed_post_state(&actual_state)?)
                 .wrap_err_with(|| format!("state-root calculation failed at block {number}"))?;
             ensure!(
                 root == block.header().state_root(),
@@ -139,7 +154,7 @@ impl ParallelReplay {
                     report,
                     "{number}\t{}\t{}\t{sequential_seconds:.9}\t{speculative_seconds:.9}\t{root}",
                     receipts.len(),
-                    actual.result.gas_used
+                    actual_result.gas_used
                 )?;
                 report.flush()?;
             }

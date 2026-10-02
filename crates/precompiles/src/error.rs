@@ -9,9 +9,9 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::tip20::TIP20Error;
+use crate::{storage_credits::StorageCreditsErr, tip20::TIP20Error};
 use alloy::{
-    primitives::{Selector, U256},
+    primitives::{FixedBytes, Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use alloy_evm::EvmInternalsError;
@@ -19,10 +19,15 @@ use revm::{
     context::journaled_state::JournalLoadError,
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
-use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
-    SignatureVerifierError, StablecoinDEXError, TIP20FactoryError, TIP403RegistryError,
-    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+use tempo_contracts::{
+    TempoHardfork,
+    precompiles::{
+        AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
+        NonceError, ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError,
+        StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError,
+        TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+        ValidatorConfigV2Error, ZoneFactoryError,
+    },
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -41,6 +46,10 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 factory
     #[error("TIP20 factory error: {0:?}")]
     TIP20Factory(TIP20FactoryError),
+
+    /// Error from TIP-20 channel reserve
+    #[error("TIP20 channel reserve error: {0:?}")]
+    TIP20ChannelReserveError(TIP20ChannelReserveError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -70,6 +79,10 @@ pub enum TempoPrecompileError {
     #[error("Panic({0:?})")]
     Panic(PanicKind),
 
+    /// Internal storage delta underflow that carries the observed slot value for error mapping.
+    #[error("Storage delta underflow: current={0}")]
+    StorageDeltaUnderflow(U256),
+
     /// Error from validator config
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
@@ -86,9 +99,29 @@ pub enum TempoPrecompileError {
     #[error("Signature verifier error: {0:?}")]
     SignatureVerifierError(SignatureVerifierError),
 
+    /// Error from TIP-1028 blocked transfers precompile
+    #[error("TIP1028 blocked transfers error: {0:?}")]
+    ReceivePolicyGuardError(ReceivePolicyGuardError),
+
+    /// Error from TIP-1060 storage credits precompile
+    #[error("TIP1060 storage credits error: {0:?}")]
+    StorageCreditsError(StorageCreditsError),
+
+    /// Error from current committee precompile
+    #[error("Current committee error: {0:?}")]
+    CurrentCommitteeError(CurrentCommitteeError),
+
+    /// Error from the TIP-1091 ZoneFactory precompile
+    #[error("ZoneFactory error: {0:?}")]
+    ZoneFactoryError(ZoneFactoryError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
+
+    /// State mutation attempted during static execution.
+    #[error("State change during static call")]
+    StaticCallNotAllowed,
 
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
@@ -130,13 +163,46 @@ impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError
 pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 
 impl TempoPrecompileError {
+    /// Returns this error's ABI selector. For those variants which can't be encoded as a selector, it returns `FixedBytes<4>::ZERO`.
+    pub fn selector(&self) -> FixedBytes<4> {
+        match self {
+            Self::StablecoinDEX(e) => e.selector(),
+            Self::TIP20(e) => e.selector(),
+            Self::TIP20ChannelReserveError(e) => e.selector(),
+            Self::NonceError(e) => e.selector(),
+            Self::TIP20Factory(e) => e.selector(),
+            Self::RolesAuthError(e) => e.selector(),
+            Self::AddrRegistryError(e) => e.selector(),
+            Self::TIPFeeAMMError(e) => e.selector(),
+            Self::FeeManagerError(e) => e.selector(),
+            Self::TIP403RegistryError(e) => e.selector(),
+            Self::ValidatorConfigError(e) => e.selector(),
+            Self::ValidatorConfigV2Error(e) => e.selector(),
+            Self::AccountKeychainError(e) => e.selector(),
+            Self::SignatureVerifierError(e) => e.selector(),
+            Self::ReceivePolicyGuardError(e) => e.selector(),
+            Self::StorageCreditsError(e) => e.selector(),
+            Self::CurrentCommitteeError(e) => e.selector(),
+            Self::ZoneFactoryError(e) => e.selector(),
+            Self::UnknownFunctionSelector(selector) => *selector,
+            Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
+            Self::OutOfGas | Self::StaticCallNotAllowed | Self::Fatal(_) => [0, 0, 0, 0],
+        }
+        .into()
+    }
+
     /// Returns true if this error represents a system-level failure that must be propagated
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
+            Self::OutOfGas
+            | Self::StaticCallNotAllowed
+            | Self::Fatal(_)
+            | Self::Panic(_)
+            | Self::StorageDeltaUnderflow(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
+            | Self::TIP20ChannelReserveError(_)
             | Self::NonceError(_)
             | Self::TIP20Factory(_)
             | Self::RolesAuthError(_)
@@ -148,6 +214,10 @@ impl TempoPrecompileError {
             | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
             | Self::SignatureVerifierError(_)
+            | Self::ReceivePolicyGuardError(_)
+            | Self::StorageCreditsError(_)
+            | Self::CurrentCommitteeError(_)
+            | Self::ZoneFactoryError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -155,6 +225,11 @@ impl TempoPrecompileError {
     /// Creates an arithmetic under/overflow panic error.
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
+    }
+
+    /// Creates a storage delta underflow that carries the current slot value.
+    pub fn storage_delta_underflow(current: U256) -> Self {
+        Self::StorageDeltaUnderflow(current)
     }
 
     /// Creates an enum conversion error panic (Solidity Panic `0x21`).
@@ -177,6 +252,7 @@ impl TempoPrecompileError {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
+            Self::TIP20ChannelReserveError(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::AddrRegistryError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
@@ -190,12 +266,29 @@ impl TempoPrecompileError {
 
                 panic.abi_encode().into()
             }
+            Self::StorageDeltaUnderflow(_) => {
+                let panic = Panic {
+                    code: U256::from(PanicKind::UnderOverflow as u32),
+                };
+
+                panic.abi_encode().into()
+            }
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
+            Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
+            Self::StorageCreditsError(e) => e.abi_encode().into(),
+            Self::CurrentCommitteeError(e) => e.abi_encode().into(),
+            Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
+            }
+            Self::StaticCallNotAllowed => {
+                return Ok(PrecompileOutput::halt(
+                    PrecompileHalt::other_static("state change during static call"),
+                    reservoir,
+                ));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -221,12 +314,15 @@ pub fn add_errors_to_registry<T: SolInterface>(
         registry.insert(
             selector.into(),
             Box::new(move |data: &[u8]| {
-                T::abi_decode(data)
-                    .ok()
-                    .map(|error| DecodedTempoPrecompileError {
-                        error: converter(error),
-                        revert_bytes: data,
-                    })
+                T::abi_decode_with_config(
+                    data,
+                    crate::dispatch::abi_decoder_config_for_spec(TempoHardfork::latest()),
+                )
+                .ok()
+                .map(|error| DecodedTempoPrecompileError {
+                    error: converter(error),
+                    revert_bytes: data,
+                })
             }),
         );
     }
@@ -251,6 +347,10 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
+    add_errors_to_registry(
+        &mut registry,
+        TempoPrecompileError::TIP20ChannelReserveError,
+    );
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AddrRegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
@@ -261,6 +361,10 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::CurrentCommitteeError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ZoneFactoryError);
 
     registry
 }
@@ -283,10 +387,23 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
         .and_then(|decoder| decoder(data))
 }
 
-/// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResult`].
-pub trait IntoPrecompileResult<T> {
+/// Extension trait to convert an error into a [`PrecompileResult`].
+pub trait IntoPrecompileResult {
+    /// Converts `self` into a [`PrecompileResult`].
+    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult;
+}
+
+impl<E: Into<TempoPrecompileError>> IntoPrecompileResult for E {
+    #[inline]
+    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+        self.into().into_precompile_result(gas, reservoir)
+    }
+}
+
+/// Extension trait to convert a [`Result`](core::result::Result) into a [`PrecompileResult`].
+pub trait EncodePrecompileResult<T> {
     /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
-    fn into_precompile_result(
+    fn encode_precompile_result(
         self,
         gas: u64,
         reservoir: u64,
@@ -294,8 +411,11 @@ pub trait IntoPrecompileResult<T> {
     ) -> PrecompileResult;
 }
 
-impl<T> IntoPrecompileResult<T> for Result<T> {
-    fn into_precompile_result(
+impl<T, E> EncodePrecompileResult<T> for core::result::Result<T, E>
+where
+    E: IntoPrecompileResult,
+{
+    fn encode_precompile_result(
         self,
         gas: u64,
         reservoir: u64,
@@ -305,6 +425,16 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
             Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), reservoir)),
             Err(err) => err.into_precompile_result(gas, reservoir),
         }
+    }
+}
+
+impl StorageCreditsErr for TempoPrecompileError {
+    fn out_of_gas() -> Self {
+        Self::OutOfGas
+    }
+
+    fn fatal_external() -> Self {
+        Self::Fatal("invalid storage credits state".to_string())
     }
 }
 
@@ -394,6 +524,40 @@ mod tests {
             result.is_some(),
             "Valid error at 4+ bytes should return Some"
         );
+    }
+
+    #[test]
+    fn test_into_precompile_result_revert() {
+        let error = TempoPrecompileError::StablecoinDEX(StablecoinDEXError::order_does_not_exist());
+        let result = error.into_precompile_result(0, 0);
+
+        let output = result.expect("business-logic revert should be Ok");
+        assert!(output.status.is_revert());
+    }
+
+    #[test]
+    fn test_static_call_violation_becomes_exceptional_halt() {
+        let output = TempoPrecompileError::StaticCallNotAllowed
+            .into_precompile_result(0, 123)
+            .expect("static-call violation should be a frame-local halt");
+
+        assert!(matches!(
+            output.status,
+            revm::precompile::PrecompileStatus::Halt(PrecompileHalt::Other(_))
+        ));
+        assert!(output.bytes.is_empty());
+        assert_eq!(output.reservoir, 123);
+    }
+
+    #[test]
+    fn test_encode_precompile_result_trait_success() {
+        let result: Result<u64> = Ok(42);
+        let precompile_result = result.encode_precompile_result(0, 0, |val| {
+            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
+        });
+
+        let output = precompile_result.expect("success should be Ok");
+        assert!(output.status.is_success());
     }
 
     #[test]

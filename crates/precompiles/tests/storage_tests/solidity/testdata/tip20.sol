@@ -33,8 +33,8 @@ contract TIP20 {
     string public name;
     string public symbol;
     string public currency;
-    // Unused slot, kept for storage layout compatibility
-    bytes32 public domainSeparator;
+    /// Token logo URI (TIP-1026, reuses the previously-unused `domainSeparator` slot)
+    string public logoUri;
     address public quoteToken;
     address public nextQuoteToken;
     uint64 public transferPolicyId;

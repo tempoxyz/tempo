@@ -2,10 +2,15 @@
 name = "tempo-primitives"
 description = "Tempo primitive types"
 
-version = "1.6.0"
+version = "1.11.0"
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish = true
 
 [lints]
@@ -22,10 +27,11 @@ reth-codecs = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
 # revm
-revm.workspace = true
+revm = { workspace = true, optional = true }
 
 # Alloy
 alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-evm = { workspace = true, optional = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -42,9 +48,9 @@ serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
 
 # Cryptography
-aws-lc-rs = { version = "1.16.2", optional = true, default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
+aws-lc-rs = { workspace = true, optional = true }
 base64.workspace = true
-ed25519-consensus = { workspace = true, default-features = false }
+commonware-cryptography.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2.workspace = true
 
@@ -62,27 +68,39 @@ alloy-primitives = { workspace = true, features = [
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 alloy-signer-local.workspace = true
-rand.workspace = true
+commonware-cryptography = { workspace = true, features = ["arbitrary"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+# `reth_codecs::add_arbitrary_tests` generates imports from rand 0.9 under this name.
+rand = "0.9"
+
 [features]
-default = ["std", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
+default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
+test-utils = [
+	"reth-codecs?/test-utils",
+	"reth-db-api?/test-utils",
+	"reth-ethereum-primitives?/test-utils",
+	"reth-primitives-traits?/test-utils",
+]
 std = [
 	"alloy-consensus/secp256k1",
 	"alloy-consensus/std",
+	"alloy-evm?/std",
 	"alloy-eips/std",
 	"alloy-primitives/std",
 	"alloy-rlp/std",
 	"alloy-serde?/std",
 	"dep:aws-lc-rs",
-	"ed25519-consensus/std",
 	"base64/std",
+	"commonware-cryptography/std",
 	"derive_more/std",
 	"once_cell/std",
 	"p256/std",
 	"reth-ethereum-primitives?/std",
 	"reth-primitives-traits?/std",
-	"revm/std",
+	"revm?/std",
+	"revm?/blst",
+	"revm?/c-kzg",
 	"serde/std",
 	"serde_json/std",
 	"sha2/std",
@@ -102,9 +120,10 @@ serde = [
 	"p256/serde",
 	"rand/serde",
 	"tracing-subscriber/serde",
-	"revm/serde",
+	"revm?/serde",
 	"tempo-contracts/serde",
 ]
+evm = ["dep:alloy-evm", "dep:revm"]
 reth-codec = [
 	"reth",
 	"serde",
@@ -129,13 +148,14 @@ arbitrary = [
 	"alloy-consensus/arbitrary",
 	"alloy-primitives/arbitrary",
 	"alloy-eips/arbitrary",
+	"commonware-cryptography/arbitrary",
 	"reth-codecs?/arbitrary",
 	"alloy-serde?/arbitrary",
 	"reth-ethereum-primitives?/arbitrary",
 	"reth-primitives-traits?/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
-	"revm/arbitrary",
+	"revm?/arbitrary",
 	"alloy-sol-types/arbitrary",
 ]
 rpc = [

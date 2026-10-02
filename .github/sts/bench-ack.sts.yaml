@@ -1,0 +1,8 @@
+# Allow the issue-comment benchmark dispatcher in Tempo to mint a short-lived
+# token for membership checks and benchmark request acknowledgements.
+subject_pattern: repo:tempoxyz@211589300/tempo@994992847:ref:refs/heads/.+
+permissions:
+  contents: read
+  issues: write
+  members: read
+  pull_requests: write

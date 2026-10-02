@@ -1,4 +1,5 @@
 target
+out-repro/
 
 scripts/logs
 scripts/data
@@ -7,8 +8,10 @@ scripts/data
 coverage/
 
 # Benchmarking artifacts
+.bench-tmp/
 contrib/bench/logs/
 report.json
+report.samples.ndjson.gz
 profile.json.gz
 
 .DS_Store
@@ -16,7 +19,6 @@ profile.json.gz
 .vscode
 **/.env
 **/.envrc
-!.envrc
 localnet/**
 
 .claude/
@@ -26,10 +28,10 @@ research.md
 plan.md
 
 # Docs
-tips/ref-impls/cache/
-tips/ref-impls/out/
-tips/ref-impls/*.log
-tips/ref-impls/soljson-latest.js
+tips/verify/cache/
+tips/verify/out/
+tips/verify/*.log
+tips/verify/soljson-latest.js
 
 _
 .vercel
@@ -39,3 +41,7 @@ _
 # LLVM coverage profraw files
 *.profraw
 __pycache__/
+.bench-tmp/
+
+# Amp orb portals
+.amp/portals/*

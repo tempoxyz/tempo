@@ -1,0 +1,28 @@
+[
+  {
+    "type": "constructor",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "bindEngine",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  }
+]

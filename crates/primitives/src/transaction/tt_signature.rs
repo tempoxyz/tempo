@@ -93,12 +93,30 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
+fn split_p256_signature_fields(
+    sig_data: &[u8; P256_SIGNATURE_LENGTH],
+) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
+    let (r, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (s, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (pub_key_x, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (pub_key_y, pre_hash) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    (r, s, pub_key_x, pub_key_y, pre_hash[0] != 0)
+}
+
 /// Primitive signature types that can be used standalone or within a Keychain signature.
 /// This enum contains only the base signature types: Secp256k1, P256, and WebAuthn.
 /// It does NOT support Keychain signatures to prevent recursion.
 ///
-/// Note: This enum uses custom RLP encoding via `to_bytes()` and does NOT derive Compact.
-/// The Compact encoding is handled at the parent struct level (e.g., KeyAuthorization).
+/// Custom RLP and Compact encoding writes signature bytes directly through
+/// [`Self::encode_bytes_into`], while decoding delegates to [`Self::from_bytes`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "camelCase"))]
@@ -141,20 +159,20 @@ impl PrimitiveSignature {
             return Err("Signature data too short: expected type identifier + signature data");
         }
 
-        let type_id = data[0];
-        let sig_data = &data[1..];
+        let (&type_id, sig_data) = data.split_first().expect("signature data length checked");
 
         match type_id {
             SIGNATURE_TYPE_P256 => {
-                if sig_data.len() != P256_SIGNATURE_LENGTH {
-                    return Err("Invalid P256 signature length");
-                }
+                let sig_data: &[u8; P256_SIGNATURE_LENGTH] = sig_data
+                    .try_into()
+                    .map_err(|_| "Invalid P256 signature length")?;
+                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data);
                 Ok(Self::P256(P256SignatureWithPreHash {
-                    r: B256::from_slice(&sig_data[0..32]),
-                    s: B256::from_slice(&sig_data[32..64]),
-                    pub_key_x: B256::from_slice(&sig_data[64..96]),
-                    pub_key_y: B256::from_slice(&sig_data[96..128]),
-                    pre_hash: sig_data[128] != 0,
+                    r: B256::from_slice(r),
+                    s: B256::from_slice(s),
+                    pub_key_x: B256::from_slice(pub_key_x),
+                    pub_key_y: B256::from_slice(pub_key_y),
+                    pre_hash,
                 }))
             }
             SIGNATURE_TYPE_WEBAUTHN => {
@@ -162,12 +180,22 @@ impl PrimitiveSignature {
                 if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
                     return Err("Invalid WebAuthn signature length");
                 }
+                let (webauthn_data, sig_data) = sig_data.split_at(len - 128);
+                let (r, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
+                let (s, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
+                let (pub_key_x, pub_key_y) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
                 Ok(Self::WebAuthn(WebAuthnSignature {
-                    r: B256::from_slice(&sig_data[len - 128..len - 96]),
-                    s: B256::from_slice(&sig_data[len - 96..len - 64]),
-                    pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
-                    pub_key_y: B256::from_slice(&sig_data[len - 32..]),
-                    webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
+                    r: B256::from_slice(r),
+                    s: B256::from_slice(s),
+                    pub_key_x: B256::from_slice(pub_key_x),
+                    pub_key_y: B256::from_slice(pub_key_y),
+                    webauthn_data: Bytes::copy_from_slice(webauthn_data),
                 }))
             }
 
@@ -181,37 +209,35 @@ impl PrimitiveSignature {
     /// - Secp256k1: encoded WITHOUT type identifier (65 bytes)
     /// - P256/WebAuthn: encoded WITH type identifier prefix
     pub fn to_bytes(&self) -> Bytes {
+        let mut bytes = Vec::with_capacity(self.encoded_length());
+        self.encode_bytes_into(&mut bytes);
+        Bytes::from(bytes)
+    }
+
+    /// Writes the raw signature bytes (the same bytes [`Self::to_bytes`] returns) into `out`
+    /// without allocating an intermediate buffer.
+    pub fn encode_bytes_into(&self, out: &mut dyn alloy_rlp::BufMut) {
         match self {
             Self::Secp256k1(sig) => {
                 // Backward compatibility: no type identifier for secp256k1
-                // Ensure exactly 65 bytes by using a fixed-size buffer
-                let sig_bytes = sig.as_bytes();
-                assert_eq!(
-                    sig_bytes.len(),
-                    SECP256K1_SIGNATURE_LENGTH,
-                    "Secp256k1 signature must be exactly 65 bytes"
-                );
-                Bytes::copy_from_slice(&sig_bytes)
+                let sig_bytes: [u8; SECP256K1_SIGNATURE_LENGTH] = sig.as_bytes();
+                out.put_slice(&sig_bytes);
             }
             Self::P256(p256_sig) => {
-                let mut bytes = Vec::with_capacity(1 + 129);
-                bytes.push(SIGNATURE_TYPE_P256);
-                bytes.extend_from_slice(p256_sig.r.as_slice());
-                bytes.extend_from_slice(p256_sig.s.as_slice());
-                bytes.extend_from_slice(p256_sig.pub_key_x.as_slice());
-                bytes.extend_from_slice(p256_sig.pub_key_y.as_slice());
-                bytes.push(if p256_sig.pre_hash { 1 } else { 0 });
-                Bytes::from(bytes)
+                out.put_u8(SIGNATURE_TYPE_P256);
+                out.put_slice(p256_sig.r.as_slice());
+                out.put_slice(p256_sig.s.as_slice());
+                out.put_slice(p256_sig.pub_key_x.as_slice());
+                out.put_slice(p256_sig.pub_key_y.as_slice());
+                out.put_u8(if p256_sig.pre_hash { 1 } else { 0 });
             }
             Self::WebAuthn(webauthn_sig) => {
-                let mut bytes = Vec::with_capacity(1 + webauthn_sig.webauthn_data.len() + 128);
-                bytes.push(SIGNATURE_TYPE_WEBAUTHN);
-                bytes.extend_from_slice(&webauthn_sig.webauthn_data);
-                bytes.extend_from_slice(webauthn_sig.r.as_slice());
-                bytes.extend_from_slice(webauthn_sig.s.as_slice());
-                bytes.extend_from_slice(webauthn_sig.pub_key_x.as_slice());
-                bytes.extend_from_slice(webauthn_sig.pub_key_y.as_slice());
-                Bytes::from(bytes)
+                out.put_u8(SIGNATURE_TYPE_WEBAUTHN);
+                out.put_slice(&webauthn_sig.webauthn_data);
+                out.put_slice(webauthn_sig.r.as_slice());
+                out.put_slice(webauthn_sig.s.as_slice());
+                out.put_slice(webauthn_sig.pub_key_x.as_slice());
+                out.put_slice(webauthn_sig.pub_key_y.as_slice());
             }
         }
     }
@@ -322,19 +348,27 @@ impl Default for PrimitiveSignature {
 
 impl alloy_rlp::Encodable for PrimitiveSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let bytes = self.to_bytes();
-        alloy_rlp::Encodable::encode(&bytes, out);
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .encode(out);
+        self.encode_bytes_into(out);
     }
 
     fn length(&self) -> usize {
-        self.to_bytes().length()
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
     }
 }
 
 impl alloy_rlp::Decodable for PrimitiveSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -523,7 +557,8 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
 
 /// AA transaction signature supporting multiple signature schemes
 ///
-/// Note: Uses custom Compact implementation that delegates to `to_bytes()` / `from_bytes()`.
+/// Custom RLP and Compact encoding writes signature bytes directly through
+/// [`Self::encode_bytes_into`], while decoding delegates to [`Self::from_bytes`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged, rename_all = "camelCase"))]
@@ -597,18 +632,28 @@ impl TempoSignature {
     pub fn to_bytes(&self) -> Bytes {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.to_bytes(),
+            Self::Keychain(_) => {
+                let mut bytes = Vec::with_capacity(self.encoded_length());
+                self.encode_bytes_into(&mut bytes);
+                Bytes::from(bytes)
+            }
+        }
+    }
+
+    /// Writes the raw signature bytes (the same bytes [`Self::to_bytes`] returns) into `out`
+    /// without allocating an intermediate buffer.
+    pub fn encode_bytes_into(&self, out: &mut dyn alloy_rlp::BufMut) {
+        match self {
+            Self::Primitive(primitive_sig) => primitive_sig.encode_bytes_into(out),
             Self::Keychain(keychain_sig) => {
                 // Format: type_byte | user_address (20 bytes) | inner_signature
-                let inner_bytes = keychain_sig.signature.to_bytes();
-                let mut bytes = Vec::with_capacity(1 + 20 + inner_bytes.len());
                 let type_byte = match keychain_sig.version {
                     KeychainVersion::V1 => SIGNATURE_TYPE_KEYCHAIN,
                     KeychainVersion::V2 => SIGNATURE_TYPE_KEYCHAIN_V2,
                 };
-                bytes.push(type_byte);
-                bytes.extend_from_slice(keychain_sig.user_address.as_slice());
-                bytes.extend_from_slice(&inner_bytes);
-                Bytes::from(bytes)
+                out.put_u8(type_byte);
+                out.put_slice(keychain_sig.user_address.as_slice());
+                keychain_sig.signature.encode_bytes_into(out);
             }
         }
     }
@@ -723,19 +768,27 @@ impl Default for TempoSignature {
 
 impl alloy_rlp::Encodable for TempoSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let bytes = self.to_bytes();
-        alloy_rlp::Encodable::encode(&bytes, out);
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .encode(out);
+        self.encode_bytes_into(out);
     }
 
     fn length(&self) -> usize {
-        self.to_bytes().length()
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
     }
 }
 
 impl alloy_rlp::Decodable for TempoSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -751,10 +804,10 @@ impl From<Signature> for TempoSignature {
 
 /// Derives a P256 address from public key coordinates
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    let hash = keccak256([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
-
-    // Take last 20 bytes as address
-    Address::from_slice(&hash[12..])
+    let mut encoded_key = [0u8; 64];
+    encoded_key[..32].copy_from_slice(pub_key_x.as_slice());
+    encoded_key[32..].copy_from_slice(pub_key_y.as_slice());
+    Address::from_raw_public_key(&encoded_key)
 }
 
 /// Concatenates byte slices into a fixed-size array without heap allocations.
@@ -972,11 +1025,14 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::hex;
+    use alloy_rlp::{Decodable, Encodable};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use p256::{
         ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,
     };
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
@@ -1011,6 +1067,145 @@ mod tests {
             format!("{{\"type\":\"webauthn.get\",\"challenge\":\"{challenge}\"}}").as_bytes(),
         );
         data
+    }
+
+    fn assert_rlp_encoding<T: Encodable + Decodable + PartialEq + core::fmt::Debug>(
+        signature: &T,
+        bytes: &Bytes,
+    ) {
+        let expected = alloy_rlp::encode(bytes);
+        assert_eq!(signature.length(), expected.len());
+
+        let mut encoded = vec![0xaa, 0xbb];
+        signature.encode(&mut encoded);
+        assert_eq!(&encoded[..2], &[0xaa, 0xbb]);
+        assert_eq!(&encoded[2..], expected);
+
+        encoded.extend_from_slice(&[0xcc, 0xdd]);
+        let mut input = &encoded[2..];
+        assert_eq!(&T::decode(&mut input).unwrap(), signature);
+        assert_eq!(input, &[0xcc, 0xdd]);
+    }
+
+    proptest! {
+        #[test]
+        fn p256_address_matches_hash_and_truncate(x in any::<[u8; 32]>(), y in any::<[u8; 32]>()) {
+            let hash = keccak256([x, y].concat());
+            prop_assert_eq!(derive_p256_address(&B256::from(x), &B256::from(y)), Address::from_slice(&hash[12..]));
+        }
+
+        #[test]
+        fn proptest_primitive_signature_rlp_encoding(signature in arb::<PrimitiveSignature>()) {
+            let bytes = signature.to_bytes();
+            let mut output = vec![0; signature.encoded_length()];
+            let mut remaining = output.as_mut_slice();
+            signature.encode_bytes_into(&mut remaining);
+            prop_assert!(remaining.is_empty());
+            prop_assert_eq!(output.as_slice(), bytes.as_ref());
+            prop_assert_eq!(PrimitiveSignature::from_bytes(&output).unwrap(), signature.clone());
+            assert_rlp_encoding(&signature, &bytes);
+        }
+
+        #[test]
+        fn proptest_tempo_signature_rlp_encoding(signature in arb::<TempoSignature>()) {
+            let bytes = signature.to_bytes();
+            let mut output = vec![0; signature.encoded_length()];
+            let mut remaining = output.as_mut_slice();
+            signature.encode_bytes_into(&mut remaining);
+            prop_assert!(remaining.is_empty());
+            prop_assert_eq!(output.as_slice(), bytes.as_ref());
+            prop_assert_eq!(TempoSignature::from_bytes(&output).unwrap(), signature.clone());
+            assert_rlp_encoding(&signature, &bytes);
+        }
+    }
+
+    #[test]
+    fn test_signature_encoding_layout_and_webauthn_boundaries() {
+        let fields = [
+            B256::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+            B256::repeat_byte(0x33),
+            B256::repeat_byte(0x44),
+        ];
+        let [r, s, pub_key_x, pub_key_y] = fields;
+        let field_bytes = fields.concat();
+        let mut cases = Vec::new();
+        for parity in [false, true] {
+            let signature =
+                Signature::new(U256::from_be_bytes(r.0), U256::from_be_bytes(s.0), parity);
+            let mut expected = field_bytes[..64].to_vec();
+            expected.push(27 + u8::from(parity));
+            cases.push((PrimitiveSignature::Secp256k1(signature), expected));
+        }
+        for pre_hash in [false, true] {
+            let mut expected = vec![SIGNATURE_TYPE_P256];
+            expected.extend_from_slice(&field_bytes);
+            expected.push(u8::from(pre_hash));
+            cases.push((
+                PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    r,
+                    s,
+                    pub_key_x,
+                    pub_key_y,
+                    pre_hash,
+                }),
+                expected,
+            ));
+        }
+        // WebAuthn payloads cross 255 bytes at data length 127, or 106 inside a keychain.
+        for len in [
+            0,
+            1,
+            105,
+            106,
+            107,
+            126,
+            127,
+            128,
+            MAX_WEBAUTHN_SIGNATURE_LENGTH - 128,
+        ] {
+            let data = vec![0x55; len];
+            let mut expected = vec![SIGNATURE_TYPE_WEBAUTHN];
+            expected.extend_from_slice(&data);
+            expected.extend_from_slice(&field_bytes);
+            cases.push((
+                PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                    r,
+                    s,
+                    pub_key_x,
+                    pub_key_y,
+                    webauthn_data: data.into(),
+                }),
+                expected,
+            ));
+        }
+
+        let user = Address::repeat_byte(0x66);
+        for (primitive, expected) in cases {
+            assert_eq!(primitive.to_bytes().as_ref(), expected);
+            assert_rlp_encoding(&primitive, &Bytes::copy_from_slice(&expected));
+            for (signature, type_byte) in [
+                (TempoSignature::Primitive(primitive.clone()), None),
+                (
+                    TempoSignature::Keychain(KeychainSignature::new_v1(user, primitive.clone())),
+                    Some(SIGNATURE_TYPE_KEYCHAIN),
+                ),
+                (
+                    TempoSignature::Keychain(KeychainSignature::new(user, primitive.clone())),
+                    Some(SIGNATURE_TYPE_KEYCHAIN_V2),
+                ),
+            ] {
+                let mut bytes = Vec::new();
+                if let Some(type_byte) = type_byte {
+                    bytes.push(type_byte);
+                    bytes.extend_from_slice(user.as_slice());
+                }
+                bytes.extend_from_slice(&expected);
+                assert_eq!(signature.to_bytes().as_ref(), bytes);
+                assert_eq!(signature.encoded_length(), bytes.len());
+                assert_rlp_encoding(&signature, &Bytes::from(bytes));
+            }
+        }
     }
 
     #[test]

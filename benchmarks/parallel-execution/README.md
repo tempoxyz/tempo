@@ -3,6 +3,13 @@
 Experimental implementation, disabled by default. This is **not** evidence that
 execution is no longer the bottleneck in a live Tempo node.
 
+The scheduler has been ported from Tempo 1.6 onto current main (Tempo 1.14,
+Reth 2.7, revm 43). Earlier measurements below describe the old base. Current-main
+performance must be measured again with the GitHub workflows. See
+`main-port-validation.json` for port checks. Fee arithmetic rebasing and call-body
+reuse currently fall back to full ordered replay under T7+ gas-credit rules;
+complete speculative results can still be reused after read validation.
+
 Enable node validation and payload building with:
 
 ```sh

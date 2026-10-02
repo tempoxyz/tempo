@@ -1,11 +1,12 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
 use crate::{
-    error::Result,
-    stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
-    storage::{Handler, Mapping},
+    error::{Result, TempoPrecompileError},
+    stablecoin_dex::{IStablecoinDEX, Order, TICK_SPACING},
+    storage::{Handler, Mapping, StorageCtx},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
+use std::ops::Deref;
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
@@ -27,6 +28,78 @@ pub enum RoundingDirection {
     Down,
     /// Round up (ceiling division) - favors protocol when user deposits funds
     Up,
+}
+
+/// Per-order result of stepping a trade across one resting order. Shared by the
+/// swap settlement and the per-order quote so both walk the book identically.
+pub struct OrderStep {
+    /// Base amount filled from this order (`<= order.remaining()`). A value
+    /// strictly below `remaining` means this order terminates the trade.
+    pub fill_amount: u128,
+    /// Amount accumulated into the running total for this fill: taker output for
+    /// exact-in trades, taker input for exact-out trades.
+    pub accumulate: u128,
+    /// Input (exact-in) or output (exact-out) left after fully consuming this
+    /// order. Only meaningful on a full fill.
+    pub next_amount: u128,
+}
+
+/// How the current resting order is consumed by [`walk_resting_orders`].
+pub(crate) enum Fill {
+    /// The order terminates the trade; `u128` is the base amount filled.
+    Partial(u128),
+    /// The order is fully consumed and the walk continues to the next order.
+    Full,
+}
+
+/// Walks resting orders starting at `order`, applying the pure per-order
+/// arithmetic `step` and delegating settlement and advancement to `settle`,
+/// until `amount` (input for exact-in, output for exact-out) is exhausted.
+/// Returns the running total (output for exact-in, input for exact-out).
+///
+/// This is the single traversal shared by swap execution and quotes: the swap
+/// passes a mutating `settle` that fills orders and returns the next one, while
+/// the quote passes a read-only `settle` that only advances the cursor, so both
+/// price a trade identically.
+pub(crate) fn walk_resting_orders(
+    mut order: Order,
+    mut amount: u128,
+    is_bid: bool,
+    step: impl Fn(u128, &Order, bool) -> Option<OrderStep>,
+    mut settle: impl FnMut(Order, Fill) -> Result<Option<Order>>,
+) -> Result<u128> {
+    let mut total: u128 = 0;
+
+    while amount > 0 {
+        let remaining = order.remaining();
+        let s = step(amount, &order, is_bid).ok_or(TempoPrecompileError::under_overflow())?;
+        // Preserve historical settlement-before-overflow ordering for replay gas.
+        if s.fill_amount < remaining {
+            // Partial fill terminates the trade.
+            settle(order, Fill::Partial(s.fill_amount))?;
+            total = total
+                .checked_add(s.accumulate)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            break;
+        }
+
+        let next = settle(order, Fill::Full)?;
+        total = total
+            .checked_add(s.accumulate)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        match next {
+            Some(next) => order = next,
+            None => {
+                if s.next_amount > 0 {
+                    return Err(StablecoinDEXError::insufficient_liquidity().into());
+                }
+                break;
+            }
+        }
+        amount = s.next_amount;
+    }
+
+    Ok(total)
 }
 
 /// Convert base token amount to quote token amount at a given tick.
@@ -85,29 +158,151 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
     result.try_into().ok()
 }
 
+/// Amount the taker receives for filling `fill_amount` base of a resting order
+/// (zero-sum with the maker): selling base into a bid yields quote rounded down,
+/// buying base from an ask yields the base amount exactly.
+///
+/// Used by the shared per-order step arithmetic so quote and swap compute the
+/// taker output identically.
+pub fn taker_output(fill_amount: u128, tick: i16, is_bid: bool) -> Option<u128> {
+    if is_bid {
+        base_to_quote(fill_amount, tick, RoundingDirection::Down)
+    } else {
+        Some(fill_amount)
+    }
+}
+
+/// Per-order arithmetic for an exact-input trade. Pure: depends only on the
+/// order's `remaining`, `tick`, and side. The caller compares `fill_amount`
+/// against `remaining` to decide whether the order is partially or fully consumed.
+///
+/// NOTE: Fill arithmetic uses the route's `is_bid`, while taker payout uses `order.is_bid()`.
+/// They are equal for valid books, but can differ in some Moderato testnet DEX books whose
+/// corrupted linked lists contain dangling pointers to missing order state ("ghost orders").
+pub fn step_exact_in(amount_in: u128, order: &Order, is_bid: bool) -> Option<OrderStep> {
+    let (remaining, tick) = (order.remaining(), order.tick());
+    let (fill_amount, next_amount) = if is_bid {
+        // Selling base: input is base, fill in base.
+        (
+            amount_in.min(remaining),
+            amount_in.saturating_sub(remaining),
+        )
+    } else {
+        // Buying base: input is quote, convert to base (round down, favors protocol).
+        let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
+        let next_amount = if base_out > remaining {
+            // Quote consumed = what the maker receives, rounded up (zero-sum with maker).
+            let quote_needed = base_to_quote(remaining, tick, RoundingDirection::Up)?;
+            amount_in.checked_sub(quote_needed)?
+        } else {
+            0
+        };
+        (base_out.min(remaining), next_amount)
+    };
+
+    Some(OrderStep {
+        fill_amount,
+        accumulate: taker_output(fill_amount, tick, order.is_bid())?,
+        next_amount,
+    })
+}
+
+/// Per-order arithmetic for an exact-output trade. Pure: depends only on the
+/// order's `remaining`, `tick`, and side.
+///
+/// NOTE: Output carried after a full fill uses `order.is_bid()` for the same
+/// Moderato compatibility reasons described in [`step_exact_in`].
+pub fn step_exact_out(amount_out: u128, order: &Order, is_bid: bool) -> Option<OrderStep> {
+    let (remaining, tick) = (order.remaining(), order.tick());
+    let (fill_amount, accumulate, demand) = if is_bid {
+        // Receiving quote: round up the base needed to cover the exact output.
+        let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
+        let fill_amount = base_needed.min(remaining);
+        (fill_amount, fill_amount, base_needed)
+    } else {
+        // Receiving base: input is quote the maker receives, rounded up (zero-sum).
+        let fill_amount = amount_out.min(remaining);
+        let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)?;
+        (fill_amount, amount_in, amount_out)
+    };
+
+    // The trade carries over only when demand strictly exceeds this order: for a
+    // bid that is the base needed to cover the output, for an ask the output
+    // itself. The carried amount is the output still owed after this full fill.
+    let next_amount = if demand > remaining {
+        let amount_out_received = taker_output(remaining, tick, order.is_bid())?;
+        amount_out.checked_sub(amount_out_received)?
+    } else {
+        0
+    };
+
+    Some(OrderStep {
+        fill_amount,
+        accumulate,
+        next_amount,
+    })
+}
+
 /// Lowest representable scaled price (`PRICE_SCALE + MIN_TICK`).
 pub(crate) const MIN_PRICE: u32 = 98_000;
 /// Highest representable scaled price (`PRICE_SCALE + MAX_TICK`).
 pub(crate) const MAX_PRICE: u32 = 102_000;
 
+/// The packed linked-list fields in the first storage slot of [`TickLevel`].
+#[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TickLevelLinks {
+    /// Order ID of the first order at this tick (0 if empty).
+    pub head: u128,
+    /// Order ID of the last order at this tick (0 if empty).
+    pub tail: u128,
+}
+
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
 #[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TickLevel {
-    /// Order ID of the first order at this tick (0 if empty)
-    pub head: u128,
-    /// Order ID of the last order at this tick (0 if empty)
-    pub tail: u128,
+    /// Live order links packed into the first storage slot.
+    pub links: TickLevelLinks,
     /// Total liquidity available at this tick level
     pub total_liquidity: u128,
+}
+
+/// 1-based ID assigned to an orderbook's `book_keys` vector index; zero means unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BookId(u32);
+
+impl BookId {
+    pub(crate) const UNSET: Self = Self(0);
+
+    pub(crate) fn from_index(index: u32) -> Self {
+        Self(index + 1)
+    }
+
+    /// Returns the zero-based `book_keys` vector index, if this ID is set.
+    pub(crate) fn index(self) -> Option<u32> {
+        self.0.checked_sub(1)
+    }
+}
+
+impl From<u32> for BookId {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+impl Deref for BookId {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
         Self {
-            head: 0,
-            tail: 0,
+            links: TickLevelLinks::default(),
             total_liquidity: 0,
         }
     }
@@ -115,15 +310,14 @@ impl TickLevel {
     /// Creates a tick level with specific values
     pub fn with_values(head: u128, tail: u128, total_liquidity: u128) -> Self {
         Self {
-            head,
-            tail,
+            links: TickLevelLinks { head, tail },
             total_liquidity,
         }
     }
 
     /// Returns true if this tick level has no orders
     pub fn is_empty(&self) -> bool {
-        self.head == 0 && self.tail == 0
+        self.links.head == 0 && self.links.tail == 0
     }
 
     /// Returns true if this tick level has orders
@@ -132,11 +326,49 @@ impl TickLevel {
     }
 }
 
+// `Storable` also generates `Handler<TickLevel>` for raw two-slot access. These
+// inherent methods intentionally take precedence at call sites so normal T12 access
+// uses only `links`; tests use UFCS when they need to inspect the stale aggregate.
+impl TickLevelHandler {
+    /// Reads only the live linked-list slot at T12 while preserving the legacy layout below T12.
+    #[inline]
+    pub(crate) fn read(&self) -> Result<TickLevel> {
+        if StorageCtx.spec().is_t12() {
+            Ok(TickLevel {
+                links: self.links.read()?,
+                total_liquidity: 0,
+            })
+        } else {
+            <Self as Handler<TickLevel>>::read(self)
+        }
+    }
+
+    /// Writes only the live linked-list slot at T12 while preserving the legacy layout below T12.
+    #[inline]
+    pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
+        if StorageCtx.spec().is_t12() {
+            self.links.write(level.links)
+        } else {
+            <Self as Handler<TickLevel>>::write(self, level)
+        }
+    }
+
+    /// Deletes only the live linked-list slot at T12 while preserving the stale aggregate.
+    #[inline]
+    pub(crate) fn delete(&mut self) -> Result<()> {
+        if StorageCtx.spec().is_t12() {
+            self.links.delete()
+        } else {
+            <Self as Handler<TickLevel>>::delete(self)
+        }
+    }
+}
+
 impl From<TickLevel> for IStablecoinDEX::PriceLevel {
     fn from(value: TickLevel) -> Self {
         Self {
-            head: value.head,
-            tail: value.tail,
+            head: value.links.head,
+            tail: value.links.tail,
             totalLiquidity: value.total_liquidity,
         }
     }
@@ -144,27 +376,29 @@ impl From<TickLevel> for IStablecoinDEX::PriceLevel {
 
 /// Orderbook for token pair with price-time priority
 /// Uses tick-based pricing with bitmaps for price discovery
-#[derive(Storable, Default)]
+#[derive(Storable)]
 pub struct Orderbook {
     /// Base token address
     pub base: Address,
     /// Quote token address
     pub quote: Address,
     /// Bid orders by tick
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     bids: Mapping<i16, TickLevel>,
     /// Ask orders by tick
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     asks: Mapping<i16, TickLevel>,
-    /// Best bid tick for highest bid price
-    pub best_bid_tick: i16,
-    /// Best ask tick for lowest ask price
-    pub best_ask_tick: i16,
-    #[allow(dead_code)]
+    /// Best bid tick for highest bid price.
+    pub(crate) best_bid_tick: i16,
+    /// Best ask tick for lowest ask price.
+    pub(crate) best_ask_tick: i16,
+    /// (+T8) 1-based book ID; zero means unset.
+    pub(crate) book_id: u32,
+    #[expect(dead_code)]
     /// Mapping of tick index to bid bitmap for price discovery
     bid_bitmap: Mapping<i16, U256>,
     /// Mapping of tick index to ask bitmap for price discovery
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     ask_bitmap: Mapping<i16, U256>,
 }
 
@@ -176,8 +410,26 @@ impl Orderbook {
             quote,
             best_bid_tick: i16::MIN,
             best_ask_tick: i16::MAX,
-            ..Default::default()
+            book_id: *BookId::UNSET,
+            bids: Mapping::default(),
+            asks: Mapping::default(),
+            bid_bitmap: Mapping::default(),
+            ask_bitmap: Mapping::default(),
         }
+    }
+
+    /// Creates a new orderbook with its zero-based `book_keys` vector index.
+    pub fn new_with_index(base: Address, quote: Address, index: u32) -> Self {
+        let id = BookId::from_index(index);
+        Self {
+            book_id: *id,
+            ..Self::new(base, quote)
+        }
+    }
+
+    /// Returns this orderbook's 1-based book ID.
+    pub(crate) fn id(&self) -> BookId {
+        BookId::from(self.book_id)
     }
 
     /// Returns true if this orderbook is initialized
@@ -438,7 +690,7 @@ pub fn compute_book_key(base: Address, quote: Address) -> B256 {
 
 /// Convert relative tick to scaled price
 pub fn tick_to_price(tick: i16) -> u32 {
-    (PRICE_SCALE as i32 + tick as i32) as u32
+    (PRICE_SCALE as i32 + i32::from(tick)) as u32
 }
 
 /// Converts a scaled price back to a relative tick.
@@ -467,19 +719,111 @@ pub fn validate_tick_spacing(tick: i16) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::TempoPrecompileError;
+    use crate::{
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
     use rand_08::Rng;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use alloy::primitives::address;
 
     #[test]
+    fn test_walk_settles_before_accumulation_overflow() {
+        for second_remaining in [2, 3] {
+            let mut first = Order::new_ask(1, Address::ZERO, B256::ZERO, 1, 0);
+            first.next = 2;
+            let mut second = Order::new_ask(2, Address::ZERO, B256::ZERO, second_remaining, 0);
+            second.prev = 1;
+            let mut settled = Vec::new();
+
+            let result = walk_resting_orders(
+                first,
+                3,
+                false,
+                |amount, order, _| {
+                    let remaining = order.remaining();
+                    Some(OrderStep {
+                        fill_amount: amount.min(remaining),
+                        accumulate: if remaining == 1 { u128::MAX } else { 1 },
+                        next_amount: amount.saturating_sub(remaining),
+                    })
+                },
+                |order, fill| {
+                    settled.push(order.order_id());
+                    match (order.order_id(), fill) {
+                        (1, Fill::Full) => Ok(Some(second)),
+                        (2, Fill::Full | Fill::Partial(_)) => Ok(None),
+                        _ => unreachable!(),
+                    }
+                },
+            );
+
+            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+            assert_eq!(settled, [1, 2]);
+        }
+    }
+
+    #[test]
     fn test_tick_level_creation() {
         let level = TickLevel::new();
-        assert_eq!(level.head, 0);
-        assert_eq!(level.tail, 0);
+        assert_eq!(level.links.head, 0);
+        assert_eq!(level.links.tail, 0);
         assert_eq!(level.total_liquidity, 0);
         assert!(level.is_empty());
         assert!(!level.has_liquidity());
+    }
+
+    #[test]
+    fn test_tick_level_handler_io() -> eyre::Result<()> {
+        let slot = U256::from(7);
+        let address = Address::random();
+        let legacy = TickLevel::with_values(11, 22, 33);
+        let updated = TickLevel::with_values(44, 55, 0);
+
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T3,
+            TempoHardfork::T10,
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+        ] {
+            let is_t12 = spec.is_t12();
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)
+            })?;
+
+            storage.reset_counters();
+            let level =
+                StorageCtx::enter(&mut storage, || TickLevelHandler::new(slot, address).read())?;
+            assert_eq!(level.links, legacy.links);
+            assert_eq!(level.total_liquidity, if is_t12 { 0 } else { 33 });
+            assert_eq!(storage.counter_sload(), if is_t12 { 1 } else { 2 });
+            assert_eq!(storage.counter_sstore(), 0);
+
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                TickLevelHandler::new(slot, address).write(updated)
+            })?;
+            assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
+            assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
+
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                TickLevelHandler::new(slot, address).delete()
+            })?;
+            assert_eq!(storage.counter_sload(), 0);
+            assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
+
+            let stored = StorageCtx::enter(&mut storage, || {
+                Handler::<TickLevel>::read(&TickLevelHandler::new(slot, address))
+            })?;
+            assert_eq!(stored.links, TickLevelLinks::default());
+            assert_eq!(stored.total_liquidity, if is_t12 { 33 } else { 0 });
+        }
+
+        Ok(())
     }
 
     #[test]
@@ -539,7 +883,7 @@ mod tests {
         let result = price_to_tick(MIN_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MIN_TICK);
-        assert_eq!(MIN_PRICE, (PRICE_SCALE as i32 + MIN_TICK as i32) as u32);
+        assert_eq!(MIN_PRICE, (PRICE_SCALE as i32 + i32::from(MIN_TICK)) as u32);
     }
 
     #[test]
@@ -547,7 +891,7 @@ mod tests {
         let result = price_to_tick(MAX_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MAX_TICK);
-        assert_eq!(MAX_PRICE, (PRICE_SCALE as i32 + MAX_TICK as i32) as u32);
+        assert_eq!(MAX_PRICE, (PRICE_SCALE as i32 + i32::from(MAX_TICK)) as u32);
     }
 
     #[test]
@@ -1103,9 +1447,9 @@ mod tests {
             let base_amount = 33u128;
             let tick = 100i16;
 
-            let price = tick_to_price(tick) as u128;
+            let price = u128::from(tick_to_price(tick));
             let numerator = base_amount * price;
-            let has_remainder = !numerator.is_multiple_of(PRICE_SCALE as u128);
+            let has_remainder = !numerator.is_multiple_of(u128::from(PRICE_SCALE));
 
             let quote_down = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
             let quote_up = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
@@ -1141,8 +1485,8 @@ mod tests {
             let quote_amount = 33u128;
             let tick = 100i16;
 
-            let price = tick_to_price(tick) as u128;
-            let numerator = quote_amount * PRICE_SCALE as u128;
+            let price = u128::from(tick_to_price(tick));
+            let numerator = quote_amount * u128::from(PRICE_SCALE);
             let has_remainder = !numerator.is_multiple_of(price);
 
             let base_down = quote_to_base(quote_amount, tick, RoundingDirection::Down).unwrap();
@@ -1212,11 +1556,11 @@ mod tests {
 
         #[test]
         fn test_quote_to_base_large_amount_no_overflow() {
-            let large_quote_amount: u128 = (u128::MAX / PRICE_SCALE as u128) + 1;
+            let large_quote_amount: u128 = (u128::MAX / u128::from(PRICE_SCALE)) + 1;
 
             assert!(
                 large_quote_amount
-                    .checked_mul(PRICE_SCALE as u128)
+                    .checked_mul(u128::from(PRICE_SCALE))
                     .is_none(),
                 "Test setup: this value should overflow u128 multiplication"
             );

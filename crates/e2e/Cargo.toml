@@ -3,8 +3,16 @@ name = "tempo-e2e"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
+
+[lib]
+test = false
 
 [dependencies]
 alloy = { workspace = true, features = [
@@ -31,36 +39,44 @@ commonware-utils.workspace = true
 itertools.workspace = true
 
 eyre.workspace = true
+futures.workspace = true
+rand_core.workspace = true
+
 reth-chainspec.workspace = true
 reth-db.workspace = true
+reth-downloaders.workspace = true
 reth-ethereum = { workspace = true, features = [
   "node",
   "rpc",
   "test-utils",
   "pool",
 ] }
+reth-config.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-node-metrics.workspace = true
+reth-prune-types.workspace = true
 reth-rpc-builder.workspace = true
+reth-stages.workspace = true
+reth-static-file.workspace = true
 
+tempfile.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-evm.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
-tempo-commonware-node.workspace = true
+tempo-consensus.workspace = true
 tempo-node.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 
-futures.workspace = true
-tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-commonware-consensus.workspace = true
 commonware-macros.workspace = true
 commonware-parallel.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }
+tempo-alloy.workspace = true
 tempo-eyre.workspace = true
 tempo-primitives.workspace = true
 tracing-subscriber.workspace = true
@@ -68,6 +84,7 @@ tracing-subscriber.workspace = true
 alloy-network.workspace = true
 
 rand_08.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true

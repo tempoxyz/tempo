@@ -18,6 +18,7 @@ mod sets;
 mod solidity;
 mod strings;
 mod structs;
+mod vecs;
 
 // -- TEST HELPERS ---------------------------------------------------------------------------------
 
@@ -69,6 +70,12 @@ pub(crate) fn test_address(byte: u8) -> Address {
     let mut bytes = [0u8; 20];
     bytes[19] = byte;
     Address::from(bytes)
+}
+
+/// Compute the i-th tail slot of a dynamic value (`String`/`Bytes`/`Vec`) whose
+/// base/length slot is `base_slot`. Solidity stores tail data at `keccak256(base_slot) + i`.
+pub(crate) fn dyn_tail_slot(base_slot: U256, i: u64) -> U256 {
+    U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0) + U256::from(i)
 }
 
 /// Helper to test store + load roundtrip

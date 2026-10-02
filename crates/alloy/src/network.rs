@@ -3,24 +3,26 @@ use std::fmt::Debug;
 use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
 use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_network::{
     BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkTransactionBuilder,
-    NetworkWallet, TransactionBuilder, TransactionBuilderError, UnbuiltTransactionError,
+    NetworkWallet, TransactionBuilder, TransactionBuilder7702, TransactionBuilderError,
+    UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
-use alloy_provider::fillers::{
-    ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
-};
+use alloy_provider::fillers::{ChainIdFiller, JoinFill, NonceFiller, RecommendedFillers};
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
+use crate::fillers::TempoGasFiller;
+
 /// Set of recommended fillers.
 ///
 /// `N` is a nonce filler.
-pub type TempoFillers<N> = JoinFill<N, JoinFill<GasFiller, ChainIdFiller>>;
+pub type TempoFillers<N> = JoinFill<N, JoinFill<TempoGasFiller, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
@@ -138,6 +140,16 @@ impl TransactionBuilder for TempoTransactionRequest {
     }
 }
 
+impl TransactionBuilder7702 for TempoTransactionRequest {
+    fn authorization_list(&self) -> Option<&Vec<SignedAuthorization>> {
+        TransactionBuilder7702::authorization_list(&self.inner)
+    }
+
+    fn set_authorization_list(&mut self, authorization_list: Vec<SignedAuthorization>) {
+        TransactionBuilder7702::set_authorization_list(&mut self.inner, authorization_list)
+    }
+}
+
 impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
         match ty {
@@ -157,22 +169,11 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn can_build(&self) -> bool {
-        NetworkTransactionBuilder::<Ethereum>::can_build(&self.inner) || self.can_build_aa()
+        self.output_tx_type_checked().is_some()
     }
 
     fn output_tx_type(&self) -> TempoTxType {
-        if !self.calls.is_empty()
-            || self.nonce_key.is_some()
-            || self.fee_token.is_some()
-            || !self.tempo_authorization_list.is_empty()
-            || self.key_authorization.is_some()
-            || self.key_id.is_some()
-            || self.key_type.is_some()
-            || self.key_data.is_some()
-            || self.valid_before.is_some()
-            || self.valid_after.is_some()
-            || self.fee_payer_signature.is_some()
-        {
+        if self.has_aa_fields() {
             TempoTxType::AA
         } else {
             match NetworkTransactionBuilder::<Ethereum>::output_tx_type(&self.inner) {
@@ -188,7 +189,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
         match self.output_tx_type() {
-            TempoTxType::AA => Some(TempoTxType::AA).filter(|_| self.can_build_aa()),
+            TempoTxType::AA => self.can_build_aa().then_some(TempoTxType::AA),
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
@@ -310,12 +311,14 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 mod tests {
     use super::*;
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
-    use alloy_eips::eip7702::SignedAuthorization;
     use alloy_primitives::{B256, Signature};
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
     use tempo_primitives::{
         SignatureType, TempoSignature,
-        transaction::{KeyAuthorization, PrimitiveSignature, TempoSignedAuthorization},
+        transaction::{
+            FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, PrimitiveSignature,
+            TempoSignedAuthorization,
+        },
     };
 
     #[test_case::test_case(
@@ -468,6 +471,35 @@ mod tests {
     }
 
     #[test]
+    fn can_build_respects_aa_fields() {
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::ZERO)),
+                gas_price: Some(1),
+                nonce: Some(0),
+                gas: Some(21_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(request.can_build());
+        assert!(request.clone().build_unsigned().is_ok());
+
+        request.nonce_key = Some(U256::ONE);
+        assert_eq!(request.output_tx_type(), TempoTxType::AA);
+        assert!(!request.can_build());
+        assert!(request.clone().build_unsigned().is_err());
+
+        request.inner.max_fee_per_gas = Some(1);
+        request.inner.max_priority_fee_per_gas = Some(0);
+        assert!(request.can_build());
+        assert!(matches!(
+            request.build_unsigned(),
+            Ok(TempoTypedTransaction::AA(_))
+        ));
+    }
+
+    #[test]
     fn output_tx_type_empty_request_is_not_aa() {
         let req = TempoTransactionRequest::default();
         assert_ne!(req.output_tx_type(), TempoTxType::AA);
@@ -521,7 +553,7 @@ mod tests {
     #[test]
     fn output_tx_type_fee_payer_signature_is_aa() {
         let req = TempoTransactionRequest {
-            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);

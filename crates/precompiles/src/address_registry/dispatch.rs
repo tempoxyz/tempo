@@ -1,9 +1,9 @@
 use crate::{
-    Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch_call, mutate, view,
+    Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
+use tempo_contracts::precompiles::IAddressRegistry;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 impl Precompile for AddressRegistry {
@@ -12,37 +12,37 @@ impl Precompile for AddressRegistry {
             return err;
         }
 
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[],
-            IAddressRegistryCalls::abi_decode,
             |call| match call {
-                // Registration
-                IAddressRegistryCalls::registerVirtualMaster(call) => {
-                    mutate(call, msg_sender, |s, c| self.register_virtual_master(s, c))
+                IAddressRegistry::IAddressRegistryCalls {
+                    // Registration
+                    registerVirtualMaster(call) => mutate(call, msg_sender, |sender, c| {
+                        self.register_virtual_master(sender, c)
+                    }),
+                    // View functions
+                    getMaster(call) => view(call, |c| {
+                        Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
+                    }),
+                    resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
+                    resolveVirtualAddress(call) => view(call, |c| {
+                        self.resolve_virtual_address(c.virtualAddr)
+                    }),
+                    // Pure functions
+                    isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
+                    decodeVirtualAddress(call) => view(call, |c| {
+                        let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
+                            Some((mid, tag)) => (true, mid, tag),
+                            None => (false, MasterId::ZERO, UserTag::ZERO),
+                        };
+                        Ok((is_virtual, master_id, user_tag).into())
+                    }),
+                    #[schedule(since = T5)]
+                    isImplicitlyApproved(call) => view(call, |c| {
+                        Ok(self.is_implicitly_approved(c.addr))
+                    })
                 }
-                // View functions
-                IAddressRegistryCalls::getMaster(call) => view(call, |c| {
-                    Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
-                }),
-                IAddressRegistryCalls::resolveRecipient(call) => {
-                    view(call, |c| self.resolve_recipient(c.to))
-                }
-                IAddressRegistryCalls::resolveVirtualAddress(call) => {
-                    view(call, |c| self.resolve_virtual_address(c.virtualAddr))
-                }
-                // Pure functions
-                IAddressRegistryCalls::isVirtualAddress(call) => {
-                    view(call, |c| Ok(c.addr.is_virtual()))
-                }
-                IAddressRegistryCalls::decodeVirtualAddress(call) => view(call, |c| {
-                    let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
-                        Some((mid, tag)) => (true, mid, tag),
-                        None => (false, MasterId::ZERO, UserTag::ZERO),
-                    };
-                    Ok((is_virtual, master_id, user_tag).into())
-                }),
-            },
+            }
         )
     }
 }
@@ -55,12 +55,13 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut registry = AddressRegistry::new();
 
@@ -72,6 +73,51 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_selector_gated_pre_t5() -> eyre::Result<()> {
+        // Pre-T5: the isImplicitlyApproved selector must be treated as unknown.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = AddressRegistry::new();
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: Address::ZERO,
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(result.is_revert());
+            assert!(
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
+                    .is_ok()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_precompile_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = AddressRegistry::new();
+
+            // Listed precompile returns true.
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS,
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert!(bool::abi_decode(&result.bytes).unwrap());
+
+            // Unlisted address returns false.
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: Address::random(),
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert!(!bool::abi_decode(&result.bytes).unwrap());
 
             Ok(())
         })

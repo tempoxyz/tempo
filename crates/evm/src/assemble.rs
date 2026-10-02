@@ -1,29 +1,90 @@
-use crate::{TempoEvmConfig, context::TempoBlockExecutionCtx};
-use alloy_consensus::{BlockBody, BlockHeader, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, proofs};
-use alloy_eips::{eip4895::Withdrawals, merge::BEACON_NONCE};
-use alloy_evm::block::BlockExecutionError;
+use crate::{
+    TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
+};
+use alloy_consensus::{TxReceipt, proofs};
+use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
 use alloy_primitives::{B256, Bloom};
 use rayon::{ThreadPool, prelude::*};
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
-use reth_revm::context::Block as _;
+use reth_evm_ethereum::EthBlockAssembler;
+use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
-use tempo_primitives::{Block, TempoHeader, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 
 /// Assembler for Tempo blocks.
 #[derive(Debug, Clone)]
 pub struct TempoBlockAssembler {
-    chain_spec: Arc<TempoChainSpec>,
+    pub(crate) inner: EthBlockAssembler<TempoChainSpec>,
     pub(crate) pool: Option<Arc<ThreadPool>>,
 }
 
 impl TempoBlockAssembler {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
-            chain_spec,
+            inner: EthBlockAssembler::new(chain_spec),
             pool: None,
         }
+    }
+
+    pub fn assemble_block(
+        &self,
+        input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
+        transactions_root: Option<B256>,
+        receipts_root: Option<B256>,
+        receipts_bloom: Option<Bloom>,
+    ) -> Result<tempo_primitives::Block, BlockExecutionError> {
+        let BlockAssemblerInput {
+            evm_env,
+            execution_ctx:
+                TempoBlockExecutionCtx {
+                    inner,
+                    general_gas_limit,
+                    shared_gas_limit,
+                    consensus_context,
+                    ..
+                },
+            parent,
+            transactions,
+            output,
+            bundle_state,
+            state_provider,
+            state_root,
+            block_access_list_hash,
+            ..
+        } = input;
+
+        let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
+
+        let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
+
+        // Delegate block building to the inner assembler
+        let block = self.inner.assemble_block(
+            BlockAssemblerInput::<
+                EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
+            >::new(
+                evm_env,
+                inner,
+                &parent,
+                transactions,
+                output,
+                bundle_state,
+                state_provider,
+                state_root,
+                block_access_list_hash,
+            ),
+            transactions_root,
+            receipts_root,
+            receipts_bloom,
+        )?;
+
+        Ok(block.map_header(|inner| TempoHeader {
+            inner,
+            general_gas_limit,
+            timestamp_millis_part,
+            shared_gas_limit,
+            consensus_context,
+        }))
     }
 }
 
@@ -70,103 +131,19 @@ fn calculate_roots(
 }
 
 impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
-    type Block = Block;
+    type Block = tempo_primitives::Block;
 
     fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
     ) -> Result<Self::Block, BlockExecutionError> {
-        let BlockAssemblerInput {
-            evm_env,
-            execution_ctx:
-                TempoBlockExecutionCtx {
-                    inner: ctx,
-                    general_gas_limit,
-                    shared_gas_limit,
-                    consensus_context,
-                    ..
-                },
-            parent,
-            transactions,
-            output,
-            state_root,
-            ..
-        } = input;
-
-        let timestamp = evm_env.block_env.timestamp().saturating_to();
-        let (transactions_root, receipts_root, logs_bloom) =
-            calculate_roots(&transactions, &output.receipts, self.pool.as_deref());
-
-        // Preserve EthBlockAssembler's fork-dependent header and body fields.
-        // Differential assembly tests below compare the complete upstream block.
-        let withdrawals = self
-            .chain_spec
-            .is_shanghai_active_at_timestamp(timestamp)
-            .then(|| Withdrawals::new(ctx.withdrawals.map(|w| w.into_owned()).unwrap_or_default()));
-        let withdrawals_root = withdrawals
-            .as_deref()
-            .map(|w| proofs::calculate_withdrawals_root(w));
-        let requests_hash = self
-            .chain_spec
-            .is_prague_active_at_timestamp(timestamp)
-            .then(|| output.requests.requests_hash());
-        let mut excess_blob_gas = None;
-        let mut block_blob_gas_used = None;
-        if self.chain_spec.is_cancun_active_at_timestamp(timestamp) {
-            block_blob_gas_used = Some(output.blob_gas_used);
-            excess_blob_gas = if self
-                .chain_spec
-                .is_cancun_active_at_timestamp(parent.timestamp())
-            {
-                parent.maybe_next_block_excess_blob_gas(
-                    self.chain_spec.blob_params_at_timestamp(timestamp),
-                )
-            } else {
-                Some(
-                    alloy_eips::eip7840::BlobParams::cancun()
-                        .next_block_excess_blob_gas_osaka(0, 0, 0),
-                )
-            };
+        if let Some(pool) = self.pool.as_deref() {
+            let (transactions, receipts, bloom) =
+                calculate_roots(&input.transactions, &input.output.receipts, Some(pool));
+            self.assemble_block(input, Some(transactions), Some(receipts), Some(bloom))
+        } else {
+            self.assemble_block(input, None, None, None)
         }
-        let inner = Header {
-            parent_hash: ctx.parent_hash,
-            ommers_hash: EMPTY_OMMER_ROOT_HASH,
-            beneficiary: evm_env.block_env.beneficiary(),
-            state_root,
-            transactions_root,
-            receipts_root,
-            withdrawals_root,
-            logs_bloom,
-            timestamp,
-            mix_hash: evm_env.block_env.prevrandao().unwrap_or_default(),
-            nonce: BEACON_NONCE.into(),
-            base_fee_per_gas: Some(evm_env.block_env.basefee()),
-            number: evm_env.block_env.number().saturating_to(),
-            gas_limit: evm_env.block_env.gas_limit(),
-            difficulty: evm_env.block_env.difficulty(),
-            gas_used: output.gas_used,
-            extra_data: ctx.extra_data,
-            parent_beacon_block_root: ctx.parent_beacon_block_root,
-            blob_gas_used: block_blob_gas_used,
-            excess_blob_gas,
-            requests_hash,
-            block_access_list_hash: None,
-            slot_number: None,
-        };
-        Ok(Block {
-            header: TempoHeader {
-                inner,
-                general_gas_limit,
-                timestamp_millis_part: evm_env.block_env.timestamp_millis_part,
-                shared_gas_limit,
-                consensus_context,
-            },
-            body: BlockBody {
-                transactions,
-                ommers: Default::default(),
-                withdrawals,
-            },
-        })
     }
 }
 
@@ -181,7 +158,6 @@ mod tests {
     use reth_primitives_traits::SealedHeader;
     use reth_storage_api::noop::NoopProvider;
     use revm::{context::BlockEnv, database::BundleState};
-    use std::collections::HashMap;
     use tempo_chainspec::spec::MODERATO;
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -233,6 +209,7 @@ mod tests {
                     ..Default::default()
                 },
                 timestamp_millis_part,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -260,12 +237,11 @@ mod tests {
                 withdrawals: None,
                 extra_data: Bytes::new(),
                 tx_count_hint: None,
+                slot_number: None,
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: None,
-            subblock_fee_recipients: HashMap::new(),
         };
 
         let tx = create_legacy_tx();
@@ -292,11 +268,11 @@ mod tests {
             &bundle_state,
             &state_provider,
             state_root,
+            None,
         );
 
-        let block = assembler
-            .assemble_block(input)
-            .expect("should assemble block");
+        let block =
+            BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
 
         // Verify block header fields
         assert_eq!(block.header.inner.number, block_number);
@@ -331,7 +307,7 @@ mod tests {
         let ctx = tempo_primitives::TempoConsensusContext {
             epoch: 1,
             view: 5,
-            proposer: tempo_primitives::ed25519::PublicKey::from_seed([0xab; 32]),
+            proposer: tempo_primitives::ed25519::PublicKey::from_seed(0xab),
             parent_view: 4,
         };
 
@@ -346,6 +322,7 @@ mod tests {
                     ..Default::default()
                 },
                 timestamp_millis_part: 0,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -370,12 +347,11 @@ mod tests {
                 withdrawals: None,
                 extra_data: Bytes::new(),
                 tx_count_hint: None,
+                slot_number: None,
             },
             general_gas_limit,
             shared_gas_limit,
-            validator_set: None,
             consensus_context: Some(ctx),
-            subblock_fee_recipients: HashMap::new(),
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -398,15 +374,97 @@ mod tests {
             &bundle_state,
             &state_provider,
             B256::ZERO,
+            None,
         );
 
-        let block = assembler
-            .assemble_block(input)
-            .expect("should assemble block");
+        let block =
+            BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
 
         assert_eq!(block.header.consensus_context, Some(ctx));
     }
 
+    #[test]
+    fn test_assemble_block_preserves_pre_amsterdam_bal_hash() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let assembler = TempoBlockAssembler::new(chainspec.clone());
+
+        let gas_limit = 30_000_000u64;
+        let general_gas_limit = 10_000_000u64;
+        let shared_gas_limit = 10_000_000u64;
+
+        let evm_env = EvmEnv {
+            block_env: TempoBlockEnv {
+                inner: BlockEnv {
+                    number: U256::from(1),
+                    timestamp: U256::from(1000),
+                    beneficiary: Address::repeat_byte(0x01),
+                    basefee: 1,
+                    gas_limit,
+                    ..Default::default()
+                },
+                timestamp_millis_part: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let parent_header = TempoHeader {
+            inner: alloy_consensus::Header {
+                gas_limit,
+                ..Default::default()
+            },
+            general_gas_limit,
+            shared_gas_limit,
+            ..Default::default()
+        };
+        let parent = SealedHeader::seal_slow(parent_header);
+
+        let execution_ctx = TempoBlockExecutionCtx {
+            transactions: &[],
+            inner: EthBlockExecutionCtx {
+                parent_hash: parent.hash(),
+                parent_beacon_block_root: Some(B256::ZERO),
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+                tx_count_hint: None,
+                slot_number: None,
+            },
+            general_gas_limit,
+            shared_gas_limit,
+            consensus_context: None,
+        };
+
+        let transactions = vec![create_legacy_tx()];
+        let output = BlockExecutionResult {
+            receipts: vec![create_test_receipt(21000)],
+            requests: Default::default(),
+            gas_used: 21000,
+            blob_gas_used: 0,
+        };
+
+        let bundle_state = BundleState::default();
+        let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
+        let input = BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
+            evm_env,
+            execution_ctx,
+            &parent,
+            transactions,
+            &output,
+            &bundle_state,
+            &state_provider,
+            B256::ZERO,
+            Some(B256::repeat_byte(0x42)),
+        );
+
+        let block =
+            BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
+
+        assert_eq!(
+            block.header.inner.block_access_list_hash,
+            Some(B256::repeat_byte(0x42))
+        );
+    }
     fn generated_assembly_data(count: usize) -> (Vec<TempoTxEnvelope>, Vec<TempoReceipt>) {
         use alloy_consensus::TxEip1559;
         use alloy_primitives::Log;
@@ -531,6 +589,7 @@ mod tests {
                                 ..Default::default()
                             },
                             timestamp_millis_part: 777,
+                            ..Default::default()
                         },
                         ..Default::default()
                     };
@@ -546,11 +605,12 @@ mod tests {
                         }])),
                         extra_data: Bytes::from_static(b"assembly-differential"),
                         tx_count_hint: Some(count),
+                        slot_number: None,
                     };
                     let consensus_context = tempo_primitives::TempoConsensusContext {
                         epoch: 9,
                         view: 13,
-                        proposer: tempo_primitives::ed25519::PublicKey::from_seed([0xab; 32]),
+                        proposer: tempo_primitives::ed25519::PublicKey::from_seed(0xab),
                         parent_view: 12,
                     };
                     let ctx = TempoBlockExecutionCtx {
@@ -558,31 +618,35 @@ mod tests {
                         inner: inner.clone(),
                         general_gas_limit: 50_000_000,
                         shared_gas_limit: 10_000_000,
-                        validator_set: None,
                         consensus_context: Some(consensus_context),
-                        subblock_fee_recipients: HashMap::new(),
                     };
                     let expected = reference
-                        .assemble_block(BlockAssemblerInput::<
-                            EthBlockExecutorFactory<
-                                TempoReceiptBuilder,
-                                TempoChainSpec,
-                                TempoEvmFactory,
-                            >,
-                        >::new(
-                            evm_env.clone(),
-                            inner,
-                            &eth_parent,
-                            transactions.clone(),
-                            &output,
-                            &bundle,
-                            &state_provider,
-                            B256::repeat_byte(0x51),
-                        ))
+                        .assemble_block(
+                            BlockAssemblerInput::<
+                                EthBlockExecutorFactory<
+                                    TempoReceiptBuilder,
+                                    TempoChainSpec,
+                                    TempoEvmFactory,
+                                >,
+                            >::new(
+                                evm_env.clone(),
+                                inner,
+                                &eth_parent,
+                                transactions.clone(),
+                                &output,
+                                &bundle,
+                                &state_provider,
+                                B256::repeat_byte(0x51),
+                                None,
+                            ),
+                            None,
+                            None,
+                            None,
+                        )
                         .unwrap();
-                    let actual = config
-                        .block_assembler
-                        .assemble_block(BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
+                    let actual = BlockAssembler::assemble_block(
+                        &config.block_assembler,
+                        BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
                             evm_env,
                             ctx,
                             &parent,
@@ -591,8 +655,10 @@ mod tests {
                             &bundle,
                             &state_provider,
                             B256::repeat_byte(0x51),
-                        ))
-                        .unwrap();
+                            None,
+                        ),
+                    )
+                    .unwrap();
                     assert_eq!(actual.header.general_gas_limit, 50_000_000);
                     assert_eq!(actual.header.shared_gas_limit, 10_000_000);
                     assert_eq!(actual.header.timestamp_millis_part, 777);

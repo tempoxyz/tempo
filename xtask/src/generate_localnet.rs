@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use alloy_primitives::Address;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_08::SeedableRng as _;
 use reth_network_peers::pk2id;
@@ -8,6 +7,8 @@ use secp256k1::SECP256K1;
 use serde::Serialize;
 
 use crate::genesis_args::GenesisArgs;
+
+const LOCALNET_SIGNING_KEY_SECRET: &str = "tempo-localnet-signing-key-secret";
 
 /// Generates a config file to run a bunch of validators locally.
 ///
@@ -103,7 +104,6 @@ impl GenerateLocalnet {
             all_configs.push((
                 validator.clone(),
                 ConfigOutput {
-                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
                     consensus_p2p_port,
@@ -125,20 +125,24 @@ impl GenerateLocalnet {
             let target_dir = validator.dst_dir(&output);
             std::fs::create_dir(&target_dir).wrap_err_with(|| {
                 format!(
-                    "failed creating target directory to store validator specifici keys at `{}`",
-                    &target_dir.display()
+                    "failed creating target directory to store validator specific keys at `{}`",
+                    target_dir.display()
                 )
             })?;
 
             let signing_key_dst = validator.dst_signing_key(&output);
-            std::fs::write(&signing_key_dst, config.consensus_on_disk_signing_key).wrap_err_with(
-                || {
+            validator
+                .signing_key
+                .write_to_file_encrypted(
+                    &signing_key_dst,
+                    tempo_consensus_config::SigningKeyPassphrase::from(LOCALNET_SIGNING_KEY_SECRET),
+                )
+                .wrap_err_with(|| {
                     format!(
                         "failed writing signing key to `{}`",
                         signing_key_dst.display()
                     )
-                },
-            )?;
+                })?;
             let signing_share_dst = validator.dst_signing_share(&output);
             std::fs::write(&signing_share_dst, config.consensus_on_disk_signing_share)
                 .wrap_err_with(|| {
@@ -165,6 +169,7 @@ impl GenerateLocalnet {
             let cmd = format!(
                 "cargo run --bin tempo -- node \
                 \\\n--consensus.signing-key {signing_key} \
+                \\\n--consensus.secret <(printf '%s\\n' '{signing_key_secret}') \
                 \\\n--consensus.signing-share {signing_share} \
                 \\\n--consensus.listen-address 127.0.0.1:{listen_port} \
                 \\\n--consensus.metrics-address 127.0.0.1:{metrics_port} \
@@ -174,9 +179,9 @@ impl GenerateLocalnet {
                 \\\n--port {execution_p2p_port} \
                 \\\n--discovery.port {execution_p2p_port} \
                 \\\n--p2p-secret-key {execution_p2p_secret_key} \
-                \\\n--authrpc.port {authrpc_port} \
-                \\\n--consensus.fee-recipient {fee_recipient}",
+                \\\n--authrpc.port {authrpc_port}",
                 signing_key = signing_key_dst.display(),
+                signing_key_secret = LOCALNET_SIGNING_KEY_SECRET,
                 signing_share = signing_share_dst.display(),
                 listen_port = config.consensus_p2p_port,
                 metrics_port = config.consensus_p2p_port + 2,
@@ -185,7 +190,6 @@ impl GenerateLocalnet {
                 trusted_peers = trusted_peers.join(","),
                 execution_p2p_port = config.execution_p2p_port,
                 execution_p2p_secret_key = enode_key_dst.display(),
-                fee_recipient = Address::ZERO,
                 authrpc_port = config.execution_p2p_port + 2,
             );
             println!("{cmd}\n\n");
@@ -196,7 +200,6 @@ impl GenerateLocalnet {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ConfigOutput {
-    consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
     consensus_p2p_port: u16,
     execution_p2p_port: u16,

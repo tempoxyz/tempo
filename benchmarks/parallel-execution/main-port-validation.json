@@ -1,0 +1,55 @@
+{
+  "upstream": "69597607de23d5e6a5497b1d67346acd28cff7a0",
+  "toolchain": "rustc 1.98.1",
+  "status": "validated port; GitHub performance pending",
+  "execution_tests": {
+    "evm_passed": 143,
+    "evm_ignored_benchmarks": 2,
+    "revm_passed": 200
+  },
+  "node_tests": {
+    "unique_cases_passed": 10,
+    "cases": "4 post-block state-root proof variants; 3 TIP-20 transfer variants; 3 mixed-payment variants",
+    "note": "Node dev miner logged occasional rejected empty payloads in sequential and speculative tests; a debug rerun identified equal parent/child millisecond timestamps, not execution divergence. All assertions passed."
+  },
+  "clippy": "all targets, tempo-evm, tempo-revm, tempo-payload-builder, tempo-node, tempo; -D warnings passed",
+  "coverage": [
+    "Generated AA/TIP-20 contention through T14 with forwarding on/off and state-gas split on/off",
+    "Current-fork EVM storage credit create/update/clear/revert differential",
+    "Keychain spending limits and revocation through T14",
+    "Storage-action recording disables speculative result reuse",
+    "Validator fee compared for successful differential results"
+  ],
+  "limitations": [
+    "Fee arithmetic rebasing disabled at T7+ and with EIP-8037 until the gas-credit semantics are proven safe.",
+    "Call-body reuse disabled at T7+; full result reuse retains complete read validation.",
+    "Public historical replay and latest-main GitHub throughput measurements still pending.",
+    "Historical benchmark artifacts before this port used Tempo 1.6 and are not acceptance evidence for latest main."
+  ],
+  "logs": [
+    {
+      "path": "/tmp/tempo-main-port-execution-tests.log",
+      "sha256": "77386809d968b91068badfcabe604f1e7d9dc2e58794447ca5e7d12da9db2a8f"
+    },
+    {
+      "path": "/tmp/tempo-main-port-clippy.log",
+      "sha256": "9276e244acd0279f4a42a0110ec413faa855ce09e409936c0ca958f57c0176b8"
+    },
+    {
+      "path": "/tmp/tempo-main-port-node-roots.log",
+      "sha256": "7b37cfac586891029e711c6b5ad412a206a2a4f56ca59b87e9b026c26438d25e"
+    },
+    {
+      "path": "/tmp/tempo-main-port-node-tip20.log",
+      "sha256": "05c69715d8da9667569386c0819904b7911c46e72a9ee66b771a5addc74e000e"
+    },
+    {
+      "path": "/tmp/tempo-main-port-node-payment.log",
+      "sha256": "b5e5bb638b804cd2bd3cd3a6c0d07808c2f0195229dee5c24b14bec97b32277b"
+    },
+    {
+      "path": "/tmp/tempo-main-port-node-tip20-debug.log",
+      "sha256": "a63805537fd39c85ea8b82974df69d53006adef52aee34647140987ff011fe2f"
+    }
+  ]
+}

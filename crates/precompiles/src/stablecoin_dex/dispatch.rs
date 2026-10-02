@@ -1,12 +1,15 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
+use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
-    Precompile, charge_input_cost, dispatch_call, mutate, mutate_void,
-    stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
+    Precompile, charge_input_cost, dispatch, mutate, preserve_storage_credits,
+    stablecoin_dex::{
+        StablecoinDEX, TickLevel,
+        orderbook::{BookId, compute_book_key},
+    },
     view,
 };
 
@@ -15,91 +18,86 @@ impl Precompile for StablecoinDEX {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
-
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[],
-            IStablecoinDEXCalls::abi_decode,
             |call| match call {
-                IStablecoinDEXCalls::place(call) => mutate(call, msg_sender, |s, c| {
-                    self.place(s, c.token, c.amount, c.isBid, c.tick)
-                }),
-                IStablecoinDEXCalls::placeFlip(call) => mutate(call, msg_sender, |s, c| {
-                    self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
-                }),
-                IStablecoinDEXCalls::balanceOf(call) => {
-                    view(call, |c| self.balance_of(c.user, c.token))
+                IStablecoinDEX::IStablecoinDEXCalls {
+                    place(call) => mutate(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.place(sender, c.token, c.amount, c.isBid, c.tick)
+                    }),
+                    placeFlip(call) => mutate(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.place_flip(sender, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
+                    }),
+                    balanceOf(call) => view(call, |c| self.balance_of(c.user, c.token)),
+                    getOrder(call) => view(call, |c| {
+                        self.get_order(c.orderId).map(|order| order.into())
+                    }),
+                    getTickLevel(call) => view(call, |c| {
+                        let TickLevel { links, total_liquidity } = self.get_price_level(c.base, c.tick, c.isBid)?;
+                        Ok((links.head, links.tail, total_liquidity).into())
+                    }),
+                    pairKey(call) => view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB))),
+                    books(call) => view(call, |c| self.books(c.pairKey).map(Into::into)),
+                    nextOrderId(call) => view(call, |_| self.next_order_id()),
+                    createPair(call) => mutate(call, msg_sender, |_, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.create_pair(c.base)
+                    }),
+                    withdraw(call) => mutate(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.withdraw(sender, c.token, c.amount)
+                    }),
+                    cancel(call) => mutate(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.cancel(sender, c.orderId)
+                    }),
+                    cancelStaleOrder(call) => mutate(call, msg_sender, |_, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.cancel_stale_order(c.orderId)
+                    }),
+                    swapExactAmountIn(call) => mutate(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.swap_exact_amount_in(sender, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
+                    }),
+                    swapExactAmountOut(call) => mutate(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.swap_exact_amount_out(sender, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
+                    }),
+                    quoteSwapExactAmountIn(call) => view(call, |c| {
+                        self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
+                    }),
+                    quoteSwapExactAmountOut(call) => view(call, |c| {
+                        self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
+                    }),
+                    MIN_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MIN_TICK)),
+                    MAX_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MAX_TICK)),
+                    TICK_SPACING(call) => view(call, |_| Ok(crate::stablecoin_dex::TICK_SPACING)),
+                    PRICE_SCALE(call) => view(call, |_| Ok(crate::stablecoin_dex::PRICE_SCALE)),
+                    MIN_ORDER_AMOUNT(call) => view(call, |_| Ok(crate::stablecoin_dex::MIN_ORDER_AMOUNT)),
+                    MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
+                    MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
+                    tickToPrice(call) => view(call, |c| self.tick_to_price(c.tick)),
+                    priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
+
+                    #[schedule(since = T7)]
+                    storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
+
+                    #[schedule(since = T8)]
+                    bookIndexForKey(call) => view(call, |c| {
+                        let index = self.book_key_index(c.bookKey)?;
+                        Ok((index.is_some(), index.unwrap_or(*BookId::UNSET)).into())
+                    }),
+                    #[schedule(since = T8)]
+                    bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
+                    #[schedule(since = T8)]
+                    setBookIndex(call) => mutate(call, msg_sender, |_, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.set_book_index(c.index)
+                    }),
                 }
-                IStablecoinDEXCalls::getOrder(call) => view(call, |c| {
-                    self.get_order(c.orderId).map(|order| order.into())
-                }),
-                IStablecoinDEXCalls::getTickLevel(call) => view(call, |c| {
-                    let level = self.get_price_level(c.base, c.tick, c.isBid)?;
-                    Ok((level.head, level.tail, level.total_liquidity).into())
-                }),
-                IStablecoinDEXCalls::pairKey(call) => {
-                    view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB)))
-                }
-                IStablecoinDEXCalls::books(call) => {
-                    view(call, |c| self.books(c.pairKey).map(Into::into))
-                }
-                IStablecoinDEXCalls::nextOrderId(call) => view(call, |_| self.next_order_id()),
-                IStablecoinDEXCalls::createPair(call) => {
-                    mutate(call, msg_sender, |_, c| self.create_pair(c.base))
-                }
-                IStablecoinDEXCalls::withdraw(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.withdraw(s, c.token, c.amount))
-                }
-                IStablecoinDEXCalls::cancel(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.cancel(s, c.orderId))
-                }
-                IStablecoinDEXCalls::cancelStaleOrder(call) => {
-                    mutate_void(call, msg_sender, |_, c| self.cancel_stale_order(c.orderId))
-                }
-                IStablecoinDEXCalls::swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
-                    self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
-                }),
-                IStablecoinDEXCalls::swapExactAmountOut(call) => {
-                    mutate(call, msg_sender, |s, c| {
-                        self.swap_exact_amount_out(
-                            s,
-                            c.tokenIn,
-                            c.tokenOut,
-                            c.amountOut,
-                            c.maxAmountIn,
-                        )
-                    })
-                }
-                IStablecoinDEXCalls::quoteSwapExactAmountIn(call) => view(call, |c| {
-                    self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
-                }),
-                IStablecoinDEXCalls::quoteSwapExactAmountOut(call) => view(call, |c| {
-                    self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
-                }),
-                IStablecoinDEXCalls::MIN_TICK(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::MIN_TICK))
-                }
-                IStablecoinDEXCalls::MAX_TICK(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::MAX_TICK))
-                }
-                IStablecoinDEXCalls::TICK_SPACING(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::TICK_SPACING))
-                }
-                IStablecoinDEXCalls::PRICE_SCALE(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::PRICE_SCALE))
-                }
-                IStablecoinDEXCalls::MIN_ORDER_AMOUNT(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::MIN_ORDER_AMOUNT))
-                }
-                IStablecoinDEXCalls::MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
-                IStablecoinDEXCalls::MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
-                IStablecoinDEXCalls::tickToPrice(call) => {
-                    view(call, |c| self.tick_to_price(c.tick))
-                }
-                IStablecoinDEXCalls::priceToTick(call) => {
-                    view(call, |c| self.price_to_tick(c.price))
-                }
-            },
+            }
         )
     }
 }
@@ -117,6 +115,7 @@ mod tests {
         primitives::{Address, U256},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
@@ -467,7 +466,7 @@ mod tests {
 
     #[test]
     fn stablecoin_dex_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 

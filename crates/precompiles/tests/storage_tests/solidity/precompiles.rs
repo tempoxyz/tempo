@@ -4,10 +4,10 @@
 //! match their Solidity equivalents, ensuring compatibility with the EVM.
 
 use super::*;
+use tempo_precompiles::test_util::storage_conformance::*;
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
 };
-use utils::*;
 
 #[test]
 fn test_tip403_registry_layout() {
@@ -17,7 +17,13 @@ fn test_tip403_registry_layout() {
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout = layout_fields!(policy_id_counter, policy_records, policy_set);
+    let rust_layout = layout_fields!(
+        policy_id_counter,
+        policy_records,
+        policy_set,
+        receive_policies,
+        token_transfer_policies
+    );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
@@ -56,6 +62,17 @@ fn test_tip403_registry_layout() {
             panic_layout_mismatch("CompoundPolicyData struct layout", errors, &sol_path);
         }
     }
+
+    // Verify `TokenTransferPolicy` packs the ID and set bit into one slot.
+    {
+        use tempo_precompiles::tip403_registry::__packing_token_transfer_policy::*;
+        let rust_binding = struct_fields!(slots::TOKEN_TRANSFER_POLICIES, policy_id, is_set);
+        if let Err(errors) =
+            compare_nested_struct_type(&solc_layout, "TokenTransferPolicy", &rust_binding)
+        {
+            panic_layout_mismatch("TokenTransferPolicy struct layout", errors, &sol_path);
+        }
+    }
 }
 
 #[test]
@@ -89,7 +106,7 @@ fn test_fee_manager_layout() {
 #[test]
 fn test_stablecoin_dex_layout() {
     use tempo_precompiles::stablecoin_dex::{
-        order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
+        order::__packing_legacy_order::*, orderbook::__packing_orderbook::*, slots,
     };
 
     let sol_path = testdata("stablecoin_dex.sol");
@@ -131,6 +148,7 @@ fn test_stablecoin_dex_layout() {
         asks,
         best_bid_tick,
         best_ask_tick,
+        book_id,
         bid_bitmap,
         ask_bitmap
     );
@@ -155,8 +173,8 @@ fn test_tip20_layout() {
         name,
         symbol,
         currency,
-        // Unused slot, kept for storage layout compatibility
-        _domain_separator,
+        // TIP-1026: token logo URI (reuses the previously-unused _domain_separator slot)
+        logo_uri,
         quote_token,
         next_quote_token,
         transfer_policy_id,
@@ -210,7 +228,7 @@ fn export_all_storage_constants() {
     let mut all_constants = serde_json::Map::new();
 
     // Helper to convert RustStorageField to JSON
-    let field_to_json = |field: &utils::RustStorageField| {
+    let field_to_json = |field: &RustStorageField| {
         json!({
             "name": field.name,
             "slot": format!("{:#x}", field.slot),
@@ -284,7 +302,7 @@ fn export_all_storage_constants() {
     // Stablecoin DEX
     {
         use tempo_precompiles::stablecoin_dex::{
-            order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
+            order::__packing_legacy_order::*, orderbook::__packing_orderbook::*, slots,
         };
 
         let fields = layout_fields!(books, orders, balances, next_order_id, book_keys);
@@ -314,6 +332,7 @@ fn export_all_storage_constants() {
             asks,
             best_bid_tick,
             best_ask_tick,
+            book_id,
             bid_bitmap,
             ask_bitmap
         );
@@ -342,8 +361,8 @@ fn export_all_storage_constants() {
             name,
             symbol,
             currency,
-            // Unused slot, kept for storage layout compatibility
-            _domain_separator,
+            // TIP-1026: token logo URI (reuses the previously-unused _domain_separator slot)
+            logo_uri,
             quote_token,
             next_quote_token,
             transfer_policy_id,

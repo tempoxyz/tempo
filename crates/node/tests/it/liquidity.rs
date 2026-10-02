@@ -9,7 +9,7 @@ use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
 
-use crate::utils::setup_test_token;
+use crate::utils::{PendingTransactionBuilderExt, setup_test_token};
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
 #[tokio::test(flavor = "multi_thread")]
@@ -144,7 +144,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .watch()
+        .get_tempo_receipt()
         .await?;
 
     // Now try to send payment transactions that require fee swaps

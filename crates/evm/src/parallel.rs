@@ -22,16 +22,22 @@ use reth_revm::{
     db::CacheDB,
     state::{AccountInfo, Bytecode},
 };
-use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    mpsc,
+use std::{
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::Duration,
 };
-use std::time::Duration;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::storage::fee_updates::{self, FeeUpdate};
-use tempo_revm::replay::{BodyCache, ReadKey, ReadValue, read};
-use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
+use tempo_revm::{
+    TempoInvalidTransaction, TempoTxEnv,
+    replay::{BodyCache, ReadKey, ReadValue, read},
+};
+
+use reth_revm::context::result::HaltReason as TempoHaltReason;
 
 mod forwarding;
 
@@ -326,7 +332,10 @@ fn run_worker<E: DBErrorMarker>(
         }
         // Fee storage contexts use maximum gas and discard their gas/refund
         // accounting. Restrict rebasing to the standard, bounded gas schedules.
-        let record_fees = standard_fee_gas && tx.calls().all(|(kind, _)| kind.is_call());
+        let record_fees = standard_fee_gas
+            && !env.cfg_env.spec.is_t7()
+            && !env.cfg_env.enable_amsterdam_eip8037
+            && tx.calls().all(|(kind, _)| kind.is_call());
         let (result, fee_updates) = if record_fees {
             fee_updates::record(|| evm.transact_raw(tx.clone()))
         } else {
@@ -372,6 +381,7 @@ fn run_worker<E: DBErrorMarker>(
             index,
             Box::new(SpeculativeResult {
                 env: env.clone(),
+                validator_fee: evm.validator_fee(),
                 reads,
                 result,
                 body,
@@ -531,6 +541,7 @@ pub(crate) struct SpeculativeResult<E> {
     pub(crate) env: Env,
     reads: Vec<(ReadKey, ReadValue)>,
     pub(crate) result: Outcome<E>,
+    pub(crate) validator_fee: U256,
     pub(crate) body: Option<BodyCache>,
     fee_updates: Vec<FeeUpdate>,
     pub(crate) fees_rebased: bool,

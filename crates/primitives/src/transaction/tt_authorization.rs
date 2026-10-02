@@ -1,8 +1,10 @@
-use alloc::vec::Vec;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, U256, keccak256};
+#[cfg(feature = "evm")]
+use alloy_primitives::U256;
+use alloy_primitives::{Address, B256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
+#[cfg(feature = "evm")]
 use revm::context::transaction::AuthorizationTr;
 
 #[cfg(not(feature = "std"))]
@@ -66,10 +68,7 @@ impl TempoSignedAuthorization {
     /// following EIP-7702 spec.
     #[inline]
     pub fn signature_hash(&self) -> B256 {
-        let mut buf = Vec::new();
-        buf.push(MAGIC);
-        self.inner.encode(&mut buf);
-        keccak256(buf)
+        self.inner.signature_hash()
     }
 
     /// Recover the authority for the authorization.
@@ -114,7 +113,7 @@ impl TempoSignedAuthorization {
 
     /// Calculates a heuristic for the in-memory size of this authorization
     pub fn size(&self) -> usize {
-        size_of::<Self>()
+        size_of::<Authorization>() + self.signature.size()
     }
 }
 
@@ -286,6 +285,7 @@ impl Deref for RecoveredTempoAuthorization {
     }
 }
 
+#[cfg(feature = "evm")]
 impl AuthorizationTr for RecoveredTempoAuthorization {
     fn chain_id(&self) -> U256 {
         self.chain_id
@@ -306,7 +306,8 @@ impl AuthorizationTr for RecoveredTempoAuthorization {
 pub mod tests {
     use super::*;
     use crate::TempoSignature;
-    use alloy_primitives::{U256, address};
+    use alloc::vec::Vec;
+    use alloy_primitives::{U256, address, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 

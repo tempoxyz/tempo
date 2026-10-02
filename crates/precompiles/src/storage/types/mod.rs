@@ -18,12 +18,14 @@ pub use set::{Set, SetHandler};
 pub mod bytes_like;
 mod primitives;
 
+mod cache;
+pub(crate) use cache::HandlerCache;
+
 use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -87,7 +89,8 @@ impl Layout {
 /// ```rs
 /// enum LayoutCtx {
 ///    Full,
-///    Packed(usize)
+///    Init,
+///    Packed(usize),
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,9 +100,20 @@ pub struct LayoutCtx(usize);
 impl LayoutCtx {
     /// Load/store the entire value at a given slot.
     ///
-    /// For writes, this directly overwrites the entire slot without needing SLOAD.
-    /// All storable types support this context.
+    /// For writes, this signals that the value occupies full slot(s), and that the
+    /// implementation must clear potential stale tail data:
+    ///
+    /// - Static types overwrite the entire slot without needing an SLOAD.
+    /// - Dynamic types read the prior length (1 extra SLOAD) and zero any stale tail slots.
     pub const FULL: Self = Self(usize::MAX);
+
+    /// Like `Full`, but the asserts the destination is virgin (zero-filled).
+    ///
+    /// - Static types behave identically to `Full`.
+    /// - Dynamic types skip reading the prior length and clearing stale tail slots.
+    ///
+    /// Used by hot paths that know by construction the target is empty.
+    pub const INIT: Self = Self(usize::MAX - 1);
 
     /// Load/store a packed primitive at the given byte offset within a slot.
     ///
@@ -114,14 +128,28 @@ impl LayoutCtx {
         Self(offset)
     }
 
-    /// Get the packed offset, returns `None` for `Full`
+    /// Get the packed offset, returns `None` for `FULL` and `INIT`
     #[inline]
     pub const fn packed_offset(&self) -> Option<usize> {
-        if self.0 == usize::MAX {
+        if self.0 >= usize::MAX - 1 {
             None
         } else {
             Some(self.0)
         }
+    }
+
+    /// Returns `true` if this context signals the tail doesn't need to be cleared.
+    ///
+    /// Used by dynamic type's `Storable::store` to skip the extra SLOAD to check stale tails.
+    #[inline]
+    pub const fn skip_tail_cleanup(&self) -> bool {
+        self.0 == usize::MAX - 1
+    }
+
+    /// Returns true if this context is a full-slot context (`FULL` or `INIT`).
+    #[inline]
+    pub const fn is_full(&self) -> bool {
+        self.0 >= usize::MAX - 1
     }
 }
 
@@ -340,64 +368,5 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
         U256::from_be_bytes(keccak256(buf).0)
-    }
-}
-
-/// Cache for computed handlers with stable references.
-///
-/// Enables `Index` implementations on handlers by storing child handlers and
-/// returning references that remain valid across insertions.
-///
-/// Uses `RefCell` for interior mutability with runtime borrow checking.
-/// Re-entrant access will panic rather than cause undefined behavior.
-#[derive(Debug, Default)]
-pub(super) struct HandlerCache<K, H> {
-    inner: RefCell<HashMap<K, Box<H>>>,
-}
-
-impl<K, H> HandlerCache<K, H> {
-    /// Creates a new empty handler cache.
-    #[inline]
-    pub(super) fn new() -> Self {
-        Self {
-            inner: RefCell::new(HashMap::new()),
-        }
-    }
-}
-
-impl<K, H> Clone for HandlerCache<K, H> {
-    /// Creates a new empty cache (cached handlers are not cloned).
-    fn clone(&self) -> Self {
-        Self::new()
-    }
-}
-
-impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
-    /// Returns a reference to a lazily initialized handler for the given key.
-    #[inline]
-    pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
-        let mut cache = self.inner.borrow_mut();
-        // Lookup first to avoid cloning on cache hit
-        if let Some(boxed) = cache.get(key) {
-            // SAFETY: Box provides stable heap address. Cache is append-only.
-            return unsafe { &*(boxed.as_ref() as *const H) };
-        }
-        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
-        // SAFETY: Box provides stable heap address. Cache is append-only.
-        unsafe { &*(boxed.as_ref() as *const H) }
-    }
-
-    /// Returns a mutable reference to a lazily initialized handler for the given key.
-    #[inline]
-    pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
-        let mut cache = self.inner.borrow_mut();
-        // Lookup first to avoid cloning on cache hit
-        if let Some(boxed) = cache.get_mut(key) {
-            // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
-            return unsafe { &mut *(boxed.as_mut() as *mut H) };
-        }
-        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
-        // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
-        unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
 }

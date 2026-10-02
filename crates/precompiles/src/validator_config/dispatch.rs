@@ -1,73 +1,46 @@
 //! ABI dispatch for the [`ValidatorConfig`] (V1) precompile.
 
 use super::ValidatorConfig;
-use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, error::TempoPrecompileError,
-    mutate_void, view,
-};
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use crate::{Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate, view};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
-
-const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR];
+use tempo_contracts::precompiles::IValidatorConfig;
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
-
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T1).with_added(T1_ADDED)],
-            IValidatorConfigCalls::abi_decode,
             |call| match call {
-                // View functions
-                IValidatorConfigCalls::owner(call) => view(call, |_| self.owner()),
-                IValidatorConfigCalls::getValidators(call) => view(call, |_| self.get_validators()),
-                IValidatorConfigCalls::getNextFullDkgCeremony(call) => {
-                    view(call, |_| self.get_next_full_dkg_ceremony())
-                }
-                IValidatorConfigCalls::validatorsArray(call) => view(call, |c| {
-                    let index =
-                        u64::try_from(c.index).map_err(|_| TempoPrecompileError::array_oob())?;
-                    self.validators_array(index)
-                }),
-                IValidatorConfigCalls::validators(call) => {
-                    view(call, |c| self.validators(c.validator))
-                }
-                IValidatorConfigCalls::validatorCount(call) => {
-                    view(call, |_| self.validator_count())
-                }
+                IValidatorConfig::IValidatorConfigCalls {
+                    // View functions
+                    owner(call) => view(call, |_| self.owner()),
+                    getValidators(call) => view(call, |_| self.get_validators()),
+                    getNextFullDkgCeremony(call) => view(call, |_| self.get_next_full_dkg_ceremony()),
+                    validatorsArray(call) => view(call, |c| {
+                        let index = u64::try_from(c.index)
+                            .map_err(|_| TempoPrecompileError::array_oob())?;
+                        self.validators_array(index)
+                    }),
+                    validators(call) => view(call, |c| self.validators(c.validator)),
+                    validatorCount(call) => view(call, |_| self.validator_count()),
 
-                // Mutate functions
-                IValidatorConfigCalls::addValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
-                }
-                IValidatorConfigCalls::updateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.update_validator(s, c))
-                }
-                IValidatorConfigCalls::changeValidatorStatus(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
-                }
-                IValidatorConfigCalls::changeValidatorStatusByIndex(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.change_validator_status_by_index(s, c)
+                    // Mutate functions
+                    addValidator(call) => mutate(call, msg_sender, |sender, c| self.add_validator(sender, c)),
+                    updateValidator(call) => mutate(call, msg_sender, |sender, c| self.update_validator(sender, c)),
+                    changeValidatorStatus(call) => mutate(call, msg_sender, |sender, c| self.change_validator_status(sender, c)),
+                    #[schedule(since = T1)]
+                    changeValidatorStatusByIndex(call) => mutate(call, msg_sender, |sender, c| {
+                        self.change_validator_status_by_index(sender, c)
+                    }),
+                    changeOwner(call) => mutate(call, msg_sender, |sender, c| self.change_owner(sender, c)),
+                    setNextFullDkgCeremony(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_next_full_dkg_ceremony(sender, c)
                     })
                 }
-                IValidatorConfigCalls::changeOwner(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.change_owner(s, c))
-                }
-                IValidatorConfigCalls::setNextFullDkgCeremony(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.set_next_full_dkg_ceremony(s, c)
-                    })
-                }
-            },
+            }
         )
     }
 }
@@ -84,10 +57,10 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
-
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
+        IValidatorConfig::{self, IValidatorConfigCalls},
+        ValidatorConfigError,
     };
 
     #[test]
@@ -111,7 +84,7 @@ mod tests {
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns error
+        // Pre-T1 (T0): insufficient calldata returns halted output
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();

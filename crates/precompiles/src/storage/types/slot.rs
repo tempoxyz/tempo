@@ -105,6 +105,18 @@ impl<T> Slot<T> {
         self.slot
     }
 
+    /// Returns the address whose storage this slot accesses.
+    #[inline]
+    pub const fn address(&self) -> Address {
+        self.address
+    }
+
+    /// Returns the layout context used to load and store the underlying type.
+    #[inline]
+    pub const fn ctx(&self) -> LayoutCtx {
+        self.ctx
+    }
+
     /// Returns the byte offset within the slot (for packed fields).
     ///
     /// Returns `Some(offset)` if this is a packed slot, `None` if it's a full slot.
@@ -123,6 +135,30 @@ impl<T> StorageOps for Slot<T> {
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
         let mut storage = StorageCtx;
         storage.sstore(self.address, slot, value)
+    }
+
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let mut storage = StorageCtx;
+        storage.sinc(self.address, slot, delta)
+    }
+
+    fn sdec(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let mut storage = StorageCtx;
+        storage.sdec(self.address, slot, delta)
+    }
+}
+
+impl Slot<U256> {
+    /// Increments this slot by `delta`.
+    #[inline]
+    pub fn sinc(&mut self, delta: U256) -> Result<()> {
+        <Self as StorageOps>::sinc(self, self.slot, delta)
+    }
+
+    /// Decrements this slot by `delta`.
+    #[inline]
+    pub fn sdec(&mut self, delta: U256) -> Result<()> {
+        <Self as StorageOps>::sdec(self, self.slot, delta)
     }
 }
 
@@ -330,6 +366,23 @@ mod tests {
         let raw = storage.sload(address, slot_num)?;
         assert_eq!(raw, test_value);
         Ok(())
+    }
+
+    #[test]
+    fn test_u256_slot_sinc_sdec() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut slot = Slot::<U256>::new(U256::from(7), address);
+
+            slot.sinc(U256::from(10))?;
+            assert_eq!(slot.read()?, U256::from(10));
+
+            slot.sdec(U256::from(3))?;
+            assert_eq!(slot.read()?, U256::from(7));
+
+            Ok(())
+        })
     }
 
     #[test]

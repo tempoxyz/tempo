@@ -2,23 +2,30 @@
 use std::net::SocketAddr;
 
 use crate::{
-    check_abi::CheckAbi, generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, generate_state_bloat::GenerateStateBloat,
-    get_dkg_outcome::GetDkgOutcome,
+    bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
+    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
+    generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
+    generate_shadowfork::GenerateShadowfork, get_dkg_outcome::GetDkgOutcome,
+    identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
+use tempo_state_bloat::GenerateStateBloat;
 
+mod bootstrap_shadowfork;
 mod check_abi;
 mod generate_devnet;
 mod generate_genesis;
+mod generate_hardfork;
 mod generate_localnet;
-mod generate_state_bloat;
+mod generate_shadowfork;
 mod genesis_args;
 mod get_dkg_outcome;
+mod identity_transitions;
+mod shadowfork;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -26,7 +33,12 @@ async fn main() -> eyre::Result<()> {
     match args.action {
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
         Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
+        Action::GetIdentityTransitions(args) => args
+            .run()
+            .await
+            .wrap_err("failed to get identity transitions"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
+        Action::AddHardfork(args) => args.run().wrap_err("failed adding hardfork plumbing"),
         Action::GenerateDevnet(args) => args
             .run()
             .await
@@ -35,6 +47,13 @@ async fn main() -> eyre::Result<()> {
             .run()
             .await
             .wrap_err("failed to generate localnet configs"),
+        Action::GenerateShadowfork(args) => args
+            .run()
+            .await
+            .wrap_err("failed to generate shadow fork configs"),
+        Action::BootstrapShadowfork(args) => args
+            .run()
+            .wrap_err("failed to bootstrap shadow fork configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
         Action::GenerateStateBloat(args) => args
             .run()
@@ -57,9 +76,13 @@ struct Args {
 enum Action {
     CheckAbi(CheckAbi),
     GetDkgOutcome(GetDkgOutcome),
+    GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),
+    AddHardfork(AddHardfork),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
+    GenerateShadowfork(GenerateShadowfork),
+    BootstrapShadowfork(BootstrapShadowfork),
     GenerateAddPeer(GenerateAddPeer),
     GenerateStateBloat(GenerateStateBloat),
 }

@@ -21,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
+    SystemTransactionFailed(Box<ExecutionResult<HaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///
@@ -86,17 +86,42 @@ pub enum TempoInvalidTransaction {
     #[error("expiring nonce transaction requires valid_before to be set")]
     ExpiringNonceMissingValidBefore,
 
-    /// Expiring nonce transaction must have nonce == 0.
-    #[error("expiring nonce transaction must have nonce == 0")]
+    /// Pre-T12 expiring nonce transaction must have nonce == 0.
+    #[error("expiring nonce transaction must have nonce == 0 before T12")]
     ExpiringNonceNonceNotZero,
 
-    /// Subblock transaction must have zero fee.
-    #[error("subblock transaction must have zero fee")]
-    SubblockTransactionMustHaveZeroFee,
+    /// The nonce key uses the reserved subblock prefix.
+    #[error("subblock transactions are not supported")]
+    SubblockTransactionsDisabled,
 
-    /// Invalid fee token.
+    /// Invalid fee token fallback.
     #[error("invalid fee token: {0}")]
     InvalidFeeToken(Address),
+
+    /// Fee token address is not a TIP-20 token.
+    #[error("fee token {address} is not a TIP-20 token; fee tokens must be TIP-20 tokens")]
+    FeeTokenNotTip20 {
+        /// Invalid fee token address.
+        address: Address,
+    },
+
+    /// Fee token is not USD-denominated.
+    #[error(
+        "fee token {address} uses currency {currency:?}; fee tokens must be USD-denominated TIP-20 tokens"
+    )]
+    FeeTokenNotUsdCurrency {
+        /// Invalid fee token address.
+        address: Address,
+        /// Token currency read from TIP-20 metadata.
+        currency: String,
+    },
+
+    /// Fee token is paused.
+    #[error("fee token {address} is paused and cannot be used for fees")]
+    FeeTokenPaused {
+        /// Paused fee token address.
+        address: Address,
+    },
 
     /// Value transfer not allowed.
     #[error("value transfer not allowed")]
@@ -207,10 +232,6 @@ pub enum TempoInvalidTransaction {
     #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
     V2KeychainBeforeActivation,
 
-    /// Keychain operations are not supported in subblock transactions.
-    #[error("keychain operations are not supported in subblock transactions")]
-    KeychainOpInSubblockTransaction,
-
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -284,16 +305,18 @@ impl TempoInvalidTransaction {
             | Self::ValueTransferNotAllowedInAATx
             | Self::ExpiringNonceMissingTxEnv
             | Self::ExpiringNonceMissingValidBefore
-            | Self::ExpiringNonceNonceNotZero
-            | Self::SubblockTransactionMustHaveZeroFee
-            | Self::KeychainOpInSubblockTransaction
+            | Self::SubblockTransactionsDisabled
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
-            // State-dependent: may resolve as state advances.
+            // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
+            | Self::ExpiringNonceNonceNotZero
             | Self::InvalidFeeToken(_)
+            | Self::FeeTokenNotTip20 { .. }
+            | Self::FeeTokenNotUsdCurrency { .. }
+            | Self::FeeTokenPaused { .. }
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
@@ -346,10 +369,17 @@ impl From<KeychainVersionError> for TempoInvalidTransaction {
 pub enum FeePaymentError {
     /// Insufficient liquidity in the FeeAMM pool to perform fee token swap.
     ///
-    /// This indicates the user's fee token cannot be swapped for the native token
-    /// because there's insufficient liquidity in the AMM pool.
-    #[error("insufficient liquidity in FeeAMM pool to swap fee tokens (required: {fee})")]
+    /// This indicates the user's fee token cannot be swapped to at least one recent
+    /// validator token because there's insufficient liquidity in the relevant AMM pool.
+    #[error(
+        "insufficient liquidity in FeeAMM pool to swap fee tokens{pair} (required: {fee})",
+        pair = liquidity_pair_msg(.user_token, .validator_token)
+    )]
     InsufficientAmmLiquidity {
+        /// The fee payer's fee token (the token being swapped from), when known.
+        user_token: Option<Address>,
+        /// The validator's preferred token (the token being swapped to), when known.
+        validator_token: Option<Address>,
         /// The required fee amount that couldn't be swapped.
         fee: U256,
     },
@@ -386,31 +416,15 @@ impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransactio
     }
 }
 
-/// Tempo-specific halt reason.
-///
-/// Used to extend basic [`HaltReason`] with an edge case of a subblock transaction fee payment error.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::From)]
-pub enum TempoHaltReason {
-    /// Basic Ethereum halt reason.
-    #[from]
-    Ethereum(HaltReason),
-    /// Subblock transaction failed to pay fees.
-    SubblockTxFeePayment,
+fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Address>) -> String {
+    if let (Some(user_token), Some(validator_token)) = (user_token, validator_token) {
+        return format!(" for pair {user_token} -> {validator_token}");
+    } else if let Some(user_token) = user_token {
+        return format!(" for user token {user_token}");
+    }
+    String::new()
 }
 
-#[cfg(feature = "rpc")]
-impl reth_rpc_eth_types::error::api::FromEvmHalt<TempoHaltReason>
-    for reth_rpc_eth_types::EthApiError
-{
-    fn from_evm_halt(halt_reason: TempoHaltReason, gas_limit: u64) -> Self {
-        match halt_reason {
-            TempoHaltReason::Ethereum(halt_reason) => Self::from_evm_halt(halt_reason, gas_limit),
-            TempoHaltReason::SubblockTxFeePayment => {
-                Self::EvmCustom("subblock transaction failed to pay fees".to_string())
-            }
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,12 +438,23 @@ mod tests {
         );
 
         let err = FeePaymentError::InsufficientAmmLiquidity {
+            user_token: None,
+            validator_token: None,
             fee: U256::from(1000),
         };
-        assert!(
-            err.to_string()
-                .contains("insufficient liquidity in FeeAMM pool")
-        );
+        assert!(err.to_string().contains("required: 1000"));
+
+        let user_token = Address::with_last_byte(0x11);
+        let validator_token = Address::with_last_byte(0x22);
+        let err = FeePaymentError::InsufficientAmmLiquidity {
+            user_token: Some(user_token),
+            validator_token: Some(validator_token),
+            fee: U256::from(1000),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("insufficient liquidity in FeeAMM pool"));
+        assert!(msg.contains(&format!("{user_token} -> {validator_token}")));
+        assert!(msg.contains("required: 1000"));
 
         let err = FeePaymentError::InsufficientFeeTokenBalance {
             fee: U256::from(1000),
@@ -446,6 +471,40 @@ mod tests {
             tempo_err,
             TempoInvalidTransaction::EthInvalidTransaction(_)
         ));
+    }
+
+    #[test]
+    fn test_fee_token_errors_are_not_bad_transactions() {
+        let address = Address::repeat_byte(0x20);
+        let cases = [
+            TempoInvalidTransaction::InvalidFeeToken(address),
+            TempoInvalidTransaction::FeeTokenNotTip20 { address },
+            TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                address,
+                currency: "EUR".to_string(),
+            },
+            TempoInvalidTransaction::FeeTokenPaused { address },
+        ];
+
+        for err in cases {
+            assert!(!err.is_bad_transaction(), "{err} should not be bad");
+        }
+    }
+
+    #[test]
+    fn test_pre_t12_expiring_nonce_discriminator_is_not_bad() {
+        assert!(
+            !TempoInvalidTransaction::ExpiringNonceNonceNotZero.is_bad_transaction(),
+            "a discriminator rejected only before T12 must not poison gossip or bad imports"
+        );
+
+        assert!(
+            TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::NonceOverflowInTransaction
+            )
+            .is_bad_transaction(),
+            "ordinary nonce overflow remains permanently invalid"
+        );
     }
 
     #[test]
@@ -469,6 +528,8 @@ mod tests {
     #[test]
     fn test_fee_payment_error() {
         let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
+            user_token: None,
+            validator_token: None,
             fee: U256::from(1000),
         }
         .into();

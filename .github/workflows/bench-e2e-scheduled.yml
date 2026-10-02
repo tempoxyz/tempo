@@ -1,0 +1,225 @@
+# Scheduled e2e regression benchmarks.
+# State is stored in branch-isolated Actions artifacts for 90 days. Missing or
+# expired state uses the existing first-run baseline rules; no state PAT is needed.
+#
+# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each scenario below.
+# Nightly runs compare the latest main commit against the
+# last commit that completed this scheduled e2e workflow successfully for the
+# same state key.
+# Tag runs compare the pushed release tag against the previous release tag.
+
+name: bench-e2e-scheduled
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (tag or branch) to benchmark as a release run. When set, the workflow runs as a release comparison (ref vs. previous tag) without needing `--ref`."
+        required: false
+        default: ""
+        type: string
+      force:
+        description: "Force run even if no new nightly commit is available"
+        required: false
+        default: false
+        type: boolean
+      samply:
+        description: "Enable samply profiling"
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  resolve-refs:
+    name: resolve-refs
+    if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+    outputs:
+      bench-matrix: ${{ steps.refs.outputs.bench-matrix }}
+      save-matrix: ${{ steps.refs.outputs.save-matrix }}
+      has-benchmarks: ${{ steps.refs.outputs.has-benchmarks }}
+      has-nightly-benchmarks: ${{ steps.refs.outputs.has-nightly-benchmarks }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Resolve refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_FORCE: ${{ inputs.force || 'false' }}
+          INPUT_REF: ${{ inputs.ref || '' }}
+        run: |
+          scenarios=(
+            # Keep a distinct state key for each benchmark series.
+            '{"preset":"default","state_key":"default","token_count":"4"}'
+            '{"preset":"tip20:recipient=existing,fee-token=any_tip20","state_key":"tip20-existing-any","token_count":"4"}'
+          )
+          bench_entries=()
+          save_entries=()
+          stale_scenarios=()
+
+          get_output() {
+            local file="$1"
+            local key="$2"
+            grep -E "^${key}=" "$file" | tail -1 | sed "s/^${key}=//"
+          }
+
+          for scenario in "${scenarios[@]}"; do
+            preset="$(jq -r '.preset' <<< "$scenario")"
+            state_key="$(jq -r '.state_key' <<< "$scenario")"
+            token_count="$(jq -r '.token_count' <<< "$scenario")"
+            out="$(mktemp)"
+            GITHUB_OUTPUT="$out" bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" "$state_key"
+
+            baseline_ref="$(get_output "$out" baseline-ref)"
+            baseline_name="$(get_output "$out" baseline-name)"
+            feature_ref="$(get_output "$out" feature-ref)"
+            feature_name="$(get_output "$out" feature-name)"
+            should_skip="$(get_output "$out" should-skip)"
+            run_type="$(get_output "$out" run-type)"
+            actor="$(get_output "$out" actor)"
+            is_stale="$(get_output "$out" is-stale)"
+
+            if [ "$is_stale" = "true" ]; then
+              stale_scenarios+=("$preset")
+            fi
+
+            if [ "$should_skip" != "true" ] && [ "$is_stale" != "true" ]; then
+              entry="$(jq -cn \
+                --arg preset "$preset" \
+                --arg actor "$actor" \
+                --arg baseline_ref "$baseline_ref" \
+                --arg feature_ref "$feature_ref" \
+                --arg baseline_name "$baseline_name" \
+                --arg feature_name "$feature_name" \
+                --arg run_type "$run_type" \
+                --arg token_count "$token_count" \
+                --arg state_key "$state_key" \
+                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count}')"
+              bench_entries+=("$entry")
+              if [ "$run_type" = "nightly" ]; then
+                save_entries+=("$entry")
+              fi
+            fi
+
+            rm -f "$out"
+          done
+
+          if [ "${#stale_scenarios[@]}" -gt 0 ]; then
+            echo "::error::Nightly Docker build is stale (>24h old). Aborting e2e benchmark for scenario(s): ${stale_scenarios[*]}."
+            exit 1
+          fi
+
+          if [ "${#bench_entries[@]}" -gt 0 ]; then
+            bench_matrix="$(printf '%s\n' "${bench_entries[@]}" | jq -cs '{include:.}')"
+            has_benchmarks="true"
+          else
+            bench_matrix='{"include":[]}'
+            has_benchmarks="false"
+          fi
+
+          if [ "${#save_entries[@]}" -gt 0 ]; then
+            save_matrix="$(printf '%s\n' "${save_entries[@]}" | jq -cs '{include:.}')"
+            has_nightly_benchmarks="true"
+          else
+            save_matrix='{"include":[]}'
+            has_nightly_benchmarks="false"
+          fi
+
+          {
+            echo "bench-matrix=$bench_matrix"
+            echo "save-matrix=$save_matrix"
+            echo "has-benchmarks=$has_benchmarks"
+            echo "has-nightly-benchmarks=$has_nightly_benchmarks"
+          } >> "$GITHUB_OUTPUT"
+
+  bench-e2e:
+    needs: resolve-refs
+    if: needs.resolve-refs.outputs.has-benchmarks == 'true'
+    name: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }})
+    uses: ./.github/workflows/bench-e2e.yml
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-refs.outputs.bench-matrix) }}
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      actor: ${{ matrix.actor }}
+      baseline: ${{ matrix.baseline_ref }}
+      feature: ${{ matrix.feature_ref }}
+      baseline-name: ${{ matrix.baseline_name }}
+      feature-name: ${{ matrix.feature_name }}
+      preset: ${{ matrix.preset }}
+      token-count: ${{ matrix.token_count }}
+      duration: "600"
+      tps: "50000"
+      run-type: ${{ matrix.run_type }}
+      run-pairs: "1"
+      clickhouse-run: feature-1
+      samply: ${{ github.event_name == 'workflow_dispatch' && inputs.samply && 'true' || 'false' }}
+    secrets:
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+
+  save-state:
+    needs: [resolve-refs, bench-e2e]
+    if: |
+      always() &&
+      needs.resolve-refs.outputs.has-nightly-benchmarks == 'true' &&
+      needs.bench-e2e.result == 'success'
+    name: save-state (${{ matrix.state_key }})
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-refs.outputs.save-matrix) }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Prepare benchmark state
+        env:
+          FEATURE_REF: ${{ matrix.feature_ref }}
+        run: |
+          [[ "$FEATURE_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/bench-state"
+          printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
+
+      - name: Save benchmark state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-state-e2e-${{ matrix.state_key }}
+          path: ${{ runner.temp }}/bench-state/feature-ref
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: true

@@ -28,7 +28,7 @@ use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
+        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -455,12 +455,53 @@ pub(crate) fn create_key_authorization(
     expiry: Option<std::num::NonZeroU64>,
     spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
 ) -> eyre::Result<SignedKeyAuthorization> {
+    create_key_authorization_inner(
+        root_signer,
+        access_key_addr,
+        access_key_signature,
+        chain_id,
+        expiry,
+        spending_limits,
+        None,
+    )
+}
+
+pub(crate) fn create_key_authorization_with_witness(
+    root_signer: &impl SignerSync,
+    access_key_addr: Address,
+    access_key_signature: TempoSignature,
+    chain_id: u64,
+    expiry: Option<std::num::NonZeroU64>,
+    spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
+    witness: B256,
+) -> eyre::Result<SignedKeyAuthorization> {
+    create_key_authorization_inner(
+        root_signer,
+        access_key_addr,
+        access_key_signature,
+        chain_id,
+        expiry,
+        spending_limits,
+        Some(witness),
+    )
+}
+
+fn create_key_authorization_inner(
+    root_signer: &impl SignerSync,
+    access_key_addr: Address,
+    access_key_signature: TempoSignature,
+    chain_id: u64,
+    expiry: Option<std::num::NonZeroU64>,
+    spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
+    witness: Option<B256>,
+) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
     let key_type = access_key_signature.signature_type();
 
     let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
     key_auth.expiry = expiry;
     key_auth.limits = spending_limits;
+    key_auth.witness = witness;
 
     // Root key signs the authorization
     let root_auth_signature = root_signer.sign_hash_sync(&key_auth.signature_hash())?;
@@ -593,23 +634,6 @@ pub(crate) fn sign_aa_tx_with_secp256k1_access_key(
     let inner_signature = PrimitiveSignature::Secp256k1(signature);
 
     Ok(TempoSignature::Keychain(KeychainSignature::new(
-        root_key_addr,
-        inner_signature,
-    )))
-}
-
-/// Helper to sign AA transaction with secp256k1 access key using legacy V1 keychain signature.
-/// V1 signs the raw sig_hash without binding user_address.
-pub(super) fn sign_aa_tx_with_secp256k1_access_key_v1(
-    tx: &TempoTransaction,
-    access_key_signer: &impl SignerSync,
-    root_key_addr: Address,
-) -> eyre::Result<TempoSignature> {
-    let sig_hash = tx.signature_hash();
-    let signature = access_key_signer.sign_hash_sync(&sig_hash)?;
-    let inner_signature = PrimitiveSignature::Secp256k1(signature);
-
-    Ok(TempoSignature::Keychain(KeychainSignature::new_v1(
         root_key_addr,
         inner_signature,
     )))
@@ -1173,6 +1197,7 @@ pub(crate) fn build_fill_request_context(
     signer_addr: Address,
     recipient: Address,
     current_timestamp: u64,
+    max_expiry_secs: u64,
 ) -> FillRequestContext {
     let valid_before_offset = test_case
         .valid_before_offset
@@ -1182,13 +1207,9 @@ pub(crate) fn build_fill_request_context(
         .map(|offset| resolve_timestamp_offset(current_timestamp, offset));
 
     let valid_before = valid_before_offset.or_else(|| match test_case.nonce_mode {
-        NonceMode::Expiring => Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS / 2),
-        NonceMode::ExpiringAtBoundary => {
-            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS - 1)
-        }
-        NonceMode::ExpiringExceedsBoundary => {
-            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 3600)
-        }
+        NonceMode::Expiring => Some(current_timestamp + max_expiry_secs / 2),
+        NonceMode::ExpiringAtBoundary => Some(current_timestamp + max_expiry_secs - 1),
+        NonceMode::ExpiringExceedsBoundary => Some(current_timestamp + max_expiry_secs + 3600),
         NonceMode::ExpiringInPast => Some(current_timestamp.saturating_sub(1)),
         _ => None,
     });
@@ -1256,10 +1277,16 @@ pub(crate) async fn fill_transaction_from_case(
     test_case: &FillTestCase,
     signer_addr: Address,
     current_timestamp: u64,
+    max_expiry_secs: u64,
 ) -> eyre::Result<(TempoTransaction, FillRequestContext)> {
     let recipient = Address::random();
-    let request_context =
-        build_fill_request_context(test_case, signer_addr, recipient, current_timestamp);
+    let request_context = build_fill_request_context(
+        test_case,
+        signer_addr,
+        recipient,
+        current_timestamp,
+        max_expiry_secs,
+    );
 
     let filled: serde_json::Value =
         legacy_compat::raw_request(provider, "eth_fillTransaction", &request_context.request)
@@ -1329,11 +1356,11 @@ mod tests {
             "832f98b5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f424000000000000000000000000020c0000000000000000000000000000000000000"
         );
         let expected_revert_hex = hex::encode(expected_revert_bytes);
-        let revert_data = TIP20Error::InsufficientBalance(ITIP20::InsufficientBalance {
-            available: U256::ZERO,
-            required: U256::from(1_000_000u64),
-            token: DEFAULT_FEE_TOKEN,
-        })
+        let revert_data = TIP20Error::insufficient_balance(
+            U256::ZERO,
+            U256::from(1_000_000u64),
+            DEFAULT_FEE_TOKEN,
+        )
         .abi_encode();
         assert_eq!(
             revert_data.as_slice(),

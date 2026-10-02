@@ -50,7 +50,7 @@ async fn test_tip20_transfer(
                 .build()
                 .unwrap();
             let account = signer.address();
-            let balance = U256::from(rand::random::<u32>());
+            let balance = U256::from(rand_09::random::<u32>());
             (account, signer, balance)
         })
         .collect();
@@ -94,12 +94,10 @@ async fn test_tip20_transfer(
         };
         assert_eq!(
             result.as_decoded_interface_error::<TIP20Error>(),
-            Some(TIP20Error::InsufficientBalance(
-                ITIP20::InsufficientBalance {
-                    available: *balance,
-                    required: balance + U256::ONE,
-                    token: *token.address()
-                }
+            Some(TIP20Error::insufficient_balance(
+                *balance,
+                balance + U256::ONE,
+                *token.address()
             ))
         );
     }
@@ -176,7 +174,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let account_data: Vec<_> = (1..100)
         .map(|_| {
             let account = Address::random();
-            let balance = U256::from(rand::random::<u32>());
+            let balance = U256::from(rand_09::random::<u32>());
             (account, balance)
         })
         .collect();
@@ -232,7 +230,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let err = max_mint_result.unwrap_err();
     assert_eq!(
         err.as_decoded_interface_error::<TIP20Error>(),
-        Some(TIP20Error::SupplyCapExceeded(ITIP20::SupplyCapExceeded {}))
+        Some(TIP20Error::supply_cap_exceeded())
     );
 
     Ok(())
@@ -260,7 +258,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
                 .unwrap()
                 .build()
                 .unwrap();
-            let balance = U256::from(rand::random::<u32>());
+            let balance = U256::from(rand_09::random::<u32>());
             (signer, balance)
         })
         .collect();
@@ -740,7 +738,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     );
     await_receipts(&mut pending).await?;
 
-    // Distribute reward (immediate distribution)
+    // Rewards are disabled. Distribution is a no-op and should not emit reward events.
     let distribute_receipt = token
         .distributeReward(reward_amount)
         .gas(gas)
@@ -750,14 +748,16 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    distribute_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP20::RewardDistributed::decode_log(&log.inner).ok())
-        .next()
-        .expect("RewardDistributed event should be emitted");
+    assert!(
+        distribute_receipt
+            .logs()
+            .iter()
+            .filter_map(|log| ITIP20::RewardDistributed::decode_log(&log.inner).ok())
+            .next()
+            .is_none()
+    );
 
-    // Transfer to trigger reward update (use authorized address, not random)
+    // Transfer should not settle rewards now that reward accounting is disabled.
     pending.push(
         alice_token
             .transfer(admin, U256::from(100e18))
@@ -770,10 +770,8 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     assert_eq!(token.balanceOf(alice).call().await?, U256::from(900e18));
     assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
-    assert_eq!(
-        token.balanceOf(*token.address()).call().await?,
-        reward_amount
-    );
+    assert_eq!(token.balanceOf(*token.address()).call().await?, U256::ZERO);
+    assert_eq!(token.getPendingRewards(bob).call().await?, 0);
 
     bob_token
         .claimRewards()
@@ -783,7 +781,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    assert_eq!(token.balanceOf(bob).call().await?, reward_amount);
+    assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
 
     Ok(())
 }
@@ -860,7 +858,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 
     // Grant PAUSE_ROLE to admin and user
     roles
-        .grantRole(*PAUSE_ROLE, admin)
+        .grantRole(PAUSE_ROLE, admin)
         .gas(gas)
         .gas_price(gas_price)
         .send()
@@ -868,7 +866,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .get_receipt()
         .await?;
     roles
-        .grantRole(*PAUSE_ROLE, user)
+        .grantRole(PAUSE_ROLE, user)
         .gas(gas)
         .gas_price(gas_price)
         .send()

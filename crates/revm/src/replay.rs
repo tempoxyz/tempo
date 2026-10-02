@@ -12,7 +12,7 @@ use alloy_primitives::{
 };
 use revm::{
     context::{JournalEntry, JournalInner},
-    context_interface::cfg::gas::InitialAndFloorGas,
+    context_interface::cfg::gas::GasTracker,
     handler::FrameResult,
     state::{AccountInfo, Bytecode},
 };
@@ -75,7 +75,7 @@ pub fn nonce_hint(
     }
     let (slot, bound) = if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
         let hash = if spec.is_t1b() {
-            aa.expiring_nonce_hash?
+            tx.unique_tx_identifier()?
         } else {
             aa.tx_hash
         };
@@ -389,7 +389,8 @@ fn reference_prefetch_keys(
 pub struct BodyCache {
     before: JournalInner<JournalEntry>,
     after: JournalInner<JournalEntry>,
-    gas: InitialAndFloorGas,
+    gas: GasTracker,
+    after_gas: GasTracker,
     accesses: StorageAccesses,
     result: FrameResult,
     reads: Option<Vec<(ReadKey, ReadValue)>>,
@@ -401,7 +402,7 @@ impl BodyCache {
     pub(crate) fn capture(
         before: JournalInner<JournalEntry>,
         after: JournalInner<JournalEntry>,
-        gas: InitialAndFloorGas,
+        (gas, after_gas): (GasTracker, GasTracker),
         accesses: StorageAccesses,
         result: FrameResult,
         before_error_context: Option<String>,
@@ -426,6 +427,7 @@ impl BodyCache {
             before,
             after,
             gas,
+            after_gas,
             accesses,
             result,
             reads: None,
@@ -442,7 +444,7 @@ impl BodyCache {
     pub(crate) fn try_apply<DB: Database>(
         self,
         context: &mut crate::evm::TempoContext<DB>,
-        gas: &InitialAndFloorGas,
+        gas: &mut GasTracker,
     ) -> Option<FrameResult> {
         let journal = &mut context.journaled_state;
         let fresh = &journal.inner;
@@ -465,7 +467,7 @@ impl BodyCache {
         for (address, old) in &self.before.state {
             let new = fresh.state.get(address)?;
             if old.info != new.info
-                || old.original_info != new.original_info
+                || old.original_info() != new.original_info()
                 || old.status != new.status
                 || old.transaction_id != new.transaction_id
             {
@@ -547,6 +549,7 @@ impl BodyCache {
         fresh.warm_addresses = warm_addresses;
         fresh.selfdestructed_addresses = selfdestructed_addresses;
         context.local.precompile_error_message = self.after_error_context;
+        *gas = self.after_gas;
         Some(self.result)
     }
 }

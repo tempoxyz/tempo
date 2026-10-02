@@ -12,13 +12,11 @@
 
 use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 
-use alloy::signers::k256::schnorr::CryptoRngCore;
 use alloy_primitives::Address;
-use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self},
+        dkg::feldman_desmedt as dkg,
         primitives::{group::Share, sharing::Mode},
     },
     ed25519::{PrivateKey, PublicKey},
@@ -28,30 +26,32 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_codec::Encode;
 use commonware_runtime::{
-    Clock, Metrics as _, Runner as _,
+    Runner as _, Supervisor as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
+use rand_core::CryptoRng;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_commonware_node::{consensus, feed::FeedStateHandle};
+use tempo_consensus::{VerificationMode, feed::FeedStateHandle};
 
+pub mod consensus_snapshot;
 pub mod execution_runtime;
+pub mod metrics;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 pub use testing_node::TestingNode;
 
-#[cfg(test)]
-mod tests;
-
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
+const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
+
 fn generate_consensus_node_config(
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CryptoRng,
     signers: u32,
     verifiers: u32,
     fee_recipient: Address,
@@ -71,7 +71,7 @@ fn generate_consensus_node_config(
     .unwrap();
 
     let onchain_dkg_outcome = OnchainDkgOutcome {
-        epoch: Epoch::zero(),
+        epoch: 0,
         output: initial_dkg_outcome,
         next_players: shares.keys().clone(),
         is_next_full_dkg: false,
@@ -118,6 +118,13 @@ pub struct ConsensusNodeConfig {
 /// The test setup run by [`run`].
 #[derive(Clone)]
 pub struct Setup {
+    /// T12 activation override for transition tests; disables later forks when set.
+    /// `None` preserves the fixture schedule.
+    pub t12_time: Option<u64>,
+
+    /// Verification mode used by every validator.
+    pub verification_mode: VerificationMode,
+
     /// How many signing validators to launch.
     pub how_many_signers: u32,
 
@@ -134,38 +141,41 @@ pub struct Setup {
     /// The number of heights in an epoch.
     pub epoch_length: u64,
 
-    /// The amount of time the node waits for the execution layer to return
-    /// a build a payload.
-    pub new_payload_wait_time: Duration,
-
-    /// The t4 hardfork time.
-    ///
-    /// Default: `None` (not activated).
-    pub t4_time: Option<u64>,
-
-    /// Whether to activate subblocks building.
-    pub with_subblocks: bool,
+    /// Local proposal return budget, excluding the network propagation allowance.
+    pub proposal_return_budget: Duration,
 
     /// The fee recipient written into the V2 contract for each validator.
     pub fee_recipient: Address,
+
+    /// Whether validators announce `tempo/1` and publish finalization
+    /// certificates over it.
+    pub with_gossip: bool,
 }
 
 impl Setup {
-    pub fn new() -> Self {
+    pub fn new(verification_mode: VerificationMode) -> Self {
         Self {
+            t12_time: None,
+            verification_mode,
             how_many_signers: 4,
             how_many_verifiers: 0,
             seed: 0,
             linkage: Link {
                 latency: Duration::from_millis(10),
                 jitter: Duration::from_millis(1),
-                success_rate: 1.0,
+                success_rate: commonware_utils::probability!(1.0),
             },
             epoch_length: 20,
-            new_payload_wait_time: Duration::from_millis(300),
-            t4_time: None,
-            with_subblocks: false,
+            proposal_return_budget: Duration::from_millis(300),
             fee_recipient: Address::ZERO,
+            with_gossip: false,
+        }
+    }
+
+    pub fn t12_time(self, t12_time: u64) -> Self {
+        Self {
+            t12_time: Some(t12_time),
+            ..self
         }
     }
 
@@ -198,16 +208,9 @@ impl Setup {
         }
     }
 
-    pub fn new_payload_wait_time(self, new_payload_wait_time: Duration) -> Self {
+    pub fn proposal_return_budget(self, proposal_return_budget: Duration) -> Self {
         Self {
-            new_payload_wait_time,
-            ..self
-        }
-    }
-
-    pub fn subblocks(self, with_subblocks: bool) -> Self {
-        Self {
-            with_subblocks,
+            proposal_return_budget,
             ..self
         }
     }
@@ -219,9 +222,11 @@ impl Setup {
         }
     }
 
-    pub fn t4_time(self, t4_time: u64) -> Self {
+    /// Announces `tempo/1` on every validator so they publish finalization
+    /// certificates to their devp2p peers.
+    pub fn gossip(self, with_gossip: bool) -> Self {
         Self {
-            t4_time: Some(t4_time),
+            with_gossip,
             ..self
         }
     }
@@ -229,7 +234,7 @@ impl Setup {
 
 impl Default for Setup {
     fn default() -> Self {
-        Self::new()
+        Self::new(VerificationMode::default())
     }
 }
 
@@ -242,23 +247,30 @@ impl Default for Setup {
 pub async fn setup_validators(
     context: &mut Context,
     Setup {
+        t12_time,
+        verification_mode,
         epoch_length,
         how_many_signers,
         how_many_verifiers,
         linkage,
-        new_payload_wait_time,
-        t4_time,
-        with_subblocks,
+        proposal_return_budget,
         fee_recipient,
+        with_gossip,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
-        context.with_label("network"),
+        context.child("network"),
         simulated::Config {
-            max_size: 1024 * 1024,
+            max_size: MAX_MESSAGE_SIZE,
             disconnect_on_block: true,
-            tracked_peer_sets: commonware_utils::NZUsize!(3),
+            // Mirror production (`PEERSETS_TO_TRACK`): peers that leave the
+            // registered set are disconnected at the boundary.
+            tracked_peer_sets: commonware_utils::NZUsize!(1),
+            max_peers_per_set: std::num::NonZeroUsize::new(
+                (how_many_signers + how_many_verifiers).max(1) as usize,
+            )
+            .expect("maximum peers per set is non-zero"),
         },
     );
     network.start();
@@ -270,10 +282,15 @@ pub async fn setup_validators(
         fee_recipient,
     );
 
+    let network_identity = tempo_chainspec::NetworkIdentity {
+        from_epoch: onchain_dkg_outcome.epoch,
+        identity: *onchain_dkg_outcome.network_identity(),
+    };
+
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
-        .with_t4_time(t4_time)
+        .with_t12_time(t12_time)
         .with_validators(validators.clone())
         .launch()
         .unwrap();
@@ -300,37 +317,19 @@ pub async fn setup_validators(
 
         execution_config.validator_key = Some(public_key.encode().as_ref().try_into().unwrap());
         execution_config.feed_state = Some(feed_state.clone());
-
-        let engine_config = consensus::Builder {
-            fee_recipient: None,
-            execution_node: None,
-            blocker: oracle.control(private_key.public_key()),
-            peer_manager: oracle.socket_manager(),
-            partition_prefix: uid.clone(),
-            share,
-            signer: private_key.clone(),
-            mailbox_size: 1024,
-            deque_size: 10,
-            time_to_propose: Duration::from_secs(2),
-            time_to_collect_notarizations: Duration::from_secs(3),
-            time_to_retry_nullify_broadcast: Duration::from_secs(10),
-            time_for_peer_response: Duration::from_secs(2),
-            views_to_track: 10,
-            views_until_leader_skip: 5,
-            payload_interrupt_time: Duration::from_millis(200),
-            new_payload_wait_time,
-            time_to_build_subblock: Duration::from_millis(100),
-            subblock_broadcast_interval: Duration::from_millis(50),
-            fcu_heartbeat_interval: Duration::from_secs(3),
-            feed_state,
-            with_subblocks,
-        };
+        // Validators publish but never ingest; they already receive certificates
+        // over their authenticated consensus network.
+        execution_config.gossip = with_gossip.then(|| execution_runtime::gossip_config(false));
 
         nodes.push(TestingNode::new(
             uid,
             private_key,
             oracle.clone(),
-            engine_config,
+            share,
+            network_identity.clone(),
+            feed_state,
+            proposal_return_budget,
+            verification_mode,
             execution_runtime.handle(),
             execution_config,
             ingress,
@@ -344,7 +343,7 @@ pub async fn setup_validators(
 }
 
 /// Runs a test configured by [`Setup`].
-pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> String {
+pub fn run(setup: Setup, mut stop_condition: impl FnMut(&metrics::Metrics) -> bool) -> String {
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -353,36 +352,11 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
-        loop {
-            let metrics = context.encode();
-
-            let mut success = false;
-            for line in metrics.lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if stop_condition(metric, value) {
-                    success = true;
-                    break;
-                }
-            }
-
-            if success {
-                break;
-            }
-
-            context.sleep(Duration::from_secs(1)).await;
-        }
+        metrics::wait_for_metrics(&context, |metrics| {
+            metrics.assert_no_blocked_peers();
+            stop_condition(metrics)
+        })
+        .await;
 
         context.auditor().state()
     })

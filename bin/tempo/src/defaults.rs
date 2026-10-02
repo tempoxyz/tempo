@@ -3,18 +3,18 @@ use eyre::Context as _;
 use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
-    DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues, DefaultStorageValues,
-    DefaultTxPoolValues,
+    DefaultDiscoveryArgs, DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues,
+    DefaultPruningValues, DefaultTraceValues, DefaultTxPoolValues,
 };
+use reth_prune_types::{PruneMode, PruneModes};
 use std::{borrow::Cow, str::FromStr, time::Duration};
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::spec::TEMPO_T7_BASE_FEE_FLOOR;
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
-
-/// Default OTLP logs filter level for telemetry.
-const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
+const MINIMAL_PEER_SYNC_RETENTION_BLOCKS: u64 =
+    tempo_consensus::MINIMAL_PEER_SYNC_FINALIZED_BLOCKS + 64;
 
 /// CLI arguments for telemetry configuration.
 #[derive(Debug, Clone, clap::Args)]
@@ -80,7 +80,6 @@ impl TelemetryArgs {
 
         Ok(Some(TelemetryConfig {
             logs_otlp_url,
-            logs_otlp_filter: DEFAULT_LOGS_OTLP_FILTER.to_string(),
             metrics_prometheus_url,
             metrics_prometheus_interval: self.telemetry_metrics_interval,
             metrics_auth_header: Some(auth_header),
@@ -137,8 +136,6 @@ impl From<UrlWithAuth> for Url {
 pub(crate) struct TelemetryConfig {
     /// OTLP logs endpoint (without credentials).
     pub(crate) logs_otlp_url: Url,
-    /// OTLP logs filter level.
-    pub(crate) logs_otlp_filter: String,
     /// Prometheus metrics push endpoint (without credentials).
     /// Used for both consensus and execution metrics.
     pub(crate) metrics_prometheus_url: Url,
@@ -169,7 +166,7 @@ fn init_download_urls() {
 fn init_payload_builder_defaults() {
     DefaultPayloadBuilderValues::default()
         .with_interval(Duration::from_millis(100))
-        .with_max_payload_tasks(16)
+        .with_max_payload_tasks(1)
         .with_deadline(4)
         .try_init()
         .expect("failed to initialize payload builder defaults");
@@ -191,23 +188,18 @@ fn init_txpool_defaults() {
         .with_new_tx_listener_buffer_size(50000)
         .with_disable_transactions_backup(true)
         .with_additional_validation_tasks(8)
-        .with_minimal_protocol_basefee(TempoHardfork::default().base_fee())
+        .with_minimal_protocol_basefee(TEMPO_T7_BASE_FEE_FLOOR)
         .with_minimum_priority_fee(Some(0))
         .with_max_batch_size(50000)
         .try_init()
         .expect("failed to initialize txpool defaults");
 }
 
-fn init_storage_defaults() {
-    DefaultStorageValues::default()
-        // NOTE: when changing, don't forget to change in `e2e::launch_execution_node`
-        .with_v2(false)
-        .try_init()
-        .expect("failed to initialize storage defaults");
-}
-
 fn init_engine_defaults() {
     DefaultEngineValues::default()
+        // Selected by sweeping persistence thresholds with the public-mix txgen preset over 600s.
+        .with_persistence_threshold(25)
+        .with_num_state_masking_blocks(10)
         // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
         // and immediately nullified (allowing to build a payload on top of its parent). In that case reth might be asked to
         // build a payload on top an ancestor of canonical tip, which is not possible without this flag.
@@ -217,8 +209,39 @@ fn init_engine_defaults() {
         //
         // This setting allows reth to process payload attributes even if `headBlockHash` is an ancestor of the canonical tip.
         .with_always_process_payload_attributes_on_canonical_head(true)
+        // Defer persistence I/O during active payload builds.
+        .with_suppress_persistence_during_build(true)
+        .with_share_sparse_trie_with_payload_builder(true)
+        .with_share_execution_cache_with_payload_builder(true)
         .try_init()
         .expect("failed to initialize engine defaults");
+}
+
+fn init_pruning_defaults() {
+    let minimal_history_retention = Some(PruneMode::Distance(MINIMAL_PEER_SYNC_RETENTION_BLOCKS));
+    // This defines Tempo's minimum history retention window: nodes should retain
+    // enough block and state history for peers and unwinds up to three mainnet
+    // epochs behind the finalized tip, plus Reth's normal 64-block safety margin.
+    let minimal_prune_modes = PruneModes {
+        account_history: minimal_history_retention,
+        storage_history: minimal_history_retention,
+        bodies_history: minimal_history_retention,
+        ..DefaultPruningValues::default().minimal_prune_modes
+    };
+
+    DefaultPruningValues::default()
+        .with_minimal_prune_modes(minimal_prune_modes)
+        .try_init()
+        .expect("failed to initialize pruning defaults");
+}
+
+fn init_trace_defaults() {
+    DefaultTraceValues::default()
+        .with_service_name("tempo")
+        .with_service_version(env!("CARGO_PKG_VERSION"))
+        .with_logs_otlp_filter("debug")
+        .try_init()
+        .expect("failed to initialize trace defaults");
 }
 
 fn init_otlp_defaults() {
@@ -245,12 +268,23 @@ fn init_network_defaults() {
         .expect("failed to initialize network defaults");
 }
 
+fn init_discovery_defaults() {
+    DefaultDiscoveryArgs::default()
+        // Set `None` as default for discv5 ports to make discv5 share the regular discovery port with discv4.
+        .with_discv5_port(None)
+        .with_discv5_port_ipv6(None)
+        .try_init()
+        .expect("failed to initialize discovery defaults");
+}
+
 pub(crate) fn init_defaults() {
-    init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
     init_engine_defaults();
+    init_pruning_defaults();
+    init_trace_defaults();
     init_otlp_defaults();
     init_network_defaults();
+    init_discovery_defaults();
 }

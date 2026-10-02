@@ -8,10 +8,7 @@ use core::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
-    },
+    transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
 use crate::TempoNetwork;
@@ -87,7 +84,7 @@ pub struct TempoTransactionRequest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_nonzero_quantity_opt"
+        with = "alloy_serde::quantity::opt"
     )]
     pub valid_before: Option<NonZeroU64>,
 
@@ -98,7 +95,7 @@ pub struct TempoTransactionRequest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_nonzero_quantity_opt"
+        with = "alloy_serde::quantity::opt"
     )]
     pub valid_after: Option<NonZeroU64>,
 
@@ -109,6 +106,21 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    /// Returns whether this request contains fields that require Tempo AA transaction semantics.
+    pub(crate) fn has_aa_fields(&self) -> bool {
+        !self.calls.is_empty()
+            || self.nonce_key.is_some()
+            || self.fee_token.is_some()
+            || !self.tempo_authorization_list.is_empty()
+            || self.key_authorization.is_some()
+            || self.key_id.is_some()
+            || self.key_type.is_some()
+            || self.key_data.is_some()
+            || self.valid_before.is_some()
+            || self.valid_after.is_some()
+            || self.fee_payer_signature.is_some()
+    }
+
     /// Set the fee token for the [`TempoTransaction`] transaction.
     pub fn set_fee_token(&mut self, fee_token: Address) {
         self.fee_token = Some(fee_token);
@@ -142,9 +154,43 @@ impl TempoTransactionRequest {
         self
     }
 
+    /// Builder-pattern method for appending one call to the Tempo call list.
+    pub fn call(mut self, call: Call) -> Self {
+        self.calls.push(call);
+        self
+    }
+
     /// Append one call to the Tempo call list.
     pub fn push_call(&mut self, call: Call) {
         self.calls.push(call);
+    }
+
+    /// Replace the Tempo authorization list for this transaction.
+    pub fn set_tempo_authorization_list(
+        &mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) {
+        self.tempo_authorization_list = authorization_list;
+    }
+
+    /// Builder-pattern method for replacing the Tempo authorization list.
+    pub fn with_tempo_authorization_list(
+        mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) -> Self {
+        self.tempo_authorization_list = authorization_list;
+        self
+    }
+
+    /// Builder-pattern method for appending one Tempo authorization.
+    pub fn tempo_authorization(mut self, authorization: TempoSignedAuthorization) -> Self {
+        self.tempo_authorization_list.push(authorization);
+        self
+    }
+
+    /// Append one authorization to the Tempo authorization list.
+    pub fn push_tempo_authorization(&mut self, authorization: TempoSignedAuthorization) {
+        self.tempo_authorization_list.push(authorization);
     }
 
     /// Set the access-key signature type used for gas estimation.
@@ -581,6 +627,52 @@ mod tests {
     }
 
     #[test]
+    fn test_validity_window_quantity_formats() {
+        for field in ["validBefore", "validAfter"] {
+            for (value, expected) in [
+                (serde_json::Value::Null, None),
+                (serde_json::json!("0x1"), NonZeroU64::new(1)),
+                (serde_json::json!("1234"), NonZeroU64::new(1234)),
+                (serde_json::json!(1234), NonZeroU64::new(1234)),
+                (
+                    serde_json::json!("0xffffffffffffffff"),
+                    NonZeroU64::new(u64::MAX),
+                ),
+            ] {
+                let request: TempoTransactionRequest =
+                    serde_json::from_value(serde_json::json!({field: value})).unwrap();
+                let actual = if field == "validBefore" {
+                    request.valid_before
+                } else {
+                    request.valid_after
+                };
+                assert_eq!(actual, expected);
+                let serialized = serde_json::to_value(&request).unwrap();
+                assert_eq!(
+                    serialized.get(field).cloned().unwrap_or_default(),
+                    expected
+                        .map(|value| serde_json::json!(format!("0x{:x}", value.get())))
+                        .unwrap_or_default()
+                );
+            }
+            for value in [
+                serde_json::json!(0),
+                serde_json::json!("0"),
+                serde_json::json!("0x0"),
+            ] {
+                let err = serde_json::from_value::<TempoTransactionRequest>(
+                    serde_json::json!({field: value}),
+                )
+                .unwrap_err();
+                assert!(err.to_string().contains("expected non-zero quantity"));
+            }
+        }
+        let request: TempoTransactionRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(request.valid_before, None);
+        assert_eq!(request.valid_after, None);
+    }
+
+    #[test]
     fn test_deserialize_rejects_zero_validity_window_bounds() {
         let err = serde_json::from_str::<TempoTransactionRequest>(r#"{"validBefore":"0x0"}"#)
             .expect_err("zero valid_before must be rejected during deserialization");
@@ -735,6 +827,21 @@ mod tests {
         let mut request = TempoTransactionRequest::default();
         request.set_calls(vec![call.clone()]);
         request.push_call(call.clone());
+
+        assert_eq!(request.calls, vec![call.clone(), call]);
+    }
+
+    #[test]
+    fn test_call_builder() {
+        let call = Call {
+            to: address!("0x1111111111111111111111111111111111111111").into(),
+            value: U256::ZERO,
+            input: Bytes::from(vec![0xaa]),
+        };
+
+        let request = TempoTransactionRequest::default()
+            .with_calls(vec![call.clone()])
+            .call(call.clone());
 
         assert_eq!(request.calls, vec![call.clone(), call]);
     }

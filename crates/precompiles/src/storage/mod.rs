@@ -4,8 +4,12 @@
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
 pub mod access;
-pub mod evm;
+pub mod actions;
 pub mod fee_updates;
+pub use actions::{StorageAction, StorageActions};
+
+pub mod evm;
+pub use evm::SstoreTransitionFlags;
 pub mod hashmap;
 
 pub mod thread_local;
@@ -26,6 +30,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -44,14 +49,8 @@ pub trait PrecompileStorageProvider {
     /// Returns the chain ID.
     fn chain_id(&self) -> u64;
 
-    /// Returns the current block timestamp.
-    fn timestamp(&self) -> U256;
-
-    /// Returns the current block beneficiary (coinbase).
-    fn beneficiary(&self) -> Address;
-
-    /// Returns the current block number.
-    fn block_number(&self) -> u64;
+    /// Returns the full Tempo block environment.
+    fn block_env(&self) -> &TempoBlockEnv;
 
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
@@ -63,6 +62,21 @@ pub trait PrecompileStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
 
+    /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
+    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode)>;
+
+    /// Copies deployed runtime bytecode between accounts.
+    ///
+    /// Returns `None` when the source account's runtime bytecode is empty.
+    fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
+        let (code_hash, code) = self.account_code(source)?;
+        if code.is_empty() {
+            return Ok(None);
+        }
+        self.set_code(destination, code)?;
+        Ok(Some(code_hash))
+    }
+
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 
@@ -71,6 +85,30 @@ pub trait PrecompileStorageProvider {
 
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Increments a persistent storage slot by `delta`.
+    ///
+    /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        let value = self
+            .sload(address, key)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.sstore(address, key, value)
+    }
+
+    /// Decrements a persistent storage slot by `delta`.
+    ///
+    /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        let current = self.sload(address, key)?;
+        let value = current
+            .checked_sub(delta)
+            .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        self.sstore(address, key, value)
+    }
 
     /// Performs a TSTORE operation (transient storage write).
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
@@ -84,8 +122,18 @@ pub trait PrecompileStorageProvider {
     /// Add refund to the refund gas counter.
     fn refund_gas(&mut self, gas: i64);
 
+    /// Returns the gas limit for this precompile call.
+    fn gas_limit(&self) -> u64;
+
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
+
+    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    fn state_gas_used(&self) -> u64;
+
+    /// Returns the state gas that was drawn from regular gas because the reservoir was empty
+    /// (EIP-8037's `state_gas_from_gas_left`).
+    fn state_gas_spilled(&self) -> u64;
 
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;
@@ -95,6 +143,15 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
+
+    /// Returns the shared storage-actions recorder for this provider.
+    fn storage_actions(&self) -> StorageActions {
+        StorageActions::disabled()
+    }
+
+    /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
+    /// regular/state gas split independently of the active hardfork.
+    fn amsterdam_eip8037_enabled(&self) -> bool;
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
@@ -116,6 +173,20 @@ pub trait PrecompileStorageProvider {
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
+
+    /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
+    ///
+    /// Implementations that do not run TIP-1060 accounting may treat this as a no-op. Production
+    /// providers must still hardfork-gate enabling so calling this with `true` before T7 does not
+    /// activate storage credits early.
+    fn set_tip1060_storage_credits(&mut self, enabled: bool);
+
+    /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
+    ///
+    /// This leaves storage-credit accounting active for storage creation charges, redemptions, and
+    /// refund-mode settlement. Implementations that do not run TIP-1060 accounting may treat this
+    /// as a no-op.
+    fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
 
     /// Computes keccak256 and charges the appropriate gas.
     ///
@@ -161,6 +232,30 @@ pub trait StorageOps {
     fn store(&mut self, slot: U256, value: U256) -> Result<()>;
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
+
+    /// Increments a value at the provided slot by `delta`.
+    ///
+    /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let value = self
+            .load(slot)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.store(slot, value)
+    }
+
+    /// Decrements a value at the provided slot by `delta`.
+    ///
+    /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sdec(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let current = self.load(slot)?;
+        let value = current
+            .checked_sub(delta)
+            .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        self.store(slot, value)
+    }
 }
 
 /// Trait providing access to a contract's address.

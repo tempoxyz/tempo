@@ -1,0 +1,1891 @@
+//! Standalone DKG manager actor tests.
+
+mod harness;
+mod startup;
+
+use std::time::Duration;
+
+use commonware_consensus::types::{Epoch, Height, Round as ConsensusRound, View};
+use commonware_cryptography::{
+    bls12381::primitives::{
+        group::{Private, Share},
+        sharing::Mode,
+    },
+    ed25519::PrivateKey,
+};
+use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
+use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
+use rand::{SeedableRng as _, rngs::StdRng};
+use tempo_primitives::TempoConsensusContext;
+
+use super::*;
+use harness::{
+    EpochEvent, Harness, StubExecutionProvider, TestNetwork, block, dkg_state, header,
+    outcome_header, parent_block, revealed_recovery_fixture, signed_dealer_logs,
+};
+
+/// Returns the DKG outcome of a boundary block that ends `epoch`, with the
+/// ceremony `output`. The application reads `next_players` and the full DKG
+/// schedule from the state of the boundary block's parent. Here the next
+/// ceremony reshares.
+fn boundary_outcome(
+    epoch: Epoch,
+    output: Output<MinSig, PublicKey>,
+    next_players: &ordered::Set<PublicKey>,
+) -> OnchainDkgOutcome {
+    OnchainDkgOutcome {
+        epoch: epoch.next().get(),
+        output,
+        next_players: next_players.clone(),
+        is_next_full_dkg: false,
+    }
+}
+
+#[test]
+fn network_storage_failures_panic_and_allow_recovery() {
+    use commonware_runtime::deterministic::FaultConfig;
+    use commonware_utils::probability;
+
+    // Exercise both failure while appending to a new journal section and
+    // failure while syncing an appended dealing.
+    for fail_open in [true, false] {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
+            let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+            let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+            let (_, public, private) = dkg::Dealer::start::<commonware_utils::N3f1>(
+                &mut context,
+                round.info().clone(),
+                keys[1].clone(),
+                None,
+            )
+            .unwrap();
+            let private = private
+                .into_iter()
+                .find(|(player, _)| player == &keys[0].public_key())
+                .unwrap()
+                .1;
+            let (_, other_public, _) = dkg::Dealer::start::<commonware_utils::N3f1>(
+                &mut context,
+                round.info().clone(),
+                keys[1].clone(),
+                None,
+            )
+            .unwrap();
+            let ack = dkg::Player::new(round.info().clone(), keys[0].clone())
+                .unwrap()
+                .dealer_message::<commonware_utils::N3f1>(
+                    keys[1].public_key(),
+                    public.clone(),
+                    private.clone(),
+                )
+                .unwrap()
+                .unwrap();
+            let invalid_messages = [
+                vec![u8::MAX].into(),
+                // The commitment belongs to a different polynomial.
+                Message::Dealer(other_public, private.clone()).encode(),
+                // This ACK was signed by keys[0], but arrives from keys[1].
+                Message::Ack(ack).encode(),
+            ];
+            let message = Message::Dealer(public, private).encode();
+            let network = TestNetwork::default();
+            let (sender, mut receiver) = network.register(keys[1].public_key());
+            let mut sender = mux::GlobalSender::new(sender);
+            let mut harness = Harness::builder(context.child("actor"), "network_storage_failure")
+                .initial_state(state.clone())
+                .identity(keys[0].clone())
+                .network(network)
+                .build()
+                .await;
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+
+            let faults = context.storage_fault_config();
+            if fail_open {
+                faults.write().open_rate = Some(probability!(1.0));
+            } else {
+                faults.write().sync_rate = Some(probability!(1.0));
+            }
+            // Rejected protocol messages must not attempt a write or stop the
+            // actor, even when every storage operation would fail.
+            for invalid in invalid_messages {
+                assert!(
+                    sender
+                        .send(
+                            state.epoch.get(),
+                            Recipients::One(keys[0].public_key()),
+                            invalid,
+                            true,
+                        )
+                        .accepted()
+                );
+                context.sleep(Duration::from_millis(1)).await;
+                assert!(!harness.has_dealer_log(state.epoch).await);
+                assert!(receiver.recv().now_or_never().is_none());
+            }
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        message.clone(),
+                        true,
+                    )
+                    .accepted()
+            );
+
+            // The failed write must panic immediately without another message.
+            let mut harness = context
+                .timeout(Duration::from_secs(1), async move {
+                    harness.wait_for_actor_panic().await;
+                    harness
+                })
+                .await
+                .expect("a network storage failure must panic immediately");
+            assert!(
+                receiver.recv().now_or_never().is_none(),
+                "a dealing must be persisted before its ACK is sent",
+            );
+
+            *faults.write() = FaultConfig::default();
+            harness.stop().await;
+            assert_eq!(harness.storage().current(), state);
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+
+            // Invalid peer input must remain recoverable: send a malformed message
+            // before retrying the valid dealing and require its acknowledgement.
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        vec![u8::MAX],
+                        true,
+                    )
+                    .accepted()
+            );
+            // Let the mux deliver the malformed message before filling its
+            // single-slot subchannel again.
+            context.sleep(Duration::from_millis(1)).await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            assert!(
+                sender
+                    .send(
+                        state.epoch.get(),
+                        Recipients::One(keys[0].public_key()),
+                        message,
+                        true,
+                    )
+                    .accepted()
+            );
+            let (_, ack) = context
+                .timeout(Duration::from_secs(1), async move { receiver.recv().await })
+                .await
+                .expect("reopened storage must accept the retried dealing")
+                .unwrap();
+            let (epoch, mut ack) = mux::parse(ack).unwrap();
+            assert_eq!(epoch, state.epoch.get());
+            assert!(matches!(
+                Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
+                Message::Ack(_)
+            ));
+            harness.stop().await;
+        });
+    }
+}
+
+#[test]
+fn local_share_storage_failures_panic_and_allow_recovery() {
+    use commonware_consensus::Reporter as _;
+    use commonware_runtime::deterministic::FaultConfig;
+    use commonware_utils::probability;
+
+    // Fail opening the dealing's journal section, syncing the dealing, or
+    // syncing the ACK after the dealing has already been persisted.
+    for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
+        let runner = Runner::new(
+            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
+        );
+        runner.start(|mut context| async move {
+            let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+            let identity = keys[0].clone();
+            let mut harness = Harness::builder(context.child("actor"), "local_storage_failure")
+                .initial_state(state.clone())
+                .identity(identity.clone())
+                .build()
+                .await;
+
+            if seed_dealing {
+                let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+                let storage = harness.storage_mut();
+                let dealer = storage
+                    .create_dealer_for_round(
+                        identity.clone(),
+                        round.clone(),
+                        state.share.clone(),
+                        state.seed,
+                    )
+                    .unwrap()
+                    .unwrap();
+                let mut player = storage
+                    .create_player_for_round(identity.clone(), &round)
+                    .unwrap()
+                    .unwrap();
+                let (_, public, private) = dealer
+                    .shares_to_distribute()
+                    .find(|(recipient, _, _)| *recipient == identity.public_key())
+                    .unwrap();
+                player
+                    .receive_dealing(storage, state.epoch, identity.public_key(), public, private)
+                    .await
+                    .unwrap();
+            }
+
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            let faults = context.storage_fault_config();
+            if fail_open {
+                faults.write().open_rate = Some(probability!(1.0));
+            } else {
+                faults.write().sync_rate = Some(probability!(1.0));
+            }
+
+            // An early finalized block triggers delivery of our own dealing and
+            // ACK before the block's header is persisted.
+            let (ack, waiter) = Exact::handle();
+            assert!(
+                harness
+                    .mailbox()
+                    .clone()
+                    .report(Update::Block(Arc::new(block(header(Height::new(10)))), ack))
+                    .accepted()
+            );
+            let mut harness = context
+                .timeout(Duration::from_secs(1), async move {
+                    harness.wait_for_actor_panic().await;
+                    harness
+                })
+                .await
+                .expect("a local storage failure must panic immediately");
+            assert!(
+                waiter.await.is_err(),
+                "the failed block must not be acknowledged"
+            );
+
+            *faults.write() = FaultConfig::default();
+            harness.stop().await;
+            assert_eq!(harness.storage().current(), state);
+            assert!(
+                harness
+                    .storage()
+                    .get_latest_finalized_block_for_epoch(&state.epoch)
+                    .is_none()
+            );
+            harness.start().await;
+            assert!(!harness.has_dealer_log(state.epoch).await);
+            harness
+                .report_finalized_header(header(Height::new(10)))
+                .await;
+            harness.stop().await;
+            assert_eq!(
+                *harness
+                    .storage()
+                    .get_latest_finalized_block_for_epoch(&state.epoch)
+                    .unwrap()
+                    .0,
+                Height::new(10)
+            );
+        });
+    }
+}
+
+#[test]
+fn actor_drops_outcome_request_when_block_subscription_closes() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let mut harness = Harness::builder(context.child("test"), "closed_subscription")
+            .epoch_length(10)
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(9), &state));
+
+        harness.marshal.close_subscriptions();
+
+        harness.start().await;
+
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        harness
+            .report_finalized_header(header(Height::new(11)))
+            .await;
+
+        let request_mailbox = harness.mailbox().clone();
+        let response = context
+            .timeout(Duration::from_secs(1), async move {
+                request_mailbox
+                    .subscribe_dkg_ceremony(parent_block(
+                        ConsensusRound::new(state.epoch, View::new(11)),
+                        Height::new(11),
+                        1,
+                    ))
+                    .await
+            })
+            .await
+            .expect("a closed block subscription must not leave the outcome request pending");
+
+        assert!(response.is_err());
+    });
+}
+
+#[test]
+fn startup_discards_stale_state_on_startup() {
+    Runner::default().start(|mut context| async move {
+        let (current_state, _, _) = dkg_state(&mut context, Epoch::new(1).next(), 4, false);
+        let mut harness = Harness::builder(context.child("test"), "startup_discards_stale_state")
+            .epoch_length(10)
+            .initial_epoch(1)
+            // Exercise stale-state replacement as an observer, without
+            // recovering a share from the previous epoch.
+            .identity(PrivateKey::from_seed(u64::MAX))
+            .finalized_floor(Height::new(19))
+            .build()
+            .await;
+
+        let stale_state = harness.initial_state().clone();
+
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(19), &current_state));
+
+        harness.start().await;
+
+        // A mailbox round-trip ensures startup healing and epoch entry have completed as
+        // heal() completes priot to starting the event loop
+        assert!(!harness.has_dealer_log(current_state.epoch).await);
+
+        assert_ne!(current_state.output, stale_state.output);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: current_state.epoch,
+                public: current_state.output.public().clone(),
+                share: None,
+                participants: current_state.dealers().clone(),
+            }]
+        );
+        assert_eq!(
+            harness.execution.reads(),
+            vec![Height::new(19); 3],
+            "healing should replace stale state from the latest boundary"
+        );
+    });
+}
+
+#[test]
+fn startup_recovers_v0_share_without_t12() {
+    assert_startup_recovers_revealed_share(None);
+}
+
+#[test]
+fn startup_recovers_v1_share_after_t12() {
+    assert_startup_recovers_revealed_share(Some(0));
+}
+
+#[test]
+fn startup_recovers_historical_v0_share_after_t12() {
+    assert_startup_recovers_revealed_share(Some(100));
+}
+
+fn assert_startup_recovers_revealed_share(activation: Option<u64>) {
+    Runner::default().start(|mut context| async move {
+        let ceremony_epoch = Epoch::new(1);
+        let fixture =
+            revealed_recovery_fixture(&mut context, ceremony_epoch, activation == Some(0));
+
+        // Since the finalized floor is the boundary of epoch 1, it will try look through this epoch
+        // to see if the share was revealed onchain.
+        let mut harness =
+            Harness::builder(context.child("test"), "startup_recovers_revealed_share")
+                .epoch_length(10)
+                .identity(fixture.identity.clone())
+                .finalized_floor(Height::new(19))
+                .build()
+                .await;
+
+        fixture.populate_execution(&harness.execution, &harness.epoch_strategy);
+
+        harness.execution.set_t12_activation(activation);
+        // Recovery must use epoch 1's starting boundary (timestamp 0), even when
+        // T12 is active at the boundary that starts the current epoch.
+        let mut current_boundary = outcome_header(Height::new(19), &fixture.recovered_state);
+        current_boundary.inner.timestamp = 100;
+        harness.execution.add_header(current_boundary);
+        harness.start().await;
+
+        // A mailbox round-trip ensures startup recovery and epoch entry have completed.
+        assert!(!harness.has_dealer_log(ceremony_epoch.next()).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: ceremony_epoch.next(),
+                public: fixture.expected_output.public().clone(),
+                share: Some(fixture.recovered_share),
+                participants: fixture.expected_output.players().clone(),
+            }]
+        );
+    });
+}
+
+#[test]
+fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
+    Runner::default().start(|mut context| async move {
+        let ceremony_epoch = Epoch::new(1);
+        let (ceremony_state, keys, _) = dkg_state(&mut context, ceremony_epoch, 1, true);
+        let mut carried_state = ceremony_state.clone();
+        carried_state.epoch = ceremony_epoch.next();
+        carried_state.is_full_dkg = false;
+
+        let mut harness = Harness::builder(context.child("test"), "startup_skips_failed_ceremony")
+            .epoch_length(10)
+            .initial_state(ceremony_state.clone())
+            .identity(keys[0].clone())
+            .finalized_floor(Height::new(19))
+            .build()
+            .await;
+
+        let last_finalized_height = Height::new(19);
+        let ceremony_boundary = harness
+            .epoch_strategy
+            .last(ceremony_epoch.previous().unwrap())
+            .unwrap();
+
+        harness
+            .execution
+            .add_header(outcome_header(ceremony_boundary, &ceremony_state));
+
+        harness
+            .execution
+            .add_header(outcome_header(last_finalized_height, &carried_state));
+
+        harness.start().await;
+
+        assert!(!harness.has_dealer_log(carried_state.epoch).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: carried_state.epoch,
+                public: carried_state.output.public().clone(),
+                share: None,
+                participants: carried_state.dealers().clone(),
+            }]
+        );
+        assert_eq!(
+            harness.execution.reads(),
+            vec![
+                last_finalized_height,
+                ceremony_boundary,
+                last_finalized_height,
+                last_finalized_height
+            ],
+            "a carried-forward output must skip dealer-log recovery"
+        );
+    });
+}
+
+#[test]
+fn failed_dkg_outcomes_carry_share_forward() {
+    Runner::default().start(|mut context| async move {
+        let (mut state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let identity = keys[0].clone();
+        let index = state
+            .output
+            .players()
+            .index(&identity.public_key())
+            .unwrap();
+        let share = Share::new(index, Private::random(&mut context));
+        state.share = ShareState::Plaintext(Some(share.clone()));
+
+        let mut harness = Harness::builder(context.child("test"), "failed_dkg_carries_share")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .identity(identity)
+            .build()
+            .await;
+
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        harness
+            .report_finalized_header(header(Height::new(11)))
+            .await;
+
+        let first_parent = parent_block(
+            ConsensusRound::new(state.epoch, View::new(10)),
+            Height::new(10),
+            1,
+        );
+        let first_digest = first_parent.digest();
+        let first_output = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(first_parent.clone())
+            .await
+            .unwrap();
+        assert_eq!(first_output, state.output);
+        let first_outcome = boundary_outcome(state.epoch, first_output, state.players());
+
+        let mut first_boundary = header(Height::new(19));
+        first_boundary.inner.parent_hash = first_digest.0;
+        first_boundary.inner.extra_data = first_outcome.encode().into();
+        harness.report_finalized_header(first_boundary).await;
+        assert!(!harness.has_dealer_log(first_outcome.epoch()).await);
+
+        harness
+            .report_finalized_header(header(Height::new(20)))
+            .await;
+        harness
+            .report_finalized_header(header(Height::new(21)))
+            .await;
+
+        let second_parent = parent_block(
+            ConsensusRound::new(state.epoch.next(), View::new(20)),
+            Height::new(20),
+            2,
+        );
+        let second_digest = second_parent.digest();
+        let second_output = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(second_parent.clone())
+            .await
+            .unwrap();
+        assert_eq!(second_output, state.output);
+        let second_outcome =
+            boundary_outcome(first_outcome.epoch(), second_output, state.players());
+
+        let mut second_boundary = header(Height::new(29));
+        second_boundary.inner.parent_hash = second_digest.0;
+        second_boundary.inner.extra_data = second_outcome.encode().into();
+        harness.report_finalized_header(second_boundary).await;
+        assert!(!harness.has_dealer_log(second_outcome.epoch()).await);
+
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![
+                EpochEvent::Enter {
+                    epoch: state.epoch,
+                    public: state.output.public().clone(),
+                    share: Some(share.clone()),
+                    participants: state.dealers().clone(),
+                },
+                EpochEvent::Exit(state.epoch),
+                EpochEvent::Enter {
+                    epoch: first_outcome.epoch(),
+                    public: state.output.public().clone(),
+                    share: Some(share.clone()),
+                    participants: state.dealers().clone(),
+                },
+                EpochEvent::Exit(first_outcome.epoch()),
+                EpochEvent::Enter {
+                    epoch: second_outcome.epoch(),
+                    public: state.output.public().clone(),
+                    share: Some(share),
+                    participants: state.dealers().clone(),
+                },
+            ]
+        );
+    });
+}
+
+#[test]
+fn startup_prepopulates_to_a_non_boundary_finalized_floor() {
+    Runner::default().start(|mut context| async move {
+        let (current_state, _, _) = dkg_state(&mut context, Epoch::new(1).next(), 4, false);
+        let mut harness =
+            Harness::builder(context.child("test"), "prepopulates_non_boundary_floor")
+                .epoch_length(10)
+                .initial_epoch(1)
+                .identity(PrivateKey::from_seed(u64::MAX))
+                .finalized_floor(Height::new(22))
+                .build()
+                .await;
+
+        let boundary = harness.epoch_strategy.last(Epoch::new(1)).unwrap();
+        harness
+            .execution
+            .add_header(outcome_header(boundary, &current_state));
+
+        // Add a few headers into the epoch.
+        harness.execution.add_header(header(Height::new(20)));
+        harness.execution.add_header(header(Height::new(21)));
+        harness.execution.add_header(header(Height::new(22)));
+
+        harness.start().await;
+
+        assert!(!harness.has_dealer_log(current_state.epoch).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: current_state.epoch,
+                public: current_state.output.public().clone(),
+                share: None,
+                participants: current_state.dealers().clone(),
+            }]
+        );
+
+        assert_eq!(
+            harness.execution.reads(),
+            [
+                boundary,
+                boundary,
+                Height::new(20),
+                Height::new(21),
+                Height::new(22),
+                boundary
+            ]
+        );
+    });
+}
+
+#[test]
+fn prepopulation_replays_only_missing_headers() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "prepopulation_missing_range")
+            .epoch_length(10)
+            .initial_epoch(1)
+            .finalized_floor(Height::new(12))
+            .build()
+            .await;
+
+        let initial_epoch = harness.initial_state().epoch;
+        harness.execution.add_header(header(Height::new(10)));
+        harness.execution.add_header(header(Height::new(11)));
+        harness.marshal.add_block(block(header(Height::new(12))));
+
+        harness.start().await;
+
+        assert!(!harness.has_dealer_log(initial_epoch).await);
+        harness.stop().await;
+
+        assert_eq!(
+            harness
+                .storage()
+                .get_latest_finalized_block_for_epoch(&Epoch::new(1))
+                .map(|(height, _)| *height),
+            Some(Height::new(12))
+        );
+        assert_eq!(
+            harness.execution.reads(),
+            vec![
+                Height::new(9),
+                Height::new(10),
+                Height::new(11),
+                Height::new(12),
+                Height::new(9)
+            ]
+        );
+        assert_eq!(harness.marshal.reads(), vec![Height::new(12)]);
+
+        harness.start().await;
+        assert!(!harness.has_dealer_log(initial_epoch).await);
+
+        assert_eq!(
+            harness.execution.reads(),
+            vec![
+                Height::new(9),
+                Height::new(10),
+                Height::new(11),
+                Height::new(12),
+                Height::new(9),
+                Height::new(9),
+                Height::new(9)
+            ],
+            "only the ceremony boundary should be read again"
+        );
+    });
+}
+
+#[test]
+fn prepopulation_skips_replay_when_dkg_state_is_ahead() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "prepopulation_ahead")
+            .epoch_length(10)
+            .initial_epoch(1)
+            .finalized_floor(Height::new(8))
+            .build()
+            .await;
+
+        let state = harness.initial_state().clone();
+
+        harness.start().await;
+
+        assert!(!harness.has_dealer_log(state.epoch).await);
+
+        // No replay is needed; only the ceremony boundary is read for version selection.
+        assert_eq!(harness.execution.reads(), vec![Height::new(9)]);
+        assert!(harness.marshal.reads().is_empty());
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: state.epoch,
+                public: state.output.public().clone(),
+                share: None,
+                participants: state.dealers().clone(),
+            }]
+        );
+    });
+}
+
+#[test]
+fn prepopulation_fails_when_required_header_is_unavailable() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "prepopulation_missing_header")
+            .epoch_length(10)
+            .initial_epoch(1)
+            .finalized_floor(Height::new(10))
+            .build()
+            .await;
+
+        harness.start().await;
+
+        // After reading the ceremony boundary, replay fails on the missing header at 10.
+        harness.wait_for_exit().await;
+
+        assert_eq!(
+            harness.execution.reads(),
+            vec![Height::new(9), Height::new(10)]
+        );
+    });
+}
+
+#[test]
+fn epoch_shares_only_distributed_in_the_first_half() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let mut harness = Harness::builder(context.child("test"), "epoch_shares_distributed")
+            .epoch_length(10)
+            .build()
+            .await;
+
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(9), &state));
+
+        harness.start().await;
+
+        // A mailbox round-trip ensures the actor has entered the epoch before
+        // finalized blocks are delivered.
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: state.epoch,
+                public: state.output.public().clone(),
+                share: None,
+                participants: state.dealers().clone(),
+            }]
+        );
+
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        assert_eq!(harness.sender().send_count(), state.players().len() - 1);
+
+        harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+
+        assert!(harness.has_dealer_log(state.epoch).await);
+
+        harness
+            .report_finalized_header(header(Height::new(16)))
+            .await;
+
+        assert_eq!(
+            harness.sender().send_count(),
+            state.players().len() - 1,
+            "midpoint and late blocks must not redistribute shares"
+        );
+
+        let parent = parent_block(
+            ConsensusRound::new(state.epoch, View::new(15)),
+            Height::new(15),
+            1,
+        );
+        let digest = parent.digest();
+        let output = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent.clone())
+            .await
+            .unwrap();
+
+        let mut boundary = header(Height::new(19));
+        boundary.inner.parent_hash = digest.0;
+        boundary.inner.extra_data = boundary_outcome(state.epoch, output, state.players())
+            .encode()
+            .into();
+
+        harness.report_finalized_header(boundary).await;
+
+        assert!(!harness.has_dealer_log(state.epoch.next()).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![
+                EpochEvent::Enter {
+                    epoch: state.epoch,
+                    public: state.output.public().clone(),
+                    share: None,
+                    participants: state.dealers().clone(),
+                },
+                EpochEvent::Exit(state.epoch),
+                EpochEvent::Enter {
+                    epoch: state.epoch.next(),
+                    public: state.output.public().clone(),
+                    share: None,
+                    participants: state.dealers().clone(),
+                },
+            ]
+        );
+    });
+}
+
+#[test]
+fn ceremony_without_t12_uses_v0() {
+    assert_ceremony_reveal_version(None, 100, false);
+}
+
+#[test]
+fn ceremony_crossing_t12_keeps_v0() {
+    assert_ceremony_reveal_version(Some(100), 99, false);
+}
+
+#[test]
+fn ceremony_at_t12_uses_v1() {
+    assert_ceremony_reveal_version(Some(100), 100, true);
+}
+
+#[test]
+fn ceremony_after_t12_uses_v1() {
+    assert_ceremony_reveal_version(Some(100), 101, true);
+}
+
+fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u64, use_v1: bool) {
+    Runner::default().start(|mut context| async move {
+        let (mut state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let mut dealers = keys.into_iter().zip(shares).collect::<Vec<_>>();
+        dealers.sort_by_key(|(key, _)| key.public_key());
+        let players = (0..7).map(PrivateKey::from_seed).collect::<Vec<_>>();
+        state.players =
+            ordered::Set::try_from_iter(players.iter().map(|k| k.public_key())).unwrap();
+        let revealed_player = players[6].public_key();
+        // Two of the three selected dealers withhold the revealed player's ACK.
+        let dealer_inputs = dealers
+            .iter()
+            .map(|(key, share)| (key.clone(), Some(share.clone())))
+            .collect::<Vec<_>>();
+        let withholding_dealers = dealers
+            .iter()
+            .take(2)
+            .map(|(key, _)| key.public_key())
+            .collect::<Vec<_>>();
+
+        // Resharing from 4 to 7 players selects 3 dealer commitments. V0 needs
+        // f_new + 1 = 3 reveals; V1 needs quorum_old - f_old = 3 - 1 = 2.
+        // Construct both reference rounds independently of Round::from_state,
+        // so changing the actor's version cannot also change the expectation.
+        let mut reference = |reveal| {
+            let info = dkg::Info::new::<N3f1>(
+                crate::config::NAMESPACE,
+                state.epoch.get(),
+                Some(state.output.clone()),
+                Mode::NonZeroCounter,
+                reveal,
+                state.dealers().clone(),
+                state.players().clone(),
+            )
+            .unwrap();
+            // Reuse each dealer's polynomial randomness across both rounds:
+            // V1 binds ACK signatures to a different transcript, so the logs
+            // must be regenerated per mode from the same dealings.
+            let signed = signed_dealer_logs(
+                &info,
+                &dealer_inputs,
+                &players,
+                |index| StdRng::seed_from_u64(index as u64),
+                |dealer, player| withholding_dealers.contains(dealer) && *player == revealed_player,
+            );
+            for (index, signed) in signed.iter().enumerate() {
+                let (_, log) = signed.clone().check(&info).unwrap();
+                let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
+                    panic!("fixture must contain usable dealer logs");
+                };
+                let expected_reveals = if index < 2 {
+                    ordered::Set::try_from_iter([revealed_player.clone()]).unwrap()
+                } else {
+                    ordered::Set::default()
+                };
+                assert_eq!(reveals, expected_reveals);
+                assert_eq!(acks.len() + reveals.len(), players.len());
+            }
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(info.clone());
+            for signed in &signed {
+                let (dealer, log) = signed.clone().check(&info).unwrap();
+                logs.record(dealer, log);
+            }
+            let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            (signed, output)
+        };
+        let (new_logs, new_output) = reference(dkg::Reveal::V1);
+        #[expect(deprecated, reason = "pin the pre-upgrade revealed-share calculation")]
+        let (legacy_logs, legacy_output) = reference(dkg::Reveal::V0);
+
+        assert!(legacy_output.revealed().is_empty());
+        assert_eq!(
+            new_output.revealed(),
+            &ordered::Set::try_from_iter([revealed_player]).unwrap()
+        );
+        assert_eq!(legacy_output.public(), new_output.public());
+        assert_eq!(legacy_output.players(), new_output.players());
+        assert_eq!(legacy_output.dealers(), new_output.dealers());
+        assert_eq!(
+            legacy_output.dealers(),
+            &ordered::Set::try_from_iter(dealers.iter().take(3).map(|(k, _)| k.public_key()))
+                .unwrap()
+        );
+
+        // Run the real actor as an observer, using only finalized block input.
+        let mut harness = Harness::builder(context.child("test"), "t12_reveals")
+            .initial_state(state.clone())
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        harness.execution.set_t12_activation(activation);
+        let mut previous = outcome_header(Height::new(9), &state);
+        previous.inner.timestamp = boundary_timestamp;
+        harness.execution.add_header(previous.clone());
+        harness.start().await;
+
+        // A contiguous epoch prefix with signed dealer logs (including their
+        // ACKs and reveals) in all four post-midpoint, non-boundary blocks.
+        let mut selected_logs = if use_v1 { new_logs } else { legacy_logs }.into_iter();
+        for height in 10..=18 {
+            let mut next = header(Height::new(height));
+            next.inner.parent_hash = previous.hash_slow();
+            next.inner.timestamp = boundary_timestamp + height;
+            if height >= 15 {
+                next.inner.extra_data = selected_logs.next().unwrap().encode().into();
+            }
+            harness.marshal.add_block(block(next.clone()));
+            harness.report_finalized_header(next.clone()).await;
+            previous = next;
+        }
+        assert!(selected_logs.next().is_none());
+        let actual = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
+            .await
+            .unwrap();
+
+        // Full equality pins the transcript as well as the revealed set.
+        let (expected, other) = if use_v1 {
+            (&new_output, &legacy_output)
+        } else {
+            (&legacy_output, &new_output)
+        };
+        assert_eq!(&actual, expected);
+        assert_ne!(actual.revealed(), other.revealed());
+        assert_ne!(actual.encode(), other.encode());
+        assert!(harness.marshal.subscriptions().is_empty());
+        harness.stop().await;
+        assert_eq!(harness.storage().logs_for_epoch(state.epoch).count(), 4);
+        // Reconstruct the round from persisted state and replay the same logs.
+        harness.start().await;
+        let restarted = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
+            .await
+            .unwrap();
+        assert_eq!(restarted, actual);
+        harness.stop().await;
+    });
+}
+
+#[test]
+fn two_actors_produce_the_same_new_dkg_output() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+        let execution = StubExecutionProvider::default();
+        execution.add_header(outcome_header(Height::new(9), &state));
+
+        let network = TestNetwork::default();
+        let mut first_harness = Harness::builder(context.child("first"), "new_output_first")
+            .epoch_length(10)
+            .identity(keys[0].clone())
+            .execution(execution.clone())
+            .network(network.clone())
+            .build()
+            .await;
+        let mut second_harness = Harness::builder(context.child("second"), "new_output_second")
+            .epoch_length(10)
+            .identity(keys[1].clone())
+            .execution(execution)
+            .network(network)
+            .build()
+            .await;
+
+        first_harness.start().await;
+        second_harness.start().await;
+
+        first_harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+
+        second_harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+
+        first_harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+        second_harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+
+        let first_log = first_harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .unwrap();
+        let second_log = second_harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut first_log_header = header(Height::new(16));
+        first_log_header.inner.extra_data = first_log.encode().into();
+        first_harness
+            .report_finalized_header(first_log_header.clone())
+            .await;
+        second_harness
+            .report_finalized_header(first_log_header)
+            .await;
+
+        let mut second_log_header = header(Height::new(17));
+        second_log_header.inner.extra_data = second_log.encode().into();
+        first_harness
+            .report_finalized_header(second_log_header.clone())
+            .await;
+        second_harness
+            .report_finalized_header(second_log_header)
+            .await;
+
+        let parent = parent_block(
+            ConsensusRound::new(state.epoch, View::new(17)),
+            Height::new(17),
+            1,
+        );
+        let first_output = first_harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent.clone())
+            .await
+            .unwrap();
+        let second_output = second_harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(first_output, second_output);
+        assert_ne!(first_output, state.output);
+    });
+}
+
+#[test]
+fn reshare_produces_new_shares() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 2, false);
+        let first_share = shares[0].clone();
+        let mut first_state = state.clone();
+        first_state.share = ShareState::Plaintext(Some(first_share.clone()));
+
+        let second_share = shares[1].clone();
+        let mut second_state = state.clone();
+        second_state.share = ShareState::Plaintext(Some(second_share.clone()));
+
+        let execution = StubExecutionProvider::default();
+
+        let network = TestNetwork::default();
+        let mut first_harness = Harness::builder(context.child("first"), "reshare_first")
+            .epoch_length(10)
+            .initial_state(first_state)
+            .identity(keys[0].clone())
+            .execution(execution.clone())
+            .network(network.clone())
+            .build()
+            .await;
+        let mut second_harness = Harness::builder(context.child("second"), "reshare_second")
+            .epoch_length(10)
+            .initial_state(second_state)
+            .identity(keys[1].clone())
+            .execution(execution)
+            .network(network)
+            .build()
+            .await;
+
+        first_harness.start().await;
+        second_harness.start().await;
+
+        first_harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+
+        second_harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+
+        first_harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+        second_harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+
+        let first_log = first_harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut first_log_header = header(Height::new(16));
+        first_log_header.inner.extra_data = first_log.encode().into();
+
+        first_harness
+            .report_finalized_header(first_log_header.clone())
+            .await;
+        second_harness
+            .report_finalized_header(first_log_header)
+            .await;
+
+        let second_log = second_harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut second_log_header = header(Height::new(17));
+        second_log_header.inner.extra_data = second_log.encode().into();
+
+        first_harness
+            .report_finalized_header(second_log_header.clone())
+            .await;
+        second_harness
+            .report_finalized_header(second_log_header)
+            .await;
+
+        let parent = parent_block(
+            ConsensusRound::new(state.epoch, View::new(17)),
+            Height::new(17),
+            1,
+        );
+        let digest = parent.digest();
+        let first_output = first_harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent.clone())
+            .await
+            .unwrap();
+        let second_output = second_harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(first_output, second_output);
+        assert_eq!(
+            first_output.public().public(),
+            state.output.public().public()
+        );
+        let outcome = boundary_outcome(state.epoch, first_output, state.players());
+
+        let mut boundary = header(Height::new(19));
+        boundary.inner.parent_hash = digest.0;
+        boundary.inner.extra_data = outcome.encode().into();
+        first_harness
+            .report_finalized_header(boundary.clone())
+            .await;
+
+        second_harness.report_finalized_header(boundary).await;
+        assert!(!first_harness.has_dealer_log(outcome.epoch()).await);
+        assert!(!second_harness.has_dealer_log(outcome.epoch()).await);
+
+        let first_events = first_harness.epoch_manager.events();
+        let EpochEvent::Enter {
+            share: Some(new_first_share),
+            ..
+        } = first_events.last().unwrap()
+        else {
+            panic!("first actor should enter with a reshared share");
+        };
+        let second_events = second_harness.epoch_manager.events();
+        let EpochEvent::Enter {
+            share: Some(new_second_share),
+            ..
+        } = second_events.last().unwrap()
+        else {
+            panic!("second actor should enter with a reshared share");
+        };
+
+        assert_ne!(new_first_share, &first_share);
+        assert_ne!(new_second_share, &second_share);
+        assert_eq!(
+            new_first_share.public::<MinSig>(),
+            outcome
+                .output
+                .public()
+                .partial_public(new_first_share.index)
+                .unwrap()
+        );
+        assert_eq!(
+            new_second_share.public::<MinSig>(),
+            outcome
+                .output
+                .public()
+                .partial_public(new_second_share.index)
+                .unwrap()
+        );
+    });
+}
+
+#[test]
+fn acked_dealer_messages_not_re_exchanged_after_restart() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let first = keys[0].clone();
+        let second = keys[1].clone();
+        let first_public = first.public_key();
+        let second_public = second.public_key();
+
+        let execution = StubExecutionProvider::default();
+        execution.add_header(outcome_header(Height::new(9), &state));
+
+        let network = TestNetwork::default();
+        let mut first_harness = Harness::builder(context.child("first"), "actor_exchange_first")
+            .epoch_length(10)
+            .identity(first.clone())
+            .execution(execution.clone())
+            .network(network.clone())
+            .build()
+            .await;
+        let mut second_harness = Harness::builder(context.child("second"), "actor_exchange_second")
+            .epoch_length(10)
+            .identity(second.clone())
+            .execution(execution.clone())
+            .network(network.clone())
+            .build()
+            .await;
+
+        first_harness.start().await;
+        second_harness.start().await;
+
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+
+        // Synchronize first with the player receiving the dealing, then with
+        // the dealer receiving its ACK.
+        first_harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+
+        // Apply the same ordering in the opposite direction. Once these calls
+        // return, both ACKs have been processed and persisted.
+        second_harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+        assert_eq!(
+            (
+                network.deliveries_between(&first_public, &second_public),
+                network.deliveries_between(&second_public, &first_public),
+            ),
+            (2, 2),
+            "each actor should send a dealing and return an ACK"
+        );
+
+        first_harness.stop().await;
+        second_harness.stop().await;
+
+        let deliveries_before_restart = (
+            network.deliveries_between(&first_public, &second_public),
+            network.deliveries_between(&second_public, &first_public),
+        );
+
+        drop(first_harness);
+        drop(second_harness);
+
+        let mut first_harness =
+            Harness::builder(context.child("first_restart"), "actor_exchange_first")
+                .epoch_length(10)
+                .identity(first)
+                .execution(execution.clone())
+                .finalized_floor(Height::new(10))
+                .network(network.clone())
+                .build()
+                .await;
+        let mut second_harness =
+            Harness::builder(context.child("second_restart"), "actor_exchange_second")
+                .epoch_length(10)
+                .identity(second)
+                .execution(execution)
+                .finalized_floor(Height::new(10))
+                .network(network.clone())
+                .build()
+                .await;
+
+        first_harness.start().await;
+        second_harness.start().await;
+
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+
+        first_harness
+            .report_finalized_header(header(Height::new(11)))
+            .await;
+        second_harness
+            .report_finalized_header(header(Height::new(11)))
+            .await;
+
+        // Round trips after both updates ensure any resulting network messages
+        // have been handled before inspecting the transport.
+        assert!(!first_harness.has_dealer_log(state.epoch).await);
+        assert!(!second_harness.has_dealer_log(state.epoch).await);
+        assert_eq!(
+            (
+                network.deliveries_between(&first_public, &second_public),
+                network.deliveries_between(&second_public, &first_public),
+            ),
+            deliveries_before_restart,
+            "restarted actors must not redistribute shares already acknowledged"
+        );
+
+        first_harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+        second_harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+
+        assert!(first_harness.has_dealer_log(state.epoch).await);
+        assert!(second_harness.has_dealer_log(state.epoch).await);
+    });
+}
+
+#[test]
+fn duplicate_outcome_requests_keep_all_live_waiters() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let mut harness = Harness::builder(context.child("test"), "duplicate_outcomes")
+            .epoch_length(10)
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(9), &state));
+        harness.start().await;
+        let finalized = header(Height::new(10));
+        harness.marshal.add_block(block(finalized.clone()));
+        harness.report_finalized_header(finalized.clone()).await;
+
+        // Marshal does not have the parent yet, so the requests wait for it.
+        let mut parent = header(Height::new(11));
+        parent.inner.parent_hash = finalized.hash_slow();
+        let parent = block(parent);
+        let mailbox = harness.mailbox().clone();
+        let mut first = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
+        let mut second = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
+        let canceled = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        drop(canceled);
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        harness.marshal.add_block(parent);
+        let (first, second) = futures::join!(first, second);
+        assert_eq!(first.unwrap(), second.unwrap());
+    });
+}
+
+#[test]
+fn finalized_logs_of_all_dealers_conclude_the_ceremony_for_every_parent() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let dealers = keys
+            .iter()
+            .map(|key| (key.clone(), None))
+            .collect::<Vec<_>>();
+        let signed_logs = signed_dealer_logs(
+            round.info(),
+            &dealers,
+            &keys,
+            |index| StdRng::seed_from_u64(index as u64),
+            |_, _| false,
+        );
+        let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+        for signed in &signed_logs {
+            let (dealer, log) = signed.clone().check(round.info()).unwrap();
+            logs.record(dealer, log);
+        }
+        let expected = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+
+        let mut harness = Harness::builder(context.child("test"), "concluded_ceremony")
+            .initial_state(state.clone())
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        harness.start().await;
+        for (offset, signed) in signed_logs.iter().enumerate() {
+            let mut log_header = header(Height::new(15 + offset as u64));
+            log_header.inner.extra_data = signed.encode().into();
+            harness.report_finalized_header(log_header).await;
+        }
+
+        // Marshal has neither parent. The actor answers without their ancestry.
+        let parent = |tag| {
+            parent_block(
+                ConsensusRound::new(state.epoch, View::new(18)),
+                Height::new(18),
+                tag,
+            )
+        };
+        let (first, second) = futures::join!(
+            harness.mailbox().subscribe_dkg_ceremony(parent(1)),
+            harness.mailbox().subscribe_dkg_ceremony(parent(2)),
+        );
+        assert_eq!(first.unwrap(), expected);
+        assert_eq!(second.unwrap(), expected);
+        assert!(harness.marshal.subscriptions().is_empty());
+
+        // Storage replays the logs after a restart.
+        harness.stop().await;
+        harness.start().await;
+        let restarted = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent(3))
+            .await
+            .unwrap();
+        assert_eq!(restarted, expected);
+        assert!(harness.marshal.subscriptions().is_empty());
+    });
+}
+
+#[test]
+fn dealer_log_verification_distinguishes_unavailable_state_from_invalid_logs() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let mut harness = Harness::builder(context.child("test"), "dealer_log_availability")
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+
+        // The same malformed bytes have no verdict without the matching epoch.
+        assert!(
+            harness
+                .mailbox()
+                .verify_dealer_log(state.epoch.next(), vec![u8::MAX].into())
+                .await
+                .is_err()
+        );
+        assert!(
+            harness
+                .mailbox()
+                .verify_dealer_log(state.epoch, vec![u8::MAX].into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn outcome_request_fills_gap_from_notarized_ancestry() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_notarized_gap")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+
+        // Finalized Blocks
+        let mut anchor = None;
+        for height in 0..=5 {
+            let header = header(Height::new(height));
+            harness.execution.add_header(header.clone());
+            if height == 5 {
+                anchor = Some(block(header));
+            }
+        }
+
+        // Notarized blocks available through marshal subscriptions.
+        let anchor = anchor.unwrap();
+        let mut tip = anchor.header().clone();
+        harness.marshal.add_block(anchor);
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = tip.hash_slow();
+            tip = header.clone();
+            harness.marshal.add_block(block(header));
+        }
+
+        harness.start().await;
+
+        let output = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())))
+            .await
+            .unwrap();
+
+        assert_eq!(output, state.output);
+        assert_eq!(
+            harness.marshal.reads(),
+            vec![
+                Height::new(8),
+                Height::new(7),
+                Height::new(6),
+                Height::new(5),
+            ]
+        );
+    });
+}
+
+#[test]
+fn outcome_request_waits_for_blocks_without_stalling_actor() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_pending_blocks")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        for height in 0..=5 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+        let anchor = block(header(Height::new(5)));
+        let mut tip = anchor.header().clone();
+        harness.marshal.add_block(anchor);
+        let mut chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = tip.hash_slow();
+            tip = header.clone();
+            chain.push(block(header));
+        }
+        harness.start().await;
+        let mut response = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())));
+
+        // Both the starting block and its ancestors can arrive after the
+        // request. Waiting for either must leave the actor responsive.
+        for block in chain.into_iter().rev() {
+            let marshal = harness.marshal.clone();
+            let mailbox = harness.mailbox().clone();
+            let wait_ctx = context.child("wait_for_subscription");
+            let digest = block.digest();
+            let epoch = state.epoch;
+            context
+                .timeout(Duration::from_secs(1), async move {
+                    while !marshal
+                        .subscriptions()
+                        .iter()
+                        .any(|(subscribed, _)| *subscribed == digest)
+                    {
+                        wait_ctx.sleep(Duration::from_millis(1)).await;
+                    }
+                    assert!(mailbox.get_dealer_log(epoch).await.unwrap().is_none());
+                })
+                .await
+                .expect("waiting for a block must not stall the DKG actor");
+            assert!(futures::poll!(&mut response).is_pending());
+            harness.marshal.add_block(block);
+        }
+
+        // Block delivery alone wakes the actor; no further DKG messages or
+        // execution-state notifications are needed to complete the outcome.
+        let output = context
+            .timeout(Duration::from_secs(1), response)
+            .await
+            .expect("block delivery must resume the request")
+            .unwrap();
+        assert_eq!(output, state.output);
+    });
+}
+
+#[test]
+fn outcome_walk_fetches_blocks_after_its_requests_go_away() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_walk_without_requests")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        for height in 0..=5 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+
+        // Marshal has the notarized chain at heights 6 to 8, except the
+        // block at height 7.
+        let anchor = block(header(Height::new(5)));
+        let mut tip = anchor.header().clone();
+        harness.marshal.add_block(anchor);
+        let mut chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = tip.hash_slow();
+            tip = header.clone();
+            chain.push(block(header));
+        }
+        let missing = chain.remove(1);
+        let missing_digest = missing.digest();
+        for block in chain {
+            harness.marshal.add_block(block);
+        }
+        harness.start().await;
+
+        let parent = Arc::new(block(tip));
+        let request = harness.mailbox().subscribe_dkg_ceremony(parent.clone());
+        let marshal = harness.marshal.clone();
+        let wait_ctx = context.child("wait_for_subscription");
+        context
+            .timeout(Duration::from_secs(1), async move {
+                while !marshal
+                    .subscriptions()
+                    .iter()
+                    .any(|(subscribed, _)| *subscribed == missing_digest)
+                {
+                    wait_ctx.sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("the walk must fetch the missing block");
+
+        // The actor handles another message after the request went away,
+        // and the block arrives only after that.
+        drop(request);
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        harness.marshal.add_block(missing);
+
+        let output = context
+            .timeout(
+                Duration::from_secs(1),
+                harness.mailbox().subscribe_dkg_ceremony(parent),
+            )
+            .await
+            .expect("a later request must get the output of the walk")
+            .unwrap();
+        assert_eq!(output, state.output);
+        let fetches_of_missing = harness
+            .marshal
+            .subscriptions()
+            .iter()
+            .filter(|(subscribed, _)| *subscribed == missing_digest)
+            .count();
+        assert_eq!(
+            fetches_of_missing, 1,
+            "the walk must not fetch the missing block again"
+        );
+    });
+}
+
+#[test]
+fn outcome_request_drops_ancestry_with_wrong_parent_height() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_wrong_parent_height")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        for height in 0..=5 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+        let ancestor = block(header(Height::new(6)));
+        let mut tip = header(Height::new(8));
+        tip.inner.parent_hash = ancestor.digest().0;
+        harness.marshal.add_block(ancestor);
+        harness.marshal.add_block(block(tip.clone()));
+        harness.start().await;
+
+        let response = context
+            .timeout(
+                Duration::from_secs(1),
+                harness
+                    .mailbox()
+                    .subscribe_dkg_ceremony(Arc::new(block(tip.clone()))),
+            )
+            .await
+            .expect("a mismatched ancestor must close the outcome subscription");
+        assert!(response.is_err());
+        assert!(!harness.has_dealer_log(state.epoch).await);
+    });
+}
+
+#[test]
+fn outcome_request_switches_notarized_ancestry_branches() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_notarized_fork")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        let proposer =
+            crate::utils::public_key_to_tempo_primitive(state.players().iter().next().unwrap());
+
+        let mut anchor = None;
+        for height in 0..=5 {
+            let mut header = header(Height::new(height));
+            header.consensus_context = Some(TempoConsensusContext {
+                epoch: 0,
+                view: height * 10,
+                parent_view: height.saturating_sub(1) * 10,
+                proposer,
+            });
+            harness.execution.add_header(header.clone());
+            if height == 5 {
+                anchor = Some(block(header));
+            }
+        }
+
+        let anchor = anchor.unwrap();
+        let anchor_digest = anchor.digest();
+
+        harness.start().await;
+        harness.marshal.add_block(anchor);
+
+        // First Notarized Chain
+        let mut first_parent = anchor_digest;
+        let mut first_tip = None;
+        let mut first_chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = first_parent.0;
+            header.inner.timestamp = 1;
+            header.consensus_context = Some(TempoConsensusContext {
+                epoch: 0,
+                view: height * 10 + 1,
+                parent_view: if height == 6 {
+                    50
+                } else {
+                    (height - 1) * 10 + 1
+                },
+                proposer,
+            });
+            let block = block(header);
+            first_parent = block.digest();
+            first_chain.push(first_parent);
+            first_tip = Some(block.header().clone());
+            harness.marshal.add_block(block);
+        }
+        let first_tip = first_tip.unwrap();
+
+        let first_output = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
+            .await
+            .unwrap();
+
+        // Second Notarized Chain
+        let mut second_parent = anchor_digest;
+        let mut second_tip = None;
+        let mut second_chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = second_parent.0;
+            header.inner.timestamp = 2;
+            header.consensus_context = Some(TempoConsensusContext {
+                epoch: 0,
+                view: height * 10 + 5,
+                parent_view: if height == 6 {
+                    50
+                } else {
+                    (height - 1) * 10 + 5
+                },
+                proposer,
+            });
+            let block = block(header);
+            second_parent = block.digest();
+            second_chain.push(second_parent);
+            second_tip = Some(block.header().clone());
+            harness.marshal.add_block(block);
+        }
+        let second_tip = second_tip.unwrap();
+
+        let second_output = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(Arc::new(block(second_tip.clone())))
+            .await
+            .unwrap();
+
+        assert_eq!(first_output, state.output);
+        assert_eq!(second_output, state.output);
+        let fetch_round = |view| DigestFallback::FetchByRound {
+            round: ConsensusRound::new(Epoch::new(0), View::new(view)),
+        };
+        // Use each branch's parent views, including skipped views, rather
+        // than deriving the fetch round from the height or the child's view.
+        let subscriptions = vec![
+            (first_chain[2], fetch_round(81)),
+            (first_chain[1], fetch_round(71)),
+            (first_chain[0], fetch_round(61)),
+            (anchor_digest, fetch_round(50)),
+            (second_chain[2], fetch_round(85)),
+            (second_chain[1], fetch_round(75)),
+            (second_chain[0], fetch_round(65)),
+        ];
+
+        assert_eq!(harness.marshal.subscriptions(), subscriptions);
+
+        // DKG Outcomes are cached, thus we can request the outcome without re-reading state
+        let cached_first_output = harness
+            .mailbox()
+            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
+            .await
+            .unwrap();
+
+        assert_eq!(cached_first_output, first_output);
+        assert_eq!(harness.marshal.subscriptions(), subscriptions);
+    });
+}

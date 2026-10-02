@@ -16,9 +16,34 @@ use alloy::{
     primitives::{Address, FixedBytes, keccak256},
     sol_types::SolValue,
 };
-pub use tempo_contracts::precompiles::{AddrRegistryError, AddrRegistryEvent, IAddressRegistry};
+use tempo_chainspec::hardfork::TempoHardfork;
+pub use tempo_contracts::precompiles::{
+    AddrRegistryError, AddrRegistryEvent, IAddressRegistry, STABLECOIN_DEX_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+};
 use tempo_precompiles_macros::{Storable, contract};
 pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+
+/// TIP-1035 Implicit Approval List.
+///
+/// Precompiles on this list are authorized to call
+/// [`crate::tip20::TIP20Token::system_transfer_from`], pulling TIP-20 tokens from a user without a
+/// prior `approve()`. The list is gated on `TempoHardfork::T5`; before activation it is empty.
+pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
+    TIP_FEE_MANAGER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS,
+];
+
+/// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
+///
+/// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
+pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
+    if !hardfork.is_t5() {
+        return false;
+    }
+    IMPLICIT_APPROVAL_LIST.contains(&addr)
+}
 
 /// [TIP-1022] virtual address registry contract.
 ///
@@ -107,12 +132,7 @@ impl AddressRegistry {
         })?;
 
         // Emit event
-        self.emit_event(AddrRegistryEvent::MasterRegistered(
-            IAddressRegistry::MasterRegistered {
-                masterId: master_id,
-                masterAddress: msg_sender,
-            },
-        ))?;
+        self.emit_event(AddrRegistryEvent::master_registered(master_id, msg_sender))?;
 
         Ok(master_id)
     }
@@ -155,6 +175,12 @@ impl AddressRegistry {
             Some((master_id, _)) => Ok(self.get_master(master_id)?.unwrap_or(Address::ZERO)),
         }
     }
+
+    /// Returns `true` iff `addr` is on the TIP-1035 [`IMPLICIT_APPROVAL_LIST`] for the active
+    /// hardfork. Returns `false` for all addresses before `TempoHardfork::T5`.
+    pub fn is_implicitly_approved(&self, addr: Address) -> bool {
+        is_implicitly_approved(addr, self.storage.spec())
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +193,32 @@ mod tests {
     };
     use alloy_primitives::hex_literal::hex;
     use tempo_chainspec::hardfork::TempoHardfork;
+
+    #[test]
+    fn test_is_implicitly_approved_pre_t5_returns_false() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        StorageCtx::enter(&mut storage, || {
+            let registry = AddressRegistry::new();
+            assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
+            assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+            assert!(!registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
+            assert!(!registry.is_implicitly_approved(Address::random()));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_t5_lists_initial_set() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let registry = AddressRegistry::new();
+            assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
+            assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+            assert!(registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
+            assert!(!registry.is_implicitly_approved(Address::random()));
+            Ok(())
+        })
+    }
 
     #[test]
     fn test_register_virtual_master() -> eyre::Result<()> {

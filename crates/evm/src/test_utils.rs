@@ -1,18 +1,18 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{num::NonZeroU64, sync::Arc};
 
 use alloy_evm::{Database, EvmEnv};
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{B256, Bytes};
 use reth_chainspec::EthChainSpec;
 use reth_evm::block::StateDB;
 use reth_revm::context::BlockEnv;
 use revm::inspector::NoOpInspector;
-use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
+use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::MODERATO};
+use tempo_primitives::TempoTxEnvelope;
 use tempo_revm::TempoBlockEnv;
 
 use crate::{TempoBlockExecutionCtx, block::TempoBlockExecutor, evm::TempoEvm};
 use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::U256;
-use tempo_primitives::subblock::PartialValidatorKey;
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
     Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
@@ -43,47 +43,57 @@ pub(crate) fn test_evm_with_basefee<DB: Database>(
 }
 
 use crate::block::BlockSection;
-use tempo_primitives::TempoTxEnvelope;
 
 pub(crate) struct TestExecutorBuilder {
     pub(crate) block_number: u64,
+    pub(crate) epoch_length: NonZeroU64,
     pub(crate) parent_hash: B256,
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
-    pub(crate) validator_set: Option<Vec<B256>>,
     pub(crate) parent_beacon_block_root: Option<B256>,
-    pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
+    pub(crate) amsterdam_eip8037_enabled: bool,
+    pub(crate) spec: TempoHardfork,
+    pub(crate) extra_data: Bytes,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
-    pub(crate) initial_seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
-    pub(crate) initial_incentive_gas_used: u64,
 }
 
 impl Default for TestExecutorBuilder {
     fn default() -> Self {
         Self {
             block_number: 1,
+            epoch_length: NonZeroU64::MIN,
             parent_hash: B256::ZERO,
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
-            validator_set: None,
             parent_beacon_block_root: None,
-            subblock_fee_recipients: HashMap::new(),
+            amsterdam_eip8037_enabled: false,
+            spec: TempoHardfork::default(),
+            extra_data: Bytes::new(),
             initial_section: None,
-            initial_seen_subblocks: Vec::new(),
-            initial_incentive_gas_used: 0,
         }
     }
 }
 
 impl TestExecutorBuilder {
-    pub(crate) fn with_validator_set(mut self, validators: Vec<B256>) -> Self {
-        self.validator_set = Some(validators);
+    pub(crate) fn with_block_number(mut self, block_number: u64) -> Self {
+        self.block_number = block_number;
         self
     }
 
-    pub(crate) fn with_shared_gas_limit(mut self, limit: u64) -> Self {
-        self.shared_gas_limit = limit;
+    pub(crate) fn with_epoch_length(mut self, epoch_length: u64) -> Self {
+        self.epoch_length = NonZeroU64::new(epoch_length).expect("epoch length must be non-zero");
+        self
+    }
+
+    pub(crate) fn with_extra_data(mut self, extra_data: Bytes) -> Self {
+        self.extra_data = extra_data;
+        self
+    }
+
+    pub(crate) fn with_spec(mut self, spec: TempoHardfork) -> Self {
+        self.spec = spec;
         self
     }
 
@@ -97,25 +107,16 @@ impl TestExecutorBuilder {
         self
     }
 
+    /// Toggles `cfg_env.enable_amsterdam_eip8037`, which gates TIP-1016 (state gas split)
+    /// behavior independently of the T4 hardfork.
+    pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
+        self.amsterdam_eip8037_enabled = enabled;
+        self
+    }
+
     /// Set the initial block section for the executor (for testing section transitions).
     pub(crate) fn with_section(mut self, section: BlockSection) -> Self {
         self.initial_section = Some(section);
-        self
-    }
-
-    /// Add a seen subblock to the executor (for testing shared gas validation).
-    pub(crate) fn with_seen_subblock(
-        mut self,
-        proposer: PartialValidatorKey,
-        txs: Vec<TempoTxEnvelope>,
-    ) -> Self {
-        self.initial_seen_subblocks.push((proposer, txs));
-        self
-    }
-
-    /// Set the initial incentive gas used (for testing gas limit validation).
-    pub(crate) fn with_incentive_gas_used(mut self, gas: u64) -> Self {
-        self.initial_incentive_gas_used = gas;
         self
     }
 
@@ -133,9 +134,14 @@ impl TestExecutorBuilder {
         chainspec: &'a Arc<TempoChainSpec>,
         transactions: &'a [TempoTxEnvelope],
     ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
+        let mut cfg_env = revm::context::CfgEnv::default();
+        cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
+        cfg_env.spec = self.spec;
+
         let evm = TempoEvm::new(
             db,
             EvmEnv {
+                cfg_env,
                 block_env: TempoBlockEnv {
                     inner: BlockEnv {
                         number: U256::from(self.block_number),
@@ -143,9 +149,9 @@ impl TestExecutorBuilder {
                         gas_limit: 30_000_000,
                         ..Default::default()
                     },
+                    epoch_length: self.epoch_length,
                     ..Default::default()
                 },
-                ..Default::default()
             },
         );
 
@@ -156,14 +162,13 @@ impl TestExecutorBuilder {
                 parent_beacon_block_root: self.parent_beacon_block_root,
                 ommers: &[],
                 withdrawals: None,
-                extra_data: Bytes::new(),
+                extra_data: self.extra_data,
                 tx_count_hint: None,
+                slot_number: None,
             },
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
-            validator_set: self.validator_set,
             consensus_context: None,
-            subblock_fee_recipients: self.subblock_fee_recipients,
         };
 
         let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
@@ -171,12 +176,6 @@ impl TestExecutorBuilder {
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {
             executor.set_section_for_test(section);
-        }
-        for (proposer, txs) in self.initial_seen_subblocks {
-            executor.add_seen_subblock_for_test(proposer, txs);
-        }
-        if self.initial_incentive_gas_used > 0 {
-            executor.set_incentive_gas_used_for_test(self.initial_incentive_gas_used);
         }
 
         executor

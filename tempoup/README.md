@@ -24,6 +24,12 @@ tempoup --help           # Show help
 - **macOS**: Apple Silicon (arm64)
 - **Windows**: x86_64, arm64
 
+## Runtime Dependencies
+
+On macOS, tempoup installs the `libusb` runtime dependency with Homebrew when
+it is missing. If Homebrew is not installed, tempoup will stop with the exact
+`brew install libusb` command to run before retrying.
+
 ## Installation Directory
 
 Default: `~/.tempo/bin/`

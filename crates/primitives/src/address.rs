@@ -1,8 +1,9 @@
 use alloy_primitives::{Address, FixedBytes, hex};
+use tempo_contracts::{TempoHardfork, precompiles::SYSTEM_PRECOMPILES};
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
-const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+pub const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
 /// Returns `true` if `addr` has the TIP-20 token prefix.
 ///
@@ -25,6 +26,9 @@ pub trait TempoAddressExt {
     /// NOTE: prefix alone does not prove a token exists — use `TIP20Factory::is_tip20()` for that.
     const TIP20_PREFIX: [u8; 12];
 
+    /// 12-byte prefix shared by all ZonePortal addresses.
+    const ZONE_PORTAL_PREFIX: [u8; 12];
+
     /// 10-byte magic value occupying bytes `[4:14]` of every [TIP-1022] virtual address.
     ///
     /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
@@ -37,6 +41,16 @@ pub trait TempoAddressExt {
     ///
     /// [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
     fn is_tip20(&self) -> bool;
+
+    /// Returns the nonzero zone ID encoded in a ZonePortal address.
+    ///
+    /// Returns `None` if the address does not match the ZonePortal format.
+    fn zone_portal_id(&self) -> Option<u64>;
+
+    /// Returns `true` if the address is a precompile. This is the case if it is either:
+    /// - A TIP-20 token address.
+    /// - A system precompile active at the specified `spec` hardfork.
+    fn is_precompile(&self, spec: TempoHardfork) -> bool;
 
     /// Returns `true` if the address matches the [TIP-1022] virtual-address format
     /// (bytes `[4:14]` == [`Self::VIRTUAL_MAGIC`]).
@@ -60,10 +74,23 @@ pub trait TempoAddressExt {
 
 impl TempoAddressExt for Address {
     const TIP20_PREFIX: [u8; 12] = TIP20_TOKEN_PREFIX;
+    const ZONE_PORTAL_PREFIX: [u8; 12] = hex!("5AD000000000000000000000");
     const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
 
     fn is_tip20(&self) -> bool {
         is_tip20_prefix(*self)
+    }
+
+    fn zone_portal_id(&self) -> Option<u64> {
+        let bytes = self.as_slice();
+        if !bytes.starts_with(&Self::ZONE_PORTAL_PREFIX) {
+            return None;
+        }
+
+        let mut suffix = [0u8; 8];
+        suffix.copy_from_slice(&bytes[12..]);
+        let zone_id = u64::from_be_bytes(suffix);
+        (zone_id != 0).then_some(zone_id)
     }
 
     fn is_virtual(&self) -> bool {
@@ -91,5 +118,129 @@ impl TempoAddressExt for Address {
         bytes[4..14].copy_from_slice(&Self::VIRTUAL_MAGIC);
         bytes[14..20].copy_from_slice(user_tag.as_slice());
         Self::from(bytes)
+    }
+
+    fn is_precompile(&self, spec: TempoHardfork) -> bool {
+        self.is_tip20()
+            || SYSTEM_PRECOMPILES
+                .iter()
+                .any(|&(a, activated)| &a == self && spec >= activated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+    use tempo_contracts::precompiles::PATH_USD_ADDRESS;
+
+    #[test]
+    fn is_tip20_prefix_variations() {
+        // address with exact TIP20 prefix
+        let mut bytes = [0u8; 20];
+        bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
+        let tip20_addr = Address::from(bytes);
+        assert!(is_tip20_prefix(tip20_addr));
+        assert!(tip20_addr.is_tip20());
+
+        // zero address is not TIP20
+        assert!(!Address::ZERO.is_tip20());
+
+        // random address is not TIP20
+        assert!(!address!("0x1111111111111111111111111111111111111111").is_tip20());
+
+        // differs at byte index 1 (0xC0 → 0x00) — not TIP20
+        let mut wrong = [0u8; 20];
+        wrong[0] = TIP20_TOKEN_PREFIX[0];
+        // skip byte 1 (leave as 0 instead of 0xC0)
+        assert!(!is_tip20_prefix(Address::from(wrong)));
+    }
+
+    #[test]
+    fn virtual_address_variations() {
+        let master_id = MasterId::from([0xAA, 0xBB, 0xCC, 0xDD]);
+        let user_tag = UserTag::from([1, 2, 3, 4, 5, 6]);
+
+        // construct → decode roundtrip
+        let vaddr = Address::new_virtual(master_id, user_tag);
+        assert!(vaddr.is_virtual());
+        let (decoded_master, decoded_tag) = vaddr.decode_virtual().unwrap();
+        assert_eq!(decoded_master, master_id);
+        assert_eq!(decoded_tag, user_tag);
+
+        // non-virtual address returns None
+        assert!(Address::ZERO.decode_virtual().is_none());
+        assert!(!Address::ZERO.is_virtual());
+
+        // zero master_id + zero user_tag
+        let zero_vaddr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
+        assert!(zero_vaddr.is_virtual());
+        let (m, t) = zero_vaddr.decode_virtual().unwrap();
+        assert_eq!(m, MasterId::ZERO);
+        assert_eq!(t, UserTag::ZERO);
+    }
+
+    #[test]
+    fn zone_portal_id_variations() {
+        assert_eq!(
+            address!("0x5AD0000000000000000000000000000000000001").zone_portal_id(),
+            Some(1)
+        );
+        assert_eq!(
+            address!("0x5AD000000000000000000000ffffffffffffffff").zone_portal_id(),
+            Some(u64::MAX)
+        );
+        assert!(
+            address!("0x5AD0000000000000000000000000000000000000")
+                .zone_portal_id()
+                .is_none()
+        );
+        assert!(Address::ZERO.zone_portal_id().is_none());
+    }
+
+    #[test]
+    fn is_valid_master_variations() {
+        // regular address is valid master
+        let regular = address!("0x1111111111111111111111111111111111111111");
+        assert!(regular.is_valid_master());
+
+        // zero address is not valid master
+        assert!(!Address::ZERO.is_valid_master());
+
+        // virtual address is not valid master
+        let vaddr = Address::new_virtual(
+            MasterId::from([1, 2, 3, 4]),
+            UserTag::from([5, 6, 7, 8, 9, 10]),
+        );
+        assert!(!vaddr.is_valid_master());
+
+        // TIP20 address is not valid master
+        let mut tip20_bytes = [0u8; 20];
+        tip20_bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
+        assert!(!Address::from(tip20_bytes).is_valid_master());
+    }
+
+    #[test]
+    fn test_is_precompile_address() {
+        let latest = *TempoHardfork::VARIANTS
+            .last()
+            .expect("hardfork variants should not be empty");
+
+        for &(address, activated) in SYSTEM_PRECOMPILES {
+            assert!(address.is_precompile(activated));
+            assert!(address.is_precompile(latest));
+
+            if let Some(index) = TempoHardfork::VARIANTS
+                .iter()
+                .position(|hardfork| *hardfork == activated)
+                && index > 0
+            {
+                assert!(!address.is_precompile(TempoHardfork::VARIANTS[index - 1]));
+            }
+        }
+
+        // Assert TIP20 prefixed addresses are classified as precompiles
+        assert!(PATH_USD_ADDRESS.is_tip20());
+        assert!(PATH_USD_ADDRESS.is_precompile(TempoHardfork::Genesis));
     }
 }

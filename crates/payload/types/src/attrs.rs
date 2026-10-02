@@ -1,33 +1,14 @@
-use alloy_primitives::{Address, B256, Bytes};
+use crate::ValidationLatencyEstimate;
+use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, atomic, atomic::Ordering};
-use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
-
-/// A handle for a payload interrupt flag.
-///
-/// Can be fired using [`InterruptHandle::interrupt`].
-#[derive(Debug, Clone, Default)]
-pub struct InterruptHandle(Arc<atomic::AtomicBool>);
-
-impl InterruptHandle {
-    /// Turns on the interrupt flag on the associated payload.
-    pub fn interrupt(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-
-    /// Returns whether the interrupt flag is set.
-    pub fn is_interrupted(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
-    }
-}
+use std::time::Duration;
+use tempo_primitives::TempoConsensusContext;
 
 /// Container type for all components required to build a payload.
-///
-/// The `TempoPayloadAttributes` has an additional feature of interrupting payload.
 ///
 /// It also carries DKG data to be included in the block's extra_data field.
 #[derive(
@@ -40,9 +21,19 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Interrupt handle.
+    /// Remaining local proposal budget available to this payload build.
+    ///
+    /// Consensus sets this to the proposal return budget left when it dispatches
+    /// the build. `None` means the build was not requested by consensus, so the
+    /// builder should not stop early for block pacing.
     #[serde(skip)]
-    interrupt: InterruptHandle,
+    payload_build_budget: Option<Duration>,
+    /// Validation latency estimate for a consensus payload build.
+    ///
+    /// Consensus snapshots this from recent locally validated blocks. `None`
+    /// means the builder should use its conservative fallback.
+    #[serde(skip)]
+    validation_latency_estimate: Option<ValidationLatencyEstimate>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -56,10 +47,6 @@ pub struct TempoPayloadAttributes {
     proposer_public_key: Option<B256>,
     /// Consensus view for this block
     consensus_context: Option<TempoConsensusContext>,
-    /// Subblocks closure.
-    #[debug(skip)]
-    #[serde(skip, default = "default_subblocks")]
-    subblocks: Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static>,
 }
 
 impl Default for TempoPayloadAttributes {
@@ -70,30 +57,33 @@ impl Default for TempoPayloadAttributes {
 
 impl TempoPayloadAttributes {
     /// Creates new `TempoPayloadAttributes` with `inner` attributes.
+    ///
+    /// The inner `suggested_fee_recipient` is always `Address::ZERO`; the
+    /// real beneficiary is resolved from the validator config v2 contract by
+    /// the payload builder.
     pub fn new(
-        suggested_fee_recipient: Address,
         proposer_public_key: Option<B256>,
         timestamp: u64,
         timestamp_millis_part: u64,
         extra_data: Bytes,
         consensus_context: Option<TempoConsensusContext>,
-        subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         Self {
             inner: EthPayloadAttributes {
                 timestamp,
-                suggested_fee_recipient,
+                suggested_fee_recipient: Address::ZERO,
                 prev_randao: B256::ZERO,
                 withdrawals: Some(Default::default()),
                 parent_beacon_block_root: Some(B256::ZERO),
                 slot_number: None,
+                target_gas_limit: None,
             },
-            interrupt: InterruptHandle::default(),
+            payload_build_budget: None,
+            validation_latency_estimate: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
             consensus_context,
-            subblocks: Arc::new(subblocks),
         }
     }
 
@@ -102,20 +92,48 @@ impl TempoPayloadAttributes {
         &self.extra_data
     }
 
+    /// Sets the extra data to be included in the block header.
+    pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
+        self.extra_data = extra_data;
+        self
+    }
+
     /// Returns the proposer's public key.
     pub fn proposer_public_key(&self) -> Option<&B256> {
         self.proposer_public_key.as_ref()
     }
 
-    /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
-    /// processing any more transactions.
-    pub fn is_interrupted(&self) -> bool {
-        self.interrupt.0.load(Ordering::Relaxed)
+    /// Sets the remaining local proposal budget for a consensus payload build.
+    ///
+    /// The value should already account for any time spent before the build was
+    /// requested. The builder treats it as a shared budget for leader
+    /// build/persist work and validator replay/persist work.
+    pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
+        self.payload_build_budget = Some(budget);
+        self
     }
 
-    /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
-    pub fn interrupt_handle(&self) -> &InterruptHandle {
-        &self.interrupt
+    /// Returns the consensus-provided build budget, if this is a paced build.
+    ///
+    /// `None` is intentional for non-consensus builds such as dev or external
+    /// payload requests; those builds are not constrained by the consensus
+    /// block-time budget.
+    pub fn payload_build_budget(&self) -> Option<Duration> {
+        self.payload_build_budget
+    }
+
+    /// Sets the validation latency estimate for a consensus payload build.
+    pub fn with_validation_latency_estimate(
+        mut self,
+        estimate: Option<ValidationLatencyEstimate>,
+    ) -> Self {
+        self.validation_latency_estimate = estimate;
+        self
+    }
+
+    /// Returns the consensus-provided validation latency estimate.
+    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
+        self.validation_latency_estimate
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -135,11 +153,6 @@ impl TempoPayloadAttributes {
     pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
         self.consensus_context
     }
-
-    /// Returns the subblocks.
-    pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
-        (self.subblocks)()
-    }
 }
 
 // Required by reth's e2e-test-utils for integration tests.
@@ -149,12 +162,12 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
     fn from(inner: EthPayloadAttributes) -> Self {
         Self {
             inner,
-            interrupt: InterruptHandle::default(),
+            payload_build_budget: None,
+            validation_latency_estimate: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
             consensus_context: None,
-            subblocks: Arc::new(Vec::new),
         }
     }
 }
@@ -167,7 +180,12 @@ impl PayloadAttributes for TempoPayloadAttributes {
         // the consensus engine will kill the proposal task. Then eventually
         // consensus will circle back to an earlier node, which then
         // has the chance of picking up the old payload.
-        payload_id_from_block_hash(parent_hash)
+        //
+        // The consensus context (epoch, view, parent_view, proposer) is
+        // mixed into the ID so that distinct consensus rounds proposing on
+        // the same parent block produce distinct payload IDs and do not
+        // collide in the payload builder cache.
+        payload_id_from_parent_and_context(parent_hash, self.consensus_context.as_ref())
     }
 
     fn timestamp(&self) -> u64 {
@@ -195,34 +213,53 @@ fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     )
 }
 
-fn default_subblocks() -> Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static> {
-    Arc::new(Vec::new)
+/// Constructs a [`PayloadId`] from the parent block hash and consensus context.
+///
+/// When `consensus_context` is `None`, this is equivalent to
+/// [`payload_id_from_block_hash`] for backwards compatibility with pre-fork
+/// blocks. Otherwise the parent hash and each field of the consensus context
+/// are streamed into a Keccak256 hasher and the first 8 bytes of the digest
+/// form the ID.
+fn payload_id_from_parent_and_context(
+    parent_hash: &B256,
+    consensus_context: Option<&TempoConsensusContext>,
+) -> PayloadId {
+    let Some(ctx) = consensus_context else {
+        return payload_id_from_block_hash(parent_hash);
+    };
+
+    let mut hasher = Keccak256::new();
+    hasher.update(parent_hash);
+    hasher.update(ctx.epoch.to_be_bytes());
+    hasher.update(ctx.view.to_be_bytes());
+    hasher.update(ctx.parent_view.to_be_bytes());
+    hasher.update(B256::from(&ctx.proposer));
+    let digest = hasher.finalize();
+
+    PayloadId::new(
+        <[u8; 8]>::try_from(&digest[0..8]).expect("a 32 byte array always has more than 8 bytes"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_rpc_types_eth::Withdrawal;
+    use tempo_primitives::ed25519::PublicKey;
 
     trait TestExt: Sized {
         fn random() -> Self;
         fn with_timestamp(self, millis: u64) -> Self;
-        fn with_subblocks(
-            self,
-            f: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
-        ) -> Self;
     }
 
     impl TestExt for TempoPayloadAttributes {
         fn random() -> Self {
             Self::new(
-                Address::random(),
                 None,
                 1, // 1s
                 0,
                 Bytes::default(),
                 None,
-                Vec::new,
             )
         }
 
@@ -231,61 +268,23 @@ mod tests {
             self.timestamp_millis_part = millis % 1000;
             self
         }
-
-        fn with_subblocks(
-            mut self,
-            f: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
-        ) -> Self {
-            self.subblocks = Arc::new(f);
-            self
-        }
-    }
-
-    #[test]
-    fn test_interrupt_handle() {
-        // Default state
-        let handle = InterruptHandle::default();
-        assert!(!handle.is_interrupted());
-
-        // Interrupt sets flag
-        handle.interrupt();
-        assert!(handle.is_interrupted());
-
-        // Clone shares state
-        let handle2 = handle.clone();
-        assert!(handle2.is_interrupted());
-
-        // New handle via clone before interrupt
-        let fresh = InterruptHandle::default();
-        let cloned = fresh.clone();
-        assert!(!cloned.is_interrupted());
-        fresh.interrupt();
-        assert!(cloned.is_interrupted()); // shared atomic
-
-        // Multiple interrupts are idempotent
-        handle.interrupt();
-        handle.interrupt();
-        assert!(handle.is_interrupted());
     }
 
     #[test]
     fn test_builder_attributes_construction() {
         let parent = B256::random();
-        let recipient = Address::random();
         let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
 
         // With extra_data
         let attrs = TempoPayloadAttributes::new(
-            recipient,
             None,
             1,
             500, // 1.5s
             extra_data.clone(),
             None,
-            Vec::new,
         );
         assert_eq!(attrs.extra_data(), &extra_data);
-        assert_eq!(attrs.suggested_fee_recipient, recipient);
+        assert_eq!(attrs.suggested_fee_recipient, Address::ZERO);
         assert_eq!(
             attrs.payload_id(&parent),
             payload_id_from_block_hash(&parent)
@@ -300,37 +299,15 @@ mod tests {
 
         // Without extra_data
         let attrs2 = TempoPayloadAttributes::new(
-            recipient,
             None,
             2, // +500ms
             0,
             Bytes::default(),
             None,
-            Vec::new,
         );
         assert_eq!(attrs2.extra_data(), &Bytes::default());
         assert_eq!(attrs2.timestamp(), 2);
         assert_eq!(attrs2.timestamp_millis_part(), 0);
-    }
-
-    #[test]
-    fn test_builder_attributes_interrupt_integration() {
-        let attrs = TempoPayloadAttributes::random();
-
-        // Initially not interrupted
-        assert!(!attrs.is_interrupted());
-
-        // Get handle and interrupt
-        let handle = attrs.interrupt_handle().clone();
-        handle.interrupt();
-
-        // Both see interrupted state
-        assert!(attrs.is_interrupted());
-        assert!(handle.is_interrupted());
-
-        // Multiple handle accesses return same underlying state
-        let handle2 = attrs.interrupt_handle();
-        assert!(handle2.is_interrupted());
     }
 
     #[test]
@@ -361,26 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_attributes_subblocks() {
-        use std::sync::atomic::AtomicUsize;
-
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let count_clone = call_count.clone();
-
-        let attrs = TempoPayloadAttributes::random().with_subblocks(move || {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-            Vec::new()
-        });
-
-        // Closure invoked each call
-        assert_eq!(call_count.load(Ordering::SeqCst), 0);
-        let _ = attrs.subblocks();
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-        let _ = attrs.subblocks();
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
     fn test_from_eth_payload_builder_attributes() {
         let eth_attrs = EthPayloadAttributes {
             timestamp: 1000,
@@ -389,6 +346,7 @@ mod tests {
             withdrawals: Some(Default::default()),
             parent_beacon_block_root: Some(B256::random()),
             slot_number: None,
+            target_gas_limit: None,
         };
 
         let tempo_attrs: TempoPayloadAttributes = eth_attrs.clone().into();
@@ -414,8 +372,6 @@ mod tests {
         // Tempo-specific defaults
         assert_eq!(tempo_attrs.timestamp_millis_part(), 0);
         assert_eq!(tempo_attrs.extra_data(), &Bytes::default());
-        assert!(!tempo_attrs.is_interrupted());
-        assert!(tempo_attrs.subblocks().is_empty());
     }
 
     #[test]
@@ -430,6 +386,7 @@ mod tests {
                 withdrawals: Some(vec![]),
                 parent_beacon_block_root: Some(B256::random()),
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part,
             ..Default::default()
@@ -470,6 +427,7 @@ mod tests {
                 }]),
                 parent_beacon_block_root: Some(beacon_root),
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part: 123,
             ..Default::default()
@@ -490,11 +448,82 @@ mod tests {
                 withdrawals: None,
                 parent_beacon_block_root: None,
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part: 0,
             ..Default::default()
         };
         assert!(attrs_none.withdrawals().is_none());
         assert!(attrs_none.parent_beacon_block_root().is_none());
+    }
+
+    #[test]
+    fn payload_id_includes_consensus_context() {
+        let parent = B256::random();
+        let proposer = PublicKey::from_seed(0xab);
+
+        let mk = |ctx: Option<TempoConsensusContext>| -> PayloadId {
+            let mut attrs = TempoPayloadAttributes::random();
+            attrs.consensus_context = ctx;
+            attrs.payload_id(&parent)
+        };
+
+        let no_ctx = mk(None);
+        let ctx_a = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        }));
+        let ctx_b = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer,
+        }));
+        let ctx_c = mk(Some(TempoConsensusContext {
+            epoch: 2,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        }));
+        let ctx_d = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer: PublicKey::from_seed(0xcd),
+        }));
+
+        // Without context, falls back to parent-hash-only ID.
+        assert_eq!(no_ctx, payload_id_from_block_hash(&parent));
+
+        // Each distinct consensus context produces a distinct ID, and all
+        // differ from the no-context fallback.
+        let ids = [no_ctx, ctx_a, ctx_b, ctx_c, ctx_d];
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                assert_ne!(ids[i], ids[j], "payload ids {i} and {j} collide");
+            }
+        }
+
+        // Same context on the same parent is deterministic.
+        let ctx_a_again = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        }));
+        assert_eq!(ctx_a, ctx_a_again);
+
+        // Different parent with the same context yields a different ID.
+        let other_parent = B256::random();
+        let mut attrs = TempoPayloadAttributes::random();
+        attrs.consensus_context = Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        });
+        assert_ne!(attrs.payload_id(&parent), attrs.payload_id(&other_parent));
     }
 }

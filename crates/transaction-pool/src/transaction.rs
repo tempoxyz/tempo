@@ -1,27 +1,41 @@
 use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
-use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
+use alloy_consensus::{
+    BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
+};
 use alloy_eips::{
-    eip2718::{Encodable2718, Typed2718},
+    eip2718::{Decodable2718, Encodable2718, Typed2718},
     eip2930::AccessList,
     eip4844::env_settings::KzgSettings,
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
+use alloy_primitives::{
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+};
 use reth_evm::execute::WithTxEnv;
-use reth_primitives_traits::{InMemorySize, Recovered};
+use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
-    error::PoolTransactionError,
+    error::{PoolTransactionError, RawPoolTransactionError},
 };
 use std::{
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_contracts::precompiles::PaymentSlots;
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN,
+    nonce::NonceManager,
+    storage::StorageKey,
+    tip20::{TIP20Token, tip20_slots},
+    tip403_registry::tip403_registry_slots,
+};
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
@@ -31,10 +45,12 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
-    /// Cached payment classification for efficient block building
+    /// Cached cost of the transaction in the fee token.
+    fee_token_cost: U256,
+    /// Cached T5+ payment classification for efficient block building.
     is_payment: bool,
-    /// Cached expiring nonce classification
-    is_expiring_nonce: bool,
+    /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
+    expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
@@ -51,45 +67,92 @@ pub struct TempoPooledTransaction {
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
     resolved_fee_token: OnceLock<Address>,
+    /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
+    key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
+    /// Cached target key of an inline `KeyAuthorization`.
+    key_authorization_target_subject: OnceLock<Option<KeyAuthorizationTargetSubject>>,
+    /// Cached TIP20 balance storage slot for the fee payer.
+    ///
+    /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
+    /// can check if the fee payer's balance was modified without recomputing the keccak.
+    fee_balance_slot: OnceLock<Option<(Address, U256)>>,
 }
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
+        let sender = transaction.signer();
+        let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
+            tx.tx()
+                .is_expiring_nonce_tx()
+                .then(|| tx.expiring_nonce_hash(sender))
+        });
+        let encoded_length = transaction.encode_2718_len();
+        Self::new_with(transaction, expiring_nonce_hash, encoded_length)
+    }
+
+    /// Create a new pooled transaction with optional precomputed transaction metadata.
+    ///
+    /// Raw transaction recovery can compute the signer and expiring nonce hash in one pass for
+    /// expiring AA transactions, and it already knows the encoded byte length. This constructor
+    /// preserves those values while keeping [`Self::new`] as the default path for callers that
+    /// already have a recovered transaction.
+    fn new_with(
+        transaction: Recovered<TempoTxEnvelope>,
+        expiring_nonce_hash: Option<B256>,
+        encoded_length: usize,
+    ) -> Self {
         let is_payment = transaction.is_payment_v2();
-        let is_expiring_nonce = transaction
-            .as_aa()
-            .map(|tx| tx.tx().is_expiring_nonce_tx())
-            .unwrap_or(false);
+        let value = transaction.value();
+        let cost =
+            calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
+                .saturating_add(value);
+        let fee_token_cost = cost - value;
+        let in_memory_size = transaction.size();
         Self {
             inner: EthPooledTransaction {
-                cost: calc_gas_balance_spending(
-                    transaction.gas_limit(),
-                    transaction.max_fee_per_gas(),
-                )
-                .saturating_add(transaction.value()),
-                encoded_length: transaction.encode_2718_len(),
-                blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
+                cost,
+                encoded_length,
+                in_memory_size,
+                blob_sidecar: EthBlobTransactionSidecar::None,
+                blob_cell_availability: None,
             },
+            fee_token_cost,
             is_payment,
-            is_expiring_nonce,
+            expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
+            key_authorization_signer_subject: OnceLock::new(),
+            key_authorization_target_subject: OnceLock::new(),
+            fee_balance_slot: OnceLock::new(),
         }
     }
 
     /// Get the cost of the transaction in the fee token.
-    pub fn fee_token_cost(&self) -> U256 {
-        self.inner.cost - self.inner.value()
+    #[inline]
+    pub const fn fee_token_cost(&self) -> U256 {
+        self.fee_token_cost
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
+    }
+
+    /// Resolves the transaction fee payer.
+    ///
+    /// This reuses the cached transaction environment once validation has prepared it,
+    /// so repeated pool-maintenance checks do not recover the fee payer again.
+    pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
+        if let Some(tx_env) = self.cached_tx_env() {
+            return tx_env.fee_payer().map_err(|_| RecoveryError::new());
+        }
+
+        self.inner().fee_payer(self.inner().signer())
     }
 
     /// Returns true if this is an AA transaction
@@ -102,6 +165,11 @@ impl TempoPooledTransaction {
         self.inner.transaction.nonce_key()
     }
 
+    /// Returns a reference to the nonce key if this is an [`AASigned`](tempo_primitives::AASigned) transaction.
+    pub fn nonce_key_ref(&self) -> Option<&U256> {
+        self.inner.transaction.nonce_key_ref()
+    }
+
     /// Returns the storage slot for the nonce key of this transaction.
     pub fn nonce_key_slot(&self) -> Option<U256> {
         *self.nonce_key_slot.get_or_init(|| {
@@ -112,16 +180,14 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction.
-    ///
-    /// Uses strict classification: TIP-20 prefix AND recognized calldata.
+    /// Returns whether this is a payment transaction according to the T5+ builder criteria.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
-    pub(crate) fn is_aa_2d(&self) -> bool {
+    pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
             .as_aa()
@@ -130,8 +196,8 @@ impl TempoPooledTransaction {
     }
 
     /// Returns true if this is an expiring nonce transaction.
-    pub(crate) fn is_expiring_nonce(&self) -> bool {
-        self.is_expiring_nonce
+    pub fn is_expiring_nonce(&self) -> bool {
+        self.expiring_nonce_hash.is_some()
     }
 
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
@@ -146,11 +212,7 @@ impl TempoPooledTransaction {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
         let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
-        let fee_token = self
-            .resolved_fee_token
-            .get()
-            .copied()
-            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
+        let fee_token = self.effective_fee_token();
         Some(KeychainSubject {
             account: keychain_sig.user_address,
             key_id,
@@ -158,8 +220,64 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
+    ///
+    /// Used for revocation matching: if the access key that signed an inline authorization is
+    /// revoked while the transaction is still in the pool, the transaction must be revalidated.
+    pub fn key_authorization_signer_subject(&self) -> Option<KeychainSubject> {
+        *self.key_authorization_signer_subject.get_or_init(|| {
+            let aa_tx = self.inner().as_aa()?;
+            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+            let key_id = key_authorization.recover_signer().ok()?;
+            let account = key_authorization
+                .authorization
+                .account
+                .unwrap_or(*self.sender_ref());
+            let fee_token = self.effective_fee_token();
+            Some(KeychainSubject {
+                account,
+                key_id,
+                fee_token,
+            })
+        })
+    }
+
+    /// Extracts the target key of an inline `KeyAuthorization`.
+    ///
+    /// Used for matching pending authorizations against key status changes emitted by
+    /// already-included authorizations or revocations.
+    pub fn key_authorization_target_subject(&self) -> Option<KeyAuthorizationTargetSubject> {
+        *self.key_authorization_target_subject.get_or_init(|| {
+            let aa_tx = self.inner().as_aa()?;
+            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+            let account = key_authorization
+                .authorization
+                .account
+                .unwrap_or(*self.sender_ref());
+            Some(KeyAuthorizationTargetSubject {
+                account,
+                key_id: key_authorization.authorization.key_id,
+            })
+        })
+    }
+
+    /// Extracts the TIP-1053 key-authorization witness carried by this transaction, if any.
+    pub fn key_authorization_witness_subject(&self) -> Option<KeyAuthorizationWitnessSubject> {
+        let aa_tx = self.inner().as_aa()?;
+        let witness = aa_tx
+            .tx()
+            .key_authorization
+            .as_ref()?
+            .authorization
+            .witness()?;
+        Some(KeyAuthorizationWitnessSubject {
+            account: *self.sender_ref(),
+            witness,
+        })
+    }
+
     /// Returns the unique identifier for this AA transaction.
-    pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
+    pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
         let sender = AASequenceId {
             address: self.sender(),
@@ -172,7 +290,7 @@ impl TempoPooledTransaction {
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
-    fn tx_env_slow(&self) -> TempoTxEnv {
+    pub(crate) fn tx_env_slow(&self) -> TempoTxEnv {
         TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
     }
 
@@ -182,6 +300,41 @@ impl TempoPooledTransaction {
     /// ahead of time, avoiding it during payload building.
     pub fn tx_env(&self) -> &TempoTxEnv {
         self.tx_env.get_or_init(|| self.tx_env_slow())
+    }
+
+    /// Returns the cached [`TempoTxEnv`] if already prepared.
+    pub(crate) fn cached_tx_env(&self) -> Option<&TempoTxEnv> {
+        self.tx_env.get()
+    }
+
+    /// Attempts to cache a prepared [`TempoTxEnv`].
+    pub(crate) fn cache_tx_env(&self, tx_env: TempoTxEnv) {
+        let _ = self.tx_env.set(tx_env);
+    }
+
+    /// Returns a cloned [`TempoTxEnv`] for this transaction.
+    ///
+    /// This uses the cached value prepared by [`Self::tx_env`] when available,
+    /// and computes it on-demand otherwise.
+    pub fn clone_tx_env(&self) -> TempoTxEnv {
+        self.tx_env().clone()
+    }
+
+    /// Returns a tuple that can be passed to block executor.
+    pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
+        (self.tx_env().clone(), &self.inner.transaction)
+    }
+
+    /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
+    /// recovered transaction.
+    ///
+    /// This avoids cloning the full pooled transaction when the caller only
+    /// needs an owned executable transaction.
+    pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+        WithTxEnv {
+            tx_env: self.clone_tx_env(),
+            tx: Arc::new(self.inner.transaction.clone()),
+        }
     }
 
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
@@ -213,20 +366,108 @@ impl TempoPooledTransaction {
         self.key_expiry.get().copied().flatten()
     }
 
-    /// Caches the resolved fee token determined during validation.
+    /// Returns whether the transaction or its signing key expires by `cutoff`.
+    pub fn is_expired_by(&self, cutoff: u64) -> bool {
+        [self.inner().valid_before(), self.key_expiry()]
+            .into_iter()
+            .flatten()
+            .min()
+            .is_some_and(|expiry| expiry <= cutoff)
+    }
+
+    /// Caches the effective fee token determined during transaction validation.
+    ///
+    /// The validator sets this after EVM validation resolves the token from the
+    /// transaction's explicit `fee_token` field or from fee-manager state. Pool
+    /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
-    /// Returns the resolved fee token cached during validation, if available.
+    /// Clones this transaction while discarding validation-derived caches.
+    ///
+    /// Revalidation must not reuse cached state such as the resolved fee token and key expiry
+    /// from a previous canonical state. Transaction-intrinsic caches are retained.
+    pub(crate) fn with_discarded_caches(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            fee_token_cost: self.fee_token_cost,
+            is_payment: self.is_payment,
+            expiring_nonce_hash: self.expiring_nonce_hash,
+            nonce_key_slot: self.nonce_key_slot.clone(),
+            expiring_nonce_slot: self.expiring_nonce_slot.clone(),
+            tx_env: self.tx_env.clone(),
+            key_authorization_target_subject: self.key_authorization_target_subject.clone(),
+            // Discard state-dependent caches before revalidation.
+            fee_balance_slot: OnceLock::new(),
+            key_expiry: OnceLock::new(),
+            resolved_fee_token: OnceLock::new(),
+            key_authorization_signer_subject: OnceLock::new(),
+        }
+    }
+
+    /// Returns the fee token cached during transaction validation, if available.
+    ///
+    /// This is `None` for transactions that have not completed validation through
+    /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
+    /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
     }
 
-    /// Returns the expiring nonce hash for AA expiring nonce transactions.
+    /// Returns the effective fee token for pool maintenance and accounting.
+    ///
+    /// This prefers the token cached by validation, then falls back to the raw
+    /// transaction `fee_token` field, and finally to [`DEFAULT_FEE_TOKEN`]. This
+    /// fallback covers non-AA transactions and AA transactions without an explicit
+    /// fee token. Use this when checking liquidity, token pause state, balances, or
+    /// transfer policies. Use the raw `fee_token` field only when the code
+    /// specifically needs to know whether the transaction explicitly supplied a token.
+    pub fn effective_fee_token(&self) -> Address {
+        self.resolved_fee_token()
+            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
+    }
+
+    /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
+    /// lazily computed and cached on first access.
+    pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
+        *self.fee_balance_slot.get_or_init(|| {
+            let fee_token = self
+                .resolved_fee_token()
+                .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
+            let fee_payer = self.fee_payer().ok()?;
+            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+            Some((fee_token, slot))
+        })
+    }
+
+    /// Returns true when the transaction fee is paid by the transaction sender.
+    ///
+    /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a
+    /// conservative sender-scoped invalidation for malformed pooled state.
+    pub(crate) fn is_sender_paid_fee(&self) -> bool {
+        let sender = self.sender();
+        self.fee_payer()
+            .map_or(true, |fee_payer| fee_payer == sender)
+    }
+
+    /// Returns the sender-scoped expiring nonce hash for AA transactions.
+    ///
+    /// Expiring nonce transactions use the precomputed value from construction;
+    /// other AA transactions compute on demand to preserve the helper's existing behavior.
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
+        if let Some(hash) = self.expiring_nonce_hash {
+            return Some(hash);
+        }
+
         let aa_tx = self.inner().as_aa()?;
         Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
+
+    /// Returns the precomputed hash for transactions already classified as expiring nonce.
+    pub(crate) fn precomputed_expiring_nonce_hash(&self) -> B256 {
+        self.expiring_nonce_hash
+            .expect("expiring nonce hash must be precomputed")
     }
 
     /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
@@ -236,87 +477,266 @@ impl TempoPooledTransaction {
             Some(NonceManager::new().expiring_nonce_seen[hash].slot())
         })
     }
+
+    /// Warms the global keccak cache with storage slot hashes that will be accessed
+    /// during payment execution after pool validation.
+    ///
+    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
+    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
+    /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
+    /// which is unknown at validation time.
+    ///
+    /// See `warm_payment_keccak_slots` for the exact set of slots this warms.
+    pub fn precalculate_keccak_slots(&self) {
+        if !self.is_payment {
+            return;
+        }
+
+        let sender = self.sender();
+        warm_payment_keccak_slots(
+            self.inner().calls().map(|(_kind, input)| input.as_ref()),
+            sender,
+            self.fee_payer().unwrap_or(sender),
+            |_slot| {},
+        );
+    }
 }
 
+/// Computes, and thereby warms the global keccak cache with, the storage slots a payment
+/// transaction's `calls` will touch during execution.
+///
+/// Per TIP-20 payment call this warms `balances[to]` (plus `balances[from]` for the
+/// `transferFrom` variants), `receive_policies[to]` in the TIP-403 registry together with
+/// its second-level hash, and `allowances[from][sender]` for the `transferFrom` variants.
+/// `balances[fee_payer]`, which the fee path has already warmed, is skipped.
+///
+/// Calls are classified by selector and exact ABI-encoded length via [`PaymentSlots`], so
+/// non-payment calldata is skipped without decoding. All nine payment calls have fully
+/// static parameters, so their addresses are read straight from the ABI head.
+///
+/// `warmed` observes every computed slot; production passes a no-op and the transaction-pool
+/// tests use it to assert the warmed set.
+fn warm_payment_keccak_slots<'a>(
+    calls: impl Iterator<Item = &'a [u8]>,
+    sender: Address,
+    fee_payer: Address,
+    mut warmed: impl FnMut(U256),
+) {
+    // For payment transactions, warm sender + recipient balance and allowance slots.
+    if fee_payer != sender {
+        warmed(sender.mapping_slot(tip20_slots::BALANCES));
+    }
+    for input in calls {
+        let Some(payment) = PaymentSlots::classify(input) else {
+            continue;
+        };
+
+        for &addr in payment.addresses() {
+            if addr != fee_payer {
+                warmed(addr.mapping_slot(tip20_slots::BALANCES));
+            }
+        }
+        if let Some(addr) = payment.to() {
+            let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+            warmed(slot);
+            warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
+        }
+
+        // Allowance slots for transferFrom variants: allowances[from][sender]
+        if let Some(from) = payment.from() {
+            let owner_slot = from.mapping_slot(tip20_slots::ALLOWANCES);
+            warmed(owner_slot);
+            warmed(sender.mapping_slot(owner_slot));
+        }
+    }
+}
+
+/// Tempo-specific transaction pool rejection reasons.
+///
+/// These errors can be returned by RPC after transaction submission when the
+/// transaction pool rejects a transaction. Variant docs describe when each
+/// rejection is thrown.
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
+    /// A non-payment transaction no longer fits in the block's general gas lane.
+    ///
+    /// Thrown by the payload builder after the transaction is already in the pool,
+    /// when adding it would exceed the configured non-payment gas limit for the block.
     #[error(
         "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
     )]
     ExceedsNonPaymentLimit,
 
-    #[error(
-        "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
-    )]
-    InvalidValidBefore { valid_before: u64, min_allowed: u64 },
+    /// An AA transaction's `valid_before` is too close to the current pool tip.
+    ///
+    /// Thrown during pool admission when `valid_before` is less than or equal to
+    /// the latest tip timestamp plus the pool's propagation buffer.
+    #[error(transparent)]
+    InvalidValidBefore(#[from] InvalidValidBefore),
 
-    #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
-    InvalidValidAfter { valid_after: u64, max_allowed: u64 },
+    /// An AA transaction's `valid_after` is too far in the future.
+    ///
+    /// Thrown during pool admission when `valid_after` exceeds the wall-clock time
+    /// plus the pool's configured future-validity window.
+    #[error(transparent)]
+    InvalidValidAfter(#[from] InvalidValidAfter),
 
+    /// A pool-only keychain authorization limit failed.
+    ///
+    /// Thrown during AA field-limit validation for key authorizations whose call
+    /// scopes, selector rules, or selector recipients exceed pool DoS limits. The
+    /// static string identifies the specific exceeded limit.
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
 
-    /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    /// A pool transaction attempted to use the subblock nonce-key prefix.
+    ///
+    /// Thrown after validation when a transaction has a non-zero nonce key whose
+    /// prefix is reserved for validator subblock transactions, which are
+    /// not accepted from the public pool.
     #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
-    /// Thrown when an AA transaction has too many authorizations in its authorization list.
+    /// An AA transaction has too many Tempo authorizations.
+    ///
+    /// Thrown during pool admission when the AA transaction's authorization list
+    /// exceeds the validator's configured maximum.
     #[error(
         "Too many authorizations in AA transaction: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyAuthorizations { count: usize, max_allowed: usize },
+    TooManyAuthorizations {
+        /// The number of authorizations in the transaction.
+        count: usize,
+        /// The maximum number of authorizations accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an AA transaction has too many calls.
+    /// An AA transaction contains too many calls.
+    ///
+    /// Thrown during AA field-limit validation when `calls.len()` exceeds the
+    /// pool's hard cap.
     #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
-    TooManyCalls { count: usize, max_allowed: usize },
+    TooManyCalls {
+        /// The number of calls in the transaction.
+        count: usize,
+        /// The maximum number of calls accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
+    /// An AA call input is larger than the pool accepts.
+    ///
+    /// Thrown during AA field-limit validation for the first call whose input
+    /// data exceeds the per-call byte limit.
     #[error(
         "Call input size {size} exceeds maximum allowed {max_allowed} bytes (call index: {call_index})"
     )]
     CallInputTooLarge {
+        /// Index of the rejected call in the AA transaction.
         call_index: usize,
+        /// Input byte length for the rejected call.
         size: usize,
+        /// The maximum input byte length accepted by the pool.
         max_allowed: usize,
     },
 
-    /// Thrown when an AA transaction has too many accounts in its access list.
+    /// An AA transaction access list contains too many accounts.
+    ///
+    /// Thrown during AA field-limit validation when the number of access-list
+    /// entries exceeds the pool's hard cap.
     #[error("Too many access list accounts: {count} exceeds maximum allowed {max_allowed}")]
-    TooManyAccessListAccounts { count: usize, max_allowed: usize },
+    TooManyAccessListAccounts {
+        /// The number of access-list entries in the transaction.
+        count: usize,
+        /// The maximum number of access-list entries accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an access list entry has too many storage keys.
+    /// An AA access-list entry contains too many storage keys.
+    ///
+    /// Thrown during AA field-limit validation for the first access-list entry
+    /// whose storage-key count exceeds the per-account cap.
     #[error(
         "Too many storage keys in access list entry {account_index}: {count} exceeds maximum allowed {max_allowed}"
     )]
     TooManyStorageKeysPerAccount {
+        /// Index of the rejected access-list entry.
         account_index: usize,
+        /// The number of storage keys on the rejected entry.
         count: usize,
+        /// The maximum number of storage keys accepted per access-list entry.
         max_allowed: usize,
     },
 
-    /// Thrown when the total number of storage keys across all access list entries is too large.
+    /// An AA transaction access list contains too many storage keys in total.
+    ///
+    /// Thrown during AA field-limit validation when the sum of storage keys across
+    /// all access-list entries exceeds the pool's total cap.
     #[error(
         "Too many total storage keys in access list: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyTotalStorageKeys { count: usize, max_allowed: usize },
+    TooManyTotalStorageKeys {
+        /// Total number of storage keys across all access-list entries.
+        count: usize,
+        /// The maximum total number of storage keys accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when a key authorization has too many token limits.
+    /// A key authorization contains too many token limits.
+    ///
+    /// Thrown during AA field-limit validation when `key_authorization.limits`
+    /// exceeds the pool's hard cap.
     #[error(
         "Too many token limits in key authorization: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyTokenLimits { count: usize, max_allowed: usize },
+    TooManyTokenLimits {
+        /// The number of token limits in the key authorization.
+        count: usize,
+        /// The maximum number of token limits accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an access key has expired or is expiring within the propagation buffer.
+    /// The access key used by a keychain transaction expires too soon.
+    ///
+    /// Thrown after EVM validation when the effective access-key expiry is less
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
-    AccessKeyExpired { expiry: u64, min_allowed: u64 },
+    AccessKeyExpired {
+        /// The effective access-key expiry timestamp returned by EVM validation.
+        expiry: u64,
+        /// The minimum expiry timestamp accepted by the pool.
+        min_allowed: u64,
+    },
 
-    /// Thrown when a KeyAuthorization has expired or is expiring within the propagation buffer.
+    /// A key authorization expiry is too close to the current pool tip.
+    ///
+    /// This variant is not currently thrown on the active validation path;
+    /// key expiry returned by EVM validation is reported as [`Self::AccessKeyExpired`].
     #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
-    KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
+    KeyAuthorizationExpired {
+        /// The key authorization expiry timestamp.
+        expiry: u64,
+        /// The minimum expiry timestamp accepted by the pool.
+        min_allowed: u64,
+    },
 
-    /// EVM validation pipeline error.
+    /// A transaction matched a configured address check.
+    ///
+    /// Thrown during pool admission when the recovered sender or a direct call target
+    /// appears in the node's configured address filter.
+    #[error("Transaction address check failed for {address}")]
+    AddressCheck {
+        /// The address that matched the configured filter.
+        address: Address,
+    },
+
+    /// A Tempo EVM validation error returned by the transaction pool.
+    ///
+    /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
+    /// a [`TempoInvalidTransaction`] that is not mapped to a standard reth
+    /// pool error. The pool also uses this wrapper for AMM liquidity failures
+    /// detected after EVM validation, as `CollectFeePreTx(InsufficientAmmLiquidity)`.
     #[error(transparent)]
     Evm(TempoInvalidTransaction),
 }
@@ -326,10 +746,11 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::Evm(err) => err.is_bad_transaction(),
             Self::ExceedsNonPaymentLimit
-            | Self::InvalidValidBefore { .. }
-            | Self::InvalidValidAfter { .. }
+            | Self::InvalidValidBefore(_)
+            | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
+            | Self::AddressCheck { .. }
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
@@ -394,6 +815,34 @@ impl PoolTransaction for TempoPooledTransaction {
         Self::new(tx)
     }
 
+    fn recover_raw_transaction(data: &[u8]) -> Result<Self, RawPoolTransactionError> {
+        if data.is_empty() {
+            return Err(RawPoolTransactionError::EmptyRawTransactionData);
+        }
+
+        let encoded_length = data.len();
+        let transaction = Self::Pooled::decode_2718_exact(data)
+            .map_err(|_| RawPoolTransactionError::FailedToDecodeSignedTransaction)?;
+
+        let (signer, expiring_nonce_hash) = match &transaction {
+            TempoTxEnvelope::AA(tx) => tx
+                .recover_signer_with_expiring_nonce_hash()
+                .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
+            _ => (
+                transaction
+                    .recover_signer()
+                    .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
+                None,
+            ),
+        };
+
+        Ok(Self::new_with(
+            Recovered::new_unchecked(transaction, signer),
+            expiring_nonce_hash,
+            encoded_length,
+        ))
+    }
+
     fn hash(&self) -> &TxHash {
         self.inner.transaction.tx_hash()
     }
@@ -423,6 +872,12 @@ impl PoolTransaction for TempoPooledTransaction {
                 tx.tx().nonce_key.is_zero()
             })
             .unwrap_or(true)
+    }
+
+    fn requires_nonce_bound_check(&self) -> bool {
+        // Expiring nonces are discriminators, not incrementing counters. Fork-specific
+        // restrictions on their values are enforced by Tempo's EVM validation.
+        !self.is_expiring_nonce()
     }
 }
 
@@ -532,15 +987,63 @@ mod tests {
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
     use alloy_primitives::{Address, Signature, TxKind, address};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use alloy_sol_types::SolCall;
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb_sized;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TempoTransaction,
+        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     };
+
+    const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
+
+    fn signed_aa_envelope(tx: TempoTransaction) -> (TempoTxEnvelope, Address) {
+        let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
+        let signature = signer
+            .sign_hash_sync(&tx.signature_hash())
+            .expect("signing failed");
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        );
+        (signed.into(), signer.address())
+    }
+
+    fn raw_pooled_transaction(
+        tx: TempoTransaction,
+    ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
+        let (envelope, sender) = signed_aa_envelope(tx);
+        let mut raw = Vec::with_capacity(envelope.encode_2718_len());
+        envelope.encode_2718(&mut raw);
+        let encoded_length = raw.len();
+        let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
+            .expect("raw transaction recovery failed");
+        (pooled, envelope, sender, encoded_length)
+    }
+
+    #[test]
+    fn discarded_caches_preserve_transaction_intrinsic_values() {
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(42))
+            .build();
+        let nonce_key_slot = transaction.nonce_key_slot();
+        let _ = transaction.tx_env();
+        transaction.set_key_expiry(Some(123));
+        transaction.set_resolved_fee_token(Address::random());
+
+        let fresh = transaction.with_discarded_caches();
+
+        assert_eq!(fresh.nonce_key_slot(), nonce_key_slot);
+        assert!(fresh.cached_tx_env().is_some());
+        assert_eq!(fresh.key_expiry(), None);
+        assert_eq!(fresh.resolved_fee_token(), None);
+    }
 
     #[test]
     fn test_payment_classification_positive() {
@@ -622,6 +1125,7 @@ mod tests {
         //              = (1_000_000 * 20_000_000_000) / 1_000_000_000_000 = 20000
         let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
+        assert_eq!(tx.fee_token_cost, expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
 
@@ -722,17 +1226,17 @@ mod tests {
         let cases: &[(TempoPoolTransactionError, bool)] = &[
             (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
             (
-                TempoPoolTransactionError::InvalidValidBefore {
+                TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore {
                     valid_before: 100,
                     min_allowed: 200,
-                },
+                }),
                 false,
             ),
             (
-                TempoPoolTransactionError::InvalidValidAfter {
+                TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter {
                     valid_after: 200,
                     max_allowed: 100,
-                },
+                }),
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
@@ -740,6 +1244,25 @@ mod tests {
                 TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
                     "nonce error".to_string(),
                 )),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
+                    address: Address::repeat_byte(0x20),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: Address::repeat_byte(0x20),
+                    currency: "EUR".to_string(),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
+                    address: Address::repeat_byte(0x20),
+                }),
                 false,
             ),
             (
@@ -753,6 +1276,12 @@ mod tests {
                 TempoPoolTransactionError::KeyAuthorizationExpired {
                     expiry: 100,
                     min_allowed: 200,
+                },
+                false,
+            ),
+            (
+                TempoPoolTransactionError::AddressCheck {
+                    address: Address::repeat_byte(0x20),
                 },
                 false,
             ),
@@ -895,6 +1424,41 @@ mod tests {
         assert_eq!(pooled.nonce(), nonce);
     }
 
+    proptest! {
+        #[test]
+        fn proptest_recover_raw_transaction_precomputes_expiring_nonce_hash(
+            mut tx in arb_sized::<TempoTransaction>(TEMPO_TRANSACTION_ARBITRARY_SIZE)
+        ) {
+            tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+            let (pooled, envelope, sender, encoded_length) = raw_pooled_transaction(tx);
+            let expected = envelope.as_aa().unwrap().expiring_nonce_hash(sender);
+            let via_new = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+
+            prop_assert!(pooled.is_expiring_nonce());
+            prop_assert_eq!(pooled.encoded_length(), encoded_length);
+            prop_assert_eq!(pooled.expiring_nonce_hash, Some(expected));
+            prop_assert_eq!(pooled.expiring_nonce_hash(), via_new.expiring_nonce_hash());
+            prop_assert_eq!(pooled.hash(), via_new.hash());
+            prop_assert_eq!(pooled.sender(), via_new.sender());
+        }
+
+        #[test]
+        fn proptest_recover_raw_transaction_matches_new_for_non_expiring_aa(
+            mut tx in arb_sized::<TempoTransaction>(TEMPO_TRANSACTION_ARBITRARY_SIZE)
+        ) {
+            tx.nonce_key = U256::ZERO;
+            let (pooled, envelope, sender, encoded_length) = raw_pooled_transaction(tx);
+            let via_new = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+
+            prop_assert!(!pooled.is_expiring_nonce());
+            prop_assert_eq!(pooled.encoded_length(), encoded_length);
+            prop_assert_eq!(pooled.expiring_nonce_hash, None);
+            prop_assert_eq!(pooled.expiring_nonce_hash(), via_new.expiring_nonce_hash());
+            prop_assert_eq!(pooled.hash(), via_new.hash());
+            prop_assert_eq!(pooled.sender(), via_new.sender());
+        }
+    }
+
     #[test]
     fn test_transaction_trait_forwarding() {
         let sender = Address::random();
@@ -922,6 +1486,161 @@ mod tests {
 
         // PoolTransaction::cost() returns &U256::ZERO for Tempo
         assert_eq!(*tx.cost(), U256::ZERO);
+    }
+
+    /// Collects the slots [`warm_payment_keccak_slots`] warms for `calls`.
+    fn warmed_keccak_slots<'a>(
+        calls: impl Iterator<Item = &'a [u8]>,
+        sender: Address,
+        fee_payer: Address,
+    ) -> Vec<U256> {
+        let mut slots = Vec::new();
+        warm_payment_keccak_slots(calls, sender, fee_payer, |slot| slots.push(slot));
+        slots
+    }
+
+    /// ABI-encoded calldata for every TIP-20 payment call, using `from` as the `transferFrom`
+    /// owner and `to` as the recipient (and as `approve`'s spender), so callers can overlap
+    /// those addresses with the sender and the fee payer.
+    fn payment_calldatas(from: Address, to: Address) -> Vec<Bytes> {
+        let (amount, memo) = (U256::from(7u64), B256::repeat_byte(0xab));
+
+        vec![
+            ITIP20::transferCall { to, amount }.abi_encode().into(),
+            ITIP20::transferWithMemoCall { to, amount, memo }
+                .abi_encode()
+                .into(),
+            ITIP20::transferFromCall { from, to, amount }
+                .abi_encode()
+                .into(),
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount,
+                memo,
+            }
+            .abi_encode()
+            .into(),
+            ITIP20::approveCall {
+                spender: to,
+                amount,
+            }
+            .abi_encode()
+            .into(),
+            ITIP20::mintCall { to, amount }.abi_encode().into(),
+            ITIP20::mintWithMemoCall { to, amount, memo }
+                .abi_encode()
+                .into(),
+            ITIP20::burnCall { amount }.abi_encode().into(),
+            ITIP20::burnWithMemoCall { amount, memo }
+                .abi_encode()
+                .into(),
+        ]
+    }
+
+    #[test]
+    fn warmed_keccak_slots_for_payment_shapes() {
+        let [sender, fee_payer, from, to] = [0x11, 0x22, 0x33, 0x44].map(Address::repeat_byte);
+        let amount = U256::random();
+        let balance = |addr: Address| addr.mapping_slot(tip20_slots::BALANCES);
+        let allowance = |addr: Address| addr.mapping_slot(tip20_slots::ALLOWANCES);
+        let policy = |addr: Address| {
+            let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+            [slot, keccak256(slot.to_be_bytes::<32>()).into()]
+        };
+
+        let cases = [
+            (
+                &ITIP20::transferCall { to, amount }.abi_encode(),
+                fee_payer,
+                vec![balance(sender), balance(to), policy(to)[0], policy(to)[1]],
+            ),
+            (
+                &ITIP20::transferCall {
+                    to: fee_payer,
+                    amount,
+                }
+                .abi_encode(),
+                fee_payer,
+                vec![balance(sender), policy(fee_payer)[0], policy(fee_payer)[1]],
+            ),
+            (
+                &ITIP20::transferCall { to, amount }.abi_encode(),
+                sender,
+                vec![balance(to), policy(to)[0], policy(to)[1]],
+            ),
+            (
+                &ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+                fee_payer,
+                vec![
+                    balance(sender),
+                    balance(from),
+                    balance(to),
+                    policy(to)[0],
+                    policy(to)[1],
+                    allowance(from),
+                    sender.mapping_slot(allowance(from)),
+                ],
+            ),
+            (
+                &ITIP20::approveCall {
+                    spender: to,
+                    amount,
+                }
+                .abi_encode(),
+                fee_payer,
+                vec![balance(sender)],
+            ),
+        ];
+        for (input, payer, expected) in cases {
+            assert_eq!(
+                warmed_keccak_slots(core::iter::once(input.as_slice()), sender, payer),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn warmed_keccak_slots_skip_non_payment_and_truncated_calldata() {
+        let (sender, fee_payer) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+
+        let mut unknown_selector = ITIP20::transferCall {
+            to: Address::repeat_byte(0x33),
+            amount: U256::from(1u64),
+        }
+        .abi_encode();
+        unknown_selector[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+
+        let mut inputs: Vec<Bytes> = vec![
+            Bytes::new(),
+            unknown_selector.into(),
+            ITIP20::claimRewardsCall {}.abi_encode().into(),
+            ITIP20::setRewardRecipientCall {
+                recipient: Address::repeat_byte(0x33),
+            }
+            .abi_encode()
+            .into(),
+        ];
+
+        // truncations of otherwise valid payment calldata must be ignored, not panic
+        for calldata in payment_calldatas(Address::repeat_byte(0x44), Address::repeat_byte(0x55)) {
+            for len in [0, 3, 4, 5, calldata.len() - 1] {
+                inputs.push(calldata.slice(..len));
+            }
+        }
+
+        for input in &inputs {
+            let once = || core::iter::once(input.as_ref());
+
+            // same sender and fee payer: nothing at all is warmed
+            assert!(warmed_keccak_slots(once(), sender, sender).is_empty());
+
+            // separate fee payer: only the unconditional `balances[sender]` slot
+            assert_eq!(
+                warmed_keccak_slots(once(), sender, fee_payer),
+                vec![sender.mapping_slot(tip20_slots::BALANCES)],
+            );
+        }
     }
 }
 
@@ -1050,5 +1769,30 @@ impl KeychainSubject {
         spending_limit_updates: &SpendingLimitUpdates,
     ) -> bool {
         spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
+    }
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
+}
+
+/// Target key identity extracted from an inline key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationTargetSubject {
+    /// The account that owns the target key.
+    pub account: Address,
+    /// The key being authorized.
+    pub key_id: Address,
+}
+
+impl KeyAuthorizationTargetSubject {
+    /// Returns true if this target key is affected by a key status update.
+    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
+        key_updates.contains(self.account, self.key_id)
     }
 }

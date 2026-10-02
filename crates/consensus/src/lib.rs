@@ -1,913 +1,276 @@
-//! Tempo consensus implementation.
+//! A Tempo node using commonware's threshold simplex as consensus.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use alloy_evm::block::BlockExecutionResult;
-use reth_chainspec::EthChainSpec;
-use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
-use reth_consensus_common::validation::{
-    validate_against_parent_4844, validate_against_parent_eip1559_base_fee,
-    validate_against_parent_gas_limit, validate_against_parent_hash_number,
-};
-use reth_ethereum_consensus::EthBeaconConsensus;
-use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
-use std::sync::Arc;
-use tempo_chainspec::{
-    hardfork::TempoHardforks,
-    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec},
-};
-use tempo_primitives::{
-    Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-};
-
-/// How far in the future the block timestamp can be.
-///
-/// We are setting this to 0 to not allow any drift of the block time in the future.
-/// We are considering this safe because with the way CL works currently block time would
-/// be consistent and thus an honest proposer should never produce a block that appears
-/// to be in the future even assuming 50-100ms clock drift.
-pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 0;
-
-/// Divisor for calculating shared gas limit (payment lane capacity).
-/// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
-pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
-
-/// Maximum extra data size for Tempo blocks.
-pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
-
-/// Tempo consensus implementation.
-#[derive(Debug, Clone)]
-pub struct TempoConsensus {
-    /// Inner Ethereum consensus.
-    inner: EthBeaconConsensus<TempoChainSpec>,
-}
-
-impl TempoConsensus {
-    /// Creates a new [`TempoConsensus`] with the given chain spec.
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self {
-            inner: EthBeaconConsensus::new(chain_spec)
-                .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE),
-        }
-    }
-
-    /// Validates the given header against common consensus rules and the given millisecond timestamp.
-    fn validate_header_with_timestamp_millis(
-        &self,
-        header: &SealedHeader<TempoHeader>,
-        present_timestamp_millis: u64,
-    ) -> Result<(), ConsensusError> {
-        self.inner.validate_header(header)?;
-
-        // Validate the timestamp milliseconds part
-        if header.timestamp_millis_part >= 1000 {
-            return Err(ConsensusError::Other(
-                "Timestamp milliseconds part must be less than 1000".to_string(),
-            ));
-        }
-
-        if header.timestamp_millis() > present_timestamp_millis + ALLOWED_FUTURE_BLOCK_TIME_MILLIS {
-            return Err(ConsensusError::TimestampIsInFuture {
-                timestamp: header.timestamp_millis(),
-                present_timestamp: present_timestamp_millis,
-            });
-        }
-
-        if header.shared_gas_limit != header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR {
-            return Err(ConsensusError::Other(
-                "Shared gas limit does not match header gas limit".to_string(),
-            ));
-        }
-
-        // Validate the general (non-payment) gas limit
-        let expected_general_gas_limit = self.inner.chain_spec().general_gas_limit_at(
-            header.timestamp(),
-            header.gas_limit(),
-            header.shared_gas_limit,
-        );
-
-        if header.general_gas_limit != expected_general_gas_limit {
-            return Err(ConsensusError::Other(format!(
-                "General gas limit {} does not match expected {}",
-                header.general_gas_limit, expected_general_gas_limit
-            )));
-        }
-
-        Ok(())
-    }
-}
-
-impl HeaderValidator<TempoHeader> for TempoConsensus {
-    fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
-        let current_timestamp_millis = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .expect("system time should never be before UNIX EPOCH")
-            .as_millis() as u64;
-        self.validate_header_with_timestamp_millis(header, current_timestamp_millis)
-    }
-
-    fn validate_header_against_parent(
-        &self,
-        header: &SealedHeader<TempoHeader>,
-        parent: &SealedHeader<TempoHeader>,
-    ) -> Result<(), ConsensusError> {
-        validate_against_parent_hash_number(header.header(), parent)?;
-
-        validate_against_parent_gas_limit(header, parent, self.inner.chain_spec())?;
-
-        validate_against_parent_eip1559_base_fee(
-            header.header(),
-            parent.header(),
-            self.inner.chain_spec(),
-        )?;
-
-        if let Some(blob_params) = self
-            .inner
-            .chain_spec()
-            .blob_params_at_timestamp(header.timestamp())
-        {
-            validate_against_parent_4844(header.header(), parent.header(), blob_params)?;
-        }
-
-        if header.timestamp_millis() <= parent.timestamp_millis() {
-            return Err(ConsensusError::TimestampIsInPast {
-                parent_timestamp: parent.timestamp_millis(),
-                timestamp: header.timestamp_millis(),
-            });
-        }
-
-        Ok(())
-    }
-}
-
-impl Consensus<Block> for TempoConsensus {
-    fn validate_body_against_header(
-        &self,
-        body: &BlockBody,
-        header: &SealedHeader<TempoHeader>,
-    ) -> Result<(), ConsensusError> {
-        Consensus::<Block>::validate_body_against_header(&self.inner, body, header)
-    }
-
-    fn validate_block_pre_execution(
-        &self,
-        block: &SealedBlock<Block>,
-    ) -> Result<(), ConsensusError> {
-        let transactions = &block.body().transactions;
-
-        if let Some(tx) = transactions.iter().find(|&tx| {
-            tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain().id())
-        }) {
-            return Err(ConsensusError::Other(format!(
-                "Invalid system transaction: {}",
-                tx.tx_hash()
-            )));
-        }
-
-        // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
-        let end_of_block_system_txs = transactions
-            .get(transactions.len().saturating_sub(SYSTEM_TX_COUNT)..)
-            .map(|slice| {
-                slice
-                    .iter()
-                    .filter(|tx| tx.is_system_tx())
-                    .collect::<Vec<&TempoTxEnvelope>>()
-            })
-            .unwrap_or_default();
-
-        if end_of_block_system_txs.len() != SYSTEM_TX_COUNT {
-            return Err(ConsensusError::Other(
-                "Block must contain end-of-block system txs".to_string(),
-            ));
-        }
-
-        // Validate that the sequence of end-of-block system txs is correct
-        for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
-            if tx.to().unwrap_or_default() != expected_to {
-                return Err(ConsensusError::Other(
-                    "Invalid end-of-block system tx order".to_string(),
-                ));
-            }
-        }
-
-        self.inner.validate_block_pre_execution(block)
-    }
-}
-
-impl FullConsensus<TempoPrimitives> for TempoConsensus {
-    fn validate_block_post_execution(
-        &self,
-        block: &RecoveredBlock<Block>,
-        result: &BlockExecutionResult<TempoReceipt>,
-        receipt_root_bloom: Option<ReceiptRootBloom>,
-    ) -> Result<(), ConsensusError> {
-        FullConsensus::<TempoPrimitives>::validate_block_post_execution(
-            &self.inner,
-            block,
-            result,
-            receipt_root_bloom,
-        )
-    }
-}
-
+pub(crate) mod alias;
+mod args;
+pub(crate) mod config;
+pub mod consensus;
+pub(crate) mod dkg;
+pub(crate) mod epoch;
+pub(crate) mod executor;
+pub mod feed;
+pub mod finalization_verifier;
+pub mod finalized_header_stream;
+pub mod follow;
+pub mod gossip;
+pub mod metrics;
+mod network;
+pub(crate) mod network_identity;
+pub(crate) mod peer_manager;
+pub mod storage;
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_consensus::{
-        Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
-        transaction::TxHashRef,
+pub(crate) mod test_utils;
+pub(crate) mod utils;
+pub(crate) mod validators;
+
+use std::sync::Arc;
+
+use commonware_consensus::types::FixedEpocher;
+use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
+use commonware_p2p::authenticated::lookup;
+use commonware_runtime::Supervisor as _;
+use eyre::{OptionExt, WrapErr as _, eyre};
+use tempo_consensus_config::SigningShare;
+use tempo_node::TempoFullNode;
+use tracing::info;
+
+pub use crate::config::{
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, NAMESPACE,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+};
+
+pub use args::{Args, PositiveDuration, VerificationMode};
+
+// Shared by both the consensus and follow engines such that
+// snapshots for overlapping archives can be reused.
+pub const PARTITION_PREFIX: &str = "engine";
+
+const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
+
+/// Tempo's peer sync window: nodes up to three mainnet/testnet epochs behind
+/// the finalized tip should be able to sync from peers.
+pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
+
+pub async fn run_consensus_stack(
+    context: commonware_runtime::tokio::Context,
+    config: Args,
+    execution_node: Arc<TempoFullNode>,
+    executed_state: tempo_node::ExecutedState,
+    feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
+) -> eyre::Result<()> {
+    config.validate_simplex_timing()?;
+
+    let network_identity = config
+        .network_identity()
+        .or_else(|| execution_node.chain_spec().network_identity.clone())
+        .ok_or_eyre("chainspec has no network identity and none was configured")?;
+
+    let share = config
+        .signing_share
+        .as_ref()
+        .map(|share| {
+            SigningShare::read_from_file(share).wrap_err_with(|| {
+                format!(
+                    "failed reading private bls12-381 key share from file `{}`",
+                    share.display()
+                )
+            })
+        })
+        .transpose()?
+        .map(|signing_share| signing_share.into_inner());
+
+    let signing_key = config
+        .signing_key()
+        .await?
+        .ok_or_eyre("required option `consensus.signing-key` not set")?;
+
+    let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
+
+    let (mut network, oracle) =
+        instantiate_network(&context, &config, signing_key.clone().into_inner())
+            .await
+            .wrap_err("failed to start network")?;
+
+    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT);
+    let certificates = network.register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT);
+    let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT);
+    let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
+    let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
+    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
+    let target_block_time = config.target_block_time.into_duration();
+    // Reserve time for propagation. The remaining application budget starts
+    // after commonware fetches the parent; that fetch time is not deducted.
+    let proposal_return_budget =
+        target_block_time.saturating_sub(config.network_budget.into_duration());
+
+    let consensus_engine = crate::consensus::engine::Builder {
+        network_identity,
+        execution_node: Some(execution_node),
+        executed_state,
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
+        blocker: oracle.clone(),
+        peer_manager: oracle.clone(),
+
+        // TODO: Set this through config?
+        partition_prefix: PARTITION_PREFIX.into(),
+        signer: signing_key.into_inner(),
+        share,
+
+        mailbox_size: config.mailbox_size,
+        deque_size: config.deque_size,
+        max_message_size: config.max_message_size_bytes,
+        verification_mode: config.verification_mode,
+
+        time_to_propose: config.wait_for_proposal.into_duration(),
+        time_to_collect_notarizations: config.wait_for_notarizations.into_duration(),
+        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.into_duration(),
+        time_for_peer_response: config.wait_for_peer_response.into_duration(),
+        views_to_track: config.views_to_track,
+        inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
+        proposal_return_budget,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+
+        feed_state,
+
+        finalized_blocks_retention: config.finalized_blocks_retention,
+    }
+    .try_init(context.child("engine"))
+    .await
+    .wrap_err("failed initializing consensus engine")?;
+
+    let (network, consensus_engine) = (
+        network.start(),
+        consensus_engine.start(votes, certificates, resolver, broadcaster, marshal, dkg),
+    );
+
+    tokio::select! {
+        ret = network => {
+            ret.map_err(eyre::Report::from)
+                .and_then(|()| Err(eyre!("exited unexpectedly")))
+                .wrap_err("network task failed")
+        }
+
+        ret = consensus_engine => {
+            ret.map_err(eyre::Report::from)
+                .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
+                .wrap_err("consensus engine task failed")
+        }
+    }
+}
+
+/// Run the follower stack. This uses RPC to sync consensus state and drive
+/// the execution layer from the upstream node.
+pub async fn run_follow_stack(
+    context: commonware_runtime::tokio::Context,
+    config: Args,
+    upstream_url: String,
+    upstream_request_timeout: std::time::Duration,
+    execution_node: Arc<TempoFullNode>,
+    feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
+) -> eyre::Result<()> {
+    let chain_spec = execution_node.chain_spec();
+
+    let epoch_length = chain_spec
+        .info
+        .epoch_length()
+        .ok_or_eyre("chainspec did not contain epochLength")?;
+
+    let chain_spec_network_identity = chain_spec
+        .network_identity
+        .clone()
+        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
+
+    let network_identity = config
+        .network_identity()
+        .unwrap_or(chain_spec_network_identity);
+
+    info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
+
+    let (upstream, upstream_mailbox) = crate::follow::upstream::init(
+        context.child("upstream"),
+        crate::follow::upstream::Config { upstream_url },
+    )
+    .wrap_err("failed to initialize client to upstream node")?;
+
+    let follow_engine = follow::Config {
+        execution_node,
+        gossip: gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+        }),
+        feed_state,
+        upstream,
+        upstream_mailbox,
+        network_identity,
+        partition_prefix: PARTITION_PREFIX.into(),
+        epoch_strategy: FixedEpocher::new(epoch_length),
+        mailbox_size: config.mailbox_size,
+        upstream_request_timeout,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+        finalized_blocks_retention: config.finalized_blocks_retention,
     };
-    use alloy_genesis::Genesis;
-    use alloy_primitives::{Address, B256, Signature, TxKind, U256};
-    use reth_primitives_traits::SealedHeader;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tempo_chainspec::{
-        hardfork::TempoHardfork,
-        spec::{MODERATO, TempoChainSpec},
+
+    let ret = follow_engine
+        .try_init(context.child("engine"))
+        .await
+        .wrap_err("failed initializing follow engine")?
+        .start()
+        .await;
+
+    ret.map_err(eyre::Report::from)
+        .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
+        .wrap_err("follow engine task failed")
+}
+
+async fn instantiate_network(
+    context: &commonware_runtime::tokio::Context,
+    config: &Args,
+    signing_key: PrivateKey,
+) -> eyre::Result<(
+    lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
+    lookup::Oracle<PublicKey>,
+)> {
+    // TODO: Find out why `union_unique` should be used. This is the only place
+    // where `NAMESPACE` is used at all. We follow alto's example for now.
+    let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
+    let cfg = lookup::Config {
+        namespace,
+        crypto: signing_key,
+        listen: config.listen_address,
+        max_message_size: config.max_message_size_bytes,
+        mailbox_size: config.mailbox_size,
+        send_batch_size: commonware_utils::NZUsize!(8),
+        bypass_ip_check: config.bypass_ip_check,
+        allow_private_ips: config.allow_private_ips,
+        allow_dns: config.allow_dns,
+        tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
+        max_peers_per_set: config.max_peers_per_set,
+        synchrony_bound: config.synchrony_bound.into_duration(),
+        max_handshake_age: config.handshake_stale_after.into_duration(),
+        handshake_timeout: config.handshake_timeout.into_duration(),
+        dial_timeout: config.dial_timeout.into_duration(),
+        max_concurrent_handshakes: config.max_concurrent_handshakes,
+        block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
+        dial_frequency: config.wait_before_peers_redial.into_duration(),
+        ping_frequency: config.wait_before_peers_reping.into_duration(),
+        peer_connection_cooldown: config.connection_per_peer_min_period.into_duration(),
+        allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
+            config.handshake_per_ip_min_period.into_duration(),
+        )
+        .ok_or_eyre("handshake per ip min period must be non-zero")?,
+        allowed_handshake_rate_per_subnet: commonware_runtime::Quota::with_period(
+            config.handshake_per_subnet_min_period.into_duration(),
+        )
+        .ok_or_eyre("handshake per subnet min period must be non-zero")?,
     };
 
-    fn current_timestamp_millis() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
-    #[derive(Default)]
-    struct TestHeaderBuilder {
-        gas_limit: u64,
-        timestamp: u64,
-        timestamp_millis_part: u64,
-        number: u64,
-        parent_hash: B256,
-        shared_gas_limit: Option<u64>,
-        general_gas_limit: Option<u64>,
-        base_fee: Option<u64>,
-    }
-
-    impl TestHeaderBuilder {
-        fn gas_limit(mut self, gas_limit: u64) -> Self {
-            self.gas_limit = gas_limit;
-            self
-        }
-
-        fn timestamp_millis(mut self, timestamp: u64) -> Self {
-            self.timestamp = timestamp / 1000;
-            self.timestamp_millis_part = timestamp % 1000;
-            self
-        }
-
-        fn timestamp(mut self, timestamp: u64) -> Self {
-            self.timestamp = timestamp;
-            self
-        }
-
-        fn timestamp_millis_part(mut self, millis: u64) -> Self {
-            self.timestamp_millis_part = millis;
-            self
-        }
-
-        fn number(mut self, number: u64) -> Self {
-            self.number = number;
-            self
-        }
-
-        fn parent_hash(mut self, hash: B256) -> Self {
-            self.parent_hash = hash;
-            self
-        }
-
-        fn shared_gas_limit(mut self, limit: u64) -> Self {
-            self.shared_gas_limit = Some(limit);
-            self
-        }
-
-        fn general_gas_limit(mut self, limit: u64) -> Self {
-            self.general_gas_limit = Some(limit);
-            self
-        }
-
-        fn base_fee(mut self, fee: u64) -> Self {
-            self.base_fee = Some(fee);
-            self
-        }
-
-        fn build(self) -> TempoHeader {
-            let shared_gas_limit = self
-                .shared_gas_limit
-                .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
-            // Default to T1 fixed general gas limit
-            let general_gas_limit = self
-                .general_gas_limit
-                .unwrap_or(tempo_chainspec::spec::TEMPO_T1_GENERAL_GAS_LIMIT);
-
-            TempoHeader {
-                inner: Header {
-                    gas_limit: self.gas_limit,
-                    timestamp: self.timestamp,
-                    number: self.number,
-                    parent_hash: self.parent_hash,
-                    base_fee_per_gas: Some(
-                        self.base_fee
-                            .unwrap_or(tempo_chainspec::spec::TEMPO_T0_BASE_FEE),
-                    ),
-                    withdrawals_root: Some(EMPTY_ROOT_HASH),
-                    blob_gas_used: Some(0),
-                    excess_blob_gas: Some(0),
-                    parent_beacon_block_root: Some(B256::ZERO),
-                    requests_hash: Some(B256::ZERO),
-                    ..Default::default()
-                },
-                shared_gas_limit,
-                general_gas_limit,
-                timestamp_millis_part: self.timestamp_millis_part,
-                ..Default::default()
-            }
-        }
-    }
-
-    fn create_valid_block(header: TempoHeader, transactions: Vec<TempoTxEnvelope>) -> Block {
-        let transactions_root = calculate_transaction_root(&transactions);
-        let mut header = header;
-        header.inner.transactions_root = transactions_root;
-
-        Block {
-            header,
-            body: BlockBody {
-                transactions,
-                withdrawals: Some(Default::default()),
-                ..Default::default()
-            },
-        }
-    }
-
-    fn create_system_tx(chain_id: u64, to: Address) -> TempoTxEnvelope {
-        let tx = TxLegacy {
-            chain_id: Some(chain_id),
-            nonce: 0,
-            gas_price: 0,
-            gas_limit: 0,
-            to: TxKind::Call(to),
-            value: U256::ZERO,
-            input: Default::default(),
-        };
-        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
-    }
-
-    fn create_tx(chain_id: u64) -> TempoTxEnvelope {
-        let tx = TxLegacy {
-            chain_id: Some(chain_id),
-            nonce: 1,
-            gas_price: 1_000_000_000,
-            gas_limit: 21000,
-            to: TxKind::Call(Address::repeat_byte(0x42)),
-            value: U256::from(100),
-            input: Default::default(),
-        };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
-    }
-
-    #[test]
-    fn test_validate_header() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis())
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        assert!(consensus.validate_header(&sealed).is_ok());
-    }
-
-    #[test]
-    fn test_validate_header_shared_gas_mismatch() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis())
-            .shared_gas_limit(999)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let result = consensus.validate_header(&sealed);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string()
-                .contains("Shared gas limit does not match header gas limit")
-        );
-    }
-
-    #[test]
-    fn test_validate_header_general_gas_mismatch_pre_t1() {
-        // Pre-T1 chainspec uses the divisor-based calculation
-        let consensus = TempoConsensus::new(create_pre_t1_chainspec());
-        let gas_limit = 500_000_000u64;
-        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
-        let header = TestHeaderBuilder::default()
-            .gas_limit(gas_limit)
-            .timestamp_millis(current_timestamp_millis())
-            .general_gas_limit(999)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let result = consensus.validate_header(&sealed);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string().contains("General gas limit"),
-            "Expected error about general gas limit, got: {err}",
-        );
-
-        // Now verify the correct pre-T1 value works
-        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / 2;
-        let header = TestHeaderBuilder::default()
-            .gas_limit(gas_limit)
-            .timestamp_millis(current_timestamp_millis())
-            .general_gas_limit(expected_general_gas_limit)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-        assert!(consensus.validate_header(&sealed).is_ok());
-    }
-
-    /// Creates a chainspec with only T0 active (no T1).
-    fn create_pre_t1_chainspec() -> Arc<TempoChainSpec> {
-        let genesis_json = r#"{
-            "config": {
-                "chainId": 99998,
-                "homesteadBlock": 0,
-                "daoForkSupport": false,
-                "eip150Block": 0,
-                "eip155Block": 0,
-                "eip158Block": 0,
-                "byzantiumBlock": 0,
-                "constantinopleBlock": 0,
-                "petersburgBlock": 0,
-                "istanbulBlock": 0,
-                "berlinBlock": 0,
-                "londonBlock": 0,
-                "mergeNetsplitBlock": 0,
-                "shanghaiTime": 0,
-                "cancunTime": 0,
-                "pragueTime": 0,
-                "osakaTime": 0,
-                "terminalTotalDifficulty": 0,
-                "terminalTotalDifficultyPassed": true,
-                "epochLength": 21600,
-                "t0Time": 0
-            },
-            "nonce": "0x42",
-            "timestamp": "0x0",
-            "extraData": "0x",
-            "gasLimit": "0x1dcd6500",
-            "difficulty": "0x0",
-            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-            "coinbase": "0x0000000000000000000000000000000000000000",
-            "alloc": {}
-        }"#;
-        let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
-        Arc::new(TempoChainSpec::from_genesis(genesis))
-    }
-
-    /// Creates a chainspec with T1 active at timestamp 0.
-    fn create_t1_chainspec() -> Arc<TempoChainSpec> {
-        let genesis_json = r#"{
-            "config": {
-                "chainId": 99999,
-                "homesteadBlock": 0,
-                "daoForkSupport": false,
-                "eip150Block": 0,
-                "eip155Block": 0,
-                "eip158Block": 0,
-                "byzantiumBlock": 0,
-                "constantinopleBlock": 0,
-                "petersburgBlock": 0,
-                "istanbulBlock": 0,
-                "berlinBlock": 0,
-                "londonBlock": 0,
-                "mergeNetsplitBlock": 0,
-                "shanghaiTime": 0,
-                "cancunTime": 0,
-                "pragueTime": 0,
-                "osakaTime": 0,
-                "terminalTotalDifficulty": 0,
-                "terminalTotalDifficultyPassed": true,
-                "epochLength": 21600,
-                "t0Time": 0,
-                "t1Time": 0
-            },
-            "nonce": "0x42",
-            "timestamp": "0x0",
-            "extraData": "0x",
-            "gasLimit": "0x1dcd6500",
-            "difficulty": "0x0",
-            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-            "coinbase": "0x0000000000000000000000000000000000000000",
-            "alloc": {}
-        }"#;
-        let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
-        Arc::new(TempoChainSpec::from_genesis(genesis))
-    }
-
-    #[test]
-    fn test_validate_header_general_gas_limit_t1() {
-        // Create a chainspec with T1 active at timestamp 0
-        let chainspec = create_t1_chainspec();
-        let consensus = TempoConsensus::new(chainspec);
-        let gas_limit = 500_000_000u64;
-
-        // T1+: general gas limit must be fixed at 30M
-        // Test with wrong value
-        let header = TestHeaderBuilder::default()
-            .gas_limit(gas_limit)
-            .timestamp_millis(current_timestamp_millis())
-            .general_gas_limit(999)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let result = consensus.validate_header(&sealed);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string().contains("General gas limit"),
-            "Expected error about general gas limit, got: {err}",
-        );
-
-        // Now verify the correct T1 value works (fixed 30M)
-        let header = TestHeaderBuilder::default()
-            .gas_limit(gas_limit)
-            .timestamp_millis(current_timestamp_millis())
-            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-        consensus.validate_header(&sealed).expect("should be valid");
-    }
-
-    #[test]
-    fn test_validate_header_timestamp_milli_gte_1000() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-
-        let current_timestamp_millis = 1000000999;
-
-        // Test timestamp equal to 1000
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis)
-            .timestamp_millis_part(1000)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let result =
-            consensus.validate_header_with_timestamp_millis(&sealed, current_timestamp_millis);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string()
-                .contains("Timestamp milliseconds part must be less than 1000")
-        );
-
-        // Test timestamp > 1000
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis)
-            .timestamp_millis_part(1001)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-        let result =
-            consensus.validate_header_with_timestamp_millis(&sealed, current_timestamp_millis);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string()
-                .contains("Timestamp milliseconds part must be less than 1000")
-        );
-    }
-
-    #[test]
-    fn test_validate_header_against_parent() {
-        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let parent_ts = current_timestamp_millis() - 1;
-        let parent = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(parent_ts)
-            .number(1)
-            .timestamp_millis_part(500)
-            .base_fee(TEMPO_T1_BASE_FEE)
-            .build();
-        let parent_sealed = SealedHeader::seal_slow(parent);
-
-        let child = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(parent_ts + 1)
-            .timestamp_millis_part(600)
-            .number(2)
-            .base_fee(TEMPO_T1_BASE_FEE)
-            .parent_hash(parent_sealed.hash())
-            .build();
-        let child_sealed = SealedHeader::seal_slow(child);
-
-        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_header_against_parent_timestamp_not_increasing() {
-        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let parent_ts = current_timestamp_millis();
-        let parent = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(parent_ts)
-            .timestamp_millis_part(500)
-            .base_fee(TEMPO_T1_BASE_FEE)
-            .build();
-        let parent_sealed = SealedHeader::seal_slow(parent);
-
-        let child = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(parent_ts)
-            .timestamp_millis_part(400)
-            .number(1)
-            .base_fee(TEMPO_T1_BASE_FEE)
-            .parent_hash(parent_sealed.hash())
-            .build();
-        let child_sealed = SealedHeader::seal_slow(child);
-
-        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
-        assert!(matches!(
-            result,
-            Err(ConsensusError::TimestampIsInPast { .. })
-        ));
-    }
-
-    #[test]
-    fn test_validate_header_against_parent_t1() {
-        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-
-        let chainspec = create_t1_chainspec();
-        let consensus = TempoConsensus::new(chainspec);
-
-        let parent_ts = current_timestamp_millis() - 1;
-        let parent = TestHeaderBuilder::default()
-            .gas_limit(500_000_000)
-            .timestamp(parent_ts)
-            .number(1)
-            .timestamp_millis_part(500)
-            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T1_BASE_FEE)
-            .build();
-        let parent_sealed = SealedHeader::seal_slow(parent);
-
-        let child = TestHeaderBuilder::default()
-            .gas_limit(500_000_000)
-            .timestamp(parent_ts + 1)
-            .timestamp_millis_part(600)
-            .number(2)
-            .parent_hash(parent_sealed.hash())
-            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T1_BASE_FEE)
-            .build();
-        let child_sealed = SealedHeader::seal_slow(child);
-
-        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
-        assert!(result.is_ok(), "T1 validation failed: {result:?}");
-    }
-
-    #[test]
-    fn test_validate_header_against_parent_t1_wrong_base_fee() {
-        use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
-
-        let chainspec = create_t1_chainspec();
-        let consensus = TempoConsensus::new(chainspec);
-
-        let parent_ts = current_timestamp_millis() - 1;
-        let parent = TestHeaderBuilder::default()
-            .gas_limit(500_000_000)
-            .timestamp(parent_ts)
-            .number(1)
-            .timestamp_millis_part(500)
-            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T1_BASE_FEE)
-            .build();
-        let parent_sealed = SealedHeader::seal_slow(parent);
-
-        // Child uses pre-T1 base fee (wrong for T1 chainspec)
-        let child = TestHeaderBuilder::default()
-            .gas_limit(500_000_000)
-            .timestamp(parent_ts + 1)
-            .timestamp_millis_part(600)
-            .number(2)
-            .parent_hash(parent_sealed.hash())
-            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T0_BASE_FEE)
-            .build();
-        let child_sealed = SealedHeader::seal_slow(child);
-
-        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
-        assert!(
-            matches!(result, Err(ConsensusError::BaseFeeDiff(_))),
-            "Expected BaseFeeDiff error, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_body_against_header() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-        let body = BlockBody {
-            withdrawals: Some(Default::default()),
-            ..Default::default()
-        };
-
-        assert!(
-            consensus
-                .validate_body_against_header(&body, &sealed)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
-        let user_tx = create_tx(chain_id);
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let block = create_valid_block(header, vec![user_tx, system_tx]);
-        let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
-
-        assert!(consensus.validate_block_pre_execution(&sealed).is_ok());
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution_invalid_system_tx() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let tx = TxLegacy {
-            chain_id: Some(chain_id),
-            nonce: 0,
-            gas_price: 1_000_000_000,
-            gas_limit: 21000,
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: Default::default(),
-        };
-        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
-        let tx_hash = *invalid_system_tx.tx_hash();
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let block = create_valid_block(header, vec![invalid_system_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(err.to_string().contains(&tx_hash.to_string()));
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution_no_system_tx() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let user_tx = create_tx(chain_id);
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let block = create_valid_block(header, vec![user_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string()
-                .contains("Block must contain end-of-block system txs")
-        );
-    }
-
-    #[test]
-    fn test_validate_body_against_header_bad_tx_root() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let chain_id = MODERATO.chain().id();
-        let user_tx = create_tx(chain_id);
-        let body = BlockBody {
-            transactions: vec![user_tx],
-            withdrawals: Some(Default::default()),
-            ..Default::default()
-        };
-
-        let result = consensus.validate_body_against_header(&body, &sealed);
-        assert!(
-            matches!(result, Err(ConsensusError::BodyTransactionRootDiff(_))),
-            "Expected BodyTransactionRootDiff error, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_block_post_execution_bad_receipts() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
-        let user_tx = create_tx(chain_id);
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let block = create_valid_block(header, vec![user_tx, system_tx]);
-        let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO, Address::ZERO]);
-
-        let receipt = TempoReceipt {
-            tx_type: tempo_primitives::TempoTxType::Legacy,
-            success: true,
-            cumulative_gas_used: 0,
-            logs: vec![],
-        };
-        let result = BlockExecutionResult {
-            receipts: vec![receipt],
-            requests: Default::default(),
-            gas_used: 0,
-            blob_gas_used: 0,
-        };
-
-        let err = consensus
-            .validate_block_post_execution(&recovered, &result, None)
-            .unwrap_err();
-        assert!(
-            matches!(err, ConsensusError::BodyReceiptRootDiff(_)),
-            "Expected BodyReceiptRootDiff error, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_header_timestamp_exactly_at_boundary() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let boundary_timestamp = current_timestamp_millis() + ALLOWED_FUTURE_BLOCK_TIME_MILLIS;
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp_millis(boundary_timestamp)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let result = consensus.validate_header(&sealed);
-        assert!(
-            result.is_ok(),
-            "Timestamp exactly at boundary should be accepted, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution_system_tx_out_of_order() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        let wrong_addr = Address::repeat_byte(0xFF);
-        let system_tx = create_system_tx(chain_id, wrong_addr);
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let block = create_valid_block(header, vec![system_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string()
-                .contains("Invalid end-of-block system tx order")
-        );
-    }
+    Ok(lookup::Network::new(context.child("network"), cfg))
 }

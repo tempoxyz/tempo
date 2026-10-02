@@ -8,10 +8,11 @@ use reth_storage_api::{
     StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_trie_common::{
-    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, DecodedMultiProofV2, ExecutionWitnessMode, HashedPostState, HashedStorage,
+    MultiProof, MultiProofTargets, MultiProofTargetsV2, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
-use std::{sync::Mutex, time::Instant};
+use std::time::Instant;
 use tracing::debug_span;
 
 #[derive(Metrics, Clone)]
@@ -29,18 +30,36 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payment_transactions: Histogram,
     /// Number of payment transactions in the payload.
     pub(crate) payment_transactions_last: Gauge,
-    /// Number of subblocks in the payload.
-    pub(crate) subblocks: Histogram,
-    /// Number of subblocks in the payload.
-    pub(crate) subblocks_last: Gauge,
-    /// Number of subblock transactions in the payload.
-    pub(crate) subblock_transactions: Histogram,
-    /// Number of subblock transactions in the payload.
-    pub(crate) subblock_transactions_last: Gauge,
+    /// Number of reverted transactions in the payload.
+    pub(crate) reverted_transactions: Histogram,
+    /// Number of reverted transactions in the last payload.
+    pub(crate) reverted_transactions_last: Gauge,
+    /// Number of pool transactions yielded by the best transactions iterator.
+    pub(crate) pool_transactions_yielded: Histogram,
+    /// Number of pool transactions yielded by the best transactions iterator for the last payload.
+    pub(crate) pool_transactions_yielded_last: Gauge,
+    /// Number of yielded pool transactions included in the payload.
+    pub(crate) pool_transactions_included: Histogram,
+    /// Number of yielded pool transactions included in the last payload.
+    pub(crate) pool_transactions_included_last: Gauge,
+    /// Number of pool transactions committed through parallel storage-action replay.
+    pub(crate) parallel_transactions_executed: Histogram,
+    /// Number of pool transactions committed through parallel storage-action replay in the last payload.
+    pub(crate) parallel_transactions_executed_last: Gauge,
+    /// Number of pool transaction execution attempts rejected as invalid.
+    pub(crate) invalid_pool_transaction_execution_attempts: Histogram,
+    /// Ratio of yielded pool transactions that were included in the payload.
+    pub(crate) pool_transactions_inclusion_ratio: Histogram,
+    /// Ratio of yielded pool transactions that were included in the last payload.
+    pub(crate) pool_transactions_inclusion_ratio_last: Gauge,
     /// Amount of gas used in the payload.
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
+    /// State gas used in the payload (TIP-1016).
+    pub(crate) state_gas_used: Histogram,
+    /// State gas used in the last payload (TIP-1016).
+    pub(crate) state_gas_used_last: Gauge,
     /// Gas used by general (non-payment) transactions in the payload.
     pub(crate) general_gas_used_last: Gauge,
     /// Gas used by payment transactions in the payload.
@@ -49,46 +68,55 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) general_gas_limit_last: Gauge,
     /// Payment lane gas limit.
     pub(crate) payment_gas_limit_last: Gauge,
-    /// Shared (subblock) gas limit.
-    pub(crate) shared_gas_limit_last: Gauge,
     /// Time to create the pool's `BestTransactions` iterator, including lock acquisition and snapshot.
     pub(crate) pool_fetch_duration_seconds: Histogram,
     /// Time to acquire the state provider and initialize the state DB.
     pub(crate) state_setup_duration_seconds: Histogram,
-    /// The time it took to prepare system transactions in seconds.
-    pub(crate) prepare_system_transactions_duration_seconds: Histogram,
-    /// The time it took to execute one transaction in seconds.
-    pub(crate) transaction_execution_duration_seconds: Histogram,
-    /// The time it took to execute normal transactions in seconds.
-    pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
-    /// The time it took to execute subblock transactions in seconds.
-    pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
-    /// Execution time for a single subblock.
-    pub(crate) subblock_execution_duration_seconds: Histogram,
-    /// Number of transactions in a single subblock.
-    pub(crate) subblock_transaction_count: Histogram,
-    /// The time it took to execute all transactions in seconds.
+    /// Total wall-clock time spent filling the block with normal pool transactions.
+    pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
+    /// Time spent waiting for more normal transactions during block fill.
+    pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
+    /// Total wall-clock time spent in transaction execution phases.
     pub(crate) total_transaction_execution_duration_seconds: Histogram,
-    /// The time it took to execute system transactions in seconds.
-    pub(crate) system_transactions_execution_duration_seconds: Histogram,
     /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
     pub(crate) payload_finalization_duration_seconds: Histogram,
+    /// Wall-clock time spent waiting for the shared sparse trie state root.
+    pub(crate) sparse_trie_state_root_wait_duration_seconds: Histogram,
+    /// Wall-clock time spent in `builder.finish()`.
+    pub(crate) builder_finish_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,
     /// Gas per second calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second: Histogram,
     /// Gas per second for the last payload calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second_last: Gauge,
-    /// RLP-encoded block size in bytes.
+    /// Serialized payload size in bytes, including optional RLP-encoded BAL sidecar bytes.
     pub(crate) rlp_block_size_bytes: Histogram,
-    /// RLP-encoded block size in bytes for the last payload.
+    /// Serialized payload size in bytes for the last payload.
     pub(crate) rlp_block_size_bytes_last: Gauge,
     /// Time to compute the hashed post-state from the bundle state.
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
-    /// Time spent awaiting a background root after all execution changes are complete.
-    pub(crate) background_state_root_wait_duration_seconds: Histogram,
+}
+
+/// Reason the payload builder stopped adding pool transactions to the block.
+pub(crate) enum BlockBuildStopReason {
+    GasLimit,
+    RlpBlockSizeLimit,
+    TxPoolEmpty,
+    BuildBudget,
+}
+
+impl BlockBuildStopReason {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::GasLimit => "gas_limit",
+            Self::RlpBlockSizeLimit => "rlp_block_size_limit",
+            Self::TxPoolEmpty => "tx_pool_empty",
+            Self::BuildBudget => "build_budget",
+        }
+    }
 }
 
 impl TempoPayloadBuilderMetrics {
@@ -122,49 +150,19 @@ impl TempoPayloadBuilderMetrics {
             .increment(1);
     }
 
-    /// Increments the build failure counter for a given reason.
+    /// Increments the counter for why the payload builder stopped adding pool transactions.
     #[inline]
-    pub(crate) fn inc_build_failure(&self, reason: &'static str) {
-        metrics::counter!("tempo_payload_builder_build_failures_total", "reason" => reason)
+    pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
+        metrics::counter!("tempo_payload_builder_block_build_stop_total", "reason" => reason.as_str())
             .increment(1);
-    }
-
-    /// Increments the counter for subblocks dropped due to expired transactions.
-    #[inline]
-    pub(crate) fn inc_subblocks_expired(&self) {
-        metrics::counter!("tempo_payload_builder_subblocks_expired_total").increment(1);
     }
 }
 
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
 /// `state_root_with_updates` with tracing spans and histogram metrics during `builder.finish()`.
 pub(crate) struct InstrumentedFinishProvider<'a> {
-    inner: &'a dyn StateProvider,
-    metrics: TempoPayloadBuilderMetrics,
-    background_root: Mutex<Option<BackgroundStateRoot>>,
-}
-
-type BackgroundStateRoot = Box<dyn FnOnce() -> Option<(B256, TrieUpdates)> + Send>;
-
-impl<'a> InstrumentedFinishProvider<'a> {
-    pub(crate) fn new(inner: &'a dyn StateProvider, metrics: TempoPayloadBuilderMetrics) -> Self {
-        Self {
-            inner,
-            metrics,
-            background_root: Mutex::new(None),
-        }
-    }
-
-    /// Await the trie only when the block builder requests its root. At that
-    /// point executor finalization has emitted post-block changes and dropped
-    /// the state hook. Waiting earlier would miss those changes or deadlock.
-    pub(crate) fn with_background_state_root(
-        mut self,
-        root: impl FnOnce() -> Option<(B256, TrieUpdates)> + Send + 'static,
-    ) -> Self {
-        self.background_root = Mutex::new(Some(Box::new(root)));
-        self
-    }
+    pub(crate) inner: &'a dyn StateProvider,
+    pub(crate) metrics: TempoPayloadBuilderMetrics,
 }
 
 impl<'a> AsRef<dyn StateProvider + 'a> for InstrumentedFinishProvider<'a> {
@@ -196,12 +194,16 @@ reth_storage_api::delegate_impls_to_as_ref!(
     StateProofProvider {
         fn proof(&self, input: TrieInput, address: Address, slots: &[B256]) -> ProviderResult<AccountProof>;
         fn multiproof(&self, input: TrieInput, targets: MultiProofTargets) -> ProviderResult<MultiProof>;
+        fn multiproof_v2(&self, input: TrieInput, targets: MultiProofTargetsV2) -> ProviderResult<DecodedMultiProofV2>;
         fn witness(&self, input: TrieInput, target: HashedPostState, mode: ExecutionWitnessMode) -> ProviderResult<Vec<Bytes>>;
     }
 );
 
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
         let result = self.inner.hashed_post_state(bundle_state);
@@ -233,25 +235,6 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         &self,
         hashed_state: HashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
-        let background_root = self
-            .background_root
-            .lock()
-            .expect("state root lock poisoned")
-            .take();
-        if let Some(root) = background_root {
-            let start = Instant::now();
-            let result = root();
-            self.metrics
-                .background_state_root_wait_duration_seconds
-                .record(start.elapsed());
-            if let Some(result) = result {
-                metrics::counter!("tempo_payload_builder_background_state_root_successes_total")
-                    .increment(1);
-                return Ok(result);
-            }
-            metrics::counter!("tempo_payload_builder_background_state_root_failures_total")
-                .increment(1);
-        }
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "state_root_with_updates").entered();
         let result = self.inner.state_root_with_updates(hashed_state);

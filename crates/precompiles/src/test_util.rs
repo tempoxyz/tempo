@@ -1,5 +1,17 @@
 //! Test utilities for precompile dispatch testing
 
+pub mod abi_conformance;
+pub mod storage_conformance;
+
+/// Resolves a contract artifact within a Foundry output directory.
+pub fn foundry_artifact_path(
+    artifacts: &std::path::Path,
+    source: &str,
+    contract: &str,
+) -> std::path::PathBuf {
+    artifacts.join(source).join(format!("{contract}.json"))
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 use crate::error::TempoPrecompileError;
 use crate::{
@@ -38,12 +50,12 @@ pub fn check_selector_coverage<P: Precompile>(
 
         let result = precompile.call(&calldata, Address::ZERO);
 
-        // Check if we got "Unknown function selector" error (old format)
+        // Check if we got "Unknown function selector" error (fatal format)
         let is_unsupported_old = matches!(&result,
             Err(PrecompileError::Fatal(msg)) if msg.contains("Unknown function selector")
         );
 
-        // Check if we got "Unknown function selector" error (new format - ABI-encoded)
+        // Check if we got "Unknown function selector" error (ABI-encoded revert)
         let is_unsupported_new = if let Ok(output) = &result {
             output.is_revert() && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
         } else {
@@ -221,7 +233,7 @@ impl TIP20Setup {
 
     /// Grant ISSUER_ROLE to an account.
     pub fn with_issuer(self, account: Address) -> Self {
-        self.with_role(account, *tip20::ISSUER_ROLE)
+        self.with_role(account, tip20::ISSUER_ROLE)
     }
 
     /// Grant an arbitrary role to an account.
@@ -304,7 +316,7 @@ impl TIP20Setup {
                 let salt = self.salt.unwrap_or_else(B256::random);
                 let token_address = factory.create_token(
                     admin,
-                    tip20_factory::ITIP20Factory::createTokenCall {
+                    tip20_factory::createTokenCall {
                         name: name.to_string(),
                         symbol: symbol.to_string(),
                         currency,

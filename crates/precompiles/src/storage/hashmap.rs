@@ -1,12 +1,19 @@
-use alloy::primitives::{Address, LogData, U256};
+use alloy::primitives::{Address, B256, LogData, U256};
 use revm::{
-    context::journaled_state::JournalCheckpoint,
+    context::{BlockEnv, journaled_state::JournalCheckpoint},
+    context_interface::cfg::GasParams,
+    interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    error::TempoPrecompileError,
+    storage::{PrecompileStorageProvider, SstoreTransitionFlags},
+    storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
+};
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
 ///
@@ -17,13 +24,16 @@ pub struct HashMapStorageProvider {
     accounts: HashMap<Address, AccountInfo>,
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
-    timestamp: U256,
-    beneficiary: Address,
-    block_number: u64,
+    block_env: TempoBlockEnv,
     spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
     is_static: bool,
+    gas_params: GasParams,
+    gas_tracker: GasTracker,
+    tip1060_storage_credits_enabled: bool,
     counter_sload: u64,
     counter_sstore: u64,
+    non_creditable_slots: NonCreditableSlots,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -35,6 +45,7 @@ pub struct HashMapStorageProvider {
 /// PERF: naive cloning strategy due to its limited usage.
 struct Snapshot {
     internals: HashMap<(Address, U256), U256>,
+    transient: HashMap<(Address, U256), U256>,
     events: HashMap<Address, Vec<LogData>>,
 }
 
@@ -54,25 +65,43 @@ impl HashMapStorageProvider {
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
-            #[expect(clippy::disallowed_methods)]
-            timestamp: U256::from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            ),
-            beneficiary: Address::ZERO,
-            block_number: 0,
+            block_env: TempoBlockEnv {
+                inner: BlockEnv {
+                    #[expect(clippy::disallowed_methods)]
+                    timestamp: U256::from(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             spec,
+            amsterdam_eip8037_enabled: false,
             is_static: false,
+            gas_params: GasParams::new_spec(spec.into()),
+            gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
+            tip1060_storage_credits_enabled: spec.is_t7(),
             counter_sload: 0,
             counter_sstore: 0,
+            non_creditable_slots: NonCreditableSlots::empty(),
         }
     }
 
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
+        self.gas_params = GasParams::new_spec(self.spec.into());
+        self.tip1060_storage_credits_enabled = spec.is_t7();
+        self
+    }
+
+    /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
+    pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
+        self.amsterdam_eip8037_enabled = enabled;
+        self.gas_params = GasParams::new_spec(self.spec.into());
         self
     }
 }
@@ -82,16 +111,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.chain_id
     }
 
-    fn timestamp(&self) -> U256 {
-        self.timestamp
-    }
-
-    fn beneficiary(&self) -> Address {
-        self.beneficiary
-    }
-
-    fn block_number(&self) -> u64 {
-        self.block_number
+    fn block_env(&self) -> &TempoBlockEnv {
+        &self.block_env
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
@@ -111,6 +132,13 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
+        let Some(account) = self.accounts.get(&address) else {
+            return Ok((B256::ZERO, Bytecode::default()));
+        };
+        Ok((account.code_hash, account.code.clone().unwrap_or_default()))
+    }
+
     fn sstore(
         &mut self,
         address: Address,
@@ -118,7 +146,25 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.counter_sstore += 1;
+        let present = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
         self.internals.insert((address, key), value);
+
+        if self.tip1060_storage_credits_enabled {
+            let state_load = StateLoad::new(
+                SStoreResult {
+                    original_value: present,
+                    present_value: present,
+                    new_value: value,
+                },
+                false,
+            );
+            sstore_storage_credits(self, address, Some(key), &state_load)?;
+        }
+
         Ok(())
     }
 
@@ -166,7 +212,19 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         // No-op
     }
 
+    fn gas_limit(&self) -> u64 {
+        0
+    }
+
     fn gas_used(&self) -> u64 {
+        0
+    }
+
+    fn state_gas_used(&self) -> u64 {
+        0
+    }
+
+    fn state_gas_spilled(&self) -> u64 {
         0
     }
 
@@ -182,6 +240,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.spec
     }
 
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
+    }
+
     fn is_static(&self) -> bool {
         self.is_static
     }
@@ -190,6 +252,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
             internals: self.internals.clone(),
+            transient: self.transient.clone(),
             events: self.events.clone(),
         });
         JournalCheckpoint {
@@ -216,13 +279,85 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         );
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
             self.internals = snapshot.internals;
+            self.transient = snapshot.transient;
             self.events = snapshot.events;
         }
+    }
+
+    fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+        self.tip1060_storage_credits_enabled = self.spec.is_t7() && enabled;
+    }
+}
+
+impl StorageCreditsBackend for HashMapStorageProvider {
+    type Error = TempoPrecompileError;
+
+    fn gas_params(&self) -> &GasParams {
+        &self.gas_params
+    }
+
+    fn gas_tracker(&mut self) -> &mut GasTracker {
+        &mut self.gas_tracker
+    }
+
+    fn sload(
+        &mut self,
+        address: Address,
+        key: U256,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, Self::Error> {
+        Ok(StateLoad::new(
+            self.internals
+                .get(&(address, key))
+                .copied()
+                .unwrap_or(U256::ZERO),
+            false,
+        ))
+    }
+
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+        _skip_cold_load: bool,
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
+        let present_value = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        self.internals.insert((address, key), value);
+        Ok(SstoreTransitionFlags::from_values(
+            present_value,
+            present_value,
+            value,
+        ))
+    }
+
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
+        self.transient
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
+        self.transient.insert((address, key), value);
+        Ok(())
+    }
+
+    fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
+        self.non_creditable_slots.is_non_creditable_slot(owner, key)
     }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl HashMapStorageProvider {
+    pub fn set_non_creditable_slots(&mut self, slots: NonCreditableSlots) {
+        self.non_creditable_slots = slots;
+    }
+
     pub fn fail_next_sload_at(&mut self, address: Address, slot: U256) {
         self.fail_on_sload = Some((address, slot));
     }
@@ -246,22 +381,24 @@ impl HashMapStorageProvider {
 
     /// Overrides the block timestamp.
     pub fn set_timestamp(&mut self, timestamp: U256) {
-        self.timestamp = timestamp;
+        self.block_env.timestamp = timestamp;
     }
 
     /// Overrides the block beneficiary (coinbase).
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
-        self.beneficiary = beneficiary;
+        self.block_env.beneficiary = beneficiary;
     }
 
     /// Overrides the block number.
     pub fn set_block_number(&mut self, block_number: u64) {
-        self.block_number = block_number;
+        self.block_env.number = U256::from(block_number);
     }
 
     /// Overrides the active hardfork spec.
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
+        self.gas_params = GasParams::new_spec(self.spec.into());
+        self.tip1060_storage_credits_enabled = spec.is_t7();
     }
 
     /// Clears all transient storage (simulates a new block).
@@ -278,12 +415,20 @@ impl HashMapStorageProvider {
             .or_default();
     }
 
+    /// Returns the amount of counted SLOADs.
     pub fn counter_sload(&self) -> u64 {
         self.counter_sload
     }
 
+    /// Returns the amount of counted SSTOREs.
     pub fn counter_sstore(&self) -> u64 {
         self.counter_sstore
+    }
+
+    /// Resets the SLOAD and SSTORE counters.
+    pub fn reset_counters(&mut self) {
+        self.counter_sload = 0;
+        self.counter_sstore = 0;
     }
 
     /// Returns all storage entries as `(address, slot, value)`.

@@ -35,6 +35,18 @@ For features that do not introduce a precompile, this section should define the 
 
 Where a feature involves multiple processes, state diagrams / flowcharts should be considered when helpful.
 
+# Tooling
+
+Describe any tooling impact for this TIP. Include new or changed commands, SDK or library interfaces, test helpers, fixtures, machine-readable outputs, debugging or recovery workflows, and integration guidance needed by implementers, operators, support teams, or users. If no tooling changes are required, write `N/A` and explain why existing tooling is sufficient.
+
+# Observability
+
+Describe the events needed to monitor and debug this TIP in production. List each event that MUST be emitted, its fields, and the operational question it answers. If no new events are required, write `N/A` and explain why existing observability is sufficient.
+
+# Threat Model
+
+List the actors this spec relies on and, for each, describe the trust assumptions in one or two lines. Include any trust boundaries, permissions, or adversarial behaviors that are in or out of scope.
+
 # Invariants
 
 This section should describe invariants that must always hold, and outline the critical cases that the test suite must cover. 

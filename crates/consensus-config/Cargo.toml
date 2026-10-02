@@ -1,0 +1,32 @@
+[package]
+name = "tempo-consensus-config"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+age.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography = { workspace = true, features = ["bls12381"] }
+commonware-math.workspace = true
+const-hex.workspace = true
+rand_core.workspace = true
+secrecy.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+commonware-cryptography = { workspace = true, features = ["std"] }
+commonware-utils.workspace = true
+rand.workspace = true
+tempfile.workspace = true

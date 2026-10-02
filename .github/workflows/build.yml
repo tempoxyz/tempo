@@ -19,6 +19,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
@@ -28,32 +30,26 @@ jobs:
     name: Build
     runs-on: depot-ubuntu-latest-16
     permissions:
+      id-token: write
       contents: read
     strategy:
       matrix:
-        binary: [tempo, tempo-bench, tempo-sidecar]
+        binary: [tempo, tempo-sidecar]
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
-        with:
-          tool: just
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - name: Build
-        run: just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
+        run: cargo build --bin ${{ matrix.binary }} --profile ${{ inputs.profile || 'dev' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: binary_upload
         with:
           if-no-files-found: "error"
           name: ${{ matrix.binary }}
           path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
-      - uses: cloudposse/github-action-matrix-outputs-write@ed06cf3a6bf23b8dce36d1cf0d63123885bb8375 # v1.0.0
-        id: out
-        with:
-          matrix-step-name: ${{ github.job }}
-          matrix-key: ${{ matrix.binary }}
-          outputs: |-
-            artifact_id: ${{ steps.binary_upload.outputs.artifact-id }}

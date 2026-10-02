@@ -193,6 +193,37 @@ fn differential_forwarding_mode(
     adaptive: bool,
     (streaming, fee_rebasing, chained, forwarding): (bool, bool, bool, bool),
 ) -> ExecutionStats {
+    if spec.is_t4() {
+        differential_config_mode(
+            db.clone(),
+            transactions,
+            threads,
+            batch_size,
+            (spec, true),
+            adaptive,
+            (streaming, fee_rebasing, chained, forwarding),
+        );
+    }
+    differential_config_mode(
+        db,
+        transactions,
+        threads,
+        batch_size,
+        (spec, false),
+        adaptive,
+        (streaming, fee_rebasing, chained, forwarding),
+    )
+}
+
+fn differential_config_mode(
+    db: TestDB,
+    transactions: &[TempoTxEnv],
+    threads: usize,
+    batch_size: usize,
+    (spec, amsterdam): (TempoHardfork, bool),
+    adaptive: bool,
+    (streaming, fee_rebasing, chained, forwarding): (bool, bool, bool, bool),
+) -> ExecutionStats {
     let env = EvmEnv {
         cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
             spec,
@@ -207,6 +238,8 @@ fn differential_forwarding_mode(
             ..Default::default()
         },
     };
+    let mut env = env;
+    env.cfg_env.enable_amsterdam_eip8037 = amsterdam;
     let mut sequential = TempoEvm::new(db.clone(), env.clone());
     let mut parallel = TempoEvm::new(db, env);
     parallel.set_speculative_executor(Some(
@@ -229,6 +262,11 @@ fn differential_forwarding_mode(
             match (expected, actual) {
                 (Ok(expected), Ok(actual)) => {
                     assert_eq!(expected, actual, "different execution for {tx:?}");
+                    assert_eq!(
+                        sequential.validator_fee(),
+                        parallel.validator_fee(),
+                        "validator fee for {tx:?}"
+                    );
                     sequential_gas += expected.result.tx_gas_used();
                     parallel_gas += actual.result.tx_gas_used();
                     let receipt = |result: &ResultAndState<TempoHaltReason>, gas| {
@@ -670,13 +708,17 @@ fn funded_tip20_accounts(users: impl IntoIterator<Item = Address>) -> TestDB {
     use revm::context_interface::JournalTr;
     use tempo_precompiles::{storage::StorageCtx, test_util::TIP20Setup};
     let mut evm = test_evm_with_basefee(TestDB::default(), 0);
-    StorageCtx::enter_ctx(evm.ctx_mut(), || {
-        let mut setup = TIP20Setup::path_usd(address(999)).with_issuer(address(999));
-        for user in users {
-            setup = setup.with_mint(user, U256::from(1_000_000_000u64));
-        }
-        setup.apply().unwrap();
-    });
+    StorageCtx::enter_ctx(
+        evm.ctx_mut(),
+        tempo_precompiles::storage::StorageActions::disabled(),
+        || {
+            let mut setup = TIP20Setup::path_usd(address(999)).with_issuer(address(999));
+            for user in users {
+                setup = setup.with_mint(user, U256::from(1_000_000_000u64));
+            }
+            setup.apply().unwrap();
+        },
+    );
     let state = evm.ctx_mut().journaled_state.finalize();
     evm.db_mut().commit(state);
     evm.finish().0
@@ -691,6 +733,19 @@ const FEE_SPECS: [TempoHardfork; 8] = [
     TempoHardfork::T2,
     TempoHardfork::T3,
     TempoHardfork::T4,
+];
+
+const CURRENT_SPECS: [TempoHardfork; 10] = [
+    TempoHardfork::T5,
+    TempoHardfork::T6,
+    TempoHardfork::T7,
+    TempoHardfork::T8,
+    TempoHardfork::T9,
+    TempoHardfork::T10,
+    TempoHardfork::T11,
+    TempoHardfork::T12,
+    TempoHardfork::T13,
+    TempoHardfork::T14,
 ];
 
 #[test]
@@ -978,7 +1033,7 @@ fn generated_existing_recipient_balances_match_across_forks_and_windows() {
             tx
         })
         .collect::<Vec<_>>();
-    for spec in FEE_SPECS {
+    for spec in FEE_SPECS.into_iter().chain(CURRENT_SPECS) {
         let mut reference = TempoEvm::new(
             db.clone(),
             EvmEnv {
@@ -1163,7 +1218,7 @@ fn stale_nonce_hints_do_not_replace_authoritative_validation() {
                 let aa = tx.tempo_tx_env.as_ref().unwrap();
                 let slot = if expiring {
                     let hash = if spec.is_t1b() {
-                        aa.expiring_nonce_hash.unwrap()
+                        tx.unique_tx_identifier().unwrap()
                     } else {
                         aa.tx_hash
                     };
@@ -1346,7 +1401,10 @@ fn aa_multi_call_transfers_and_two_dimensional_nonces() {
         TempoHardfork::T1B,
         TempoHardfork::T3,
         TempoHardfork::T4,
-    ] {
+    ]
+    .into_iter()
+    .chain(CURRENT_SPECS)
+    {
         let stats = differential_at_spec(db.clone(), &txs, 4, 32, spec);
         assert!(stats.conflicts + stats.retries > 0);
         assert!(stats.reused > 0);
@@ -1416,11 +1474,7 @@ fn sponsored_expiring_nonces_preserve_ring_updates_and_replay_rejection() {
 fn expiring_nonce_ring_wrap_rechecks_full_and_expired_entries() {
     use alloy_evm::FromRecoveredTx;
     use revm::Database as _;
-    use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS,
-        nonce::{EXPIRING_NONCE_SET_CAPACITY, slots},
-        storage::StorageKey,
-    };
+    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
     use tempo_primitives::{
         TempoSignature, TempoTransaction,
         transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
@@ -1465,7 +1519,7 @@ fn expiring_nonce_ring_wrap_rechecks_full_and_expired_entries() {
             for (slot, value) in [
                 (
                     slots::EXPIRING_NONCE_RING_PTR,
-                    U256::from(EXPIRING_NONCE_SET_CAPACITY - 1),
+                    U256::from(spec.expiring_nonce_set_capacity() - 1),
                 ),
                 (
                     0u32.mapping_slot(slots::EXPIRING_NONCE_RING),
@@ -1571,8 +1625,7 @@ fn keychain_spending_limits_and_revocation_invalidate_candidates() {
     use tempo_precompiles::{
         ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS,
         account_keychain::{
-            AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, authorizeKeyCall,
-            revokeKeyCall,
+            AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
         },
         storage::StorageCtx,
         tip20::ITIP20,
@@ -1582,21 +1635,26 @@ fn keychain_spending_limits_and_revocation_invalidate_candidates() {
     };
     let caller = address(0);
     let key = address(500);
-    for spec in [TempoHardfork::T3, TempoHardfork::T4] {
+    for spec in [TempoHardfork::T3, TempoHardfork::T4]
+        .into_iter()
+        .chain(CURRENT_SPECS)
+    {
         let mut setup = test_evm_with_basefee(funded_tip20_db(1), 0);
         setup.ctx_mut().cfg.spec = spec;
-        StorageCtx::enter_ctx(setup.ctx_mut(), || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize().unwrap();
-            keychain.set_transaction_key(Address::ZERO).unwrap();
-            keychain.set_tx_origin(caller).unwrap();
-            keychain
-                .authorize_key(
-                    caller,
-                    authorizeKeyCall {
-                        keyId: key,
-                        signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
+        StorageCtx::enter_ctx(
+            setup.ctx_mut(),
+            tempo_precompiles::storage::StorageActions::disabled(),
+            || {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize().unwrap();
+                keychain.set_transaction_key(Address::ZERO).unwrap();
+                keychain.set_tx_origin(caller).unwrap();
+                keychain
+                    .authorize_key(
+                        caller,
+                        key,
+                        SignatureType::Secp256k1,
+                        KeyRestrictions {
                             expiry: u64::MAX,
                             enforceLimits: true,
                             limits: vec![TokenLimit {
@@ -1607,10 +1665,11 @@ fn keychain_spending_limits_and_revocation_invalidate_candidates() {
                             allowAnyCalls: true,
                             allowedCalls: vec![],
                         },
-                    },
-                )
-                .unwrap();
-        });
+                        None,
+                    )
+                    .unwrap();
+            },
+        );
         let state = setup.ctx_mut().journaled_state.finalize();
         setup.db_mut().commit(state);
         let db = setup.finish().0;
@@ -1864,32 +1923,36 @@ fn body_reuse_rechecks_amm_liquidity_and_reservations() {
     let mut db = funded_tip20_db(64);
     contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
     let mut setup = test_evm_with_basefee(db, 0);
-    let fee_token = StorageCtx::enter_ctx(setup.ctx_mut(), || {
-        let mut token =
-            TIP20Setup::create("Fee asset", "FEE", address(999)).with_issuer(address(999));
-        for i in 0..64 {
-            token = token.with_mint(address(i), U256::from(1_000_000_000u64));
-        }
-        let fee_token = token.apply().unwrap().address();
-        TIP20Token::from_address(PATH_USD_ADDRESS)
-            .unwrap()
-            .mint(
-                address(999),
-                ITIP20::mintCall {
-                    to: TIP_FEE_MANAGER_ADDRESS,
-                    amount: U256::from(250),
-                },
-            )
-            .unwrap();
-        let mut pools = Mapping::<B256, Pool>::new(slots::POOLS, TIP_FEE_MANAGER_ADDRESS);
-        pools[PoolKey::new(fee_token, PATH_USD_ADDRESS).get_id()]
-            .write(Pool {
-                reserve_user_token: 0,
-                reserve_validator_token: 250,
-            })
-            .unwrap();
-        fee_token
-    });
+    let fee_token = StorageCtx::enter_ctx(
+        setup.ctx_mut(),
+        tempo_precompiles::storage::StorageActions::disabled(),
+        || {
+            let mut token =
+                TIP20Setup::create("Fee asset", "FEE", address(999)).with_issuer(address(999));
+            for i in 0..64 {
+                token = token.with_mint(address(i), U256::from(1_000_000_000u64));
+            }
+            let fee_token = token.apply().unwrap().address();
+            TIP20Token::from_address(PATH_USD_ADDRESS)
+                .unwrap()
+                .mint(
+                    address(999),
+                    ITIP20::mintCall {
+                        to: TIP_FEE_MANAGER_ADDRESS,
+                        amount: U256::from(250),
+                    },
+                )
+                .unwrap();
+            let mut pools = Mapping::<B256, Pool>::new(slots::POOLS, TIP_FEE_MANAGER_ADDRESS);
+            pools[PoolKey::new(fee_token, PATH_USD_ADDRESS).get_id()]
+                .write(Pool {
+                    reserve_user_token: 0,
+                    reserve_validator_token: 250,
+                })
+                .unwrap();
+            fee_token
+        },
+    );
     let state = setup.ctx_mut().journaled_state.finalize();
     setup.db_mut().commit(state);
     let mut db = setup.finish().0;
@@ -1934,22 +1997,26 @@ fn reward_changes_rebase_unobserved_slots_and_invalidate_observed_slots() {
     contract(&mut db, target, &[0]);
     let recipient = address(99);
     let mut setup = test_evm_with_basefee(db, 0);
-    StorageCtx::enter_ctx(setup.ctx_mut(), || {
-        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
-        for i in 0..16 {
+    StorageCtx::enter_ctx(
+        setup.ctx_mut(),
+        tempo_precompiles::storage::StorageActions::disabled(),
+        || {
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
+            for i in 0..16 {
+                token
+                    .set_reward_recipient(address(i), ITIP20::setRewardRecipientCall { recipient })
+                    .unwrap();
+            }
             token
-                .set_reward_recipient(address(i), ITIP20::setRewardRecipientCall { recipient })
+                .distribute_reward(
+                    address(0),
+                    ITIP20::distributeRewardCall {
+                        amount: U256::from(1_000_000),
+                    },
+                )
                 .unwrap();
-        }
-        token
-            .distribute_reward(
-                address(0),
-                ITIP20::distributeRewardCall {
-                    amount: U256::from(1_000_000),
-                },
-            )
-            .unwrap();
-    });
+        },
+    );
     let state = setup.ctx_mut().journaled_state.finalize();
     setup.db_mut().commit(state);
     let db = setup.finish().0;
@@ -2264,26 +2331,50 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
         .collect::<Vec<_>>();
     let db = funded_tip20_accounts(recovered.iter().map(|tx| tx.signer()));
     let spec = test_chainspec();
+    #[derive(Debug)]
+    struct CommitDb {
+        inner: TestDB,
+        changes: Arc<Mutex<Vec<reth_revm::state::EvmState>>>,
+    }
+    impl revm::Database for CommitDb {
+        type Error = <TestDB as revm::Database>::Error;
+        fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            self.inner.basic(address)
+        }
+        fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
+            self.inner.code_by_hash(hash)
+        }
+        fn storage(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
+            self.inner.storage(address, key)
+        }
+        fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+            self.inner.block_hash(number)
+        }
+    }
+    impl DatabaseCommit for CommitDb {
+        fn commit(&mut self, changes: reth_revm::state::EvmState) {
+            self.changes.lock().unwrap().push(changes.clone());
+            self.inner.commit(changes);
+        }
+    }
     let mut expected_output = None;
     for parallel in [false, true] {
+        let changes = Arc::new(Mutex::new(Vec::new()));
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
-            .build_with_transactions(db.clone(), &spec, &txs);
+            .build_with_transactions(
+                CommitDb {
+                    inner: db.clone(),
+                    changes: changes.clone(),
+                },
+                &spec,
+                &txs,
+            );
         if parallel {
             executor
                 .evm_mut()
                 .set_speculative_executor(Some(SpeculativeExecutor::new(4, 4).unwrap()));
         }
-        let changes = Arc::new(Mutex::new(Vec::new()));
-        let captured = changes.clone();
-        executor.set_state_hook(Some(Box::new(
-            move |source, state: &reth_revm::state::EvmState| {
-                captured
-                    .lock()
-                    .unwrap()
-                    .push((format!("{source:?}"), state.clone()));
-            },
-        )));
         executor.apply_pre_execution_changes().unwrap();
         for tx in &recovered {
             executor.execute_transaction(tx).unwrap();
@@ -2292,7 +2383,11 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
             assert!(executor.evm().execution_stats().reused > 0);
         }
         let (evm, result) = executor.finish().unwrap();
-        let output = (root(evm.db()), result, changes.lock().unwrap().clone());
+        let output = (
+            root(&evm.db().inner),
+            result,
+            changes.lock().unwrap().clone(),
+        );
         if let Some(expected) = &expected_output {
             assert_eq!(&output, expected);
         } else {
@@ -2310,6 +2405,8 @@ fn custom_precompiles_and_inspection_disable_speculation() {
     evm.set_inspector_enabled(false);
     assert_eq!(evm.speculative_batch_size(), 2);
     let _ = evm.precompiles_mut();
+    assert_eq!(evm.speculative_batch_size(), 0);
+    evm.set_speculative_executor(Some(SpeculativeExecutor::new(2, 2).unwrap()));
     assert_eq!(evm.speculative_batch_size(), 0);
 }
 
@@ -2362,7 +2459,7 @@ fn speculative_windows_are_bounded_by_declared_gas() {
 }
 
 #[test]
-fn subblock_fee_failures_preserve_nonce_only_commits() {
+fn fee_validation_failures_replay_against_ordered_state() {
     use alloy_evm::FromRecoveredTx;
     use tempo_precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
@@ -2383,23 +2480,15 @@ fn subblock_fee_failures_preserve_nonce_only_commits() {
                 ..Default::default()
             }
             .into_signed(TempoSignature::default());
-            let mut env = TempoTxEnv::from_recovered_tx(&signed, address(i));
-            env.tempo_tx_env.as_mut().unwrap().subblock_transaction = true;
-            env
+            TempoTxEnv::from_recovered_tx(&signed, address(i))
         })
         .collect::<Vec<_>>();
     for spec in [TempoHardfork::T0, TempoHardfork::T1B, TempoHardfork::T4] {
         let stats = differential_at_spec(db.clone(), &txs, 4, 8, spec);
-        assert!(
-            stats.reused > 0,
-            "caught fee failures produce reusable outcomes at {spec:?}"
-        );
-        // The first transaction can create the shared native nonce account; later
-        // candidates must then replay even though their nonce slots are disjoint.
-        assert_eq!(stats.reused + stats.conflicts, 8);
+        assert_eq!(stats.reused, 0, "fee validation fails at {spec:?}");
         assert_eq!(
-            stats.retries, 0,
-            "fee failures are caught subblock halts, not transaction errors"
+            stats.retries, 8,
+            "invalid candidates must execute authoritatively"
         );
     }
 }
@@ -2670,4 +2759,50 @@ fn worker_panic_releases_other_workers_waiting_for_reads() {
     );
     drop(batch);
     worker.join().unwrap();
+}
+
+#[test]
+fn current_fork_storage_credits_match_on_create_update_clear_and_revert() {
+    let mut db = TestDB::default();
+    for i in 0..4 {
+        // Alternate successful and reverted SSTORE bodies, including zero crossings.
+        let mut code = vec![0x60, 0, 0x35, 0x60, 0, 0x55, 0x60, 0, 0x60, 0];
+        code.push(if i % 2 == 0 { 0xf3 } else { 0xfd });
+        contract(&mut db, address(900 + i), &code);
+    }
+    let txs = (0..48)
+        .map(|i| {
+            let value = U256::from((i / 4) % 3);
+            transaction(
+                i % 8,
+                address(900 + i % 4),
+                i / 8,
+                &value.to_be_bytes::<32>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for spec in CURRENT_SPECS {
+        let stats = differential_at_spec(db.clone(), &txs, 4, 16, spec);
+        assert!(stats.reused > 0, "{spec:?}: {stats:?}");
+        assert!(stats.conflicts > 0, "{spec:?}: {stats:?}");
+    }
+}
+
+#[test]
+fn storage_action_recording_keeps_canonical_execution_after_preparation() {
+    let target = address(900);
+    let mut db = TestDB::default();
+    contract(&mut db, target, &[0x60, 1, 0x60, 0, 0x55, 0]);
+    let tx = transaction(0, target, 0, &[]);
+    let mut sequential = test_evm_with_basefee(db.clone(), 0).with_actions();
+    let mut parallel = test_evm_with_basefee(db, 0);
+    parallel.set_speculative_executor(Some(SpeculativeExecutor::new(2, 2).unwrap()));
+    parallel.prepare_transactions([(tx.clone(), Address::ZERO)]);
+    let mut parallel = parallel.with_actions();
+    assert_eq!(
+        parallel.transact_raw(tx.clone()).unwrap(),
+        sequential.transact_raw(tx).unwrap()
+    );
+    assert_eq!(parallel.take_actions(), sequential.take_actions());
+    assert_eq!(parallel.execution_stats().reused, 0);
 }

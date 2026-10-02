@@ -28,18 +28,23 @@ on:
         type: boolean
 
 env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
-  RUSTC_WRAPPER: "sccache"
 
 jobs:
   get-version:
     name: Get Version
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      id-token: write
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - name: Get version from tag or branch
         id: get_version
         env:
@@ -48,11 +53,11 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "version=$INPUT_TAG" >> $GITHUB_OUTPUT
+            echo "version=$INPUT_TAG" >> "$GITHUB_OUTPUT"
           elif [[ "$GITHUB_REF" == refs/heads/rc/* ]]; then
-            echo "version=sha-${SHA::7}" >> $GITHUB_OUTPUT
+            echo "version=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
   check-version:
     name: check version
@@ -60,17 +65,23 @@ jobs:
     needs: get-version
     if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && github.event.inputs.dry_run != 'true' }}
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
+        env:
+          TAG: ${{ needs.get-version.outputs.version }}
         run: |
-          tag="${{ needs.get-version.outputs.version }}"
+          tag="$TAG"
           tag=${tag#v}
           cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
           [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
@@ -82,14 +93,17 @@ jobs:
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: read
+      # Required by actions/attest-build-provenance and actions/attest-sbom for
+      # keyless Sigstore signing via GitHub OIDC, and to upload the resulting
+      # in-toto attestations to the repository's attestation store.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         binary:
           - name: tempo
             features: "asm-keccak,jemalloc,otlp"
-          - name: tempo-bench
-            features: ""
           - name: tempo-sidecar
             features: ""
         platform:
@@ -101,73 +115,130 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
       - name: Get build profile
         id: profile
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "profile=${{ inputs.profile }}" >> $GITHUB_OUTPUT
+            echo "profile=${{ inputs.profile }}" >> "$GITHUB_OUTPUT"
           else
-            echo "profile=maxperf" >> $GITHUB_OUTPUT
+            echo "profile=maxperf" >> "$GITHUB_OUTPUT"
           fi
         shell: bash
 
       - name: Build binary
-        run: cargo build --bin ${{ matrix.binary.name }} --features "${{ matrix.binary.features }}" --profile ${{ steps.profile.outputs.profile }} --target ${{ matrix.platform.target }}
         env:
           CARGO_TARGET_DIR: target
+          BIN_NAME: ${{ matrix.binary.name }}
+          BIN_FEATURES: ${{ matrix.binary.features }}
+          BUILD_PROFILE: ${{ steps.profile.outputs.profile }}
+          TARGET: ${{ matrix.platform.target }}
+        run: cargo build --locked --bin "$BIN_NAME" --features "$BIN_FEATURES" --profile "$BUILD_PROFILE" --target "$TARGET"
 
       - name: Prepare binary
         id: prepare
         shell: bash
+        env:
+          BUILD_PROFILE: ${{ steps.profile.outputs.profile }}
+          TARGET: ${{ matrix.platform.target }}
+          BIN_NAME: ${{ matrix.binary.name }}
+          VERSION: ${{ needs.get-version.outputs.version }}
         run: |
-          PROFILE="${{ steps.profile.outputs.profile }}"
+          PROFILE="$BUILD_PROFILE"
           if [ "$PROFILE" = "dev" ]; then
             PROFILE_DIR="debug"
           else
             PROFILE_DIR="$PROFILE"
           fi
 
-          BINARY_PATH="target/${{ matrix.platform.target }}/${PROFILE_DIR}/${{ matrix.binary.name }}"
-          BINARY_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}"
-          ARCHIVE_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}.tar.gz"
+          BINARY_PATH="target/${TARGET}/${PROFILE_DIR}/${BIN_NAME}"
+          BINARY_NAME="${BIN_NAME}-${VERSION}-${TARGET}"
+          ARCHIVE_NAME="${BIN_NAME}-${VERSION}-${TARGET}.tar.gz"
 
           cp "$BINARY_PATH" "$BINARY_NAME"
           tar czf "$ARCHIVE_NAME" "$BINARY_NAME"
 
-          echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
-          echo "archive_path=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
+          {
+            echo "archive_name=$ARCHIVE_NAME"
+            echo "archive_path=$ARCHIVE_NAME"
+            echo "binary_name=$BINARY_NAME"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate checksums
         shell: bash
+        # Two separate single-line .sha256 files, one per artifact, so that
+        # `sha256sum -c <file>.sha256` works cleanly for whichever artifact
+        # the user downloaded. The bare-binary checksum is what an
+        # independent rebuilder will compare against once the reproducible
+        # build path lands (ELF hashes reproduce far more reliably than
+        # tar/gzip hashes).
+        env:
+          ARCHIVE_PATH: ${{ steps.prepare.outputs.archive_path }}
+          ARCHIVE_NAME: ${{ steps.prepare.outputs.archive_name }}
+          BINARY_NAME: ${{ steps.prepare.outputs.binary_name }}
         run: |
-          shasum -a 256 "${{ steps.prepare.outputs.archive_path }}" > "${{ steps.prepare.outputs.archive_name }}.sha256"
+          shasum -a 256 "$ARCHIVE_PATH" > "${ARCHIVE_NAME}.sha256"
+          shasum -a 256 "$BINARY_NAME"  > "${BINARY_NAME}.sha256"
 
       - name: GPG sign archive
         shell: bash
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          ARCHIVE_PATH: ${{ steps.prepare.outputs.archive_path }}
         run: |
           GNUPGHOME=$(mktemp -d)
           export GNUPGHOME
           echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
-          printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "${{ steps.prepare.outputs.archive_path }}"
+          printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "$ARCHIVE_PATH"
+
+      - name: Generate SBOM (SPDX-JSON) for archive
+        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          file: ${{ steps.prepare.outputs.archive_path }}
+          format: spdx-json
+          output-file: ${{ steps.prepare.outputs.archive_name }}.spdx.json
+          # The release workflow uploads SBOMs explicitly via actions/upload-artifact
+          # below, so disable the action's own artifact / release upload to keep
+          # the asset list deterministic.
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          # Attest both the archive and the bare binary so consumers can verify
+          # provenance whether they hold the .tar.gz or the unpacked ELF
+          # (containers, distro packages, the independent rebuilder).
+          # `sbom-path` switches actions/attest into SBOM-attestation mode.
+          subject-path: |
+            ${{ steps.prepare.outputs.archive_path }}
+            ${{ steps.prepare.outputs.binary_name }}
+          sbom-path: ${{ steps.prepare.outputs.archive_name }}.spdx.json
+
+      - name: Attest build provenance (SLSA v1)
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          # No `sbom-path` / `predicate-*` → actions/attest auto-emits a SLSA
+          # build provenance predicate.
+          subject-path: |
+            ${{ steps.prepare.outputs.archive_path }}
+            ${{ steps.prepare.outputs.binary_name }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -177,6 +248,8 @@ jobs:
             ${{ steps.prepare.outputs.archive_path }}
             ${{ steps.prepare.outputs.archive_name }}.sha256
             ${{ steps.prepare.outputs.archive_name }}.asc
+            ${{ steps.prepare.outputs.archive_name }}.spdx.json
+            ${{ steps.prepare.outputs.binary_name }}.sha256
           if-no-files-found: error
 
   create-release:
@@ -185,11 +258,15 @@ jobs:
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
     permissions:
+      id-token: write
       contents: write
       actions: read
     steps:
       # This is necessary for generating the changelog.
       # It has to come before "Download Artifacts" or else it deletes the artifacts.
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -220,15 +297,122 @@ jobs:
             --notes "" \
             $PRERELEASE \
             artifacts/**/*
+
+  bump-main-cargo-version:
+    name: Open Cargo Version Bump PR
+    needs: [get-version, create-release, upload-cloudflare]
+    if: ${{ startsWith(needs.get-version.outputs.version, 'v') && !contains(needs.get-version.outputs.version, 'alpha') && !contains(needs.get-version.outputs.version, 'beta') && !contains(needs.get-version.outputs.version, 'rc') }}
+    runs-on: depot-ubuntu-latest
+    environment: release-pr
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Fetch GitHub token via STS
+        id: app-token
+        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          policy: release-pr
+
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Open Cargo version bump PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cargo_version="${VERSION#v}"
+          branch="automation/bump-cargo-${VERSION}"
+          current_version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
+
+          if [ "$current_version" = "$cargo_version" ]; then
+            echo "main already has tempo version $cargo_version"
+            exit 0
+          fi
+
+          git config user.name "tempo-github-sts[bot]"
+          git config user.email "312736176+tempo-github-sts[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"].removeprefix("v")
+          path = Path("Cargo.toml")
+          lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+          in_workspace_package = False
+          updated = False
+          for index, line in enumerate(lines):
+              stripped = line.strip()
+              if stripped == "[workspace.package]":
+                  in_workspace_package = True
+                  continue
+              if in_workspace_package and stripped.startswith("[") and stripped.endswith("]"):
+                  break
+              if in_workspace_package and stripped.startswith("version = "):
+                  newline = "\n" if line.endswith("\n") else ""
+                  lines[index] = f'version = "{version}"{newline}'
+                  updated = True
+                  break
+
+          if not updated:
+              raise SystemExit("failed to update [workspace.package] version in Cargo.toml")
+
+          path.write_text("".join(lines), encoding="utf-8")
+          PY
+
+          cargo update -p tempo
+
+          if git diff --quiet -- Cargo.toml Cargo.lock; then
+            echo "No Cargo version changes needed"
+            exit 0
+          fi
+
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): ${VERSION}"
+          git push --force-with-lease origin "$branch"
+
+          body_file=$(mktemp)
+          cat > "$body_file" <<EOF
+          Bumps the Cargo workspace release version to ${VERSION} after the release workflow creates the release artifacts.
+
+          Generated by the release workflow.
+          EOF
+
+          gh pr create \
+            --repo "${{ github.repository }}" \
+            --base main \
+            --head "$branch" \
+            --title "chore(release): ${VERSION}" \
+            --body-file "$body_file"
   upload-cloudflare:
     name: Upload to R2 bucket
     needs: [get-version, build-release]
+    environment: upload-binaries
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
     permissions:
+      id-token: write
       contents: read
       actions: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -244,8 +428,8 @@ jobs:
         env:
           VERSION: ${{ needs.get-version.outputs.version }}
         run: |
-          mkdir $VERSION
-          mv artifacts/**/* $VERSION/
+          mkdir "$VERSION"
+          mv artifacts/**/* "$VERSION/"
 
       - name: Determine destination directory
         id: dest
@@ -254,13 +438,13 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           if [[ "${{ github.repository }}" == "tempoxyz/tempo-private-fork" ]]; then
-            echo "dir=${SHA}/${VERSION}" >> $GITHUB_OUTPUT
+            echo "dir=${SHA}/${VERSION}" >> "$GITHUB_OUTPUT"
           else
             # Otherwise these are being stored in a generic bucket with many other subdirectories
-            echo "dir=binaries/${VERSION}" >> $GITHUB_OUTPUT
+            echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: shallwefootball/s3-upload-action@4350529f410221787ccf424e50133cbc1b52704e # v1.3.3
+      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
           aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}

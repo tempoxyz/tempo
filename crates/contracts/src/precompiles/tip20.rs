@@ -1,6 +1,6 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolType};
 
 /// Decimal precision for all TIP-20 tokens.
@@ -85,7 +85,11 @@ crate::sol! {
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
+        function logoURI() external view returns (string memory);
+        function setLogoURI(string calldata newLogoURI) external;
         function burnBlocked(address from, uint256 amount) external;
+        /// @notice Burns from any unprotected account (requires BURN_AT_ROLE, T12+).
+        function burnAt(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
@@ -115,6 +119,9 @@ crate::sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
+        /// @notice Returns the role identifier for burning from any unprotected account (T12+).
+        function BURN_AT_ROLE() external view returns (bytes32);
+
         // EIP-2612 Permit Functions
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
         function nonces(address owner) external view returns (uint256);
@@ -141,6 +148,7 @@ crate::sol! {
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
+        event BurnAt(address indexed burner, address indexed from, uint256 indexed amount);
         event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
@@ -149,6 +157,7 @@ crate::sol! {
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
+        event LogoURIUpdated(address indexed updater, string newLogoURI);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -170,153 +179,151 @@ crate::sol! {
         error InvalidTransferPolicyId();
         error PermitExpired();
         error InvalidSignature();
+        error LogoURITooLong();
+        error InvalidLogoURI();
     }
 }
 
 impl ITIP20::ITIP20Calls {
+    /// Returns the recipient address for the TIP-20 call, if one exists.
+    pub fn to(&self) -> Option<Address> {
+        Some(match self {
+            Self::transfer(c) => c.to,
+            Self::transferWithMemo(c) => c.to,
+            Self::transferFrom(c) => c.to,
+            Self::transferFromWithMemo(c) => c.to,
+            Self::mint(c) => c.to,
+            Self::mintWithMemo(c) => c.to,
+            _ => return None,
+        })
+    }
+
     /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
     /// - `transfer` / `transferWithMemo`
     /// - `transferFrom` / `transferFromWithMemo`
+    /// - `approve`
     /// - `mint` / `mintWithMemo`
     /// - `burn` / `burnWithMemo`
     ///
     /// # NOTES
     /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
     /// - Only selector and exact ABI-encoded length match, no decoding (better performance).
+    /// - Use [`PaymentSlots::classify`] when the call's addresses are needed as well.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && input.len()
-                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
-        }
+        PaymentSlotsKind::from_calldata(input).is_some()
+    }
+}
 
-        is_call::<ITIP20::transferCall>(input)
+const WORD: usize = 32;
+const ADDRESS_PADDING: usize = WORD - Address::len_bytes();
+
+fn is_call<C: SolCall>(input: &[u8]) -> bool {
+    input.first_chunk::<4>() == Some(&C::SELECTOR)
+        && <C::Parameters<'_> as SolType>::ENCODED_SIZE.is_some_and(|size| input.len() == 4 + size)
+}
+
+/// Shape of the addresses needed to derive a payment call's storage slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaymentSlotsKind {
+    /// No addresses (`approve`, `burn`, `burnWithMemo`).
+    Empty,
+    /// Recipient only (`transfer`, `transferWithMemo`, `mint`, `mintWithMemo`).
+    Direct,
+    /// Token owner followed by recipient (`transferFrom`, `transferFromWithMemo`).
+    Delegated,
+}
+
+impl PaymentSlotsKind {
+    fn from_calldata(input: &[u8]) -> Option<Self> {
+        if is_call::<ITIP20::transferCall>(input)
             || is_call::<ITIP20::transferWithMemoCall>(input)
-            || is_call::<ITIP20::transferFromCall>(input)
-            || is_call::<ITIP20::transferFromWithMemoCall>(input)
-            || is_call::<ITIP20::approveCall>(input)
             || is_call::<ITIP20::mintCall>(input)
             || is_call::<ITIP20::mintWithMemoCall>(input)
+        {
+            Some(Self::Direct)
+        } else if is_call::<ITIP20::transferFromCall>(input)
+            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+        {
+            Some(Self::Delegated)
+        } else if is_call::<ITIP20::approveCall>(input)
             || is_call::<ITIP20::burnCall>(input)
             || is_call::<ITIP20::burnWithMemoCall>(input)
+        {
+            Some(Self::Empty)
+        } else {
+            None
+        }
     }
 }
 
-impl RolesAuthError {
-    /// Creates an error for unauthorized access.
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IRolesAuth::Unauthorized {})
-    }
+/// A [TIP-20 payment] call classified straight from calldata, without ABI decoding.
+///
+/// Carries only the addresses needed to derive the storage slots a payment touches, read
+/// in place from the static ABI head. Its private array stores only a meaningful zero-to-two-
+/// address prefix. Amounts and memos are never materialized, which is why this is cheaper than
+/// decoding into [`ITIP20Calls`] just to read one or two addresses.
+///
+/// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+/// [`ITIP20Calls`]: ITIP20::ITIP20Calls
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaymentSlots {
+    kind: PaymentSlotsKind,
+    addresses: [Address; 2],
 }
 
-impl TIP20Error {
-    /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance(available: U256, required: U256, token: Address) -> Self {
-        Self::InsufficientBalance(ITIP20::InsufficientBalance {
-            available,
-            required,
-            token,
-        })
+impl PaymentSlots {
+    /// Classifies payment calldata by exact selector and length, reading only its addresses.
+    pub fn classify(input: &[u8]) -> Option<Self> {
+        fn address(input: &[u8], index: usize) -> Address {
+            let start = 4 + WORD * index + ADDRESS_PADDING;
+            Address::from_slice(&input[start..start + Address::len_bytes()])
+        }
+
+        let kind = PaymentSlotsKind::from_calldata(input)?;
+        let addresses = match kind {
+            PaymentSlotsKind::Empty => [Address::ZERO; 2],
+            PaymentSlotsKind::Direct => [address(input, 0), Address::ZERO],
+            PaymentSlotsKind::Delegated => [address(input, 0), address(input, 1)],
+        };
+        Some(Self { kind, addresses })
     }
 
-    /// Creates an error for insufficient spending allowance.
-    pub const fn insufficient_allowance() -> Self {
-        Self::InsufficientAllowance(ITIP20::InsufficientAllowance {})
+    /// Returns the transfer or mint recipient, including memo variants, if any.
+    pub const fn to(&self) -> Option<Address> {
+        match self.kind {
+            PaymentSlotsKind::Empty => None,
+            PaymentSlotsKind::Direct => Some(self.addresses[0]),
+            PaymentSlotsKind::Delegated => Some(self.addresses[1]),
+        }
     }
 
-    /// Creates an error for unauthorized callers
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(ITIP20::Unauthorized {})
+    /// Returns the token owner for `transferFrom` and `transferFromWithMemo`, if any.
+    pub const fn from(&self) -> Option<Address> {
+        match self.kind {
+            PaymentSlotsKind::Delegated => Some(self.addresses[0]),
+            _ => None,
+        }
     }
 
-    /// Creates an error when minting would set a supply cap that is too large, or invalid.
-    pub const fn invalid_supply_cap() -> Self {
-        Self::InvalidSupplyCap(ITIP20::InvalidSupplyCap {})
-    }
-
-    /// Creates an error when minting would exceed supply cap.
-    pub const fn supply_cap_exceeded() -> Self {
-        Self::SupplyCapExceeded(ITIP20::SupplyCapExceeded {})
-    }
-
-    /// Creates an error for invalid payload data.
-    pub const fn invalid_payload() -> Self {
-        Self::InvalidPayload(ITIP20::InvalidPayload {})
-    }
-
-    /// Creates an error for invalid quote token.
-    pub const fn invalid_quote_token() -> Self {
-        Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
-    }
-
-    /// Creates an error when transfer is forbidden by policy.
-    pub const fn policy_forbids() -> Self {
-        Self::PolicyForbids(ITIP20::PolicyForbids {})
-    }
-
-    /// Creates an error for invalid recipient address.
-    pub const fn invalid_recipient() -> Self {
-        Self::InvalidRecipient(ITIP20::InvalidRecipient {})
-    }
-
-    /// Creates an error when contract is paused.
-    pub const fn contract_paused() -> Self {
-        Self::ContractPaused(ITIP20::ContractPaused {})
-    }
-
-    /// Creates an error for invalid currency.
-    pub const fn invalid_currency() -> Self {
-        Self::InvalidCurrency(ITIP20::InvalidCurrency {})
-    }
-
-    /// Creates an error for invalid amount.
-    pub const fn invalid_amount() -> Self {
-        Self::InvalidAmount(ITIP20::InvalidAmount {})
-    }
-
-    /// Error for when opted in supply is 0
-    pub const fn no_opted_in_supply() -> Self {
-        Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
-    }
-
-    /// Error for operations on protected addresses (like burning `FeeManager` tokens)
-    pub const fn protected_address() -> Self {
-        Self::ProtectedAddress(ITIP20::ProtectedAddress {})
-    }
-
-    /// Error when an address is not a valid TIP20 token
-    pub const fn invalid_token() -> Self {
-        Self::InvalidToken(ITIP20::InvalidToken {})
-    }
-
-    /// Error when transfer policy ID does not exist
-    pub const fn invalid_transfer_policy_id() -> Self {
-        Self::InvalidTransferPolicyId(ITIP20::InvalidTransferPolicyId {})
-    }
-
-    /// Error when token is uninitialized (has no bytecode)
-    pub const fn uninitialized() -> Self {
-        Self::Uninitialized(ITIP20::Uninitialized {})
-    }
-
-    /// Error when permit signature has expired (block.timestamp > deadline)
-    pub const fn permit_expired() -> Self {
-        Self::PermitExpired(ITIP20::PermitExpired {})
-    }
-
-    /// Error when permit signature is invalid
-    pub const fn invalid_signature() -> Self {
-        Self::InvalidSignature(ITIP20::InvalidSignature {})
+    /// Returns `[to]`, `[from, to]`, or an empty slice according to the payment shape.
+    pub fn addresses(&self) -> &[Address] {
+        let len = match self.kind {
+            PaymentSlotsKind::Empty => 0,
+            PaymentSlotsKind::Direct => 1,
+            PaymentSlotsKind::Delegated => 2,
+        };
+        &self.addresses[..len]
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use alloy_primitives::{Address, B256, U256};
+    use alloy_sol_types::SolInterface;
 
     #[rustfmt::skip]
     /// Returns valid ABI-encoded calldata for every recognized TIP-20 payment selector.
@@ -361,6 +368,55 @@ mod test {
 
         for calldata in non_payment_calldatas() {
             assert!(!ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
+    }
+
+    /// The `from` argument the decode-based path derives for the `transferFrom` variants.
+    fn decoded_from(call: &ITIP20::ITIP20Calls) -> Option<Address> {
+        match call {
+            ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
+            ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_classify_matches_decoded_call() {
+        for calldata in payment_calldatas() {
+            let decoded = ITIP20::ITIP20Calls::abi_decode(&calldata).expect("decodes");
+            let classified = PaymentSlots::classify(&calldata).expect("classifies");
+
+            assert_eq!(classified.to(), decoded.to());
+            assert_eq!(classified.from(), decoded_from(&decoded));
+            let expected = match (decoded_from(&decoded), decoded.to()) {
+                (Some(from), Some(to)) => vec![from, to],
+                (None, Some(to)) => vec![to],
+                (None, None) => vec![],
+                (Some(_), None) => unreachable!("payment owner without recipient"),
+            };
+            assert_eq!(classified.addresses(), expected);
+        }
+    }
+
+    #[test]
+    fn test_classify_rejects_non_payment_and_malformed_calldata() {
+        for calldata in non_payment_calldatas() {
+            assert!(PaymentSlots::classify(&calldata).is_none());
+        }
+
+        for calldata in payment_calldatas() {
+            // every truncation of valid payment calldata is rejected, and none panics
+            for len in 0..calldata.len() {
+                assert!(
+                    PaymentSlots::classify(&calldata[..len]).is_none(),
+                    "truncated to {len} bytes must not classify"
+                );
+            }
+
+            // trailing bytes break the exact length match, unlike a non-validating decode
+            let mut trailing = calldata.clone();
+            trailing.push(0);
+            assert!(PaymentSlots::classify(&trailing).is_none());
         }
     }
 }

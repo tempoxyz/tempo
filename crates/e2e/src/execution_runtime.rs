@@ -12,7 +12,7 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
+use alloy_evm::{EvmFactory as _, revm::context::JournalTr};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, Keccak256, U256};
 use commonware_codec::Encode;
@@ -40,13 +40,13 @@ use reth_ethereum::{
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
-    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs, StorageArgs},
+    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
     exit::NodeExitFuture,
 };
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
-use tempo_chainspec::TempoChainSpec;
-use tempo_commonware_node::feed::FeedStateHandle;
+use tempo_chainspec::{TempoChainSpec, TempoHardfork};
+use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoFullNode,
@@ -56,7 +56,7 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
-    storage::StorageCtx,
+    storage::{StorageActions, StorageCtx},
     validator_config_v2::{
         IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
     },
@@ -73,20 +73,24 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 
 #[derive(Default, Debug)]
 pub struct Builder {
+    t12_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
-    t4_time: Option<u64>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
 impl Builder {
     pub fn new() -> Self {
         Self {
+            t12_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
-            t4_time: None,
             validators: None,
         }
+    }
+
+    pub fn with_t12_time(self, t12_time: Option<u64>) -> Self {
+        Self { t12_time, ..self }
     }
 
     pub fn with_epoch_length(self, epoch_length: u64) -> Self {
@@ -110,15 +114,11 @@ impl Builder {
         }
     }
 
-    pub fn with_t4_time(self, t4_time: Option<u64>) -> Self {
-        Self { t4_time, ..self }
-    }
-
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
+            t12_time,
             epoch_length,
             initial_dkg_outcome,
-            t4_time,
             validators,
         } = self;
 
@@ -143,15 +143,25 @@ impl Builder {
             .insert_value("epochLength".to_string(), epoch_length)
             .unwrap();
 
-        if let Some(t4_time) = t4_time {
+        if let Some(t12_time) = t12_time {
             genesis
                 .config
                 .extra_fields
-                .insert_value("t4Time".to_string(), t4_time)
+                .insert_value("t12Time".to_string(), t12_time)
                 .unwrap();
+
+            // Later forks would bypass the T12 transition being tested.
+            for &fork in TempoHardfork::VARIANTS {
+                if fork > TempoHardfork::T12 {
+                    genesis
+                        .config
+                        .extra_fields
+                        .remove(&format!("{}Time", fork.name().to_lowercase()));
+                }
+            }
         }
 
-        genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
+        genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
@@ -159,49 +169,55 @@ impl Builder {
         let mut evm = setup_tempo_evm(genesis.config.chain_id);
         {
             let cx = evm.ctx_mut();
-            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, &cx.tx, || {
-                let mut validator_config_v2 = ValidatorConfigV2::new();
-                validator_config_v2
-                    .initialize(admin())
-                    .wrap_err("failed to initialize validator config v2")
-                    .unwrap();
+            StorageCtx::enter_evm(
+                &mut cx.journaled_state,
+                &cx.block,
+                &cx.cfg,
+                &cx.tx,
+                StorageActions::disabled(),
+                || {
+                    let mut validator_config_v2 = ValidatorConfigV2::new();
+                    validator_config_v2
+                        .initialize(admin())
+                        .wrap_err("failed to initialize validator config v2")
+                        .unwrap();
 
-                for (public_key, validator) in validators {
-                    if let ConsensusNodeConfig {
-                        address,
-                        ingress,
-                        egress,
-                        fee_recipient,
-                        private_key,
-                        share: Some(_),
-                    } = validator
-                    {
-                        validator_config_v2
-                            .add_validator(
-                                admin(),
-                                IValidatorConfigV2::addValidatorCall {
-                                    validatorAddress: address,
-                                    publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                                    ingress: ingress.to_string(),
-                                    egress: egress.ip().to_string(),
-                                    feeRecipient: fee_recipient,
-                                    signature: sign_add_validator_args(
-                                        genesis.config.chain_id,
-                                        &private_key,
-                                        address,
-                                        ingress,
-                                        egress.ip(),
-                                        fee_recipient,
-                                    )
-                                    .encode()
-                                    .to_vec()
-                                    .into(),
-                                },
-                            )
-                            .unwrap();
+                    for (public_key, validator) in validators {
+                        if let ConsensusNodeConfig {
+                            address,
+                            ingress,
+                            egress,
+                            fee_recipient,
+                            private_key,
+                            share: Some(_),
+                        } = validator
+                        {
+                            validator_config_v2
+                                .add_validator(
+                                    admin(),
+                                    IValidatorConfigV2::addValidatorCall {
+                                        validatorAddress: address,
+                                        publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                        ingress: ingress.to_string(),
+                                        egress: egress.ip().to_string(),
+                                        feeRecipient: fee_recipient,
+                                        signature: sign_add_validator_args(
+                                            genesis.config.chain_id,
+                                            &private_key,
+                                            address,
+                                            ingress,
+                                            egress.ip(),
+                                            fee_recipient,
+                                        )
+                                        .encode()
+                                        .into(),
+                                    },
+                                )
+                                .unwrap();
+                        }
                     }
-                }
-            })
+                },
+            );
         }
 
         let evm_state = evm.ctx_mut().journaled_state.evm_state();
@@ -239,12 +255,17 @@ impl Builder {
 pub struct ExecutionNodeConfig {
     /// Network secret key for the node's identity.
     pub secret_key: B256,
-    /// Validator public key for filtering subblock transactions.
+    /// Validator public key exposed through the admin RPC API.
     pub validator_key: Option<B256>,
     /// Feed state handle for consensus RPC (if validator).
     pub feed_state: Option<FeedStateHandle>,
     /// Share the engine's sparse trie pipeline with the payload builder.
     pub share_sparse_trie_with_payload_builder: bool,
+    /// `tempo/1` transport settings. `None` leaves the subprotocol unannounced.
+    ///
+    /// The protocol is registered before the network starts because `RLPx`
+    /// negotiates capabilities during the handshake.
+    pub gossip: Option<tempo_node::gossip::Config>,
 }
 
 impl ExecutionNodeConfig {
@@ -259,7 +280,21 @@ impl ExecutionNodeConfig {
             validator_key: None,
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
+            gossip: None,
         }
+    }
+}
+
+/// `tempo/1` transport settings for nodes launched by tests.
+///
+/// Validators publish only. A follower ingests so gossiped certificates reach
+/// its driver, which is the only component able to verify them.
+pub fn gossip_config(ingest: bool) -> tempo_node::gossip::Config {
+    tempo_node::gossip::Config {
+        ingest,
+        peer_frame_rate: commonware_utils::NZU32!(8),
+        frame_queue: 256,
+        route_queue: 256,
     }
 }
 
@@ -365,7 +400,6 @@ impl ExecutionRuntime {
                                         fee_recipient,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
@@ -453,7 +487,6 @@ impl ExecutionRuntime {
                                         egress,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
@@ -765,6 +798,13 @@ pub struct ExecutionNode {
     pub runtime: Runtime,
     /// The exist future that resolves when the node's engine future resolves.
     pub exit_fut: NodeExitFuture,
+    /// The consensus-facing end of the `tempo/1` transport, if announced.
+    ///
+    /// The consensus layer takes this when it starts. It carries receivers, so
+    /// only one consensus instance can own it.
+    pub gossip: Option<tempo_node::gossip::TransportHandle>,
+    /// Reads the state of blocks that this node's engine has executed.
+    pub executed_state: tempo_node::ExecutedState,
 }
 
 impl ExecutionNode {
@@ -843,6 +883,16 @@ pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
 }
 
+/// Returns MDBX DB args sized for tests (64 MB max with 4 MB growth step).
+///
+/// The default 8 TB geometry with 4 GB growth step both exhausts process
+/// virtual-address space when many databases are open concurrently across
+/// parallel test threads, and pre-allocates multi-GB files on disk that
+/// can fill the CI runner's disk.
+pub fn test_db_args() -> reth_db::mdbx::DatabaseArguments {
+    reth_db::mdbx::DatabaseArguments::test()
+}
+
 /// Launches a tempo execution node.
 ///
 /// Difference compared to starting the node through the binary:
@@ -865,6 +915,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         validator_key,
         feed_state,
         share_sparse_trie_with_payload_builder,
+        gossip,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
@@ -883,17 +934,33 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             interval: Duration::from_millis(100),
             ..Default::default()
         })
-        .with_storage(StorageArgs { v2: false })
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
             c.network.p2p_secret_key_hex = Some(secret_key);
+            // Match Tempo's engine default for nodes launched by tests.
+            c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
             c
         });
 
+    // Register before launch: each RLPx session negotiates its subprotocols
+    // during the handshake, so sessions opened later cannot pick `tempo/1` up.
+    let (gossip_protocol, gossip_transport) = match gossip {
+        Some(gossip) => {
+            let (protocol, transport) = tempo_node::gossip::init(gossip, &runtime);
+            (Some(protocol), Some(transport))
+        }
+        None => (None, None),
+    };
+
     let tempo_node = TempoNode::default().with_validator_key(validator_key);
+    let tempo_node = match gossip_protocol {
+        Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
+        None => tempo_node,
+    };
+    let executed_state = tempo_node.executed_state();
 
     let node_handle = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
@@ -924,6 +991,8 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         node: Box::new(node_handle.node),
         runtime,
         exit_fut: node_handle.node_exit_future,
+        gossip: gossip_transport,
+        executed_state,
     })
 }
 

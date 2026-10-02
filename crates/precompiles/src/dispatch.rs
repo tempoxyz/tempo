@@ -1,0 +1,505 @@
+//! ABI dispatch helpers for Tempo precompiles.
+
+use crate::{
+    EncodePrecompileResult, IntoPrecompileResult, Result, error, input_cost, storage::StorageCtx,
+    storage_credits::StorageCredits,
+};
+use alloy::{
+    primitives::{Address, Bytes},
+    sol,
+    sol_types::{SolCall, SolError},
+};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
+use tempo_chainspec::hardfork::TempoHardfork;
+
+sol! {
+    error StaticCallNotAllowed();
+}
+
+/// Maximum memory the ABI decoder may allocate for a precompile call.
+pub const ABI_DECODER_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Returns the hardfork-aware ABI decoder configuration used to dispatch precompile calls.
+/// Strict decoding starts at T11; T12 additionally permits trailing bytes.
+#[inline]
+pub const fn abi_decoder_config_for_spec(
+    spec: TempoHardfork,
+) -> alloy::sol_types::abi::AbiDecoderConfig {
+    alloy::sol_types::abi::AbiDecoderConfig::new()
+        .memory_limit(ABI_DECODER_MEMORY_LIMIT)
+        .strict(spec.is_t11())
+        .validate_allow_trailing_bytes(spec.is_t12())
+}
+
+pub mod typed {
+    use super::*;
+
+    #[inline]
+    fn reject_static_call() -> PrecompileResult {
+        if !StorageCtx.spec().is_t12() {
+            let encoded = StaticCallNotAllowed {}.abi_encode().into();
+            return Ok(PrecompileOutput::revert(0, encoded, StorageCtx.reservoir()));
+        }
+        error::TempoPrecompileError::StaticCallNotAllowed
+            .into_precompile_result(0, StorageCtx.reservoir())
+    }
+
+    /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
+    ///
+    /// The `Fn` bound prevents the handler from mutably borrowing its captured precompile.
+    #[inline]
+    pub fn view<T: SolCall, E: IntoPrecompileResult>(
+        call: T,
+        f: impl Fn(T) -> core::result::Result<T::Return, E>,
+    ) -> PrecompileResult {
+        f(call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+    }
+
+    /// Dispatches a state-mutating call, ABI-encoding its return values.
+    ///
+    /// Handlers for calls without return values may return `()`; Alloy converts it into the
+    /// generated empty return container through [`Into`]. Rejects static calls pre-T12 with
+    /// [`StaticCallNotAllowed`] and from T12 with an execution halt.
+    #[inline]
+    pub fn mutate<T: SolCall, E: IntoPrecompileResult, R: Into<T::Return>>(
+        call: T,
+        sender: Address,
+        f: impl FnOnce(Address, T) -> core::result::Result<R, E>,
+    ) -> PrecompileResult {
+        if StorageCtx.is_static() {
+            return reject_static_call();
+        }
+        f(sender, call)
+            .encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret.into()).into())
+    }
+}
+
+/// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
+#[inline]
+pub fn view<T: SolCall>(call: T, f: impl Fn(T) -> Result<T::Return>) -> PrecompileResult {
+    typed::view(call, f)
+}
+
+/// Dispatches a state-mutating call, ABI-encoding its return values.
+///
+/// Rejects static calls with [`StaticCallNotAllowed`].
+#[inline]
+pub fn mutate<T: SolCall, R: Into<T::Return>>(
+    call: T,
+    sender: Address,
+    f: impl FnOnce(Address, T) -> Result<R>,
+) -> PrecompileResult {
+    typed::mutate(call, sender, f)
+}
+
+/// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
+#[inline]
+pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
+    if StorageCtx.spec().is_t7() {
+        StorageCredits::new().set_mode(
+            credit_owner,
+            tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
+        )?;
+    }
+    Ok(())
+}
+
+/// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
+#[inline]
+pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<PrecompileResult> {
+    if input_cost(storage.spec(), calldata.len())
+        .and_then(|cost| storage.deduct_gas(cost))
+        .is_err()
+    {
+        return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
+    }
+    None
+}
+
+/// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
+///
+/// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
+/// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
+/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
+///
+/// SSTORE refund propagation is activated unconditionally at T4 so the
+/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
+/// blocks were executed without refund propagation, so we cannot change their gas
+/// accounting.
+#[inline]
+fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
+    if storage.spec().is_t4() && output.is_success() {
+        output.gas_refunded = storage.gas_refunded();
+    }
+
+    if storage.amsterdam_eip8037_enabled() {
+        // Report the raw tracker values on success and failure alike. The parent
+        // settles them in `handle_reservoir_remaining_gas` exactly like a regular
+        // child frame: on success it adopts the reservoir and merges state gas and
+        // its spilled portion; on revert or halt `rollback_state_gas` credits the
+        // spilled portion back to regular gas and restores the reservoir to the
+        // value this call inherited.
+        output.reservoir = storage.reservoir();
+        output.state_gas_used = storage.state_gas_used() as i64;
+        output.state_gas_spilled = storage.state_gas_spilled();
+    }
+}
+
+/// Decodes and classifies precompile calldata without executing the `decoded` call.
+///
+/// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
+/// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
+#[inline]
+pub fn decode_call<T>(
+    calldata: &[u8],
+    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+) -> core::result::Result<T, PrecompileResult> {
+    if calldata.len() < 4 {
+        return Err(missing_selector_result());
+    }
+
+    match decode(calldata) {
+        Ok(call) => Ok(call),
+        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+            Err(StorageCtx::default().error_result(
+                error::TempoPrecompileError::UnknownFunctionSelector(*selector),
+            ))
+        }
+        Err(_) => Err(Ok(StorageCtx::default().revert_output(Bytes::new()))),
+    }
+}
+
+/// Finalizes gas, refund, and state-gas reservoir accounting for a dispatched result.
+///
+/// This must be called while the [`StorageCtx`] used to execute the call is active.
+/// Fatal errors are returned unchanged.
+#[inline]
+pub fn finalize_dispatch_result(result: PrecompileResult) -> PrecompileResult {
+    let storage = StorageCtx::default();
+    result.map(|mut output| {
+        // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
+        output.gas_used = storage.gas_used();
+        fill_state_gas(&mut output, &storage);
+        output
+    })
+}
+
+/// Decodes calldata via [`decode_call`], dispatches to `f`, and finalizes its accounting.
+#[inline]
+pub fn dispatch_call<T>(
+    calldata: &[u8],
+    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+    f: impl FnOnce(T) -> PrecompileResult,
+) -> PrecompileResult {
+    let call = match decode_call(calldata, decode) {
+        Ok(call) => call,
+        Err(result) => return result,
+    };
+    finalize_dispatch_result(f(call))
+}
+
+#[macro_export]
+macro_rules! dispatch {
+    ($calldata:expr, |$call:ident| match $match_call:ident {
+        $($iface:ident::$calls:ident {
+            $(
+                $(#[schedule($($gate:ident = $hf:ident),+ $(,)?)])*
+                $variant:ident($binding:pat) => $body:expr
+            ),* $(,)?
+        })+
+    } $(,)?) => {
+        paste::paste! {{
+            #[cfg(debug_assertions)]
+            {
+                extern crate alloc as __alloc;
+                let mut selectors = __alloc::collections::BTreeSet::new();
+                $(assert!(
+                    <$iface::$calls as alloy::sol_types::SolInterface>::selectors().all(|s| selectors.insert(s)),
+                    "duplicate precompile selector in dispatch! macro",
+                );)*
+            }
+
+            if let Some(selector) = $crate::dispatch::selector_from_calldata($calldata) {
+                $($($($(
+                    if selector == <$iface::[<$variant Call>] as alloy::sol_types::SolCall>::SELECTOR
+                        && !$crate::dispatch::$gate(tempo_chainspec::hardfork::TempoHardfork::$hf)
+                    {
+                        return $crate::dispatch::unknown_selector_result($calldata);
+                    }
+                )+)*)*)+
+                $(
+                    if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
+                        type Calls = $iface::$calls;
+                        return $crate::dispatch::dispatch_call(
+                            $calldata,
+                            |data| {
+                                <Calls as alloy::sol_types::SolInterface>::abi_decode_with_config(
+                                    data,
+                                    $crate::dispatch::abi_decoder_config_for_spec(
+                                        $crate::storage::StorageCtx.spec(),
+                                    ),
+                                )
+                            },
+                            |$call| match $match_call {
+                                $(Calls::$variant($binding) => $body,)*
+                            },
+                        );
+                    }
+                )*
+                return $crate::dispatch::unknown_selector_result($calldata);
+            }
+            $crate::dispatch::missing_selector_result()
+        }}
+    };
+}
+
+pub use crate::dispatch;
+
+pub fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
+    calldata.first_chunk::<4>().copied()
+}
+
+pub fn missing_selector_result() -> PrecompileResult {
+    let storage = StorageCtx::default();
+
+    if storage.spec().is_t1() {
+        Ok(storage.revert_output(Bytes::new()))
+    } else {
+        Ok(storage.halt_output(PrecompileHalt::Other(
+            "Invalid input: missing function selector".into(),
+        )))
+    }
+}
+
+#[inline]
+pub fn since(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
+    StorageCtx.spec() >= hardfork
+}
+
+#[inline]
+pub fn until(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
+    StorageCtx.spec() < hardfork
+}
+
+pub fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
+    let selector = selector_from_calldata(calldata).expect("calldata len >= 4 after decode");
+    StorageCtx::default().error_result(error::TempoPrecompileError::UnknownFunctionSelector(
+        selector,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        IntoPrecompileResult,
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
+    use alloy::{
+        primitives::U256,
+        sol_types::{SolCall, SolError},
+    };
+    use revm::precompile::{PrecompileError, PrecompileHalt, PrecompileStatus};
+    use tempo_chainspec::hardfork::TempoHardfork;
+
+    sol! {
+        interface ITestDispatch {
+            function get(uint256 value) external view returns (uint256);
+            function set(uint256 value) external returns (uint256);
+            function clear(uint256 value) external;
+        }
+
+        interface ITestMemoryDispatch {
+            function setValues(uint256[] values) external;
+        }
+
+        error CustomTypedError(uint256 code);
+    }
+
+    enum CustomError {
+        Typed(CustomTypedError),
+        Tempo(TempoPrecompileError),
+    }
+
+    impl IntoPrecompileResult for CustomError {
+        fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+            match self {
+                Self::Typed(error) => Ok(PrecompileOutput::revert(
+                    gas,
+                    error.abi_encode().into(),
+                    reservoir,
+                )),
+                Self::Tempo(error) => error.into_precompile_result(gas, reservoir),
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
+        let canonical = ITestMemoryDispatch::setValuesCall {
+            values: vec![U256::from(1), U256::from(2)],
+        }
+        .abi_encode();
+
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T10,
+            TempoHardfork::T11,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+        ] {
+            let config = abi_decoder_config_for_spec(spec);
+            assert_eq!(config.get_strict(), spec.is_t11());
+            assert_eq!(config.get_validate(), spec.is_t11());
+            assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
+            assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
+
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            for suffix_len in [0, 1, 32, 33] {
+                let mut calldata = canonical.clone();
+                calldata.extend(vec![0xff; suffix_len]);
+                let output = StorageCtx::enter(&mut storage, || {
+                    dispatch!(
+                        &calldata,
+                        |call| match call {
+                            ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                                setValues(_) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+                            }
+                        }
+                    )
+                })?;
+                let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
+                assert_eq!(
+                    output.is_success(),
+                    expected_success,
+                    "{spec:?}, {suffix_len}"
+                );
+            }
+
+            // Allowing a suffix must not permit gaps inside the encoding.
+            let mut gapped = canonical.clone();
+            gapped[4..36].copy_from_slice(&U256::from(64).to_be_bytes::<32>());
+            gapped.splice(36..36, [0u8; 32]);
+            assert_eq!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
+                !spec.is_t11(),
+                "{spec:?}"
+            );
+            assert!(
+                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(
+                    &canonical[..canonical.len() - 1],
+                    config,
+                )
+                .is_err(),
+                "{spec:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generic_helpers_encode_success_outputs() -> eyre::Result<()> {
+        let target = U256::from(1);
+        let output = typed::view(
+            ITestDispatch::getCall {
+                value: U256::from(41),
+            },
+            |c| core::result::Result::<_, CustomError>::Ok(target + c.value),
+        )?;
+        assert!(output.is_success());
+        assert_eq!(
+            output.bytes,
+            ITestDispatch::getCall::abi_encode_returns(&U256::from(42))
+        );
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut target = U256::ZERO;
+            let output = typed::mutate(
+                ITestDispatch::setCall {
+                    value: U256::from(7),
+                },
+                Address::ZERO,
+                |_, c| {
+                    target = c.value;
+                    core::result::Result::<_, CustomError>::Ok(target)
+                },
+            )?;
+            assert!(output.is_success());
+            assert_eq!(target, U256::from(7));
+            assert_eq!(
+                output.bytes,
+                ITestDispatch::setCall::abi_encode_returns(&U256::from(7))
+            );
+
+            let output = typed::mutate(
+                ITestDispatch::clearCall {
+                    value: U256::from(7),
+                },
+                Address::ZERO,
+                |_, _| {
+                    target = U256::ZERO;
+                    core::result::Result::<_, CustomError>::Ok(())
+                },
+            )?;
+            assert!(output.is_success());
+            assert!(output.bytes.is_empty());
+            assert_eq!(target, U256::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn downstream_typed_error_reverts_with_exact_bytes() -> eyre::Result<()> {
+        let error = CustomTypedError {
+            code: U256::from(9),
+        };
+        let output = typed::view(ITestDispatch::getCall { value: U256::ZERO }, |_| {
+            core::result::Result::<U256, _>::Err(CustomError::Typed(error.clone()))
+        })?;
+        assert!(output.is_revert());
+        assert_eq!(output.bytes, error.abi_encode());
+        Ok(())
+    }
+
+    #[test]
+    fn tempo_error_behavior_is_preserved_through_extension_trait() -> eyre::Result<()> {
+        let output =
+            CustomError::Tempo(TempoPrecompileError::OutOfGas).into_precompile_result(123, 456)?;
+        assert!(matches!(
+            output.status,
+            PrecompileStatus::Halt(PrecompileHalt::OutOfGas)
+        ));
+        assert_eq!(output.reservoir, 456);
+
+        let error = CustomError::Tempo(TempoPrecompileError::Fatal("boom".into()))
+            .into_precompile_result(0, 0)
+            .unwrap_err();
+        assert!(matches!(error, PrecompileError::Fatal(message) if message == "boom"));
+        Ok(())
+    }
+
+    #[test]
+    fn dispatch_limits_abi_decoder_memory() -> eyre::Result<()> {
+        let mut calldata = ITestMemoryDispatch::setValuesCall::SELECTOR.to_vec();
+        calldata.extend(U256::from(32).to_be_bytes::<32>());
+        calldata.extend(U256::from(ABI_DECODER_MEMORY_LIMIT as u64).to_be_bytes::<32>());
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let output = StorageCtx::enter(&mut storage, || {
+            dispatch!(
+                &calldata,
+                |call| match call {
+                    ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                        setValues(_) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+                    }
+                }
+            )
+        })?;
+
+        assert!(output.is_revert());
+        assert!(output.bytes.is_empty());
+        Ok(())
+    }
+}

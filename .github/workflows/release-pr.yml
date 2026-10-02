@@ -6,17 +6,33 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
+permissions: {}
+
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+
 jobs:
   release-pr:
     name: Release PR
+    if: ${{ github.repository == 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
+    environment: release-pr
     permissions:
-      contents: write
-      pull-requests: write
+      id-token: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Fetch GitHub token via STS
+        id: app-token
+        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
-          token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          policy: release-pr
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
+        with:
+          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
       - name: Keep only SDK changelog entries
@@ -25,7 +41,7 @@ jobs:
           from pathlib import Path
           import re
 
-          targets = {"tempo-alloy", "tempo-primitives", "tempo-chainspec", "tempo-contracts"}
+          targets = {"tempo-alloy", "tempo-primitives", "tempo-chainspec", "tempo-contracts", "tempo-hardfork"}
 
           for path in Path(".changelog").glob("*.md"):
               text = path.read_text(encoding="utf-8")
@@ -57,17 +73,17 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: tempoxyz/changelogs@b0179e7300997dfa5a631a6a7a2de248bf63310f # master
+      - uses: tempoxyz/changelogs@83e69646d7ef76c5f35364d3a06fce3a6fe62bf9 # tempoxyz/changelogs#159: vendored Peter Evans action
         id: changelogs
         with:
           conventional-commit: true
           post-version-command: cargo update -w
-          github-token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          github-token: ${{ steps.app-token.outputs.token }}
 
       - name: Demote non-v* releases from latest
         if: steps.changelogs.outputs.published == 'true'
         env:
-          GH_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           for tag in $(git tag --points-at HEAD); do
             if [[ "$tag" != v* ]]; then

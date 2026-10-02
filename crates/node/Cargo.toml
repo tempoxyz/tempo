@@ -3,8 +3,13 @@ name = "tempo-node"
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -15,11 +20,12 @@ tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-consensus.workspace = true
+tempo-contracts.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, features = ["default"] }
+tempo-revm.workspace = true
 
 thiserror.workspace = true
 
@@ -29,9 +35,11 @@ reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
+reth-metrics.workspace = true
 reth-node-metrics.workspace = true
 reth-tracing.workspace = true
 reth-provider.workspace = true
+reth-revm.workspace = true
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
 reth-network-api.workspace = true
@@ -42,9 +50,13 @@ reth-rpc-builder.workspace = true
 reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
+reth-storage-api.workspace = true
+reth-storage-overlay.workspace = true
 
 alloy-serde.workspace = true
+alloy-evm.workspace = true
 alloy-eips.workspace = true
+alloy-rlp.workspace = true
 alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
@@ -52,15 +64,25 @@ alloy-primitives.workspace = true
 
 async-trait.workspace = true
 clap.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 eyre.workspace = true
 futures.workspace = true
+governor.workspace = true
 jiff = { workspace = true, features = ["std"] }
+jsonrpsee.workspace = true
 reqwest.workspace = true
-tokio.workspace = true
+metrics.workspace = true
+parking_lot.workspace = true
+schnellru.workspace = true
+sysinfo.workspace = true
 url.workspace = true
 serde.workspace = true
-jsonrpsee.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 alloy-trie = "0.9.5"
@@ -74,7 +96,6 @@ reth-e2e-test-utils.workspace = true
 reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 serde_json.workspace = true
-tempo-contracts.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 alloy = { workspace = true, features = [
 	"full",
@@ -83,7 +104,7 @@ alloy = { workspace = true, features = [
 	"signer-mnemonic-all-languages",
 ] }
 alloy-rlp.workspace = true
-rand.workspace = true
+rand_09.workspace = true
 futures.workspace = true
 test-case.workspace = true
 indexmap.workspace = true
@@ -98,8 +119,10 @@ vergen-git2.workspace = true
 
 [features]
 default = []
+bal = ["tempo-payload-builder/bal"]
 asm-keccak = [
 	"alloy/asm-keccak",
+	"alloy-evm/asm-keccak",
 	"alloy-primitives/asm-keccak",
 	"reth-node-core/asm-keccak",
 	"reth-node-ethereum/asm-keccak",

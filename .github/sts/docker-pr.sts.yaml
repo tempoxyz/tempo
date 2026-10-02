@@ -1,0 +1,7 @@
+# Allow the Tempo PR comment dispatcher to check membership and queue builds,
+# using the same repository-bound OIDC subject as the benchmark dispatcher.
+subject_pattern: repo:tempoxyz@211589300/tempo@994992847:ref:refs/heads/.+
+permissions:
+  actions: write
+  members: read
+  pull_requests: read

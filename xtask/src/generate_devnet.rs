@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use alloy_primitives::Address;
 use eyre::{Context, OptionExt as _, ensure};
 use rand_08::SeedableRng as _;
 use reth_network_peers::pk2id;
@@ -118,11 +117,8 @@ impl GenerateDevnet {
                     devmode,
                     node_image_tag: image_tag.clone(),
 
-                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
+                    consensus_on_disk_signing_key: signing_key_to_hex(&validator.signing_key),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
-
-                    // FIXME(janis): this should not be zero
-                    consensus_fee_recipient: Address::ZERO,
 
                     consensus_p2p_port,
                     consensus_metrics_port,
@@ -167,11 +163,19 @@ pub(crate) struct ConfigOutput {
     consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
     consensus_p2p_port: u16,
-    consensus_fee_recipient: Address,
     consensus_metrics_port: u16,
     node_image_tag: String,
     execution_genesis_url: String,
     execution_p2p_port: u16,
     execution_peers: Vec<String>,
     execution_p2p_disc_key: String,
+}
+
+/// Stopgap: serialize the signing key to its on-disk hex representation
+/// via [`tempo_consensus_config::SigningKey::to_writer_unencrypted`].
+fn signing_key_to_hex(key: &tempo_consensus_config::SigningKey) -> String {
+    let mut buf = Vec::new();
+    key.to_writer_unencrypted(&mut buf)
+        .expect("writing to Vec cannot fail");
+    String::from_utf8(buf).expect("hex output is valid utf-8")
 }

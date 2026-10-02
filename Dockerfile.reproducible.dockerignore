@@ -1,0 +1,19 @@
+# Dockerignore for Dockerfile.reproducible.
+#
+# Differences from the main .dockerignore:
+#   * .git is INCLUDED — vergen-git2 (in crates/node/build.rs) reads it to
+#     embed the commit SHA. Excluding it would break the build.
+#   * target/ is EXCLUDED so local builds don't ship the 6.9G cache as
+#     build context (the main .dockerignore relies on a clean CI checkout).
+
+target/
+**/target/
+.cargo-cache/
+*.profraw
+default_*_*.profraw
+
+# Editor / OS noise that has no effect on the build but inflates context.
+.DS_Store
+.idea/
+.vscode/
+*.swp

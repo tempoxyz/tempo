@@ -5,7 +5,6 @@
 
 mod precompiles;
 mod primitives;
-mod utils;
 
 use super::*;
 use tempo_precompiles_macros::Storable;

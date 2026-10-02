@@ -11,10 +11,11 @@ extend-exclude = [
     "**/test/**",
     "**/*_test.*",
     "**/*_tests.*",
-    "tips/ref-impls/lib/**",
+    "tips/verify/lib/**",
 ]
 
 [default.extend-words]
+COSE = "COSE"
 ba = "ba"
 multline = "multline"
 froms = "froms"
@@ -22,3 +23,7 @@ Nam = "Nam"
 prool = "prool"
 Prool = "Prool"
 JOD = "JOD"
+
+[default.extend-identifiers]
+cose = "cose"
+OtOGGpViE5JRa7WT7wVYPtLlhm9ctiYKMBcjf9ibkK8 = "OtOGGpViE5JRa7WT7wVYPtLlhm9ctiYKMBcjf9ibkK8"
