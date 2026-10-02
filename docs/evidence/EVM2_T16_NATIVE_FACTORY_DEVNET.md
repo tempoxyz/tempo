@@ -66,6 +66,19 @@ replay record](evm2-t16-native-factory-legacy-replay.json) includes the fork
 hashes, receipt, and before/after values. This exercises the new approval
 check against an existing funded vault as well as the fresh factory path.
 
+Governor revocation was also exercised against the funded factory vault in a
+separate [record](evm2-t16-native-factory-revocation.json). The engine approval
+slot changed from the pinned code hash to zero at block `0x7a8`. A valid
+`deposit(1000,900)` reverted at block `0x7b0`; EarnShare supply and backing
+stayed at 402,727 and 443,000. Reapproval restored the pinned hash at block
+`0x7b8`. The identical call then succeeded at block `0x7bc`, minting 909
+EarnShare against 1,000 assets. Fifteen [captured metric
+samples](evm2-t16-native-factory-revocation-lanes.json.gz) for that successful
+transaction charged its 265,890 gas to the payment lane and zero to general.
+The revoked attempt exhausted its 3,000,000 gas limit and was not admitted as
+a verified Earn payment. This tests suspension and restoration; it does not
+establish a zero-general-gas claim for invalid or revoked calls.
+
 The evidence can be checked offline, then against the still-running devnet:
 
 ```sh

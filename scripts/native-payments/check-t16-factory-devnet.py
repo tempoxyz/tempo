@@ -108,6 +108,32 @@ def main():
     assert matches == legacy["deposit"]["matchingLaneSamples"] > 0
     assert len(legacy_samples) == legacy["deposit"]["totalLaneSamples"]
 
+    revocation = json.loads((EVIDENCE / f"{PREFIX}-revocation.json").read_text())
+    lane_record = json.loads(gzip.decompress(
+        (EVIDENCE / f"{PREFIX}-revocation-lanes.json.gz").read_bytes()
+    ))
+    revoked = revocation["states"]
+    assert revoked["beforeRevoke"]["approval"] == summary["engineHash"]
+    assert revoked["afterRevoke"]["approval"] == revoked["afterRejectedDeposit"]["approval"] == "0x" + "0" * 64
+    assert revoked["afterApprove"]["approval"] == revoked["afterSampledDeposit"]["approval"] == summary["engineHash"]
+    for stage in ("beforeRevoke", "afterRevoke", "afterRejectedDeposit", "afterApprove"):
+        assert revoked[stage]["shareSupply"] == 402_727
+        assert revoked[stage]["vaultAssets"] == 443_000
+    assert revoked["afterSampledDeposit"]["shareSupply"] == 403_636
+    assert revoked["afterSampledDeposit"]["vaultAssets"] == 444_000
+    for name, status in (("revoke", "0x1"), ("rejectedDeposit", "0x0"), ("approve", "0x1"), ("sampledDeposit", "0x1")):
+        tx = revocation["transactions"][name]
+        assert tx["status"] == status
+        assert tx["onlyTransaction"] and tx["gasUsed"] == tx["blockGasUsed"]
+    sampled_deposit = revocation["transactions"]["sampledDeposit"]
+    assert lane_record["receipt"]["transactionHash"] == sampled_deposit["transactionHash"]
+    matches = sum(
+        row["generalGas"] == 0 and row["paymentGas"] == int(sampled_deposit["gasUsed"], 16)
+        for row in lane_record["samples"]
+    )
+    assert matches == revocation["sampledDepositLane"]["matching"] > 0
+    assert len(lane_record["samples"]) == revocation["sampledDepositLane"]["total"]
+
     if args.rpc_url:
         url = args.rpc_url
         assert rpc(url, "eth_chainId", []) == summary["chainId"]
@@ -136,6 +162,17 @@ def main():
             assert call_uint(url, summary["earnShare"], "0x18160ddd", block) == expected["shareSupply"]
             assert call_uint(url, summary["vault"], "0x01e1d114", block) == expected["vaultAssets"]
             assert call_uint(url, summary["asset"], "0x70a08231" + address_word(summary["recipient"]), block) == expected["recipientAssets"]
+        for stage in revoked.values():
+            block = stage["block"]
+            assert rpc(url, "eth_getStorageAt", [registrar, revocation["engineApprovalSlot"], block]) == stage["approval"]
+            assert call_uint(url, summary["earnShare"], "0x18160ddd", block) == stage["shareSupply"]
+            assert call_uint(url, summary["vault"], "0x01e1d114", block) == stage["vaultAssets"]
+        for operation in revocation["transactions"].values():
+            receipt = rpc(url, "eth_getTransactionReceipt", [operation["transactionHash"]])
+            assert receipt["blockHash"] == operation["blockHash"]
+            assert receipt["status"] == operation["status"]
+            block = rpc(url, "eth_getBlockByNumber", [operation["blockNumber"], False])
+            assert block["transactions"] == [operation["transactionHash"]]
     if args.legacy_rpc_url:
         url = args.legacy_rpc_url
         assert rpc(url, "eth_getBlockByNumber", ["0x0", False])["hash"] == legacy["genesisHash"]
@@ -155,7 +192,7 @@ def main():
             assert call_uint(url, legacy["earnShare"], "0x18160ddd", height) == supply
             assert call_uint(url, legacy["vault"], "0x01e1d114", height) == assets
         assert rpc(url, "eth_getTransactionReceipt", [legacy["deposit"]["transactionHash"]])["status"] == "0x1"
-    print(f"T16 factory and legacy forks, {len(summary['operations']) + 1} receipts, {sampled + 1} lane samples, and accounting verified")
+    print(f"T16 factory and legacy forks, {len(summary['operations']) + 5} receipts, {sampled + 2} lane-sampled payments, revocation, and accounting verified")
 
 
 if __name__ == "__main__":
