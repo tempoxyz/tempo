@@ -1315,7 +1315,7 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()
         .await?;
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
 
     // Pre-T3: registry should have no code.
     let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;

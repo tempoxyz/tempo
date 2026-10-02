@@ -230,8 +230,7 @@ async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Resu
         .build_with_node_access()
         .await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()
-        .connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider_for::<tempo_alloy::TempoNetwork>();
     let chain_id = provider.get_chain_id().await?;
 
     let mut burn_tx = TxEip1559 {

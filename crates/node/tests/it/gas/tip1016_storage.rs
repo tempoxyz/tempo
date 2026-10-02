@@ -20,12 +20,14 @@ use reth_node_api::BuiltPayload;
 
 use alloy::{
     consensus::Transaction,
+    network::ReceiptResponse,
     primitives::{Address, Bytes, U256},
-    providers::{Provider, ProviderBuilder},
+    providers::Provider,
     sol_types::SolCall,
 };
 use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
 use reth_e2e_test_utils::wait::poll_until;
+use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
 
@@ -86,7 +88,7 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     // Simple contract init code: PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN
@@ -148,7 +150,7 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     // Step 1: Deploy a contract whose runtime code does SSTORE(calldataload(0), 1)
@@ -229,7 +231,7 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     // Deploy a contract that does: SSTORE(slot=calldataload(0), value=calldataload(32))
@@ -313,7 +315,7 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
     let signer2 = test_signer(1);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     let sender = signer.address();
@@ -394,7 +396,7 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     // Deploy a contract whose runtime does SSTORE(0, 1) then REVERT.
@@ -478,7 +480,7 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     // Deploy a contract that does 3 SSTOREs: slot 0, 1, 2 all zero->non-zero.
@@ -560,7 +562,7 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     // Deploy contract: SSTORE(calldataload(0), 1) -- same as existing test
@@ -659,7 +661,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     // Step 1: Deploy "reverting SSTORE" contract (B).
@@ -808,7 +810,7 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider_for::<TempoNetwork>();
     let chain_id = provider.get_chain_id().await?;
 
     let num_transfers: u64 = 400;
@@ -885,23 +887,13 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
 
     let block_gas_used = call_payload.block().header().inner.gas_used;
 
-    // Fetch receipt via raw RPC (AA tx type 0x76 isn't deserializable by standard types).
-    let receipt_raw: serde_json::Value = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
-    let receipt_status = receipt_raw["status"].as_str().unwrap();
-    assert_eq!(
-        receipt_status, "0x1",
-        "150M gas multicall tx should succeed"
-    );
+    let receipt = provider
+        .get_transaction_receipt(tx_hash)
+        .await?
+        .expect("receipt should exist");
+    assert!(receipt.status(), "150M gas multicall tx should succeed");
 
-    let receipt_gas = u64::from_str_radix(
-        receipt_raw["gasUsed"]
-            .as_str()
-            .unwrap()
-            .trim_start_matches("0x"),
-        16,
-    )?;
+    let receipt_gas = receipt.gas_used;
 
     // Receipt gas includes state gas; block header excludes it.
     // Each transfer to a fresh address: 230,000 state gas per new balance slot.

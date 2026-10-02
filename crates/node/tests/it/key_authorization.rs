@@ -1,7 +1,7 @@
 use crate::utils::TestNodeBuilder;
 use alloy::{
     primitives::{Address, Bytes, U256},
-    providers::{Provider, ProviderBuilder},
+    providers::Provider,
     signers::SignerSync,
 };
 use alloy_eips::Encodable2718;
@@ -79,7 +79,7 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
 
     let signer = test_signer(0);
     let signer_addr = signer.address();
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
     let nonce = provider.get_transaction_count(signer_addr).await?;

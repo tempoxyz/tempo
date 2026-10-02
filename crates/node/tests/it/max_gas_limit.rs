@@ -9,7 +9,7 @@
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     primitives::Address,
-    providers::{Provider, ProviderBuilder},
+    providers::Provider,
 };
 use alloy_eips::{eip2718::Encodable2718, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 use alloy_network::TxSignerSync;
@@ -54,7 +54,7 @@ async fn test_post_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA);
@@ -80,7 +80,7 @@ async fn test_post_t1a_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, 20_000_000);
@@ -109,7 +109,7 @@ async fn test_post_t1a_tx_at_tempo_cap() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, TEMPO_T1_TX_GAS_LIMIT_CAP);
@@ -140,7 +140,7 @@ async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, TEMPO_T1_TX_GAS_LIMIT_CAP + 1);
@@ -166,7 +166,7 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
         .await?;
 
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA);
@@ -197,7 +197,7 @@ async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
         .await?;
 
     let signer = test_signer(0);
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA + 1);
