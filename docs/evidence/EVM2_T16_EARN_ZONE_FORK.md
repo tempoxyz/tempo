@@ -52,6 +52,14 @@ and zero general gas. It used explicit NoProof mode; this run does **not**
 demonstrate Nitro execution-proof validity or sustained mixed-workload
 throughput.
 
+A separate contract at `0x8464135c8F25Da09e49BC8782676a84730C318bC` had
+the exact dispatcher runtime hash but no system registration. Its
+`spendFromEarn` call reverted with no child calls in L1 block 3981. That block
+also included a real Earn redemption: the matched metric charged 1,000,000
+general gas to the forged call and 218,120 payment gas to the registered
+payment. Matching bytecode and selector alone therefore did not grant payment
+capacity in this run.
+
 While these isolated devnets are available, rerun the public receipt and state
 checker from the Tempo checkout:
 

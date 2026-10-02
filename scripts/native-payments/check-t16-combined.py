@@ -166,6 +166,24 @@ def main():
                    int(receipt["blockNumber"], 16)) == 100_000,
             "Zone portal backing differs from private supply")
 
+    forged = record["forgedDispatcher"]
+    require(code_hash(l1, forged["address"], forged["callBlock"]) ==
+            forged["runtimeHash"].lower(), "forged dispatcher runtime differs")
+    receipt = rpc(l1, "eth_getTransactionReceipt", [forged["callTx"]])
+    block = rpc(l1, "eth_getBlockByNumber", [hex(forged["callBlock"]), False])
+    require(int(receipt["status"], 16) == 0 and int(receipt["gasUsed"], 16) == 1_000_000,
+            "forged dispatcher did not fail within its gas limit")
+    require(len(block["transactions"]) == forged["blockTransactions"],
+            "forged dispatcher block composition differs")
+    metric = forged["laneMetric"]
+    require(metric["general_gas_used_last"] == 1_000_000
+            and metric["payment_gas_used_last"] == 218_120
+            and metric["gas_used_last"] == int(block["gasUsed"], 16),
+            "forged dispatcher obtained payment capacity")
+    trace = rpc(l1, "debug_traceTransaction", [forged["callTx"], {"tracer": "callTracer"}])
+    require(len(trace.get("calls", [])) == forged["childCalls"],
+            "forged dispatcher executed a child call")
+
     sender_key = os.getenv("EVM2_ZONE_SENDER_KEY")
     recipient_key = os.getenv("EVM2_ZONE_RECIPIENT_KEY")
     if sender_key and recipient_key:
@@ -182,7 +200,7 @@ def main():
     else:
         print("private Zone balance check skipped; set EVM2_ZONE_SENDER_KEY and EVM2_ZONE_RECIPIENT_KEY")
 
-    print("checked T16 fork, 12 accounting snapshots, 6 Earn receipts, and Zone settlement")
+    print("checked T16 fork, 12 accounting snapshots, 6 Earn receipts, Zone settlement, and forged admission")
 
 
 if __name__ == "__main__":

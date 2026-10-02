@@ -283,5 +283,24 @@
       "gas_used_last": 98842.0,
       "pool_transactions_included_last": 1.0
     }
+  },
+  "forgedDispatcher": {
+    "address": "0x8464135c8F25Da09e49BC8782676a84730C318bC",
+    "runtimeHash": "0x502aeca502056d259b30dcce44d73a0bfbbcca8fd0aaec28647e53978c2ee1b4",
+    "deployTx": "0xde1ee230c1f484eefb11c1749ee814986dbff49a2ba9270a202836f28f05b70e",
+    "callTx": "0xcc76bca65b2ab8b5ba1a9903ee2bbf7f9ad51975bd65f16cfc7fedc4d919b4e6",
+    "callBlock": 3981,
+    "callStatus": 0,
+    "callGasUsed": 1000000,
+    "childCalls": 0,
+    "blockTransactions": 2,
+    "laneMetric": {
+      "time": 1790925097.5697134,
+      "payment_transactions_last": 1.0,
+      "general_gas_used_last": 1000000.0,
+      "payment_gas_used_last": 218120.0,
+      "gas_used_last": 1218120.0,
+      "pool_transactions_included_last": 2.0
+    }
   }
 }
