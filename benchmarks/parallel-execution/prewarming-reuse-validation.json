@@ -1,0 +1,28 @@
+{
+  "status": "correctness_checks_passed_github_performance_pending",
+  "source_commit": "e86a3e9a4c4c9890dc0a037658f0cdecc99a498f",
+  "main_commit": "61c979a524f9af5de9c540a0088c429a44741e4c",
+  "change": "Reuse full results from provider-owned builder prewarming workers instead of a second speculative execution. Keep source ordering, transaction/environment checks, exact read validation, eligible fee rebasing, ordered replay and normal root construction.",
+  "enabled_when": "Execution workers enabled, builder prewarming enabled, native experimental builder.parallel disabled. Default threads=0 is unchanged.",
+  "bounds": "Two prewarming candidates per prewarming thread. Candidate consumption or discard releases capacity; completed work cannot drain the source unboundedly.",
+  "validation": {
+    "evm": "146 passed, 2 ignored; existing generated differential helper also executes parent-state prewarming and compares complete outcomes, receipts and state roots.",
+    "builder": "29 passed, including ordering, completed-result bound and full-buffer shutdown.",
+    "aa_node": "2 passed (sequential and parallel), 64 signed expiring-nonce transfers; parallel case explicitly asserts successful prewarming reuse.",
+    "observer_node": "2 passed (sequential and parallel); canonical Engine execution with worker activity assertion. Run before adding the prewarming-only observability counter; final all-target Clippy includes the updated code.",
+    "guards": "Mismatched transaction, block environment and configuration fall back. Expiring-nonce omitted/reordered candidates compare full outcomes and actual block access lists; paid fee rebasing is exercised.",
+    "clippy": "Rust 1.98.1 release --all-targets -D warnings, tempo-evm/tempo-payload-builder/tempo-node passed.",
+    "format": "cargo +nightly fmt --all; git diff --check passed."
+  },
+  "limitations": [
+    "No node performance improvement claimed until the GitHub comparison finishes.",
+    "Parent-state prewarming can replay frequently for repeated payer balances or omitted nonce predecessors; forwarding the committed prefix is a potential next optimization.",
+    "Historical active-worker mainnet coverage from the preceding integration remains sparse. This change targets building and does not replace broad differential/replay acceptance."
+  ],
+  "logs": [
+    "/tmp/tempo-prewarming-reuse-tests-final.log",
+    "/tmp/tempo-prewarming-reuse-aa.log",
+    "/tmp/tempo-prewarming-reuse-observer.log",
+    "/tmp/tempo-prewarming-reuse-clippy.log"
+  ]
+}

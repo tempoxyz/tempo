@@ -1,5 +1,5 @@
 {
-  "status": "25k_and_75k_target_comparisons_running",
+  "status": "prewarming_reuse_profiled_comparison_running",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
@@ -8,7 +8,7 @@
   },
   "repository": "tempoxyz/tempo",
   "published_branch": "onbjerg/parallel-execution",
-  "published_commit": "a58e6311027e073dacc442e80eccd9e7659cc244",
+  "published_commit": "e86a3e9a4c4c9890dc0a037658f0cdecc99a498f",
   "source_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
   "publication": "Git push; original local history linked to earlier API snapshot and latest main",
   "workflow": ".github/workflows/bench-e2e.yml",
@@ -506,7 +506,7 @@
       "id": 37033132058,
       "url": "https://github.com/tempoxyz/tempo/actions/runs/37033132058",
       "created_at": "2026-10-02T16:19:21Z",
-      "status": "in_progress",
+      "status": "completed",
       "workflow": ".github/workflows/bench-e2e.yml",
       "harness_sha": "a58e6311027e073dacc442e80eccd9e7659cc244",
       "inputs": {
@@ -531,13 +531,61 @@
         "no-slack": "false",
         "run-pairs": "3"
       },
-      "purpose": "Measure 25000 target TPS against the same main and sender-reuse snapshots as the 10k and 50k runs. Profiling off; normal roots and prewarming; Slack requires significant improvement without significant noninformational regressions."
+      "purpose": "Measure 25000 target TPS against the same main and sender-reuse snapshots as the 10k and 50k runs. Profiling off; normal roots and prewarming; Slack requires significant improvement without significant noninformational regressions.",
+      "conclusion": "success",
+      "runner": "ghr-euw-04",
+      "result": "Throughput regression; smaller blocks and lower block-time tails do not establish a throughput gain.",
+      "baseline_tps": 17502,
+      "feature_tps": 14634,
+      "delta_pct": -16.39,
+      "builder_gas_throughput_delta_pct": -26.43,
+      "validator_gas_throughput_delta_pct": -26.71,
+      "artifact_id": 11240560178,
+      "report": "github-37033132058/summary.md",
+      "sender_report_failures": {
+        "baseline": [
+          0,
+          0,
+          0
+        ],
+        "feature": [
+          0,
+          0,
+          0
+        ]
+      },
+      "speculative_stats_by_role": {
+        "validator": {
+          "speculated": 3965656,
+          "nonce_filtered": 0,
+          "reused": 3047945,
+          "bodies_reused": 0,
+          "fees_rebased": 3016565,
+          "conflicts": 917711,
+          "retries": 0,
+          "backoff": 0,
+          "events": 642
+        },
+        "builder": {
+          "speculated": 4012393,
+          "nonce_filtered": 0,
+          "reused": 3044570,
+          "bodies_reused": 0,
+          "fees_rebased": 3013223,
+          "conflicts": 916810,
+          "retries": 0,
+          "backoff": 3590,
+          "events": 642
+        }
+      },
+      "shutdown": "Feature engine-stop errors follow shutdown signals and graceful engine termination. No canonical state-root mismatch observed in these logs.",
+      "slack": "Verified live workflow: on-win mode skipped all notifications because significant regressions were present."
     },
     {
       "id": 37033133677,
       "url": "https://github.com/tempoxyz/tempo/actions/runs/37033133677",
       "created_at": "2026-10-02T16:19:22Z",
-      "status": "in_progress",
+      "status": "completed",
       "workflow": ".github/workflows/bench-e2e.yml",
       "harness_sha": "a58e6311027e073dacc442e80eccd9e7659cc244",
       "inputs": {
@@ -562,7 +610,86 @@
         "no-slack": "false",
         "run-pairs": "3"
       },
-      "purpose": "Measure 75000 target TPS against the same main and sender-reuse snapshots as the 10k and 50k runs. Profiling off; normal roots and prewarming; Slack requires significant improvement without significant noninformational regressions."
+      "purpose": "Measure 75000 target TPS against the same main and sender-reuse snapshots as the 10k and 50k runs. Profiling off; normal roots and prewarming; Slack requires significant improvement without significant noninformational regressions.",
+      "conclusion": "success",
+      "runner": "ghr-euw-06",
+      "result": "Throughput regression at 75k target, which is not achieved actual input or confirmed throughput.",
+      "baseline_tps": 16869,
+      "feature_tps": 12202,
+      "delta_pct": -27.67,
+      "builder_gas_throughput_delta_pct": -38.76,
+      "validator_gas_throughput_delta_pct": -29,
+      "artifact_id": 11240575401,
+      "report": "github-37033133677/summary.md",
+      "sender_report_failures": {
+        "baseline": [
+          978151,
+          692511,
+          626980
+        ],
+        "feature": [
+          1370792,
+          1179893,
+          1267119
+        ]
+      },
+      "speculative_stats_by_role": {
+        "validator": {
+          "speculated": 3446689,
+          "nonce_filtered": 0,
+          "reused": 2649783,
+          "bodies_reused": 0,
+          "fees_rebased": 2622444,
+          "conflicts": 796906,
+          "retries": 0,
+          "backoff": 0,
+          "events": 674
+        },
+        "builder": {
+          "speculated": 3463764,
+          "nonce_filtered": 2275,
+          "reused": 2622784,
+          "bodies_reused": 0,
+          "fees_rebased": 2595721,
+          "conflicts": 788611,
+          "retries": 0,
+          "backoff": 1446,
+          "events": 670
+        }
+      },
+      "shutdown": "Feature engine-stop errors follow shutdown signals and graceful engine termination. No canonical state-root mismatch observed in these logs.",
+      "slack": "On-win filter configured to suppress mixed results; workflow completed successfully. Log download failed twice with an HTTP/2 stream cancellation, so notification outcome is not independently confirmed."
+    },
+    {
+      "id": 37035535006,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37035535006",
+      "created_at": "2026-10-02T16:40:36Z",
+      "status": "in_progress",
+      "workflow": ".github/workflows/bench-e2e.yml",
+      "harness_sha": "e86a3e9a4c4c9890dc0a037658f0cdecc99a498f",
+      "inputs": {
+        "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
+        "feature": "e86a3e9a4c4c9890dc0a037658f0cdecc99a498f",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "50000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "samply",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "false",
+        "run-pairs": "3"
+      },
+      "purpose": "Profile reuse of fully recorded builder prewarming results, eliminating a second speculative execution and serial batch prefetch. Normal roots and prewarming; exact validation and ordered replay; no performance claim before paired results."
     }
   ],
   "replay_retry": {

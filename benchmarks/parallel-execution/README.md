@@ -96,6 +96,30 @@ canonical-block throughput above. The generator uses two signing workers and
 streams into the sender, so these observations alone cannot separate generation
 cost from sender backpressure. See `github-37022356052/submission-rates.json`.
 
+The 25k-target run 37033132058 measures 17,502 baseline versus 14,634 feature
+TPS (-16.39%); builder gas throughput falls 26.43% and validator gas throughput
+falls 26.71%. Raw sender failure counts are zero. The 75k-target run 37033133677
+measures 16,869 baseline versus 12,202 feature TPS (-27.67%), with builder gas
+throughput -38.76% and validator gas throughput -29.00%. Raw sender failures are
+626,980–978,151 on baseline and 1,179,893–1,370,792 on feature, while raw sender
+samples average 23,414–27,543 submissions/s. These are target-rate comparisons,
+not proof of sustained 25k or 75k input. Both use the sender-reuse snapshot before
+the prewarming change below, normal roots/prewarming, and no sampling profiler.
+Feature engine-stop errors follow graceful shutdown; no canonical mismatch was
+observed. See `github-37033132058/` and `github-37033133677/`.
+
+Builder prewarming can now return a complete recorded speculative result instead
+of discarding it and running the transaction again in the speculative pool.
+The source iterator order remains authoritative; transaction/environment guards
+and exact read validation decide reuse, with ordinary ordered execution on a
+conflict or speculative error. Completed candidates are bounded by twice the
+prewarming thread count, and consuming or discarding a candidate releases capacity.
+This path is active only with execution workers and normal builder prewarming.
+Generated differential tests compare complete outcomes, receipts, roots and BALs;
+a real-node AA test explicitly verifies successful prewarming reuse. See
+`prewarming-reuse-validation.json`. The profiled GitHub comparison 37035535006 is pending;
+parent-state prewarming may still conflict on repeatedly modified payer balances.
+
 Workers also predict expiring-nonce ring positions in candidate order and
 prefetch those slots. Predicted values remain ordinary validated reads; skipped,
 reordered, rejected, or duplicate candidates cause replay when the prediction is

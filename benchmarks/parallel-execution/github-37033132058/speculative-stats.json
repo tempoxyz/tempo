@@ -1,0 +1,27 @@
+{
+  "scope": "All six feature node logs, complete captured intervals",
+  "totals_by_role": {
+    "validator": {
+      "speculated": 3965656,
+      "nonce_filtered": 0,
+      "reused": 3047945,
+      "bodies_reused": 0,
+      "fees_rebased": 3016565,
+      "conflicts": 917711,
+      "retries": 0,
+      "backoff": 0,
+      "events": 642
+    },
+    "builder": {
+      "speculated": 4012393,
+      "nonce_filtered": 0,
+      "reused": 3044570,
+      "bodies_reused": 0,
+      "fees_rebased": 3013223,
+      "conflicts": 916810,
+      "retries": 0,
+      "backoff": 3590,
+      "events": 642
+    }
+  }
+}

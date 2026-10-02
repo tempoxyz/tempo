@@ -1,0 +1,96 @@
+{
+  "scope": "Raw sender counters; not confirmed canonical throughput. The configured target does not prove sustained actual offered load.",
+  "target_tps": 75000,
+  "runs": [
+    {
+      "role": "baseline",
+      "pair": 1,
+      "sent": 2475134,
+      "success": 1496983,
+      "failed": 978151,
+      "elapsed_secs": 93.31251974,
+      "tps": 26525.2080524302,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 27542.928571428572,
+        "min": 5423,
+        "max": 58194
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 2,
+      "sent": 2279847,
+      "success": 1587336,
+      "failed": 692511,
+      "elapsed_secs": 92.508078007,
+      "tps": 24644.842365306587,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 24057.128571428573,
+        "min": 7674,
+        "max": 55186
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 3,
+      "sent": 2211108,
+      "success": 1584128,
+      "failed": 626980,
+      "elapsed_secs": 92.922093939,
+      "tps": 23795.28814160723,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 23414.414285714287,
+        "min": 4666,
+        "max": 67126
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 1,
+      "sent": 2519642,
+      "success": 1148850,
+      "failed": 1370792,
+      "elapsed_secs": 95.810669506,
+      "tps": 26298.135823403376,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 26247.7,
+        "min": 16405,
+        "max": 41305
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 2,
+      "sent": 2339711,
+      "success": 1159818,
+      "failed": 1179893,
+      "elapsed_secs": 94.918317342,
+      "tps": 24649.73111111728,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 24592.585714285713,
+        "min": 6783,
+        "max": 43274
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 3,
+      "sent": 2405140,
+      "success": 1138021,
+      "failed": 1267119,
+      "elapsed_secs": 94.367706038,
+      "tps": 25486.896958494446,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 24736.97142857143,
+        "min": 11298,
+        "max": 44357
+      }
+    }
+  ]
+}
