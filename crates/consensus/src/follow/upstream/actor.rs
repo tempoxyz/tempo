@@ -11,7 +11,7 @@ use jsonrpsee::{
     ws_client::{PingConfig, WsClient, WsClientBuilder},
 };
 use rand_08::Rng as _;
-use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
+use reth_primitives_traits::{Block as _, SealedOrRecoveredBlock};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 use tempo_telemetry_util::display_duration;
@@ -432,11 +432,12 @@ async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option
         .await
         .wrap_err("failed getting block by hash")?
         .map(|block| {
-            SealedOrRecoveredBlock::from(SealedBlock::seal_slow(
+            SealedOrRecoveredBlock::from(
                 block
                     .into_consensus_block()
-                    .map_transactions(|transaction| transaction.into_inner()),
-            ))
+                    .map_transactions(|transaction| transaction.into_inner())
+                    .seal_slow(),
+            )
         });
 
     let block = block

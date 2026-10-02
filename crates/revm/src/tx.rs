@@ -462,7 +462,7 @@ impl TempoTxEnv {
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{Signed, TxLegacy, transaction::TxHashRef};
+    use alloy_consensus::{SignableTransaction as _, TxLegacy, transaction::TxHashRef};
     use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
     use core::num::NonZeroU64;
@@ -616,8 +616,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
         let tx_hash = *envelope.tx_hash();
         let TempoTxEnvelope::Legacy(signed) = &envelope else {
             unreachable!()

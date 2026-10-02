@@ -22,7 +22,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use parking_lot::Mutex;
-use reth_node_core::primitives::SealedBlock;
+use reth_primitives_traits::Block as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
@@ -70,7 +70,7 @@ fn make_block_with_parent(
         body: BlockBody::default(),
     };
 
-    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
+    Block::try_from_execution_block(inner.seal_slow(), None)
         .expect("test block should not contain BAL side data")
 }
 

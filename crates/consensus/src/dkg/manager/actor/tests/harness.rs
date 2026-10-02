@@ -49,7 +49,7 @@ use futures::{StreamExt as _, channel::mpsc};
 use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_core::primitives::SealedBlock;
+use reth_primitives_traits::Block as _;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{BlockBody, TempoConsensusContext, TempoHeader};
@@ -777,10 +777,11 @@ pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Ar
 
 pub(super) fn block(header: TempoHeader) -> Block {
     Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(tempo_primitives::Block {
+        tempo_primitives::Block {
             header,
             body: BlockBody::default(),
-        }),
+        }
+        .seal_slow(),
         None,
     )
 }

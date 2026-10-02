@@ -38,6 +38,7 @@ use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_core::primitives::{RecoveredBlock, SealedBlock};
+use reth_primitives_traits::Block as _;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
@@ -75,7 +76,7 @@ pub(super) fn make_block_with_proposer(
     proposer: tempo_primitives::ed25519::PublicKey,
 ) -> Block {
     Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(TempoBlock {
+        TempoBlock {
             header: TempoHeader {
                 inner: alloy_consensus::Header {
                     number: height,
@@ -91,7 +92,8 @@ pub(super) fn make_block_with_proposer(
                 ..Default::default()
             },
             body: Default::default(),
-        }),
+        }
+        .seal_slow(),
         None,
     )
 }

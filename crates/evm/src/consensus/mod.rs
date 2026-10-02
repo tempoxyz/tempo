@@ -258,12 +258,12 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::{
-        Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
-        transaction::TxHashRef,
+        Header, SignableTransaction as _, TxLegacy, constants::EMPTY_ROOT_HASH,
+        proofs::calculate_transaction_root, transaction::TxHashRef,
     };
     use alloy_genesis::Genesis;
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
-    use reth_primitives_traits::SealedHeader;
+    use reth_primitives_traits::{Block as _, SealedHeader};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::{
         hardfork::TempoHardfork,
@@ -401,7 +401,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
+        TempoTxEnvelope::Legacy(tx.into_signed(signature))
     }
 
     fn create_tx(chain_id: u64) -> TempoTxEnvelope {
@@ -414,7 +414,7 @@ mod tests {
             value: U256::from(100),
             input: Default::default(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     #[test]
@@ -965,7 +965,7 @@ mod tests {
             .timestamp(current_timestamp_millis())
             .build();
         let block = create_valid_block(header, vec![user_tx, system_tx]);
-        let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
+        let sealed = block.seal_slow();
 
         assert!(consensus.validate_block_pre_execution(&sealed).is_ok());
     }
@@ -985,7 +985,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
+        let invalid_system_tx = TempoTxEnvelope::Legacy(tx.into_signed(signature));
         let tx_hash = *invalid_system_tx.tx_hash();
 
         let header = TestHeaderBuilder::default()
@@ -993,7 +993,7 @@ mod tests {
             .timestamp(current_timestamp_millis())
             .build();
         let block = create_valid_block(header, vec![invalid_system_tx]);
-        let sealed = SealedBlock::seal_slow(block);
+        let sealed = block.seal_slow();
 
         let result = consensus.validate_block_pre_execution(&sealed);
         let err = result.unwrap_err();
@@ -1020,7 +1020,7 @@ mod tests {
             .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![user_tx]);
-        let sealed = SealedBlock::seal_slow(block);
+        let sealed = block.seal_slow();
 
         let result = consensus.validate_block_pre_execution(&sealed);
         let err = result.unwrap_err();
@@ -1046,7 +1046,7 @@ mod tests {
             .timestamp(0)
             .build();
         let block = create_valid_block(header, vec![user_tx]);
-        let sealed = SealedBlock::seal_slow(block);
+        let sealed = block.seal_slow();
 
         assert!(consensus.validate_block_pre_execution(&sealed).is_ok());
     }
@@ -1138,7 +1138,7 @@ mod tests {
             .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![system_tx]);
-        let sealed = SealedBlock::seal_slow(block);
+        let sealed = block.seal_slow();
 
         let result = consensus.validate_block_pre_execution(&sealed);
         let err = result.unwrap_err();

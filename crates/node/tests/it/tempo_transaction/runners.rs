@@ -572,7 +572,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                     *allowed_calls,
                     recipient,
                 );
-                request.key_id = Some(auth.key_id);
+                request.set_key_id(auth.key_id);
                 request.key_authorization = Some(auth);
                 if let Some(kt) = key_type {
                     request.key_type = Some(*kt);

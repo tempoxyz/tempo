@@ -101,8 +101,7 @@ use commonware_storage::{
     archive::{self, Identifier, prunable},
     translator::TwoCap,
 };
-use reth_node_core::primitives::SealedBlock;
-use reth_primitives_traits::SealedOrRecoveredBlock;
+use reth_primitives_traits::{Block as _, SealedOrRecoveredBlock};
 use reth_provider::{
     BalProvider, BalStoreHandle, BlockReader, BlockSource, HeaderProvider, ProviderError,
     ProviderResult,
@@ -189,9 +188,7 @@ where
             return Ok(None);
         }
         match self.block_by_number(height) {
-            Ok(Some(block)) => {
-                restore_block(SealedBlock::seal_slow(block).into(), self.bal_store()).map(Some)
-            }
+            Ok(Some(block)) => restore_block(block.seal_slow().into(), self.bal_store()).map(Some),
             Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");

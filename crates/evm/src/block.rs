@@ -698,7 +698,7 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction as _, TxLegacy, transaction::Recovered};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
@@ -749,7 +749,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     fn create_tip20_empty_calldata_tx() -> TempoTxEnvelope {
@@ -762,7 +762,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     fn create_dkg_outcome(epoch: u64, players: usize) -> OnchainDkgOutcome {
@@ -887,7 +887,7 @@ mod tests {
     }
 
     fn create_system_tx(chain_id: u64, input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chain_id),
                 nonce: 0,
@@ -896,9 +896,9 @@ mod tests {
                 to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input,
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ))
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        )
     }
 
     fn create_subblock_metadata(signer: &PrivateKey) -> SubBlockMetadata {
@@ -960,7 +960,7 @@ mod tests {
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Create system tx with non-zero `to` address
-        let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        let system_tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
@@ -969,9 +969,9 @@ mod tests {
                 to: TxKind::Call(Address::repeat_byte(0x01)), // Non-zero address
                 value: U256::ZERO,
                 input: Bytes::new(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ));
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        );
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());

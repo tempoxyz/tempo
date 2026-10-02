@@ -500,7 +500,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, Header, SignableTransaction as _, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
@@ -598,8 +598,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
         let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
         Arc::new(ValidPoolTransaction {
             transaction_id: TransactionId::new(0u64.into(), nonce),

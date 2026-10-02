@@ -26,7 +26,7 @@ use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer:
 use commonware_storage::{archive::prunable, translator::TwoCap};
 use commonware_utils::{NZU16, NZUsize};
 use parking_lot::Mutex;
-use reth_node_core::primitives::SealedBlock;
+use reth_primitives_traits::Block as _;
 use reth_provider::{ProviderError, ProviderResult};
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
@@ -68,7 +68,7 @@ pub(in crate::storage) fn make_block(height: u64, parent_hash: B256) -> Block {
     };
     let body = BlockBody::default();
     let inner = TempoBlock { header, body };
-    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
+    Block::try_from_execution_block(inner.seal_slow(), None)
         .expect("test block should not carry BAL side data")
 }
 

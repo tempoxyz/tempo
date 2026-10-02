@@ -317,10 +317,11 @@ impl ConfigureEvm for TempoEvmConfig {
 mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, SignableTransaction as _, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+    use reth_primitives_traits::Block as _;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
@@ -519,7 +520,7 @@ mod tests {
         metadata.encode(&mut input);
         input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
 
-        let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        let system_tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(reth_chainspec::EthChainSpec::chain(&*chainspec).id()),
                 nonce: 0,
@@ -528,9 +529,9 @@ mod tests {
                 to: TxKind::Call(alloy_primitives::Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ));
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        );
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -553,7 +554,7 @@ mod tests {
         };
 
         let block = Block { header, body };
-        let sealed_block = SealedBlock::seal_slow(block);
+        let sealed_block = block.seal_slow();
 
         let result = evm_config.context_for_block(&sealed_block);
         assert!(result.is_ok());
@@ -593,7 +594,7 @@ mod tests {
         };
 
         let block = Block { header, body };
-        let sealed_block = SealedBlock::seal_slow(block);
+        let sealed_block = block.seal_slow();
 
         let context = evm_config.context_for_block(&sealed_block).unwrap();
         assert_eq!(context.general_gas_limit, 10_000_000);

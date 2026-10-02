@@ -19,6 +19,9 @@ use super::*;
 use crate::storage::PRUNABLE_ITEMS_PER_SECTION;
 use utils::{StubProvider, fresh_prunable_with_section_size, make_block, make_chain};
 
+#[cfg(feature = "bal")]
+use reth_primitives_traits::Block as _;
+
 /// Force every height into its own section so the prunable archive's
 /// `prune(min)` (which rounds down to the nearest section boundary) acts
 /// at single-height granularity. Required for any test that asserts on
@@ -64,7 +67,7 @@ fn execution_fallback_restores_bal_before_encoding() {
     use reth_provider::{InMemoryBalStore, RawBal};
 
     let bal = Bytes::from_static(&[0xc0]);
-    let block = SealedBlock::seal_slow(tempo_primitives::Block {
+    let block = tempo_primitives::Block {
         header: TempoHeader {
             inner: alloy_consensus::Header {
                 number: 42,
@@ -83,7 +86,8 @@ fn execution_fallback_restores_bal_before_encoding() {
             withdrawals: Some(Default::default()),
             ..Default::default()
         },
-    });
+    }
+    .seal_slow();
     let store = BalStoreHandle::new(InMemoryBalStore::default());
 
     // Missing sidecars are a storage invariant violation, not a cache miss.
