@@ -494,6 +494,7 @@ fn run_worker<E: DBErrorMarker>(
                 body,
                 fee_updates,
                 fees_rebased: false,
+                conflict: None,
             }),
         ));
     }
@@ -639,6 +640,18 @@ pub struct ExecutionStats {
     pub fees_rebased: u64,
     /// Candidates replayed after their state dependencies changed.
     pub conflicts: u64,
+    /// Conflicts on account metadata, bytecode, or block hashes.
+    pub metadata_conflicts: u64,
+    /// Conflicts on the expiring-nonce ring pointer prediction.
+    pub nonce_pointer_conflicts: u64,
+    /// Conflicts on other nonce-precompile storage.
+    pub nonce_conflicts: u64,
+    /// Conflicts on ordinary storage outside the nonce precompile.
+    pub storage_conflicts: u64,
+    /// Fee patches rejected by journal or arithmetic checks.
+    pub fee_conflicts: u64,
+    /// Provider errors during read validation, retried by ordinary execution.
+    pub validation_errors: u64,
     /// Speculative errors retried against the committed prefix.
     pub retries: u64,
     /// Transactions executed sequentially while the scheduler backs off.
@@ -654,10 +667,40 @@ pub(crate) struct SpeculativeResult<E> {
     pub(crate) body: Option<BodyCache>,
     fee_updates: Vec<FeeUpdate>,
     pub(crate) fees_rebased: bool,
+    pub(crate) conflict: Option<ConflictKind>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ConflictKind {
+    Metadata,
+    NoncePointer,
+    Nonce,
+    Storage,
+    Fee,
 }
 
 impl<E: DBErrorMarker> SpeculativeResult<E> {
-    fn conflict(key: &ReadKey, reason: &'static str) -> bool {
+    fn conflict(
+        conflict: &mut Option<ConflictKind>,
+        key: &ReadKey,
+        reason: &'static str,
+        fee: bool,
+    ) -> bool {
+        *conflict = Some(if fee {
+            ConflictKind::Fee
+        } else {
+            match key {
+                ReadKey::Storage(address, slot) if *address == NONCE_PRECOMPILE_ADDRESS => {
+                    if *slot == nonce_slots::EXPIRING_NONCE_RING_PTR {
+                        ConflictKind::NoncePointer
+                    } else {
+                        ConflictKind::Nonce
+                    }
+                }
+                ReadKey::Storage(..) => ConflictKind::Storage,
+                _ => ConflictKind::Metadata,
+            }
+        });
         tracing::trace!(target: "tempo::execution::conflicts", ?key, reason, "Replaying state conflict");
         false
     }
@@ -675,7 +718,12 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
                     ReadValue::Storage(new),
                 ) = (key, expected, actual)
                 else {
-                    return Ok(Self::conflict(key, "account, code or block hash"));
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "account, code or block hash",
+                        false,
+                    ));
                 };
                 let Some(update) = self
                     .fee_updates
@@ -683,7 +731,12 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
                     .find(|update| update.address == *address && update.slot == *slot)
                 else {
                     tracing::trace!(target: "tempo::execution::conflicts", ?key, expected = %old, actual = %new, "Storage values differ");
-                    return Ok(Self::conflict(key, "ordinary storage"));
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "ordinary storage",
+                        false,
+                    ));
                 };
                 let Some(account) = self
                     .result
@@ -691,22 +744,42 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
                     .ok()
                     .and_then(|result| result.state.get(address))
                 else {
-                    return Ok(Self::conflict(key, "missing result account"));
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "missing result account",
+                        true,
+                    ));
                 };
                 let Some(storage) = account.storage.get(slot) else {
-                    return Ok(Self::conflict(key, "missing result storage"));
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "missing result storage",
+                        true,
+                    ));
                 };
                 if account.is_created()
                     || account.is_selfdestructed()
                     || storage.original_value != *old
                     || update.apply(*old) != Some(storage.present_value)
                 {
-                    return Ok(Self::conflict(key, "fee journal mismatch"));
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "fee journal mismatch",
+                        true,
+                    ));
                 }
                 let Some(present) = update.apply(new) else {
                     // Including intermediate maximum-fee overflow: the ordinary
                     // executor must produce the canonical error or result.
-                    return Ok(Self::conflict(key, "fee arithmetic overflow"));
+                    return Ok(Self::conflict(
+                        &mut self.conflict,
+                        key,
+                        "fee arithmetic overflow",
+                        true,
+                    ));
                 };
                 patches.push((*address, *slot, new, present));
             }

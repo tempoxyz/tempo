@@ -17,7 +17,7 @@ use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
 use reth_chainspec::EthChainSpec as _;
 use reth_evm::block::StateDB;
-use reth_primitives_traits::SignedTransaction;
+use reth_primitives_traits::transaction::recover::recover_signers;
 use reth_revm::{
     Inspector,
     context::result::{ExecutionResult, HaltReason, ResultAndState},
@@ -581,34 +581,44 @@ where
         if !self.inner.evm.has_prepared_transactions() && !recovered.tx().is_system_tx() {
             let batch_size = self.inner.evm.speculative_batch_size();
             let beneficiary = self.inner.evm.ctx().block.beneficiary;
-            let mut inputs = Vec::new();
-            for (offset, candidate) in self
-                .transactions
+            let start = self.inner.receipts.len();
+            let candidates = self.transactions.get(start..).unwrap_or_default();
+            let candidates = &candidates[..candidates.len().min(batch_size)];
+            let candidates = &candidates[..candidates
                 .iter()
-                .skip(self.inner.receipts.len())
-                .take(batch_size)
-                .enumerate()
-            {
-                if candidate.is_system_tx() {
-                    break;
+                .position(TempoTxEnvelope::is_system_tx)
+                .unwrap_or(candidates.len())];
+            let first_is_current = candidates.first().is_some_and(|tx| tx == recovered.tx());
+            let known_senders = self.senders.get(start..).unwrap_or_default();
+            let recovery_start = known_senders
+                .len()
+                .min(candidates.len())
+                .max(usize::from(first_is_current));
+            // The current transaction and recovered block prefix need no recovery.
+            // The shared cache checks hits before dispatching only misses through
+            // Reth's parallel recovery. A malformed future signature only cancels
+            // this speculative suffix; ordered execution still reports its error.
+            let recovered_senders = if recovery_start < candidates.len() {
+                let remaining = &candidates[recovery_start..];
+                match &self.sender_recovery_cache {
+                    Some(cache) => cache.recover_signers(remaining),
+                    None => recover_signers(remaining),
                 }
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let mut inputs = Vec::new();
+            for (offset, candidate) in candidates.iter().enumerate() {
                 let fee_recipient = beneficiary;
-                let env = if offset == 0 && candidate == recovered.tx() {
+                let env = if offset == 0 && first_is_current {
                     tx_env.clone()
                 } else {
-                    // The engine already recovers senders on its transaction pipeline.
-                    // Reuse its block context or shared ingress cache instead of
-                    // repeating expensive signature recovery on this serial thread.
-                    let signer = self
-                        .senders
-                        .get(self.inner.receipts.len() + offset)
+                    let signer = known_senders
+                        .get(offset)
                         .copied()
-                        .map(Ok)
-                        .unwrap_or_else(|| match &self.sender_recovery_cache {
-                            Some(cache) => cache.recover(candidate),
-                            None => candidate.try_recover(),
-                        });
-                    let Ok(signer) = signer else { break };
+                        .or_else(|| recovered_senders.get(offset - recovery_start).copied());
+                    let Some(signer) = signer else { break };
                     tempo_revm::TempoTxEnv::from_recovered_tx(candidate, signer)
                 };
                 inputs.push((env, fee_recipient));

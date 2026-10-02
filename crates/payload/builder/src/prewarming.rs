@@ -123,7 +123,7 @@ impl BestTransactionsPrewarming {
                     ctx.speculative_in_flight += 1;
                     // Publish handles in source order, before workers finish. The
                     // authoritative iterator can still skip or invalidate them.
-                    let (result_tx, result_rx) = mpsc::channel();
+                    let (result_tx, result_rx) = mpsc::sync_channel(1);
                     let completion = Arc::new(SpeculativeCompletion { commands_tx });
                     let _ = transactions_tx.send(Some(PrewarmedTransaction {
                         tx: tx.clone(),

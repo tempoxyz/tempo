@@ -511,6 +511,18 @@ where
                 return candidate.result;
             } else {
                 self.execution_stats.conflicts += 1;
+                use crate::parallel::ConflictKind;
+                match candidate.conflict {
+                    Some(ConflictKind::Metadata) => self.execution_stats.metadata_conflicts += 1,
+                    Some(ConflictKind::NoncePointer) => {
+                        self.execution_stats.nonce_pointer_conflicts += 1
+                    }
+                    Some(ConflictKind::Nonce) => self.execution_stats.nonce_conflicts += 1,
+                    Some(ConflictKind::Storage) => self.execution_stats.storage_conflicts += 1,
+                    Some(ConflictKind::Fee) => self.execution_stats.fee_conflicts += 1,
+                    // Provider errors retain the ordinary ordered fallback.
+                    None => self.execution_stats.validation_errors += 1,
+                }
                 tracing::trace!(target: "tempo::execution::conflicts", caller = ?tx.inner.caller, payer = ?tx.fee_payer().ok(), "Conflicting candidate");
                 self.inner.set_body_replay(candidate.body);
             }

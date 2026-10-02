@@ -2742,13 +2742,13 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
     }
     let mut expected_output = None;
     let senders = recovered.iter().map(|tx| tx.signer()).collect::<Vec<_>>();
-    // Uncached, cold-cache, warm-cache and recovered-block lookahead must all
-    // preserve receipts, intermediate state hooks and the final state trie.
-    for mode in 0..5 {
+    // Uncached, cold-cache, warm-cache, mixed-cache and partially or fully
+    // recovered block lookahead must preserve every observable state change.
+    for mode in 0..7 {
         let parallel = mode != 0;
-        let cache = (mode == 2 || mode == 3).then(reth_evm::SenderRecoveryCache::default);
-        if mode == 3 {
-            for tx in &txs {
+        let cache = matches!(mode, 2 | 3 | 6).then(reth_evm::SenderRecoveryCache::default);
+        if mode == 3 || mode == 6 {
+            for tx in txs.iter().step_by(if mode == 6 { 2 } else { 1 }) {
                 cache.as_ref().unwrap().recover(tx).unwrap();
             }
         }
@@ -2762,7 +2762,11 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
                 },
                 &spec,
                 &txs,
-                if mode == 4 { &senders } else { &[] },
+                match mode {
+                    4 => &senders,
+                    5 => &senders[..2],
+                    _ => &[],
+                },
                 cache.clone(),
             );
         if parallel {
@@ -2779,6 +2783,10 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
         }
         if let Some(cache) = cache {
             use alloy_consensus::transaction::TxHashRef;
+            if mode == 2 {
+                // The authoritative first transaction already carries its sender.
+                assert_eq!(cache.get(txs[0].tx_hash()), None);
+            }
             // This transaction's sender is only recovered by lookahead; the
             // authoritative calls above already carry their recovered senders.
             assert_eq!(cache.get(txs[1].tx_hash()), Some(senders[1]));
@@ -2793,6 +2801,72 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
             assert_eq!(&output, expected);
         } else {
             expected_output = Some(output);
+        }
+    }
+}
+
+#[test]
+fn lookahead_invalid_signature_preserves_ordered_execution_prefix() {
+    use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_evm::block::BlockExecutor;
+    use alloy_primitives::Signature;
+    use reth_primitives_traits::{Recovered, SignedTransaction};
+    use tempo_primitives::TempoTxEnvelope;
+
+    let txs = (0..4)
+        .map(|i| {
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    gas_limit: 100_000,
+                    gas_price: 1,
+                    to: address(100 + i).into(),
+                    ..Default::default()
+                },
+                if i == 2 {
+                    // r = 0 is invalid; keep s nonzero to avoid Tempo's
+                    // special all-zero system transaction signature.
+                    Signature::new(U256::ZERO, U256::from(1), false)
+                } else {
+                    Signature::test_signature()
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert!(!txs[2].is_system_tx());
+    assert!(txs[2].try_recover().is_err());
+    let recovered = txs[..2]
+        .iter()
+        .map(|tx| Recovered::new_unchecked(tx, tx.try_recover().unwrap()))
+        .collect::<Vec<_>>();
+    let db = funded_tip20_accounts(recovered.iter().map(|tx| tx.signer()));
+    let spec = test_chainspec();
+    let mut expected = None;
+    for mode in 0..4 {
+        let cache = (mode >= 2).then(reth_evm::SenderRecoveryCache::default);
+        if mode == 3 {
+            cache.as_ref().unwrap().recover(&txs[1]).unwrap();
+        }
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build_with_recovered_transactions(db.clone(), &spec, &txs, &[], cache);
+        if mode > 0 {
+            executor
+                .evm_mut()
+                .set_speculative_executor(Some(SpeculativeExecutor::new(4, 4).unwrap()));
+        }
+        executor.apply_pre_execution_changes().unwrap();
+        // The invalid third signature must not prevent either earlier valid
+        // transaction from executing and committing in the original order.
+        for tx in &recovered {
+            executor.execute_transaction(tx).unwrap();
+        }
+        let (evm, result) = executor.finish().unwrap();
+        let output = (root(evm.db()), result);
+        if let Some(expected) = &expected {
+            assert_eq!(&output, expected);
+        } else {
+            expected = Some(output);
         }
     }
 }

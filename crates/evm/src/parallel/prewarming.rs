@@ -118,6 +118,7 @@ impl PreexecutedTransaction {
             fee_updates: self.fee_updates,
             fees_rebased: false,
             body: None,
+            conflict: None,
         })
     }
 }

@@ -62,7 +62,7 @@ on:
       slack:
         description: "Slack notification policy"
         required: false
-        default: "never"
+        default: "on-win"
         type: choice
         options:
           - always

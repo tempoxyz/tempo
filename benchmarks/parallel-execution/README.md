@@ -108,7 +108,17 @@ Canonical checks pass, but newPayload gas throughput regresses 14.93%. This is
 sparse correctness coverage, not a capacity measurement.
 
 [Prewarming reuse comparison 37035535006](https://github.com/tempoxyz/tempo/actions/runs/37035535006)
-measures commit `e86a3e9a4c4c` against main at a 50k target; results are pending.
-The change reuses fully validated prewarming results in the builder, with
-ordinary ordered execution on conflicts. Generated differential checks and a
-real-node AA test verify this reuse path. Further optimization remains in progress.
+measures 15,334 baseline versus 14,298 feature TPS (-6.76%); builder gas
+throughput falls 20.58% and validation throughput falls 34.20%. Only 12.42% of
+builder candidates reuse prewarming; the rest conflict and execute again.
+The recorded fatal engine-stop follows graceful shutdown. Workflow Slack
+notifications were suppressed. This change has not demonstrated a net gain.
+
+[Prefix-state comparison 37038805662](https://github.com/tempoxyz/tempo/actions/runs/37038805662)
+measures `43dd0364e236` against the same main at a 50k target; results are pending.
+Workers consult advisory values from the accepted prefix, and exact read
+validation still gates reuse. Generated differential tests compare outcomes,
+receipts, roots and nonce-order changes; real-node AA and Engine observer tests
+pass. Builder concurrency follows `--engine.prewarming-threads`, with twice that
+many admitted candidates; `--execution.threads` controls the separate Engine
+execution pool. Further optimization remains in progress.
