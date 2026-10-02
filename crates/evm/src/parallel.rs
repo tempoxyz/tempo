@@ -8,8 +8,8 @@
 //! produced by the committed prefix. Otherwise the ordinary EVM replays the transaction,
 //! optionally reusing a separately validated call body while rerunning fee processing.
 //!
-//! This deliberately treats shared fee counters as dependencies. Making fee updates
-//! commute requires a separate proof covering overflow, gas, logs and contract reads.
+//! Explicit unmetered fee arithmetic can be rebased only when no ordinary access
+//! observes its slot. Each intermediate arithmetic check is repeated at commit.
 
 use crate::{TempoBlockEnv, evm::TempoEvm};
 use alloy_evm::{Database, Evm, EvmEnv};
@@ -27,6 +27,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::storage::fee_updates::{self, FeeUpdate};
 use tempo_revm::replay::{BodyCache, ReadKey, ReadValue, read};
 use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
 
@@ -41,6 +42,7 @@ pub struct SpeculativeExecutor {
     adaptive_backoff: bool,
     minimum_body_duration: Duration,
     streaming: bool,
+    fee_rebasing: bool,
 }
 
 impl SpeculativeExecutor {
@@ -65,10 +67,11 @@ impl SpeculativeExecutor {
             adaptive_backoff: true,
             minimum_body_duration: Duration::from_micros(20),
             streaming: true,
+            fee_rebasing: true,
         })
     }
 
-    /// Controls periodic sequential backoff when fewer than one eighth of a window's
+    /// Controls periodic sequential backoff when fewer than half of a window's
     /// candidates are useful. Disable for experiments that need forced speculation.
     pub fn with_adaptive_backoff(mut self, enabled: bool) -> Self {
         self.adaptive_backoff = enabled;
@@ -86,6 +89,13 @@ impl SpeculativeExecutor {
     /// batch for differential coverage of maximal conflicts and scheduling comparisons.
     pub fn with_streaming(mut self, enabled: bool) -> Self {
         self.streaming = enabled;
+        self
+    }
+
+    /// Rebase explicitly recorded, unobserved fee updates. Disable for comparisons
+    /// that require all fee conflicts to use ordinary replay.
+    pub fn with_fee_rebasing(mut self, enabled: bool) -> Self {
+        self.fee_rebasing = enabled;
         self
     }
 
@@ -149,9 +159,10 @@ impl SpeculativeExecutor {
             let sender = sender.clone();
             let shared = shared.clone();
             let minimum_body_duration = self.minimum_body_duration;
+            let fee_rebasing = self.fee_rebasing;
             self.pool.spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_worker(&shared, &sender, minimum_body_duration);
+                    run_worker(&shared, &sender, minimum_body_duration, fee_rebasing);
                 }));
                 drop(shared);
                 // Catch worker panics before leaving Rayon. The owning coordinator
@@ -180,6 +191,7 @@ fn run_worker<E: DBErrorMarker>(
     shared: &Work,
     sender: &mpsc::Sender<Message<E>>,
     minimum_body_duration: Duration,
+    fee_rebasing: bool,
 ) {
     let db = RecordingDatabase {
         sender: sender.clone(),
@@ -189,6 +201,8 @@ fn run_worker<E: DBErrorMarker>(
     };
     let mut evm = TempoEvm::new(db, shared.inputs[0].1.clone());
     evm.inner_mut().enable_body_recording(minimum_body_duration);
+    let mut standard_fee_gas = fee_rebasing
+        && evm.ctx().cfg.gas_params == tempo_revm::gas_params::tempo_gas_params(evm.ctx().cfg.spec);
     while !shared.cancelled.load(Ordering::Relaxed) {
         let index = shared.next.fetch_add(1, Ordering::Relaxed);
         let Some((tx, env)) = shared.inputs.get(index) else {
@@ -198,10 +212,21 @@ fn run_worker<E: DBErrorMarker>(
             let (db, _) = evm.finish();
             evm = TempoEvm::new(db, env.clone());
             evm.inner_mut().enable_body_recording(minimum_body_duration);
+            standard_fee_gas = fee_rebasing
+                && env.cfg_env.gas_params
+                    == tempo_revm::gas_params::tempo_gas_params(env.cfg_env.spec);
         } else {
             evm.ctx_mut().block = env.block_env.clone();
         }
-        let result = match evm.transact_raw(tx.clone()) {
+        // Fee storage contexts use maximum gas and discard their gas/refund
+        // accounting. Restrict rebasing to the standard, bounded gas schedules.
+        let record_fees = standard_fee_gas && tx.calls().all(|(kind, _)| kind.is_call());
+        let (result, fee_updates) = if record_fees {
+            fee_updates::record(|| evm.transact_raw(tx.clone()))
+        } else {
+            (evm.transact_raw(tx.clone()), Vec::new())
+        };
+        let result = match result {
             Err(EVMError::Database(ProxyError::Cancelled)) => break,
             result => result.map_err(|error| {
                 error.map_db_err(|error| match error {
@@ -223,6 +248,8 @@ fn run_worker<E: DBErrorMarker>(
                 reads,
                 result,
                 body,
+                fee_updates,
+                fees_rebased: false,
             }),
         ));
     }
@@ -357,6 +384,8 @@ pub struct ExecutionStats {
     pub reused: u64,
     /// Call bodies reused after rerunning validation and pre-execution in order.
     pub bodies_reused: u64,
+    /// Full results reused after rebasing explicit fee-only arithmetic.
+    pub fees_rebased: u64,
     /// Candidates replayed after their state dependencies changed.
     pub conflicts: u64,
     /// Speculative errors retried against the committed prefix.
@@ -371,15 +400,73 @@ pub(crate) struct SpeculativeResult<E> {
     reads: Vec<(ReadKey, ReadValue)>,
     pub(crate) result: Outcome<E>,
     pub(crate) body: Option<BodyCache>,
+    fee_updates: Vec<FeeUpdate>,
+    pub(crate) fees_rebased: bool,
 }
 
 impl<E: DBErrorMarker> SpeculativeResult<E> {
     /// Read values, rather than touched addresses, determine dependencies. Two transfers
     /// touching distinct balances in the same TIP-20 therefore need not conflict.
-    pub(crate) fn validate<DB: Database<Error = E>>(&self, db: &mut DB) -> Result<bool, E> {
+    pub(crate) fn validate<DB: Database<Error = E>>(&mut self, db: &mut DB) -> Result<bool, E> {
+        let mut patches = Vec::new();
         for (key, expected) in &self.reads {
-            if read(db, *key)? != *expected {
-                return Ok(false);
+            let actual = read(db, *key)?;
+            if actual != *expected {
+                let (
+                    ReadKey::Storage(address, slot),
+                    ReadValue::Storage(old),
+                    ReadValue::Storage(new),
+                ) = (key, expected, actual)
+                else {
+                    return Ok(false);
+                };
+                let Some(update) = self
+                    .fee_updates
+                    .iter()
+                    .find(|update| update.address == *address && update.slot == *slot)
+                else {
+                    return Ok(false);
+                };
+                let Some(account) = self
+                    .result
+                    .as_ref()
+                    .ok()
+                    .and_then(|result| result.state.get(address))
+                else {
+                    return Ok(false);
+                };
+                let Some(storage) = account.storage.get(slot) else {
+                    return Ok(false);
+                };
+                if account.is_created()
+                    || account.is_selfdestructed()
+                    || storage.original_value != *old
+                    || update.apply(*old) != Some(storage.present_value)
+                {
+                    return Ok(false);
+                }
+                let Some(present) = update.apply(new) else {
+                    // Including intermediate maximum-fee overflow: the ordinary
+                    // executor must produce the canonical error or result.
+                    return Ok(false);
+                };
+                patches.push((*address, *slot, new, present));
+            }
+        }
+        // All dependency and arithmetic checks precede mutations. Preserve every
+        // other account field, storage slot, receipt, log and gas value.
+        self.fees_rebased = !patches.is_empty();
+        if let Ok(result) = &mut self.result {
+            for (address, slot, original, present) in patches {
+                let storage = result
+                    .state
+                    .get_mut(&address)
+                    .expect("checked account")
+                    .storage
+                    .get_mut(&slot)
+                    .expect("checked slot");
+                storage.original_value = original;
+                storage.present_value = present;
             }
         }
         Ok(true)
@@ -456,6 +543,7 @@ impl<E: DBErrorMarker> reth_revm::Database for RecordingDatabase<'_, E> {
     }
 
     fn storage(&mut self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        tempo_precompiles::storage::access::storage(address, slot);
         let ReadValue::Storage(value) = self.read(ReadKey::Storage(address, slot))? else {
             unreachable!()
         };

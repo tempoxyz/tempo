@@ -32,6 +32,8 @@ Phase timing adds per-transaction clock reads, so compare equally instrumented r
 `TEMPO_BENCH_STREAMING=0` waits for all workers before ordered execution, for a
 comparison with streaming (the default). With streaming, ordered time includes
 waiting for individual results and serving outstanding worker database reads.
+`TEMPO_BENCH_FEE_REBASING=0` disables fee arithmetic rebasing for comparisons;
+the `fees_rebased` column counts the subset of full results reused this way.
 
 The timer includes speculative scheduling, database reads, conflict validation,
 replays, receipt construction, and state commits. Signing, initial state setup,
@@ -573,6 +575,117 @@ counts and do not isolate a steady-state service rate. Fewer Tokio workers reduc
 kernel CPU but also admission capacity; higher client concurrency reduces admission
 in these trials. No production runtime default changes are justified by this data.
 
+## Checked fee arithmetic
+
+Speculative workers annotate three internal fee operations: crediting the fee
+manager with the maximum fee, debiting its refund, and adding the actual fee to
+the validator's accumulator. A candidate can rebase these slots only if no
+ordinary access observes or writes the slot anywhere in the transaction. Native
+precompiles, opcode storage accesses, direct database reads and cached journal
+reads all participate, including reverted accesses. Transfers to the fee manager,
+fee-balance views and fee distribution therefore retain ordinary conflict checks.
+
+For each changed slot, validation checks that the recorded operation sequence
+reproduces the speculative final value from its original value, then applies each
+checked addition/subtraction to the committed value. Checking the net delta is
+insufficient: collecting the maximum fee can overflow even when the final charge
+would fit. Any failed arithmetic check or ordinary dependency triggers replay.
+All checks precede mutation; only the result's original and present storage values
+are adjusted. Logs, outputs, gas and other state are retained from execution.
+
+This applies only to standard Tempo gas schedules. The annotated operations run
+inside maximum-gas native fee contexts whose gas/refund accounting is discarded;
+their storage-value-dependent gas does not enter transaction gas. Custom gas
+schedules disable rebasing. Creation, destruction and native code installation
+also disable fee metadata; created or destroyed result accounts cannot be patched.
+Failed annotated writes and nested recording scopes disqualify reuse. AMM state,
+reward accounting, payer balances and authorization retain ordinary validation.
+
+Generated differentials run with rebasing both enabled and disabled, and with
+streaming and frozen worker views. Dedicated cases cover direct/reverted fee
+reads, contract writes to both shared fee slots, intermediate maximum-fee and
+accumulator overflow, and custom gas schedules at every fork from T0 through T4.
+
+`fee-rebasing.tsv` and `fee-rebasing-phases.json` compare enabled/disabled modes
+in both orders on 100,000-transaction in-memory workloads. All full receipts and
+state roots match sequential execution. Two runs per mode, same 16-core host,
+streaming and phase timers enabled:
+
+These A/B measurements retain the earlier one-eighth reuse threshold for backoff,
+isolating arithmetic rebasing from the scheduling adjustment described below.
+
+| Workload | Workers | Rebasing disabled TPS | Rebasing enabled TPS |
+| --- | ---: | ---: | ---: |
+| Paid TIP-20 | 16 | 105,186 / 106,515 | 133,142 / 121,273 |
+| Paid TIP-20 | 32 | 102,949 / 105,786 | 118,966 / 116,955 |
+| Paid compute | 16 | 50,757 / 46,245 | 60,091 / 61,465 |
+| Paid compute | 32 | 47,659 / 48,300 | 61,486 / 62,423 |
+
+Sequential controls span 112,834–114,672 TPS for paid TIP-20 and 7,413–7,459
+for paid compute. Each enabled parallel run rebases 98,075 results. The initial
+fee-manager account creation still causes 127 conflicts and one backoff period;
+account metadata remains an ordinary dependency. These are isolated execution
+measurements, not sustained node throughput.
+
+`fee-rebasing-node.json` and `node/fee-{before,matrix,after-repeat,before-repeat}-*.json`
+record the corresponding five-second node trials with the 5B-gas genesis and
+16 execution workers. At offered rates of 10k/25k/50k/75k, confirmed rates including
+backlog were 9,882 / 23,805 / 24,481 / 25,004 TPS. All 1,312,157 accepted transactions
+across the matrix and comparisons confirmed with zero failures. At 50k offered,
+the previous node completed 25,463 / 25,410 TPS versus 24,481 / 24,956 with fee
+rebasing: a regression despite the independent-workload gains. Shared sender and
+recipient balances still conflict, and the small increase in reuse keeps too many
+unproductive windows active under the one-eighth threshold.
+
+The scheduler now backs off when fewer than half of a window's results or call
+bodies are reused. It still probes periodically, and correctness checks can
+disable backoff entirely. This is a performance heuristic; low-reuse expensive
+workloads may need a cost-sensitive policy beyond this threshold.
+
+`fee-backoff.tsv` covers 10k/25k/50k/100k transaction counts with that threshold.
+At 100k, 16/32 workers complete paid TIP-20 at 129,911 / 116,165 TPS and paid
+compute at 60,246 / 60,087 TPS, with matching full receipts and roots.
+`fee-backoff-node.json` and `node/fee-backoff-*.json` record 9,927 / 23,507 /
+25,113 / 25,135 confirmed TPS for the 10k/25k/50k/75k offered-load sweep;
+the repeated 50k trial completes 25,209 TPS. All 861,064 accepted transactions
+confirm with zero failures. This recovers most of the earlier node loss, without
+demonstrating an end-to-end gain over the previous node.
+
+The final implementation also computes annotation keys only during speculative
+recording, avoiding the extra lookup in ordinary sequential execution.
+`fee-final.tsv` repeats the 10k–100k transaction-count matrix. At 100k, 16/32
+workers measure 120,690 / 115,775 TPS for paid TIP-20 and 60,349 / 62,187 TPS for
+paid compute, versus sequential controls of 113,190 and 7,515 TPS respectively.
+Every run matches the sequential receipt vector and state root.
+
+`fee-final-node.json` and `node/fee-final-*.json` retain the final five-second
+node trials. With 16 execution workers and the 5B-gas benchmark genesis:
+
+| Offered TPS | Accepted TPS | Confirmed TPS including backlog |
+| --- | ---: | ---: |
+| 10,000 | 10,007 | 9,935 |
+| 25,000 | 24,995 | 23,967 |
+| 50,000 | 44,303 | 25,133 |
+| 75,000 | 46,199 | 25,206 |
+| 50,000, repeated | 44,685 | 25,252 |
+
+All 855,748 accepted transactions confirmed with zero failures. The result remains
+slightly below the earlier 25,410–25,463 TPS node controls; no node-level gain is
+claimed. The independent-workload gains do not remove actual payment-balance
+dependencies, ordered validation, pool selection or block-finishing costs.
+
+`fee-unpaid-controls.tsv` compares recording enabled/disabled on fee-free storage,
+TIP-20 and compute workloads at 100k transactions. Every full receipt vector and
+state root matches. Cheap storage and TIP-20 workloads still favor sequential
+execution; the single comparisons vary in both directions and do not establish
+an improvement from fee recording where no fees are charged.
+
+`fee-sequential-node.json` checks the ordinary node path at 50k offered TPS:
+the previous/current binaries confirm 27,185 / 27,075 TPS, with all 460,342
+accepted transactions confirmed and no failures. This single pair does not
+establish a significant change. Sequential execution still outperforms the
+speculative node on this shared-account payment workload.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -636,19 +749,36 @@ preview: 44,935 user transactions and three system transactions. Full results,
 state deltas, canonical receipts, gas, receipt roots and state roots match between
 sequential and forced speculative execution. This is local generated-chain evidence.
 
+`fee-rebasing-canonical-2d.tsv` and `fee-rebasing-canonical-expiring.tsv` repeat
+the 120-block AA replay with fee rebasing enabled: 100,000 user transactions and
+120 system transactions match full results, state deltas, stored receipts, gas,
+receipt roots and state roots. Replays overlap correctness builds; their timings
+are diagnostic only. These remain local generated chains.
+
+`fee-rebasing-canonical-busy.tsv` additionally verifies three large blocks built
+with fee rebasing: 36,521 user transactions plus three system transactions, with
+the same complete-result, state-delta and canonical-root checks.
+
+`fee-final-canonical-busy.tsv` verifies three more large blocks after the backoff
+and annotation changes: 35,613 user transactions and three system transactions.
+Together the fee-change replays cover 126 local blocks with 172,134 user and
+126 system transactions; all complete results, state deltas and canonical checks
+match. Public historical blocks are still outstanding.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed
 prefix. Prefetched values come from the batch start; other reads are cached when
 served and may observe later commits. This can produce an inconsistent speculative
-view, which is safe only because every recorded value must match the actual
-transaction's committed prefix before reuse. Otherwise the result is replayed.
+view. Before reuse, every recorded value must match the actual transaction's
+committed prefix, except eligible fee slots that pass the arithmetic checks above.
+Otherwise the result is replayed.
 Database cache misses remain on the database's owning thread, supporting Reth
 providers that cannot be shared between threads without unsafe code. Every
 execution read is recorded, including reads in
 transaction validation, native precompiles and reverted calls. Before reusing a
-result, its transaction and environment must match and every read must still
-match the committed prefix. Conflicting transactions run again through the ordinary
+result, its transaction and environment must match and every ordinary read must
+still match the committed prefix. Conflicting transactions run again through the ordinary
 EVM, with the call-body reuse check described above. Speculative errors use full replay.
 
 Windows are bounded by both transaction count and total declared gas. Candidates

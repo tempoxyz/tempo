@@ -161,8 +161,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         let reused = self.execution_stats.reused - self.last_sample.reused
             + self.execution_stats.bodies_reused
             - self.last_sample.bodies_reused;
-        if executor.adaptive_backoff() && sampled >= 32 && reused * 8 < sampled {
+        if executor.adaptive_backoff() && sampled >= 32 && reused * 2 < sampled {
             // This is only a scheduling choice. No result bypasses read validation.
+            // Reusing a few cheap results is insufficient to offset scheduling and
+            // replay of the rest, even when shared fee arithmetic can be rebased.
             // Retry periodically so a later independent workload can use the pool.
             self.backoff_remaining = executor.batch_size().saturating_mul(8);
         }
@@ -318,7 +320,7 @@ where
             && self.inner.ctx.journaled_state.state.is_empty()
             && self.inner.ctx.journaled_state.transient_storage.is_empty()
             && self.inner.ctx.journaled_state.logs.is_empty()
-            && let Some(candidate) = self
+            && let Some(mut candidate) = self
                 .prepared
                 .as_mut()
                 .and_then(|batch| batch.take(&tx, &mut self.inner.ctx.journaled_state.database))
@@ -332,6 +334,7 @@ where
                 .unwrap_or(false)
             {
                 self.execution_stats.reused += 1;
+                self.execution_stats.fees_rebased += u64::from(candidate.fees_rebased);
                 self.inner.ctx.tx = tx;
                 return candidate.result;
             } else {

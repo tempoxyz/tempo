@@ -99,6 +99,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        super::fee_updates::unsupported();
         self.deduct_gas(self.gas_params.code_deposit_cost(code.len()))?;
 
         self.internals

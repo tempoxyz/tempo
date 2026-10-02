@@ -354,6 +354,7 @@ where
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
+        tempo_precompiles::storage::access::storage(address, key);
         let _ = self
             .state
             .basic(address)

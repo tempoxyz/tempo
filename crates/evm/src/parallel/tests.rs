@@ -91,6 +91,17 @@ fn differential_with_backoff(
     spec: TempoHardfork,
     adaptive: bool,
 ) -> ExecutionStats {
+    for streaming in [true, false] {
+        differential_mode(
+            db.clone(),
+            transactions,
+            threads,
+            batch_size,
+            spec,
+            adaptive,
+            (streaming, true),
+        );
+    }
     // Exercise actual streaming, then a frozen view that makes conflict-count
     // assertions deterministic and forces the maximum number of reuse checks.
     differential_mode(
@@ -100,9 +111,17 @@ fn differential_with_backoff(
         batch_size,
         spec,
         adaptive,
-        true,
+        (true, false),
     );
-    differential_mode(db, transactions, threads, batch_size, spec, adaptive, false)
+    differential_mode(
+        db,
+        transactions,
+        threads,
+        batch_size,
+        spec,
+        adaptive,
+        (false, false),
+    )
 }
 
 fn differential_mode(
@@ -112,7 +131,7 @@ fn differential_mode(
     batch_size: usize,
     spec: TempoHardfork,
     adaptive: bool,
-    streaming: bool,
+    (streaming, fee_rebasing): (bool, bool),
 ) -> ExecutionStats {
     let env = EvmEnv {
         cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
@@ -135,6 +154,7 @@ fn differential_mode(
             .unwrap()
             .with_adaptive_backoff(adaptive)
             .with_streaming(streaming)
+            .with_fee_rebasing(fee_rebasing)
             .with_minimum_body_duration(Duration::ZERO),
     ));
     let mut sequential_gas = 0;
@@ -420,6 +440,242 @@ fn funded_tip20_accounts(users: impl IntoIterator<Item = Address>) -> TestDB {
     let state = evm.ctx_mut().journaled_state.finalize();
     evm.db_mut().commit(state);
     evm.finish().0
+}
+
+const FEE_SPECS: [TempoHardfork; 8] = [
+    TempoHardfork::T0,
+    TempoHardfork::T1,
+    TempoHardfork::T1A,
+    TempoHardfork::T1B,
+    TempoHardfork::T1C,
+    TempoHardfork::T2,
+    TempoHardfork::T3,
+    TempoHardfork::T4,
+];
+
+#[test]
+fn fee_rebasing_reuses_native_payments() {
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::ITIP20};
+    let mut db = funded_tip20_db(16);
+    contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+    let txs = (0..16)
+        .map(|i| {
+            let mut tx = transaction(
+                i,
+                PATH_USD_ADDRESS,
+                0,
+                &ITIP20::transferCall {
+                    to: address(100 + i),
+                    amount: U256::from(17),
+                }
+                .abi_encode(),
+            );
+            tx.inner.gas_price = 1;
+            tx
+        })
+        .collect::<Vec<_>>();
+    for spec in FEE_SPECS {
+        let stats = differential_mode(db.clone(), &txs, 4, 16, spec, false, (false, true));
+        assert_eq!(stats.reused, 16, "{spec:?}");
+        assert_eq!(stats.fees_rebased, 15, "{spec:?}");
+        assert_eq!(stats.conflicts, 0);
+    }
+}
+
+#[test]
+fn fee_rebasing_preserves_observed_and_reverted_fee_reads() {
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager, tip20::ITIP20,
+    };
+    let inputs = [
+        (
+            PATH_USD_ADDRESS,
+            ITIP20::balanceOfCall {
+                account: TIP_FEE_MANAGER_ADDRESS,
+            }
+            .abi_encode(),
+        ),
+        (
+            TIP_FEE_MANAGER_ADDRESS,
+            IFeeManager::collectedFeesCall {
+                validator: Address::ZERO,
+                token: PATH_USD_ADDRESS,
+            }
+            .abi_encode(),
+        ),
+    ];
+    for spec in FEE_SPECS {
+        for (target, input) in &inputs {
+            for revert in [false, true] {
+                let mut db = funded_tip20_db(2);
+                contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+                let target = if revert {
+                    // Forward calldata to the native view, then revert with its output.
+                    // The fee balance may already be cached by pre-execution.
+                    let mut code = vec![
+                        0x36, 0x60, 0, 0x60, 0, 0x37, 0x60, 32, 0x60, 0, 0x36, 0x60, 0, 0x73,
+                    ];
+                    code.extend_from_slice(target.as_slice());
+                    code.extend_from_slice(&[0x5a, 0xfa, 0x50, 0x60, 32, 0x60, 0, 0xfd]);
+                    contract(&mut db, address(900), &code);
+                    address(900)
+                } else {
+                    *target
+                };
+                let txs = (0..2)
+                    .map(|i| {
+                        let mut tx = transaction(i, target, 0, input);
+                        tx.inner.gas_price = 1;
+                        tx
+                    })
+                    .collect::<Vec<_>>();
+                let stats = differential_mode(db, &txs, 2, 2, spec, false, (false, true));
+                assert_eq!(stats.fees_rebased, 0, "{spec:?}, revert={revert}");
+                assert_eq!(stats.conflicts, 1, "{spec:?}, revert={revert}");
+            }
+        }
+    }
+}
+
+#[test]
+fn custom_gas_parameters_disable_fee_rebasing() {
+    use revm::context_interface::cfg::GasId;
+    for spec in FEE_SPECS {
+        let mut db = funded_tip20_db(2);
+        contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
+        let mut env = EvmEnv::<_, TempoBlockEnv> {
+            cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
+                spec,
+                tempo_revm::gas_params::tempo_gas_params(spec),
+            ),
+            ..Default::default()
+        };
+        let id = GasId::sstore_set_without_load_cost();
+        let cost = env.cfg_env.gas_params.get(id);
+        env.cfg_env.gas_params.override_gas([(id, cost + 1)]);
+        env.block_env.inner.basefee = 0;
+        env.block_env.inner.gas_limit = 30_000_000;
+        let mut sequential = TempoEvm::new(db.clone(), env.clone());
+        let mut parallel = TempoEvm::new(db, env);
+        parallel.set_speculative_executor(Some(
+            SpeculativeExecutor::new(2, 2)
+                .unwrap()
+                .with_adaptive_backoff(false)
+                .with_streaming(false),
+        ));
+        let txs = (0..2)
+            .map(|i| {
+                let mut tx = transaction(i, address(900), 0, &[]);
+                tx.inner.gas_price = 1;
+                tx
+            })
+            .collect::<Vec<_>>();
+        parallel.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+        for tx in txs {
+            let expected = sequential.transact_raw(tx.clone()).unwrap();
+            let actual = parallel.transact_raw(tx).unwrap();
+            assert_eq!(actual, expected);
+            sequential.db_mut().commit(expected.state);
+            parallel.db_mut().commit(actual.state);
+        }
+        assert_eq!(root(parallel.db()), root(sequential.db()));
+        assert_eq!(parallel.execution_stats().fees_rebased, 0);
+        assert_eq!(parallel.execution_stats().conflicts, 1);
+    }
+}
+
+#[test]
+fn fee_rebasing_preserves_contract_writes_to_fee_slots() {
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager, tip20::ITIP20,
+    };
+    let inputs = [
+        (
+            PATH_USD_ADDRESS,
+            ITIP20::transferCall {
+                to: TIP_FEE_MANAGER_ADDRESS,
+                amount: U256::from(17),
+            }
+            .abi_encode(),
+        ),
+        (
+            TIP_FEE_MANAGER_ADDRESS,
+            IFeeManager::distributeFeesCall {
+                validator: Address::ZERO,
+                token: PATH_USD_ADDRESS,
+            }
+            .abi_encode(),
+        ),
+    ];
+    for spec in FEE_SPECS {
+        for (target, input) in &inputs {
+            let mut db = funded_tip20_db(2);
+            contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+            let txs = (0..2)
+                .map(|i| {
+                    let mut tx = transaction(i, *target, 0, input);
+                    tx.inner.gas_price = 1;
+                    tx
+                })
+                .collect::<Vec<_>>();
+            let stats = differential_mode(db, &txs, 2, 2, spec, false, (false, true));
+            assert_eq!(stats.fees_rebased, 0, "{spec:?}");
+            assert_eq!(stats.conflicts, 1, "{spec:?}");
+        }
+    }
+}
+
+#[test]
+fn fee_rebasing_replays_intermediate_and_accumulator_overflow() {
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
+        tip20::TIP20Token,
+    };
+    for spec in FEE_SPECS {
+        for maximum_fee_overflow in [false, true] {
+            let mut db = funded_tip20_db(2);
+            contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+            let txs = (0..2)
+                .map(|i| {
+                    let mut tx = transaction(i, address(900), 0, &[]);
+                    tx.inner.gas_price = if maximum_fee_overflow {
+                        1_000_000_000_000
+                    } else {
+                        1
+                    };
+                    tx
+                })
+                .collect::<Vec<_>>();
+            if maximum_fee_overflow {
+                let slot = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap().balances
+                    [TIP_FEE_MANAGER_ADDRESS]
+                    .slot();
+                let maximum = tempo_primitives::transaction::calc_gas_balance_spending(
+                    txs[0].inner.gas_limit,
+                    txs[0].inner.gas_price,
+                );
+                db.insert_account_storage(PATH_USD_ADDRESS, slot, U256::MAX - maximum)
+                    .unwrap();
+            } else {
+                let slot =
+                    TipFeeManager::new().collected_fees[Address::ZERO][PATH_USD_ADDRESS].slot();
+                db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, slot, U256::MAX - U256::ONE)
+                    .unwrap();
+            }
+            let stats = differential_mode(db, &txs, 2, 2, spec, false, (false, true));
+            assert_eq!(
+                stats.fees_rebased, 0,
+                "{spec:?}, maximum={maximum_fee_overflow}"
+            );
+            assert_eq!(
+                stats.conflicts, 1,
+                "{spec:?}, maximum={maximum_fee_overflow}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1085,8 +1341,9 @@ fn execution_throughput() {
         .map_or(128, |value| value.parse::<usize>().unwrap());
     let profile = std::env::var_os("TEMPO_BENCH_PHASES").is_some();
     let streaming = std::env::var("TEMPO_BENCH_STREAMING").map_or(true, |value| value != "0");
+    let fee_rebasing = std::env::var("TEMPO_BENCH_FEE_REBASING").map_or(true, |value| value != "0");
     println!(
-        "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused"
+        "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused\tfees_rebased"
     );
     for count in counts.split(',').map(|s| s.parse::<u64>().unwrap()) {
         for workload in workloads.split(',') {
@@ -1148,7 +1405,8 @@ fn execution_throughput() {
                     evm.set_speculative_executor(Some(
                         SpeculativeExecutor::new(threads, batch_size)
                             .unwrap()
-                            .with_streaming(streaming),
+                            .with_streaming(streaming)
+                            .with_fee_rebasing(fee_rebasing),
                     ));
                 }
                 let mut receipts = Vec::with_capacity(txs.len());
@@ -1203,13 +1461,14 @@ fn execution_throughput() {
                     baseline = Some(output);
                 }
                 println!(
-                    "{workload}\t{count}\t{threads}\t{elapsed:.6}\t{:.0}\t{}\t{}\t{}\t{}\t{}",
+                    "{workload}\t{count}\t{threads}\t{elapsed:.6}\t{:.0}\t{}\t{}\t{}\t{}\t{}\t{}",
                     count as f64 / elapsed,
                     stats.reused,
                     stats.conflicts,
                     stats.retries,
                     stats.backoff,
-                    stats.bodies_reused
+                    stats.bodies_reused,
+                    stats.fees_rebased
                 );
             }
         }

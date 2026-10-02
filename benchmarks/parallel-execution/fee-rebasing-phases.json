@@ -1,0 +1,242 @@
+[
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "0.837040",
+    "commit": "0.042775",
+    "variant": "on"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.498145",
+    "ordered": "0.168894",
+    "commit": "0.069913",
+    "variant": "on"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.543843",
+    "ordered": "0.197660",
+    "commit": "0.080181",
+    "variant": "on"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "13.372649",
+    "commit": "0.029072",
+    "variant": "on"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.384519",
+    "ordered": "1.158323",
+    "commit": "0.114878",
+    "variant": "on"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.442301",
+    "ordered": "1.066483",
+    "commit": "0.110989",
+    "variant": "on"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "0.831404",
+    "commit": "0.042412",
+    "variant": "off"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.066481",
+    "ordered": "0.833267",
+    "commit": "0.044554",
+    "variant": "off"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.091225",
+    "ordered": "0.832647",
+    "commit": "0.041070",
+    "variant": "off"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "13.379984",
+    "commit": "0.029379",
+    "variant": "off"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.389423",
+    "ordered": "1.499921",
+    "commit": "0.074656",
+    "variant": "off"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.439112",
+    "ordered": "1.578282",
+    "commit": "0.074563",
+    "variant": "off"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "0.826240",
+    "commit": "0.042332",
+    "variant": "off-repeat"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.065735",
+    "ordered": "0.824615",
+    "commit": "0.042187",
+    "variant": "off-repeat"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.079008",
+    "ordered": "0.819463",
+    "commit": "0.040467",
+    "variant": "off-repeat"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "13.454168",
+    "commit": "0.029463",
+    "variant": "off-repeat"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.381377",
+    "ordered": "1.715224",
+    "commit": "0.059069",
+    "variant": "off-repeat"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.437141",
+    "ordered": "1.557454",
+    "commit": "0.069633",
+    "variant": "off-repeat"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "0.824134",
+    "commit": "0.041610",
+    "variant": "on-repeat"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.514540",
+    "ordered": "0.203404",
+    "commit": "0.087876",
+    "variant": "on-repeat"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.553963",
+    "ordered": "0.201111",
+    "commit": "0.081340",
+    "variant": "on-repeat"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "13.370523",
+    "commit": "0.029402",
+    "variant": "on-repeat"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.387329",
+    "ordered": "1.124828",
+    "commit": "0.108098",
+    "variant": "on-repeat"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.440386",
+    "ordered": "1.048451",
+    "commit": "0.106510",
+    "variant": "on-repeat"
+  }
+]

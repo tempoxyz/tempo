@@ -7,7 +7,10 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{
+        Handler, Mapping,
+        fee_updates::{self, FeeDelta},
+    },
     tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -235,14 +238,17 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees[validator][token].read()?;
-        self.collected_fees[validator][token].write(
-            collected_fees
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
-
-        Ok(())
+        let key = fee_updates::recording_key(|| {
+            (self.address, self.collected_fees[validator][token].slot())
+        });
+        fee_updates::update(key, FeeDelta::Add(amount), || {
+            let collected_fees = self.collected_fees[validator][token].read()?;
+            self.collected_fees[validator][token].write(
+                collected_fees
+                    .checked_add(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?,
+            )
+        })
     }
 
     /// Transfers a validator's accumulated fee balance to their address via [`TIP20Token`] and

@@ -44,6 +44,7 @@ pub fn record_database_time(elapsed: Duration) {
 /// Record a journal read or write, including accesses served from its cache.
 #[inline]
 pub fn storage(address: Address, key: U256) {
+    super::fee_updates::storage(address, key);
     if ACCESSES.is_set() {
         ACCESSES.with(|accesses| accesses.borrow_mut().slots.insert((address, key)));
     }
@@ -51,6 +52,7 @@ pub fn storage(address: Address, key: U256) {
 
 /// Disable call-body reuse for an operation that can clear account storage.
 pub fn unsupported() {
+    super::fee_updates::unsupported();
     if ACCESSES.is_set() {
         ACCESSES.with(|accesses| accesses.borrow_mut().unsupported = true);
     }

@@ -2065,6 +2065,7 @@ where
         .expect("TIP20 prefix already validated")
         .balances[sender]
         .slot();
+    tempo_precompiles::storage::access::storage(token, balance_slot);
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)
