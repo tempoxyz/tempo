@@ -1573,8 +1573,7 @@ impl Info {
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
             epoch_length: epoch_length.get(),
-            epoch_blocks_remaining: epoch_length.get()
-                - (current_height.get() % epoch_length.get() + 1),
+            epoch_blocks_remaining: epoch_length.get() - (current_height.get() % epoch_length + 1),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
         };
