@@ -313,6 +313,84 @@ Sustained 50k TPS with 25-second expiry would exceed that protocol capacity.
 Use two-dimensional nonces or shorter expiry windows for longer high-rate
 experiments; changing the ring rules is outside this execution optimization.
 
+## Admission concurrency and pool counting
+
+The locked Reth validation service holds its shared receive-queue mutex while
+awaiting each validation job, serializing the configured workers. A two-worker
+barrier regression reproduced this on the original executor. Tempo now releases
+the queue before running a job and uses a bounded sender without a sender mutex.
+The configured worker count is unchanged; each batch remains one validator call,
+preserving its shared provider snapshot and outcome order. Shutdown, queue capacity,
+batch metadata and head callbacks are covered by tests.
+
+Local stack profiles then identified a second admission bottleneck: every AA
+insertion scanned the entire pool to count pending and queued transactions before
+eviction. Pending counts are now maintained through replacement, promotion,
+demotion and removal, with expiring counts derived from their existing map.
+Eviction decisions and ordering are unchanged. The 225 pool tests pass, including
+8,000 generated mixed operations checked against actual transaction status after
+each mutation. The parallel TIP-20 node integration test and Clippy also pass.
+
+`admission-stacks.json` records two diagnostic profiles with the built-in Pyroscope
+feature at 199 Hz, captured to a local loopback server from an unstripped release
+binary. Only complete ten-second profiles inside the send window are included.
+Before the count change, discard consumed about 18% of sampled CPU in both modes.
+These sampled user-space stacks do not account for all kernel time.
+
+`admission-cpu.json` retains ten independent trials at 75k offered TPS for ten
+seconds, using a 5B-gas genesis. Each table entry is one trial, not a confidence
+interval. All accepted transactions confirmed with zero execution failures.
+
+| Variant | Accepted TPS, sequential | Accepted TPS, 16 workers | Confirmed TPS, sequential | Confirmed TPS, 16 workers |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline `f5db13d1` | 20,964 | 20,311 | 20,589 | 19,907 |
+| Baseline, 1,024 client requests | 20,711 | 19,462 | 20,271 | 19,067 |
+| Concurrent validation | 23,176 | 20,246 | 22,849 | 19,927 |
+| Concurrent validation, four Tokio threads | 20,115 | 18,335 | 19,873 | 17,826 |
+| Concurrent validation and cached counts | 46,169 | 45,211 | 22,408 | 15,774 |
+
+Accepted TPS divides accepted submissions by send duration. Confirmed TPS divides
+those same transactions by wall time from send start to the last busy block being
+added to the canonical chain, including backlog. It is neither confirmation latency
+nor a steady-state throughput estimate. The analyzer checks the receipt count and
+excludes the one system transaction per block in these isolated dev trials.
+
+The count change doubles admission capacity but exposes a large backlog: the final
+trials take 20.62 s and 28.68 s, respectively, to canonicalize all transactions.
+Node CPU during sending rises from about eight to sixteen logical cores, roughly
+half spent in the kernel. The 16-worker run spends 19.53 s in busy payload execution
+sections and 4.21 s finishing payloads. `node/admission-*.json` retains those payload
+measurements and receipts summaries. Execution remains a bottleneck, and the more
+heavily queued speculative workload regresses confirmed throughput.
+
+`admission-matrix.json` and `node/admission-matrix-*.json` repeat the complete
+10k–75k offered-load matrix with five-second send windows after both fixes:
+
+| Target TPS | Accepted, sequential | Accepted, 16 workers | Confirmed, sequential | Confirmed, 16 workers |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 | 10,014 | 9,986 | 9,904 | 9,898 |
+| 25,000 | 24,984 | 24,985 | 24,066 | 23,368 |
+| 50,000 | 46,579 | 46,739 | 26,604 | 21,507 |
+| 75,000 | 46,775 | 46,443 | 26,318 | 21,386 |
+
+All 1,284,190 user transactions confirmed with zero execution failures. These
+shorter trials show the duration sensitivity of backlog measurements; they do not
+establish sustained 50k TPS.
+
+Reproduce CPU and canonical-completion measurements with:
+
+```sh
+python3 benchmarks/parallel-execution/run_node.py \
+  --output /tmp/tempo-node-admission --duration 10 --targets 75000 \
+  --workers 0,16 --block-gas-limit 5000000000 --profile-cpu
+python3 benchmarks/parallel-execution/summarize_cpu.py /tmp/tempo-node-admission
+```
+
+`--profile-cpu` requires `pidstat`. `--node-binary` supports comparisons with a
+saved executable; `--client-concurrency` controls RPC pressure. The driver's host
+record includes `TOKIO_WORKER_THREADS` when explicitly set. CPU summaries use only
+whole one-second intervals inside sending; 100% means one logical core.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -348,6 +426,13 @@ same 120 blocks after prefetching and the journal-allocation changes. All 100,00
 user transactions and 120 system transactions match complete state deltas,
 canonical receipts, gas, receipt roots and state roots. The two replays ran
 concurrently; their timings are diagnostic only.
+
+`admission-canonical-10k.tsv` and `admission-canonical-busy.tsv` verify 54 blocks
+built after the admission changes, including three large blocks from the 50k
+trial. All 94,231 user transactions and 54 system transactions match sequential
+results, complete state deltas, canonical receipts, gas, receipt roots and state
+roots with speculation and call-body reuse forced on. These remain local generated
+chains, not public historical-chain evidence.
 
 ## Correctness model and integration
 
