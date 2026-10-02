@@ -451,8 +451,16 @@ where
             if speculation_remaining == 0 {
                 if let Some(preview) = speculative_txs.as_mut() {
                     let beneficiary = builder.evm().block().beneficiary;
+                    let remaining_gas = non_shared_gas_limit - cumulative_gas_used;
+                    let remaining_general_gas = general_gas_limit - non_payment_gas_used;
                     builder.evm_mut().prepare_transactions_with(
-                        preview.by_ref().take(batch_size),
+                        // Advance the same raw window, but don't execute candidates
+                        // that cannot fit either of the proposer's remaining budgets.
+                        preview.by_ref().take(batch_size).filter(|tx| {
+                            tx.gas_limit() <= remaining_gas
+                                && (tx.transaction.is_payment()
+                                    || tx.gas_limit() <= remaining_general_gas)
+                        }),
                         |tx| {
                             (
                                 tx.transaction.clone().into_with_tx_env().tx_env,

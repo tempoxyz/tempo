@@ -499,6 +499,32 @@ All 1,851,870 accepted user transactions confirmed with zero execution failures.
 The gain persists in the repeat, but these short trials are not steady-state
 throughput evidence and remain well below sustained 50k node TPS.
 
+## Candidate gas budgets
+
+Proposer lookahead now filters candidates against the remaining non-shared and
+general-purpose gas budgets before converting them to worker inputs. The preview
+still advances the same raw window, and the authoritative iterator performs its
+usual selection and invalidation. This avoids executing candidates already known
+to exceed the current budget. The parallel TIP-20 node integration test and Clippy
+pass.
+
+`candidate-budget-node.json` and `node/candidate-budget-*.json` repeat the
+five-second offered-load matrix with 16 workers after this filter and the hash
+index change:
+
+| Offered TPS | Accepted TPS | Confirmed TPS including backlog |
+| --- | ---: | ---: |
+| 10,000 | 10,013 | 9,906 |
+| 25,000 | 24,983 | 24,062 |
+| 50,000 | 45,696 | 24,501 |
+| 75,000 | 45,924 | 24,585 |
+
+All 633,862 accepted user transactions confirmed with zero execution failures.
+The 50k trial falls within the preceding hash-index trials; this matrix does not
+demonstrate an additional throughput gain from the filter alone. The remaining
+pool scan still visits candidates that cannot fit, and cheap shared-state
+transactions still favor sequential execution.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -550,6 +576,12 @@ node. Complete state deltas, execution results, canonical receipts, gas, receipt
 roots and state roots match. The replay jobs overlap correctness checks and each
 other, so their timings are diagnostic only. Public historical replay remains
 outstanding.
+
+`candidate-budget-canonical.tsv` verifies three large blocks from the updated
+50k offered-load trial: 38,889 user transactions and three system transactions.
+Sequential and forced speculative execution match full results, state deltas,
+canonical receipts, gas, receipt roots and state roots. These remain generated
+local-chain blocks, and replay timings are diagnostic only.
 
 ## Correctness model and integration
 
