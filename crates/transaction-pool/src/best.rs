@@ -174,6 +174,11 @@ where
             }
         }
     }
+
+    /// Returns the wrapped iterator for updating execution-dependent scheduling.
+    pub fn inner_mut(&mut self) -> &mut I {
+        &mut self.inner
+    }
 }
 
 impl<I> Iterator for StateAwareBestTransactions<I>
