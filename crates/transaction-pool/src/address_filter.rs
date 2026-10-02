@@ -8,7 +8,7 @@ use std::str::FromStr;
 /// Addresses checked against transaction senders and direct call targets.
 ///
 /// Ordinary Ethereum-style transactions have at most one direct call target. Tempo
-/// transactions may contain multiple calls, so every direct target is checked.
+/// transactions may contain multiple calls, so every direct target and funding source is checked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressFilter {
     addresses: AddressSet,
@@ -54,6 +54,18 @@ impl AddressFilter {
                     .inner()
                     .calls()
                     .filter_map(|(kind, _)| kind.into_to())
+                    .find(|address| self.contains(address))
+            })
+            .or_else(|| {
+                transaction
+                    .inner()
+                    .as_aa()?
+                    .tx()
+                    .require_funds
+                    .as_ref()?
+                    .iter()
+                    .flat_map(|entry| &entry.sources)
+                    .map(|source| source.target)
                     .find(|address| self.contains(address))
             });
 
@@ -116,6 +128,32 @@ mod tests {
             result,
             Err(TempoPoolTransactionError::AddressCheck { address }) if address == expected
         ));
+    }
+
+    #[test]
+    fn checks_funding_source_targets() {
+        use alloy_consensus::transaction::Recovered;
+        use tempo_primitives::{
+            TempoTransaction,
+            transaction::{FundingRequirement, FundingSource, TempoSignature},
+        };
+        let source = Address::repeat_byte(0x42);
+        let tx = TempoTransaction {
+            require_funds: Some(vec![FundingRequirement {
+                sources: vec![FundingSource {
+                    target: source,
+                    data: Bytes::new(),
+                }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let transaction =
+            crate::transaction::TempoPooledTransaction::new(Recovered::new_unchecked(
+                tx.into_signed(TempoSignature::default()).into(),
+                Address::ZERO,
+            ));
+        assert_address_check(AddressFilter::new([source]).check(&transaction), source);
     }
 
     #[test]

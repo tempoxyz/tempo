@@ -8,6 +8,7 @@ mod eth_call;
 mod eth_transactions;
 mod executed_state;
 mod fork_schedule;
+mod funding;
 mod gas;
 mod key_authorization;
 mod liquidity;

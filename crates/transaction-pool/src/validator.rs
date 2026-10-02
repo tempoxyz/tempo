@@ -262,13 +262,6 @@ where
         };
 
         let tx = aa_tx.tx();
-        if tx
-            .require_funds
-            .as_ref()
-            .is_some_and(|requirements| !requirements.is_empty())
-        {
-            return Err(TempoPoolTransactionError::FundingNotActivated);
-        }
 
         // Check number of calls
         if tx.calls.len() > MAX_AA_CALLS {
@@ -1203,7 +1196,9 @@ mod tests {
             TransactionValidationOutcome::Invalid(_, err) => assert!(
                 matches!(
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::FundingNotActivated)
+                    Some(TempoPoolTransactionError::Evm(
+                        TempoInvalidTransaction::FundingNotActivated
+                    ))
                 ),
                 "unexpected rejection: {err:?}"
             ),

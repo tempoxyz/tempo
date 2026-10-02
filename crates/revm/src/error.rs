@@ -15,6 +15,12 @@ pub enum TempoInvalidTransaction {
     #[error("funding requirements are not activated")]
     FundingNotActivated,
 
+    #[error("access key funding is not activated")]
+    DelegatedFundingNotActivated,
+
+    #[error("funding slippage exceeds 10000 basis points")]
+    InvalidFundingSlippage,
+
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
@@ -311,7 +317,8 @@ impl TempoInvalidTransaction {
             | Self::ExpiringNonceMissingValidBefore
             | Self::SubblockTransactionsDisabled
             | Self::LegacyKeychainSignature
-            | Self::CallsValidation(_) => true,
+            | Self::CallsValidation(_)
+            | Self::InvalidFundingSlippage => true,
 
             // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
@@ -327,7 +334,8 @@ impl TempoInvalidTransaction {
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation
-            | Self::FundingNotActivated => false,
+            | Self::FundingNotActivated
+            | Self::DelegatedFundingNotActivated => false,
         }
     }
 }

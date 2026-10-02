@@ -113,6 +113,7 @@ fn requirement(
     sources: Vec<ITIP20Funder::Source>,
 ) -> FundingRequirement {
     FundingRequirement {
+        policy_rules: None,
         token: asset,
         amount: U256::from(amount),
         slippage_bps: 0,
@@ -502,7 +503,7 @@ fn rechecks_all_balances_before_application_calls() {
 
 #[test]
 fn rejects_invalid_context_and_arguments_before_balance_shortcut() {
-    for mode in 0..6 {
+    for mode in 0..7 {
         let (mut evm, _) = setup(TempoHardfork::T5);
         let mut request = requirement(PATH_USD_ADDRESS, 0, vec![]);
         match mode {
@@ -517,6 +518,7 @@ fn rejects_invalid_context_and_arguments_before_balance_shortcut() {
                 target: SOURCE,
                 data: Bytes::new(),
             }),
+            6 => request.policy_rules = Some(Bytes::from_static(&[1])),
             _ => unreachable!(),
         }
         let result = run(&mut evm, &[request], vec![noop()], true, LIMIT, 0);
