@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::B256;
@@ -24,6 +27,43 @@ use tracing::{instrument, trace};
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
 type SpeculativePrewarmState =
     Option<PrewarmingExecutor<StateProviderDatabase<EvmStateProviderBox>>>;
+
+enum BuilderWorkerEvm {
+    Regular(Box<PrewarmEvmState>),
+    Speculative(Box<SpeculativePrewarmState>),
+}
+
+struct BuilderWorker {
+    context: Arc<AtomicBool>,
+    evm: BuilderWorkerEvm,
+}
+
+thread_local! {
+    // Engine prewarming uses WorkerPool's separate Any slot on these same
+    // threads. Keep one builder context here, replacing it on context switches.
+    static BUILDER_WORKER: RefCell<Option<BuilderWorker>> = const { RefCell::new(None) };
+}
+
+/// Release providers on their owning workers, including when a scoped job panics.
+struct BuilderWorkerCleanup<'a> {
+    pool: &'a WorkerPool,
+    context: Arc<AtomicBool>,
+}
+
+impl Drop for BuilderWorkerCleanup<'_> {
+    fn drop(&mut self) {
+        self.pool.broadcast(self.pool.current_num_threads(), |_| {
+            BUILDER_WORKER.with_borrow_mut(|worker| {
+                if worker
+                    .as_ref()
+                    .is_some_and(|worker| Arc::ptr_eq(&worker.context, &self.context))
+                {
+                    *worker = None;
+                }
+            });
+        });
+    }
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -85,15 +125,15 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let _cleanup = BuilderWorkerCleanup {
+            pool,
+            context: ctx.prewarm.stop.clone(),
+        };
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                if prewarm.speculative {
-                    pool.init::<SpeculativePrewarmState>(|_| prewarm.speculative_evm_for_ctx());
-                } else {
-                    pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-                }
+                pool.broadcast(pool.current_num_threads(), |_| prewarm.with_worker(|_| {}));
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -135,13 +175,14 @@ impl BestTransactionsPrewarming {
                         }),
                     }));
                     scope.spawn(move |_| {
-                        let result = WorkerPool::with_worker_mut(|worker| {
+                        let result = prewarm.with_worker(|worker| {
                             if prewarm.is_stopped() {
                                 return None;
                             }
-                            let evm = worker
-                                .get_or_init(|| prewarm.speculative_evm_for_ctx())
-                                .as_mut()?;
+                            let BuilderWorkerEvm::Speculative(evm) = worker else {
+                                unreachable!("speculative prewarming context")
+                            };
+                            let evm = evm.as_mut().as_mut()?;
                             evm.execute(tx.transaction.clone_tx_env(), expiring_nonce_offset)
                                 .ok()
                         });
@@ -215,8 +256,6 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
-
-        pool.clear();
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -232,12 +271,15 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = prewarm.with_worker(|worker| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let BuilderWorkerEvm::Regular(evm) = worker else {
+                unreachable!("regular prewarming context")
+            };
+            let evm = evm.as_mut().as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
@@ -491,6 +533,30 @@ where
         self.prefix.clone()
     }
 
+    /// Access only this build's EVM. Like WorkerPool's worker access, the closure
+    /// must not yield to Rayon while holding the thread-local mutable borrow.
+    fn with_worker<R>(&self, f: impl FnOnce(&mut BuilderWorkerEvm) -> R) -> R {
+        BUILDER_WORKER.with_borrow_mut(|worker| {
+            if worker
+                .as_ref()
+                .is_none_or(|worker| !Arc::ptr_eq(&worker.context, &self.stop))
+            {
+                // Drop the old provider on its owning thread before acquiring
+                // another build's provider and execution cache.
+                *worker = None;
+                *worker = Some(BuilderWorker {
+                    context: self.stop.clone(),
+                    evm: if self.speculative {
+                        BuilderWorkerEvm::Speculative(Box::new(self.speculative_evm_for_ctx()))
+                    } else {
+                        BuilderWorkerEvm::Regular(Box::new(self.evm_for_ctx()))
+                    },
+                });
+            }
+            f(&mut worker.as_mut().expect("builder worker initialized").evm)
+        })
+    }
+
     fn speculative_evm_for_ctx(&self) -> SpeculativePrewarmState {
         Some(
             PrewarmingExecutor::new(self.database_for_ctx()?, self.evm_env.clone())
@@ -624,6 +690,7 @@ mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use reth_engine_tree::tree::ExecutionCache;
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
@@ -635,6 +702,7 @@ mod tests {
     use std::{
         collections::VecDeque,
         num::NonZeroU64,
+        panic::{AssertUnwindSafe, catch_unwind},
         sync::{Arc, Mutex},
         thread,
         time::{Duration, Instant},
@@ -1100,7 +1168,10 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+        let _cleanup = BuilderWorkerCleanup {
+            pool: &pool,
+            context: context.stop.clone(),
+        };
 
         pool.install_fn(|| {
             let failed_action = StorageAction::Sstore(
@@ -1109,11 +1180,11 @@ mod tests {
                 U256::from(2),
                 U256::from(3),
             );
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
+            context.with_worker(|worker| {
+                let BuilderWorkerEvm::Regular(evm) = worker else {
+                    panic!("prewarm EVM")
+                };
+                let evm = evm.as_mut().as_mut().expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
                 assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
             });
@@ -1125,11 +1196,11 @@ mod tests {
                 None,
             );
             assert!(failed.replay.is_none());
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>()
-                    .as_mut()
-                    .expect("prewarm EVM");
+            context.with_worker(|worker| {
+                let BuilderWorkerEvm::Regular(evm) = worker else {
+                    panic!("prewarm EVM")
+                };
+                let evm = evm.as_mut().as_mut().expect("prewarm EVM");
                 assert_eq!(evm.take_actions(), Some(Vec::new()));
             });
 
@@ -1142,8 +1213,100 @@ mod tests {
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
         });
+    }
 
+    #[test]
+    fn builder_workers_do_not_replace_engine_worker_state() {
+        let executor = TaskExecutor::test();
+        let mut engine = prewarming_context(executor.clone(), false);
+        engine.cache = Some(SavedCache::new(B256::ZERO, ExecutionCache::new(1024)));
+        let builder = prewarming_context(executor, false).with_speculative(true);
+        let pool = WorkerPool::new(1, "prewarm-engine-isolation-test");
+
+        // Engine initialization precedes a speculative builder job on the same
+        // worker. Using WorkerPool's Any slot here caused a deterministic type
+        // mismatch; the reverse interleaving must also retain the Engine EVM.
+        pool.init::<PrewarmEvmState>(|_| engine.evm_for_ctx());
+        let cleanup = BuilderWorkerCleanup {
+            pool: &pool,
+            context: builder.stop.clone(),
+        };
+        pool.install_fn(|| {
+            builder.with_worker(|worker| {
+                assert!(matches!(worker, BuilderWorkerEvm::Speculative(evm) if evm.is_some()));
+            });
+            WorkerPool::with_worker(|worker| {
+                assert!(worker.get::<PrewarmEvmState>().is_some());
+            });
+        });
+        assert_eq!(engine.cache.as_ref().unwrap().usage_count(), 2);
+
+        // Engine reset/clear cannot invalidate the builder's local EVM, and
+        // builder cleanup cannot discard the Engine provider's cache handle.
         pool.clear();
+        pool.init::<PrewarmEvmState>(|_| engine.evm_for_ctx());
+        drop(cleanup);
+        pool.install_fn(|| {
+            WorkerPool::with_worker(|worker| {
+                assert!(worker.get::<PrewarmEvmState>().is_some());
+            });
+            BUILDER_WORKER.with_borrow(|worker| assert!(worker.is_none()));
+        });
+        assert_eq!(engine.cache.as_ref().unwrap().usage_count(), 2);
+        pool.clear();
+        assert!(engine.cache.as_ref().unwrap().is_available());
+    }
+
+    #[test]
+    fn builder_worker_context_switches_release_their_own_caches() {
+        let executor = TaskExecutor::test();
+        let pool = WorkerPool::new(1, "prewarm-context-isolation-test");
+        for speculative in [false, true] {
+            let mut first =
+                prewarming_context(executor.clone(), false).with_speculative(speculative);
+            let mut second =
+                prewarming_context(executor.clone(), false).with_speculative(speculative);
+            first.cache = Some(SavedCache::new(B256::ZERO, ExecutionCache::new(1024)));
+            second.cache = Some(SavedCache::new(B256::ZERO, ExecutionCache::new(1024)));
+            let first_cache = first.cache.as_ref().unwrap();
+            let second_cache = second.cache.as_ref().unwrap();
+            let cleanup_first = || BuilderWorkerCleanup {
+                pool: &pool,
+                context: first.stop.clone(),
+            };
+            let cleanup_second = || BuilderWorkerCleanup {
+                pool: &pool,
+                context: second.stop.clone(),
+            };
+
+            pool.install_fn(|| first.with_worker(|_| {}));
+            assert_eq!(first_cache.usage_count(), 2);
+            pool.install_fn(|| second.with_worker(|_| {}));
+            assert!(first_cache.is_available());
+            assert_eq!(second_cache.usage_count(), 2);
+            // An older scope finishing must not clear a newer build's state.
+            drop(cleanup_first());
+            assert_eq!(second_cache.usage_count(), 2);
+            pool.install_fn(|| first.with_worker(|_| {}));
+            assert!(second_cache.is_available());
+            drop(cleanup_second());
+            assert_eq!(first_cache.usage_count(), 2);
+            drop(cleanup_first());
+            assert!(first_cache.is_available());
+
+            // Cleanup runs after Rayon joins all scoped work, even on unwind.
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let _cleanup = cleanup_first();
+                pool.in_place_scope(|scope| {
+                    scope.spawn(|_| {
+                        first.with_worker(|_| {});
+                        panic!("failed scoped prewarm job");
+                    });
+                });
+            }));
+            assert!(result.is_err());
+            assert!(first_cache.is_available());
+        }
     }
 
     #[test]
@@ -1187,6 +1350,11 @@ mod tests {
     #[test]
     fn speculative_prewarming_preserves_order_and_bounds_completed_results() {
         let executor = TaskExecutor::test();
+        let engine = prewarming_context(executor.clone(), false);
+        let shared_executor = executor.clone();
+        shared_executor
+            .prewarming_pool()
+            .init::<PrewarmEvmState>(|_| engine.evm_for_ctx());
         let window = executor.prewarming_pool().current_num_threads() * 2;
         let transactions = (0..window * 3)
             .map(|_| test_payment_tx(Address::random(), 500_000))
@@ -1230,6 +1398,12 @@ mod tests {
         wait_until(|| log.lock().unwrap().yielded == window * 2);
         // Dropping the builder with a full window must stop without deadlock.
         drop(prewarming);
+        let pool = shared_executor.prewarming_pool();
+        pool.broadcast(pool.current_num_threads(), |worker| {
+            assert!(worker.get::<PrewarmEvmState>().is_some());
+            BUILDER_WORKER.with_borrow(|worker| assert!(worker.is_none()));
+        });
+        pool.clear();
     }
 
     #[test]
