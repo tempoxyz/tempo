@@ -182,8 +182,31 @@ native execution are the production code. This establishes a real on-chain
 queued payout and finalization using the local Veda interfaces. Vendor Veda
 contracts and hosted solver authorities remain a separate integration gate.
 
+## Sustained Earn payment-lane burst
+
+The [80-second burst](evm2-t16-native-earn-sustained-summary.json) on the same
+T16 node submitted 20 cycles of 100 registered vault deposits followed by
+100 redemptions. All 4,000 payments succeeded, with 100 transactions in each
+of 40 blocks (50.36 transactions per elapsed second, limited by the one-second
+block schedule and two-phase client). The 4,000 saved
+[receipts and metric samples](evm2-t16-native-earn-sustained-raw.json.gz)
+total 974,784,000 paid gas. Each block's receipt gas equals its block gas;
+586 captured samples match the block payment gas with zero general gas. At
+every deposit block EarnShare supply and vault assets were 1,100,000, and at
+every redemption block both returned to 1,000,000. The first attempted
+redemption burst, before EarnShare approval, reverted 100 times and was
+excluded from the successful workload; a share approval corrected the setup.
+
+```sh
+python3 scripts/native-payments/check-t16-earn-sustained.py --rpc-url http://127.0.0.1:55545 --tempo-binary target/release/tempo
+```
+
+This measures registered Earn payments in one node. The earlier 30-minute
+run exercised Earn and Zone together at a lower serial rate; a sustained
+same-chain mixed-capacity run remains open.
+
 This run exercises new-stack registration and synchronous accounting on a
 fresh fork. The earlier [combined fork run](EVM2_T16_EARN_ZONE_FORK.md) covers
 legacy Earn and Zone migration and the mixed serial workload. Vendor Veda
-settlement, real Nitro-attested Zone settlement, and a sustained capacity
-benchmark remain open.
+settlement, real Nitro-attested Zone settlement, and sustained combined
+Earn/Zone capacity remain open.
