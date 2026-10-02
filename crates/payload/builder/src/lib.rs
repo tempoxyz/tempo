@@ -876,7 +876,7 @@ where
                 .state_root_with_updates((*hashed_state).clone())
                 .map_err(BlockExecutionError::other)?;
 
-            (state_root, Arc::new(trie_updates))
+            (state_root, Arc::new(trie_updates.into_sorted()))
         };
 
         let RootsTaskResult {
