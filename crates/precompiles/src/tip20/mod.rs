@@ -1774,12 +1774,11 @@ pub(crate) mod tests {
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
-        let admin = Address::random();
         let addr = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
 
         for role in [AuthRole::MintRecipient, AuthRole::Recipient] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+            let (mut storage, admin) = setup_storage();
             StorageCtx::enter(&mut storage, || -> Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
