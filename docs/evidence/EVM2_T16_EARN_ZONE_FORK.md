@@ -118,6 +118,18 @@ batch through Zone block 2200 settled on L1 in receipt
 The reviewed record and checker include both receipts, the revert data,
 authenticated balances, and that settlement.
 
+The submitted batch containing the successful retry was also replayed locally
+through the Zone stateless proof function. Its
+[saved execution witness](evm2-t16-pinned-zone-batch-witness.json.gz) covers
+Zone blocks 2191–2200. With the
+[trusted Zone genesis](evm2-t16-reviewed-zone-genesis.json.gz), SPF reproduced
+the L1-submitted next-block commitment
+`0x6dc39b1476fcfcc99c8e694f19190cd233b7c7ea213239dd80b96321a36c6322`.
+A wrong Zone ID and wrong expected commitment were rejected. This verifies
+the witness-backed execution; the L1 settlement still used NoProof because no
+Nitro attestation was available on this machine. The Zones PR adds
+`tempo-zone-prover-utils validate-input` to recheck the saved witness offline.
+
 While these isolated devnets are available, rerun the public receipt and state
 checker from the Tempo checkout:
 
