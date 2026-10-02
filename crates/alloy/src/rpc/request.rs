@@ -222,7 +222,7 @@ impl TempoTransactionRequest {
 
     /// Builder-pattern method for setting the access-key ID.
     pub fn with_key_id(mut self, key_id: Address) -> Self {
-        self.key_id = Some(key_id);
+        self.set_key_id(key_id);
         self
     }
 

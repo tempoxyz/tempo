@@ -18,7 +18,8 @@ use commonware_consensus::types::{Height, Round};
 use futures::channel::oneshot;
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
-use reth_node_core::primitives::{SealedBlock, SealedHeader};
+use reth_node_core::primitives::SealedHeader;
+use reth_primitives_traits::Block as _;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{
@@ -51,7 +52,7 @@ pub(super) fn make_block_at_round(height: u64, parent_hash: B256, round: Round) 
         header,
         body: BlockBody::default(),
     };
-    Block::try_from_execution_block(SealedBlock::seal_slow(inner), None)
+    Block::try_from_execution_block(inner.seal_slow(), None)
         .expect("test block should not contain BAL side data")
 }
 

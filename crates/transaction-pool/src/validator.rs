@@ -878,11 +878,11 @@ where
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction as _, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use reth_chainspec::EthChainSpec;
-    use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
+    use reth_primitives_traits::{Account, Block as _, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_revm::cached::CachedReads;
     use reth_storage_api::{AccountReader, BlockNumReader, BytecodeReader};
@@ -1015,7 +1015,7 @@ mod tests {
             header,
             body: Default::default(),
         };
-        SealedBlock::seal_slow(block)
+        block.seal_slow()
     }
 
     /// Helper function to create an AA transaction with the given `valid_after` and `valid_before`
@@ -1303,7 +1303,7 @@ mod tests {
             value: U256::ZERO,
             input: Default::default(),
         };
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let transaction = TempoPooledTransaction::new(
             reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
         );

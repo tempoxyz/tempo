@@ -448,6 +448,7 @@ mod tests {
     use commonware_codec::Write as _;
     use commonware_codec::{Encode, Read as _};
     use reth_node_core::primitives::SealedBlock;
+    use reth_primitives_traits::Block as _;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
     #[cfg(feature = "bal")]
@@ -457,7 +458,7 @@ mod tests {
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
     ) -> SealedBlock<TempoBlock> {
-        SealedBlock::seal_slow(TempoBlock {
+        TempoBlock {
             header: TempoHeader {
                 inner: alloy_consensus::Header {
                     base_fee_per_gas: Some(0),
@@ -475,7 +476,8 @@ mod tests {
                 withdrawals: Some(Default::default()),
                 ..Default::default()
             },
-        })
+        }
+        .seal_slow()
     }
 
     // required unit tests:
@@ -497,7 +499,7 @@ mod tests {
 
     #[test]
     fn reads_block_without_block_access_list_bytes() {
-        let execution_block = SealedBlock::seal_slow(TempoBlock {
+        let execution_block = TempoBlock {
             header: TempoHeader {
                 inner: alloy_consensus::Header {
                     number: 42,
@@ -517,7 +519,8 @@ mod tests {
                 withdrawals: Some(Default::default()),
                 ..Default::default()
             },
-        });
+        }
+        .seal_slow();
         let expected = Block::try_from_execution_block(execution_block.clone(), None)
             .expect("block has no BAL side data");
         let mut block_bytes = Vec::new();
@@ -535,7 +538,7 @@ mod tests {
 
     #[test]
     fn read_rejects_execution_body_that_does_not_match_header() {
-        let execution_block = SealedBlock::seal_slow(TempoBlock {
+        let execution_block = TempoBlock {
             header: TempoHeader {
                 inner: alloy_consensus::Header {
                     base_fee_per_gas: Some(0),
@@ -552,7 +555,8 @@ mod tests {
                 withdrawals: Some(Default::default()),
                 ..Default::default()
             },
-        });
+        }
+        .seal_slow();
         let mut encoded = Vec::new();
         alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
 
@@ -572,7 +576,7 @@ mod tests {
 
     #[test]
     fn constructor_rejects_execution_body_that_does_not_match_header() {
-        let execution_block = SealedBlock::seal_slow(TempoBlock {
+        let execution_block = TempoBlock {
             header: TempoHeader {
                 inner: alloy_consensus::Header {
                     withdrawals_root: Some(B256::ZERO),
@@ -584,7 +588,8 @@ mod tests {
                 withdrawals: Some(Default::default()),
                 ..Default::default()
             },
-        });
+        }
+        .seal_slow();
 
         let err = Block::try_from_execution_block(execution_block, None).unwrap_err();
 
@@ -612,10 +617,11 @@ mod tests {
     #[cfg(feature = "bal")]
     #[test]
     fn rejects_block_access_list_without_header_hash() {
-        let execution_block = SealedBlock::seal_slow(TempoBlock {
+        let execution_block = TempoBlock {
             header: TempoHeader::default(),
             body: Default::default(),
-        });
+        }
+        .seal_slow();
         assert!(execution_block.block_access_list_hash().is_none());
 
         let block_access_list = bytes!("0xc0");

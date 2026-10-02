@@ -1477,7 +1477,7 @@ mod tests {
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use reth_primitives_traits::Recovered;
+    use reth_primitives_traits::{Block as _, Recovered};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
@@ -1734,13 +1734,12 @@ mod tests {
 
     #[test]
     fn canonical_state_change_refreshes_aa_2d_base_fee() {
-        use reth_primitives_traits::SealedBlock;
         use reth_transaction_pool::PoolUpdateKind;
 
         let pool = create_test_pool(create_provider_with_tip());
         let initial_base_fee = pool.aa_2d_pool.read().base_fee();
 
-        let new_tip = SealedBlock::seal_slow(Block {
+        let new_tip = Block {
             header: TempoHeader {
                 inner: Header {
                     gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
@@ -1751,7 +1750,8 @@ mod tests {
                 ..Default::default()
             },
             body: Default::default(),
-        });
+        }
+        .seal_slow();
         let pending_block_base_fee = initial_base_fee + 1_000;
 
         pool.on_canonical_state_change(CanonicalStateUpdate {

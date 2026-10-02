@@ -69,7 +69,7 @@ mod tests {
     };
     use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
     use futures::{FutureExt as _, StreamExt as _, executor::block_on};
-    use reth_node_core::primitives::SealedBlock;
+    use reth_primitives_traits::Block as _;
     use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
     use super::Mailbox;
@@ -81,7 +81,7 @@ mod tests {
             let (sender, mut receiver) = futures::channel::mpsc::unbounded();
             let mut mailbox = Mailbox::new(sender);
             let block = Block::try_from_execution_block(
-                SealedBlock::seal_slow(TempoBlock {
+                TempoBlock {
                     header: TempoHeader {
                         inner: Header {
                             number: 1,
@@ -90,7 +90,8 @@ mod tests {
                         ..Default::default()
                     },
                     body: BlockBody::default(),
-                }),
+                }
+                .seal_slow(),
                 None,
             )
             .expect("test block should not contain BAL side data");

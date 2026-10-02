@@ -414,7 +414,7 @@ impl TempoAccessKey {
                 },
             ));
         }
-        request.key_id = Some(self.address);
+        request.set_key_id(self.address);
 
         let signature_type = self.signer.signature_type();
         if let Some(key_type) = request.key_type

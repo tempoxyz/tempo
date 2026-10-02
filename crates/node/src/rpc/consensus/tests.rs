@@ -5,7 +5,7 @@ use jsonrpsee::{
     server::{Server, ServerConfig},
     ws_client::WsClientBuilder,
 };
-use reth_primitives_traits::SealedBlock;
+use reth_primitives_traits::Block as _;
 use std::{sync::Arc, time::Duration};
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
@@ -126,7 +126,7 @@ async fn subscription_notification_carries_event() {
         view: 11,
         digest: B256::repeat_byte(0x11),
         certificate: "0x1234".to_string(),
-        block: SealedBlock::seal_slow(Block::default()).into(),
+        block: Block::default().seal_slow().into(),
     };
     events_tx
         .send(SharedEvent::new(Event::Finalized {

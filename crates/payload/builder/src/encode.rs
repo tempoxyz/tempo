@@ -236,7 +236,9 @@ impl Drop for ExecutionBlockEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockBody, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+    use alloy_consensus::{
+        BlockBody, SignableTransaction as _, TxEip1559, TxEip2930, TxEip7702, TxLegacy,
+    };
     use alloy_eips::{
         eip2718::Encodable2718,
         eip4895::{Withdrawal, Withdrawals},
@@ -244,7 +246,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Signature, U256};
     use alloy_rlp::Encodable;
     use proptest::prelude::*;
-    use reth_primitives_traits::{RecoveredBlock, SealedBlock};
+    use reth_primitives_traits::{Block as _, RecoveredBlock, SealedBlock};
     use std::sync::Arc;
     use tempo_primitives::{Block, Header, TempoHeader, TempoTransaction, transaction::Call};
 
@@ -276,7 +278,7 @@ mod tests {
         )
             .prop_map(
                 |(chain_id, nonce, gas_price, gas_limit, to, value, input)| {
-                    TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TempoTxEnvelope::Legacy(
                         TxLegacy {
                             chain_id,
                             nonce,
@@ -285,9 +287,9 @@ mod tests {
                             to: to.into(),
                             value,
                             input,
-                        },
-                        Signature::test_signature(),
-                    ))
+                        }
+                        .into_signed(Signature::test_signature()),
+                    )
                 },
             )
     }
@@ -314,7 +316,7 @@ mod tests {
                     value,
                     input,
                 )| {
-                    TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+                    TempoTxEnvelope::Eip1559(
                         TxEip1559 {
                             chain_id,
                             nonce,
@@ -325,9 +327,9 @@ mod tests {
                             value,
                             access_list: Default::default(),
                             input,
-                        },
-                        Signature::test_signature(),
-                    ))
+                        }
+                        .into_signed(Signature::test_signature()),
+                    )
                 },
             )
     }
@@ -436,7 +438,7 @@ mod tests {
     }
 
     fn legacy_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
                 nonce: 0,
@@ -445,13 +447,13 @@ mod tests {
                 to: Address::ZERO.into(),
                 value: U256::ZERO,
                 input,
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn eip1559_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+        TempoTxEnvelope::Eip1559(
             TxEip1559 {
                 chain_id: 1,
                 nonce: 1,
@@ -462,29 +464,29 @@ mod tests {
                 value: U256::ZERO,
                 access_list: Default::default(),
                 input,
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn eip2930_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+        TempoTxEnvelope::Eip2930(
             TxEip2930 {
                 input,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn eip7702_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Eip7702(Signed::new_unhashed(
+        TempoTxEnvelope::Eip7702(
             TxEip7702 {
                 input,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn aa_tx(input: Bytes) -> TempoTxEnvelope {
@@ -615,13 +617,14 @@ mod tests {
             .collect();
         let encoded_transactions = encoded_block_transactions(&transactions);
         assert!(encoded_transactions.rlp.len() > 4 * 1024 * 1024);
-        let block = SealedBlock::seal_slow(Block {
+        let block = Block {
             header: TempoHeader::default(),
             body: BlockBody {
                 transactions,
                 ..Default::default()
             },
-        });
+        }
+        .seal_slow();
 
         // Encoding appends to an existing buffer, just like Encodable::encode.
         let mut encoded = vec![0xde, 0xad];
@@ -636,7 +639,7 @@ mod tests {
     fn cached_transaction_list_block_encoding_matches_full_block_encoding() {
         let transactions = all_transaction_types(Bytes::from_static(b"input"));
         let encoded_transactions = encoded_block_transactions(&transactions);
-        let block = SealedBlock::seal_slow(Block {
+        let block = Block {
             header: TempoHeader::default(),
             body: BlockBody {
                 transactions,
@@ -648,7 +651,8 @@ mod tests {
                     amount: 3,
                 }])),
             },
-        });
+        }
+        .seal_slow();
 
         let mut encoded_from_cache = Vec::new();
         assert!(
@@ -669,14 +673,15 @@ mod tests {
             legacy_tx(Bytes::from_static(b"legacy")),
             eip1559_tx(Bytes::from_static(b"typed")),
         ];
-        let block = SealedBlock::seal_slow(Block {
+        let block = Block {
             header: TempoHeader::default(),
             body: BlockBody {
                 transactions: block_transactions,
                 ommers: vec![TempoHeader::default()],
                 withdrawals: None,
             },
-        });
+        }
+        .seal_slow();
 
         let mut encoded = Vec::new();
         assert!(!cached_transactions.encode_block_with_transactions(&block, &mut encoded));
@@ -706,7 +711,7 @@ mod tests {
             block in arb_block(),
         ) {
             let encoded_transactions = encoded_block_transactions(&block.body.transactions);
-            let block = SealedBlock::seal_slow(block);
+            let block = block.seal_slow();
             let expected = full_block_encoding(&block);
 
             let mut encoded = Vec::new();
@@ -725,7 +730,7 @@ mod tests {
         ) {
             prop_assume!(cached_transactions.len() != block.body.transactions.len());
             let encoded_transactions = encoded_block_transactions(&cached_transactions);
-            let block = SealedBlock::seal_slow(block);
+            let block = block.seal_slow();
             let expected = full_block_encoding(&block);
 
             let mut encoded = Vec::new();
@@ -740,7 +745,7 @@ mod tests {
         #[test]
         fn proptest_execution_block_encoder_matches_full_block_encoding(block in arb_block()) {
             let encoded_transactions = encoded_block_transactions(&block.body.transactions);
-            let expected_block = SealedBlock::seal_slow(block.clone());
+            let expected_block = block.clone().seal_slow();
             let expected = full_block_encoding(&expected_block);
             let senders = vec![Address::ZERO; block.body.transactions.len()];
             let recovered_block = Arc::new(RecoveredBlock::new_unhashed(block, senders));

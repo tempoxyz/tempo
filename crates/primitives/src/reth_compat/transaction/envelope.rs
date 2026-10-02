@@ -19,7 +19,7 @@ mod codec {
         transaction::envelope::{TEMPO_SYSTEM_TX_SIGNATURE, TempoTxEnvelope, TempoTxType},
     };
 
-    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+    use alloy_consensus::{SignableTransaction as _, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
     use alloy_primitives::{
         Bytes, Signature,
@@ -42,28 +42,27 @@ mod codec {
             tx_type: Self::TxType,
             signature: Signature,
         ) -> (Self, &[u8]) {
-            use alloy_consensus::Signed;
             use reth_codecs::Compact;
 
             match tx_type {
                 TempoTxType::Legacy => {
                     let (tx, buf) = TxLegacy::from_compact(buf, buf.len());
-                    let tx = Signed::new_unhashed(tx, signature);
+                    let tx = tx.into_signed(signature);
                     (Self::Legacy(tx), buf)
                 }
                 TempoTxType::Eip2930 => {
                     let (tx, buf) = TxEip2930::from_compact(buf, buf.len());
-                    let tx = Signed::new_unhashed(tx, signature);
+                    let tx = tx.into_signed(signature);
                     (Self::Eip2930(tx), buf)
                 }
                 TempoTxType::Eip1559 => {
                     let (tx, buf) = TxEip1559::from_compact(buf, buf.len());
-                    let tx = Signed::new_unhashed(tx, signature);
+                    let tx = tx.into_signed(signature);
                     (Self::Eip1559(tx), buf)
                 }
                 TempoTxType::Eip7702 => {
                     let (tx, buf) = TxEip7702::from_compact(buf, buf.len());
-                    let tx = Signed::new_unhashed(tx, signature);
+                    let tx = tx.into_signed(signature);
                     (Self::Eip7702(tx), buf)
                 }
                 TempoTxType::AA => {

@@ -164,7 +164,7 @@ pub struct TempoExecutionData {
 /// `SealedHeader` wrapper as an extra nested `header`. Consensus RPC and execution payload JSON
 /// historically used `tempo_primitives::Block`, so this keeps those wire formats stable.
 pub mod serde_sealed_or_recovered_block {
-    use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
+    use reth_primitives_traits::{Block as _, SealedOrRecoveredBlock};
     use tempo_primitives::Block;
 
     pub fn serialize<S>(
@@ -200,7 +200,7 @@ pub mod serde_sealed_or_recovered_block {
         }
 
         let BlockParts { header, body } = serde::Deserialize::deserialize(deserializer)?;
-        Ok(SealedBlock::seal_slow(Block { header, body }).into())
+        Ok(Block { header, body }.seal_slow().into())
     }
 }
 
