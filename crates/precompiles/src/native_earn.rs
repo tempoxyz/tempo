@@ -11,19 +11,21 @@ use crate::{
     storage_credits::NonCreditableSlots,
     tip20::{ISSUER_ROLE, TIP20Token},
 };
-use alloy::primitives::{Address, B256, Bytes, U256};
+use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use evm2::{
     Evm, EvmTypes,
     interpreter::{GasTracker, Message, MessageKind},
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
 };
 use std::{cell::RefCell, rc::Rc};
-use tempo_contracts::TempoHardfork;
-use tempo_contracts::earn::{
-    EARN_IMPLEMENTATION_SLOT, EarnPaymentKind, EarnRegistrationField, INativeEarnRegistrar,
-    NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
-    NATIVE_EARN_REGISTRY_ADDRESS, earn_engine_approval_preimage, earn_fees_clone_runtime,
-    earn_payment_kind, earn_registration_preimage, factory_slots,
+use tempo_contracts::{
+    TempoHardfork,
+    earn::{
+        EARN_IMPLEMENTATION_SLOT, EarnPaymentKind, EarnRegistrationField, INativeEarnRegistrar,
+        NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
+        NATIVE_EARN_REGISTRY_ADDRESS, NativeEarnRegistered, earn_engine_approval_preimage,
+        earn_fees_clone_runtime, earn_payment_kind, earn_registration_preimage, factory_slots,
+    },
 };
 use tempo_primitives::TempoBlockExt;
 
@@ -295,7 +297,18 @@ impl NativeEarnRegistrar {
         let runtime = Bytes::copy_from_slice(NATIVE_EARN_DISPATCHER_V1_RUNTIME);
         self.storage.set_code(call.vault, runtime.clone())?;
         self.storage.set_code(call.fees, runtime)?;
-        Ok(())
+        self.storage.emit_event(
+            registry,
+            NativeEarnRegistered {
+                vault: call.vault,
+                asset: call.asset,
+                earnShare: call.earnShare,
+                fees: call.fees,
+                engine: call.engine,
+                engineCodeHash: engine_hash,
+            }
+            .into_log_data(),
+        )
     }
 }
 
@@ -497,8 +510,7 @@ impl NativeEarnExecution<'_> {
 mod tests {
     use super::*;
     use crate::{TempoPrecompiles, storage::StorageCtx};
-    use alloy::primitives::keccak256;
-    use alloy::sol_types::SolCall;
+    use alloy::{primitives::keccak256, sol_types::SolCall};
     use evm2::{
         BaseEvmConfigSelector, ExecutionConfig, SpecId, bytecode::Bytecode, env::TxEnv,
         evm::InMemoryDB, interpreter::Host, registry::TxRegistry,
@@ -895,6 +907,20 @@ mod tests {
         let mut evm = setup_registrar(true);
         let result = register_call(&mut evm, FACTORY);
         assert!(result.stop.is_success(), "{result:?}");
+        assert_eq!(evm.logs().len(), 1);
+        assert_eq!(evm.logs()[0].address, NATIVE_EARN_REGISTRY_ADDRESS);
+        assert_eq!(
+            evm.logs()[0].data,
+            NativeEarnRegistered {
+                vault: VAULT,
+                asset: ASSET,
+                earnShare: SHARE,
+                fees: FEES,
+                engine: ENGINE,
+                engineCodeHash: keccak256([0x00]),
+            }
+            .into_log_data()
+        );
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T16);
         StorageCtx::enter(&mut storage, || -> Result<()> {
             assert_eq!(

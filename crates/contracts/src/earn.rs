@@ -8,6 +8,15 @@ use alloy_primitives::{Address, B256, U256, address, b256, keccak256};
 use alloy_sol_types::sol;
 
 sol! {
+    event NativeEarnRegistered(
+        address indexed vault,
+        address indexed asset,
+        address indexed earnShare,
+        address fees,
+        address engine,
+        bytes32 engineCodeHash
+    );
+
     interface INativeEarnRegistrar {
         function register(address vault, address fees, address asset, address earnShare, address engine) external;
         function approveEngine(address engine) external;
