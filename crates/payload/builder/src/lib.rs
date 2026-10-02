@@ -734,52 +734,46 @@ where
         self.metrics
             .record_speculative_execution(builder.evm().execution_stats());
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let finish_provider = || InstrumentedFinishProvider {
-            inner: &*state_provider,
-            metrics: self.metrics.clone(),
-        };
+        let mut finish_provider =
+            InstrumentedFinishProvider::new(&*state_provider, self.metrics.clone());
+        if let Some(mut handle) = trie_handle {
+            finish_provider =
+                finish_provider.with_background_state_root(move || match handle.state_root() {
+                    Ok(outcome) => {
+                        debug!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            state_root = ?outcome.state_root,
+                            "received state root from sparse trie"
+                        );
+                        Some((
+                            outcome.state_root,
+                            Arc::unwrap_or_clone(outcome.trie_updates),
+                        ))
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            %err,
+                            "sparse trie failed, falling back to sync state root"
+                        );
+                        None
+                    }
+                });
+        }
 
         check_cancel!();
 
+        // Keep the state hook installed through executor finalization, including
+        // post-block system calls and balance changes. finish() drops the hook
+        // before the provider waits for the resulting trie root.
         let BlockBuilderOutcome {
             execution_result,
             block,
             hashed_state,
             trie_updates,
-        } = if let Some(mut handle) = trie_handle {
-            // Dropping the hook signals that execution is complete and the sparse trie task can
-            // finalize the state root it has been updating incrementally.
-            builder.executor_mut().set_state_hook(None);
-
-            match handle.state_root() {
-                Ok(outcome) => {
-                    debug!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        state_root = ?outcome.state_root,
-                        "received state root from sparse trie"
-                    );
-                    builder.finish(
-                        finish_provider(),
-                        Some((
-                            outcome.state_root,
-                            Arc::unwrap_or_clone(outcome.trie_updates),
-                        )),
-                    )?
-                }
-                Err(err) => {
-                    warn!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        %err,
-                        "sparse trie failed, falling back to sync state root"
-                    );
-                    builder.finish(finish_provider(), None)?
-                }
-            }
-        } else {
-            builder.finish(finish_provider(), None)?
-        };
+        } = builder.finish(finish_provider, None)?;
         drop(_finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics

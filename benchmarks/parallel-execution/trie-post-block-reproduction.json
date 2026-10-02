@@ -1,0 +1,12 @@
+{
+  "source": "b303c471",
+  "contract": "0x00000961ef480eb55e80d19ad83579a64c007002",
+  "code": "0x60005460010160005500",
+  "behavior": "Increment storage slot 0 on each post-block system call; return no requests.",
+  "proof": "The synchronous node replays blocks 1 through 3 successfully. With trie sharing, storage reaches 5 at height 5 but canonical replay fails at block 1.",
+  "synchronous_replay_returncode": 0,
+  "shared_replay_returncode": 1,
+  "shared_replay_error": "execution node failed\n\nCaused by:\n    canonical state root differs at block 1: computed 0x128096605736f43a01fc7f33c7079134ed7fbfc13e1ca32e32dbac619c9a37c7",
+  "fixed_shared_replay_returncode": 0,
+  "fixed_roots_match_original_synchronous": true
+}

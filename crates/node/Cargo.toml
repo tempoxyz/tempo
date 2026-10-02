@@ -63,6 +63,7 @@ serde.workspace = true
 jsonrpsee.workspace = true
 
 [dev-dependencies]
+alloy-trie = "0.9.5"
 tempo-e2e.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true

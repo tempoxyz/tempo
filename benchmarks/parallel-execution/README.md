@@ -815,6 +815,77 @@ CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
   cargo test -p tempo-evm --release assembly_roots_throughput -- --ignored --nocapture
 ```
 
+## Background state-root finalization
+
+The existing `--engine.share-sparse-trie-with-payload-builder` path computes
+trie updates alongside execution. It requires `--builder.max-tasks 1` because
+the engine and payload builder share the trie. The trial driver exposes these
+as `--share-sparse-trie --builder-max-tasks 1`; comparisons must set the same
+payload-task limit for the synchronous control.
+
+Testing this path exposed an ordering bug: the builder removed its state hook
+and awaited the root before executor finalization. Post-block system calls and
+balance increments therefore could change storage after the root was computed.
+`trie-post-block-reproduction.json` records an independent node reproduction:
+a genesis contract at the EIP-7002 address increments slot zero on each system
+call. The synchronous node passes canonical replay; the shared-trie node stores
+the increment but fails canonical state-root validation at block 1.
+
+The finish provider now awaits the background result only when the block
+builder requests the root, after executor finalization has emitted all state
+changes and dropped the hook. A background failure retains the synchronous
+calculation from the complete hashed post-state. New metrics distinguish
+background waiting, successful roots and fallback failures from synchronous
+root calculation.
+
+The regression deploys state-changing EIP-7002 and EIP-7251 fixtures and verifies
+account and storage proofs against the actual block header. Before the fix,
+both shared-trie cases fail while both synchronous cases pass. After the fix,
+all four cases pass with sequential and speculative execution. Release Clippy
+passes for all payload-builder and node targets.
+
+The rebuilt node also passes the original standalone fixture: all three shared
+roots exactly equal the original synchronous roots (`trie-post-block-canonical.tsv`).
+The ordinary sequential/parallel mixed-payment-lane tests and parallel TIP-20
+transfer test pass as well.
+
+`trie-initial-node.json` and `node/trie-initial-*.json` retain the preliminary
+measurements on the previous binary. With one payload task, the synchronous
+and shared-trie trials confirm 26,334 and 27,266 TPS respectively. These are
+diagnostic only: the shared-trie implementation fails the post-block state
+regression above and is not a valid optimization result.
+
+`trie-fixed-node.json` and `node/trie-fixed-*.json` compare synchronous and
+background roots using the corrected binary, five-second sends at 50k offered
+TPS and one payload task for both variants. Comparisons run in both orders:
+
+| Execution workers | Synchronous root TPS | Background root TPS | Synchronous, reverse order | Background, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 27,740 | 28,300 | 27,634 | 28,230 |
+| 16 | 26,338 | 27,295 | 26,853 | 27,450 |
+
+All 1,793,023 accepted transactions confirm with zero failures. The 16-worker
+comparisons improve by 3.6% and 2.2%. Their whole-trial finalization time falls
+from about 1.9 seconds to 0.68 seconds, but streaming state changes increases
+execution-loop time. Each background-root run records successful background
+roots and no fallback failures. These remain short local trials; the sequential
+EVM still leads on this shared-account workload, and sustained 50k+ node TPS
+has not been demonstrated.
+
+The corrected background-root sweep at 10k / 25k / 75k offered TPS accepts
+10,017 / 24,981 / 44,953 TPS and confirms 9,967 / 24,752 / 27,465 TPS including
+backlog. All 400,087 accepted transactions confirm without failures. The
+expiring-AA trial at 50k offered TPS accepts 45,935 TPS and confirms 26,836 TPS,
+with all 230,076 accepted transactions confirmed. All background roots complete
+without fallback in these runs (`node/trie-fixed-{matrix,expiring}-*.json`).
+
+```sh
+python3 benchmarks/parallel-execution/run_node.py \
+  --output /tmp/tempo-node-shared-trie --workers 16 --duration 5 \
+  --block-gas-limit 5000000000 --profile-cpu \
+  --share-sparse-trie --builder-max-tasks 1
+```
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -916,6 +987,15 @@ with 86,319 user transactions and three system transactions. All full results,
 state deltas, canonical receipts, gas and roots match. Across both assembly
 replays, 126,205 user transactions and six system transactions match; this is
 still local generated-chain evidence rather than public historical replay.
+
+`trie-fixed-canonical.tsv` and `trie-fixed-canonical-expiring.tsv` verify six
+blocks built with the corrected background-root path, including both AA nonce
+modes: 106,869 user transactions and six system transactions. Complete
+execution results, state deltas, stored receipts, gas, receipt roots and
+canonical state roots match sequential execution. The separate post-block
+fixture above adds three system-only blocks whose roots also match the
+original synchronous control. These remain generated local chains, and replay
+timings are diagnostic only.
 
 ## Correctness model and integration
 

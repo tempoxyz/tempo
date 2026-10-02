@@ -58,6 +58,10 @@ def trial(args, threads, target):
                 "--txpool.queued-max-size", "1024", "--engine.disable-prewarming",
                 "--execution.threads", str(threads), "--execution.batch-size", str(args.batch_size),
                 "--log.file.directory", str(directory / "logs"), "--log.stdout.filter", "info"]
+    if args.share_sparse_trie:
+        node_cmd.append("--engine.share-sparse-trie-with-payload-builder")
+    if args.builder_max_tasks is not None:
+        node_cmd.extend(["--builder.max-tasks", str(args.builder_max_tasks)])
     bench_cmd = [str(ROOT / "target/release/tempo-bench"), "run-max-tps",
                  "--tps", str(target), "--duration", str(args.duration), "--accounts", "100",
                  "--mnemonic", MNEMONIC, "--target-urls", rpc, "--fd-limit", "65536",
@@ -159,6 +163,10 @@ def main():
                         help="Override the node's Tokio workers without changing the client's runtime")
     parser.add_argument("--profile-cpu", action="store_true",
                         help="Record per-thread CPU usage for the node and client using pidstat")
+    parser.add_argument("--share-sparse-trie", action="store_true",
+                        help="Compute payload state roots concurrently (requires --builder-max-tasks 1)")
+    parser.add_argument("--builder-max-tasks", type=int,
+                        help="Override concurrent payload tasks, including for matched trie comparisons")
     parser.add_argument("--nonces", choices=["2d", "expiring"], default="2d")
     parser.add_argument("--block-gas-limit", type=int,
                         help="Override the gas limit in a fresh benchmark genesis copy")
@@ -167,6 +175,10 @@ def main():
         parser.error("--client-concurrency must be positive")
     if args.node_tokio_threads is not None and args.node_tokio_threads <= 0:
         parser.error("--node-tokio-threads must be positive")
+    if args.builder_max_tasks is not None and args.builder_max_tasks <= 0:
+        parser.error("--builder-max-tasks must be positive")
+    if args.share_sparse_trie and args.builder_max_tasks != 1:
+        parser.error("--share-sparse-trie requires --builder-max-tasks 1")
     if args.profile_cpu and shutil.which("pidstat") is None:
         parser.error("--profile-cpu requires pidstat")
     if args.block_gas_limit is not None and not 0 < args.block_gas_limit < 2**64:
@@ -184,6 +196,8 @@ def main():
         args.block_gas_limit = int(genesis["gasLimit"], 16)
     (args.output / "host.json").write_text(json.dumps({"platform": platform.platform(),
         "processor": platform.processor(), "block_gas_limit": args.block_gas_limit,
+        "share_sparse_trie": args.share_sparse_trie,
+        "builder_max_tasks": args.builder_max_tasks,
         "tokio_worker_threads": os.environ.get("TOKIO_WORKER_THREADS"),
         "node_tokio_worker_threads": (str(args.node_tokio_threads)
                                       if args.node_tokio_threads is not None

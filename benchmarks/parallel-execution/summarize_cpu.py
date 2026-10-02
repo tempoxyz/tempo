@@ -21,6 +21,7 @@ def payload_timings(directory):
         "pool_snapshot": "pool_fetch",
         "finalization": "payload_finalization",
         "state_root": "state_root_with_updates",
+        "background_state_root_wait": "background_state_root_wait",
         "hashed_post_state": "hashed_post_state",
         "payload_build": "payload_build",
     }
