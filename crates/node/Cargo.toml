@@ -60,6 +60,7 @@ alloy-rlp.workspace = true
 alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
+alloy-json-abi.workspace = true
 alloy-primitives.workspace = true
 
 async-trait.workspace = true

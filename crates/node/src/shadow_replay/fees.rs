@@ -1,7 +1,5 @@
-//! Tracks storage slots written by protocol fee hooks within each transaction.
-//!
-//! Normal fee-manager behavior is preserved. Application writes may touch the same slots,
-//! and fee paths outside these hooks are not tracked.
+//! Records protocol fee-hook storage and logs without inspecting EVM calls.
+//! NOTE: Application writes may touch the same slots. Fee paths outside these hooks are not tracked.
 
 use alloy_primitives::{Address, U256};
 use reth_revm::context::JournalTr as _;
@@ -25,11 +23,15 @@ pub(super) struct FeeWrites {
     pub(super) post_tx_transfer: Option<(usize, Address, Address, U256, U256)>,
 }
 
-/// Delegates protocol fee collection while recording hook-local storage writes and emitted logs.
-#[derive(Debug, Clone)]
-pub(super) struct RecordingFeeManager(pub(super) Rc<RefCell<FeeWrites>>);
+/// Delegates fee collection and records hook-local writes and logs; drained after each boundary.
+#[derive(Debug, Clone, Default)]
+pub(super) struct RecordingFeeManager(Rc<RefCell<FeeWrites>>);
 
 impl RecordingFeeManager {
+    pub(super) fn take(&self) -> FeeWrites {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+
     /// Runs one fee hook with an isolated recorder and returns its ordered storage writes.
     fn record<DB: alloy_evm::Database, R>(
         &self,
@@ -67,14 +69,10 @@ impl RecordingFeeManager {
     ) -> Vec<StorageAction> {
         let mut writes = self.0.borrow_mut();
         actions.retain(|action| {
-            let slot = match action {
-                StorageAction::Sstore(_, key, ..)
-                | StorageAction::Sinc(_, key, ..)
-                | StorageAction::Sdec(_, key, ..)
-                | StorageAction::FeeAmmSwap(key, ..) => key,
-                StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => return false,
+            let Some((slot, ..)) = storage_write(action) else {
+                return false;
             };
-            writes.slots.insert((action.address(), *slot));
+            writes.slots.insert((action.address(), slot));
             true
         });
         if !range.is_empty() {
@@ -84,8 +82,25 @@ impl RecordingFeeManager {
     }
 }
 
-/// Derives a slot's entry and exit values from ordered writes within the post-fee hook.
-/// Rejects discontinuous writes rather than attributing them to fees.
+/// Slot, entry value, and exit value of a storage-mutating action.
+fn storage_write(action: &StorageAction) -> Option<(U256, U256, Option<U256>)> {
+    Some(match *action {
+        StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => return None,
+        StorageAction::Sstore(_, slot, before, after) => (slot, before, Some(after)),
+        StorageAction::Sinc(_, slot, before, delta) => (slot, before, before.checked_add(delta)),
+        StorageAction::Sdec(_, slot, before, delta) => (slot, before, before.checked_sub(delta)),
+        StorageAction::FeeAmmSwap(slot, before, amount_in) => {
+            let mut pool = Pool::decode_from_slot(before);
+            let after = compute_amount_out(amount_in).ok().and_then(|out| {
+                pool.apply_swap(amount_in, out).ok()?;
+                pool.encode_to_slot().ok()
+            });
+            (slot, before, after)
+        }
+    })
+}
+
+/// Derives entry and exit values from ordered post-fee writes, rejecting discontinuities.
 pub(super) fn post_fee_slot_change(
     actions: &[StorageAction],
     address: Address,
@@ -93,28 +108,13 @@ pub(super) fn post_fee_slot_change(
 ) -> Option<(U256, U256)> {
     let mut change: Option<(U256, U256)> = None;
     for action in actions {
-        let key = match action {
-            StorageAction::Sstore(_, key, ..)
-            | StorageAction::Sinc(_, key, ..)
-            | StorageAction::Sdec(_, key, ..)
-            | StorageAction::FeeAmmSwap(key, ..) => *key,
-            StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => continue,
+        let Some((key, before, after)) = storage_write(action) else {
+            continue;
         };
         if action.address() != address || key != slot {
             continue;
         }
-        let (before, after) = match *action {
-            StorageAction::Sstore(_, _, before, after) => (before, after),
-            StorageAction::Sinc(_, _, before, delta) => (before, before.checked_add(delta)?),
-            StorageAction::Sdec(_, _, before, delta) => (before, before.checked_sub(delta)?),
-            StorageAction::FeeAmmSwap(_, before, amount_in) => {
-                let mut pool = Pool::decode_from_slot(before);
-                pool.apply_swap(amount_in, compute_amount_out(amount_in).ok()?)
-                    .ok()?;
-                (before, pool.encode_to_slot().ok()?)
-            }
-            StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => continue,
-        };
+        let after = after?;
         let initial = match change {
             Some((initial, current)) if current == before => initial,
             Some(_) => return None,
@@ -228,7 +228,7 @@ mod tests {
             post_fee_slot_change(
                 &[StorageAction::FeeAmmSwap(slot, old, amount)],
                 TIP_FEE_MANAGER_ADDRESS,
-                slot,
+                slot
             ),
             Some((old, expected.encode_to_slot().unwrap()))
         );
