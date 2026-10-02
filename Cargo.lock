@@ -14098,6 +14098,7 @@ dependencies = [
  "reth-rpc-eth-api",
  "reth-storage-api",
  "reth-trie",
+ "reth-trie-common",
  "revm",
  "serde_json",
  "sha2 0.10.9",

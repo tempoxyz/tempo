@@ -15,6 +15,7 @@ use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_sol_types::SolCall;
 use core::{fmt, num::NonZeroU64};
+use tempo_contracts::earn::earn_payment_kind;
 use tempo_contracts::precompiles::{
     ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, zone_portal::ZonePortal,
 };
@@ -412,6 +413,46 @@ impl TempoTxEnvelope {
                         .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
                     && tx.calls[0].value.is_zero()
                     && is_canonical_portal_withdrawal(tx.calls[0].to.to(), &tx.calls[0].input)
+            }
+        }
+    }
+
+    /// T15 candidate for an exact, bounded native Earn vault or fee payment.
+    /// The runtime checks system-owned registration and code identities before
+    /// this candidate can receive payment-lane capacity.
+    pub fn is_native_earn_payment_candidate(&self) -> bool {
+        if !self.value().is_zero() {
+            return false;
+        }
+        let matches =
+            |to: Option<&Address>, input: &[u8]| to.is_some() && earn_payment_kind(input).is_some();
+        match self {
+            Self::Legacy(tx) => matches(tx.tx().to.to(), &tx.tx().input),
+            Self::Eip2930(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && matches(tx.to.to(), &tx.input)
+            }
+            Self::Eip1559(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && matches(tx.to.to(), &tx.input)
+            }
+            Self::Eip7702(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty()
+                    && tx.authorization_list.is_empty()
+                    && matches(Some(&tx.to), &tx.input)
+            }
+            Self::AA(tx) => {
+                let tx = tx.tx();
+                tx.calls.len() == 1
+                    && tx.access_list.is_empty()
+                    && tx.tempo_authorization_list.is_empty()
+                    && tx
+                        .key_authorization
+                        .as_ref()
+                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                    && tx.calls[0].value.is_zero()
+                    && matches(tx.calls[0].to.to(), &tx.calls[0].input)
             }
         }
     }

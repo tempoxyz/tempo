@@ -11,7 +11,7 @@ use commonware_codec::ReadExt;
 use evm2::{
     EvmTypes, TxResult, TxResultWithState,
     bytecode::Bytecode,
-    evm::{Bal, PendingState, SystemTx},
+    evm::{AccountInfo, Bal, PendingState, SystemTx},
 };
 use reth_chainspec::EthChainSpec as _;
 use reth_evm::{
@@ -21,8 +21,12 @@ use reth_evm::{
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::EvmState;
-use std::sync::Arc;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use std::{collections::HashSet, sync::Arc};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::NativeEarnStack};
+use tempo_contracts::earn::{
+    EARN_IMPLEMENTATION_SLOT, EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
+    NATIVE_EARN_REGISTRY_ADDRESS, earn_fees_clone_runtime, earn_registration_slot,
+};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -201,6 +205,7 @@ pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
     t13_active_at_genesis: bool,
+    native_earn_manifest: Vec<NativeEarnStack>,
     section: BlockSection,
     extra_data: Bytes,
 
@@ -223,6 +228,7 @@ impl<'a> TempoBlockExecutor<'a> {
         Self {
             t13_active_at_genesis: chain_spec
                 .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
+            native_earn_manifest: chain_spec.info.native_earn_manifest().to_vec(),
             incentive_gas_used: 0,
             block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
@@ -337,6 +343,192 @@ impl<'a> TempoBlockExecutor<'a> {
         if !state.is_empty() {
             self.inner.commit_pending_state(&state);
         }
+        Ok(())
+    }
+
+    fn earn_account(
+        &mut self,
+        address: Address,
+        expected_hash: B256,
+    ) -> Result<AccountInfo, BlockExecutionError> {
+        let info = self
+            .evm_mut()
+            .state_mut()
+            .account_info_untracked(&address)
+            .map_err(map_database_error)?
+            .ok_or_else(|| {
+                BlockValidationError::msg(format!("missing Earn activation account {address}"))
+            })?;
+        if info.code_hash != expected_hash {
+            return Err(BlockValidationError::msg(format!(
+                "Earn activation code mismatch at {address}"
+            ))
+            .into());
+        }
+        Ok(info)
+    }
+
+    fn earn_slot(&mut self, address: Address, slot: U256) -> Result<U256, BlockExecutionError> {
+        self.evm_mut()
+            .state_mut()
+            .storage_slot_untracked(&address, &slot)
+            .map_err(map_database_error)
+    }
+
+    /// Atomically installs the v1 runtime only for legacy accounts in the
+    /// consensus manifest, retaining their nonce, balance, and existing slots.
+    /// A registry marker makes this one-shot across later blocks and replay.
+    fn migrate_native_earn_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let registry = self
+            .evm_mut()
+            .state_mut()
+            .account_info_untracked(&NATIVE_EARN_REGISTRY_ADDRESS)
+            .map_err(map_database_error)?;
+        if let Some(info) = &registry
+            && info.code_hash != KECCAK256_EMPTY
+        {
+            if info.code_hash == alloy_primitives::keccak256([0xef]) {
+                return Ok(());
+            }
+            return Err(BlockValidationError::msg("native Earn registry address occupied").into());
+        }
+        if self.native_earn_manifest.len() > 128 {
+            return Err(
+                BlockValidationError::msg("native Earn manifest exceeds 128 stacks").into(),
+            );
+        }
+        let mut seen = HashSet::new();
+        let mut previous_vault = None;
+        let mut state = PendingState::default();
+        let entries = self.native_earn_manifest.clone();
+        for entry in entries {
+            if previous_vault.is_some_and(|previous| entry.vault <= previous) {
+                return Err(
+                    BlockValidationError::msg("native Earn manifest must sort by vault").into(),
+                );
+            }
+            previous_vault = Some(entry.vault);
+            if entry.vault == Address::ZERO
+                || entry.fees == Address::ZERO
+                || entry.asset == Address::ZERO
+                || entry.earn_share == Address::ZERO
+                || entry.engine == Address::ZERO
+                || entry.vault_implementation == Address::ZERO
+                || entry.fees_implementation == Address::ZERO
+                || entry.vault == entry.fees
+                || !seen.insert(entry.vault)
+                || !seen.insert(entry.fees)
+            {
+                return Err(
+                    BlockValidationError::msg("duplicate or zero native Earn account").into(),
+                );
+            }
+            let vault = self.earn_account(entry.vault, entry.vault_runtime_hash)?;
+            let fees = self.earn_account(entry.fees, entry.fees_runtime_hash)?;
+            self.earn_account(entry.vault_implementation, entry.vault_implementation_hash)?;
+            self.earn_account(entry.fees_implementation, entry.fees_implementation_hash)?;
+            self.earn_account(entry.engine, entry.engine_hash)?;
+            if alloy_primitives::keccak256(earn_fees_clone_runtime(entry.fees_implementation))
+                != entry.fees_runtime_hash
+            {
+                return Err(BlockValidationError::msg("EarnFees clone target mismatch").into());
+            }
+            let address_word = |address: Address| U256::from_be_slice(address.as_slice());
+            for (address, slot, expected) in [
+                (
+                    entry.vault,
+                    EARN_IMPLEMENTATION_SLOT,
+                    address_word(entry.vault_implementation),
+                ),
+                (entry.vault, U256::ZERO, address_word(entry.engine)),
+                (entry.vault, U256::from(1), address_word(entry.asset)),
+                (entry.vault, U256::from(2), address_word(entry.earn_share)),
+                (entry.vault, U256::from(3), address_word(entry.fees)),
+                (entry.fees, U256::ZERO, address_word(entry.vault)),
+                (entry.fees, U256::from(1), address_word(entry.earn_share)),
+                (entry.fees, EARN_IMPLEMENTATION_SLOT, U256::ZERO),
+            ] {
+                if self.earn_slot(address, slot)? != expected {
+                    return Err(BlockValidationError::msg(format!(
+                        "Earn activation storage mismatch at {address}, slot {slot}"
+                    ))
+                    .into());
+                }
+            }
+            let runtime =
+                Bytecode::new_raw(Bytes::copy_from_slice(NATIVE_EARN_DISPATCHER_V1_RUNTIME));
+            state.insert_account(
+                entry.vault,
+                Some(vault.clone()),
+                Some(vault.with_code(runtime.clone())),
+            );
+            state.insert_account(
+                entry.fees,
+                Some(fees.clone()),
+                Some(fees.with_code(runtime)),
+            );
+            state.insert_storage(
+                entry.fees,
+                EARN_IMPLEMENTATION_SLOT,
+                U256::ZERO,
+                address_word(entry.fees_implementation),
+            );
+            for (account, values) in [
+                (
+                    entry.vault,
+                    [
+                        U256::from(1),
+                        address_word(entry.fees),
+                        address_word(entry.vault_implementation),
+                        U256::from_be_slice(entry.vault_implementation_hash.as_slice()),
+                        address_word(entry.asset),
+                        address_word(entry.earn_share),
+                        U256::from_be_slice(entry.engine_hash.as_slice()),
+                    ],
+                ),
+                (
+                    entry.fees,
+                    [
+                        U256::from(2),
+                        address_word(entry.vault),
+                        address_word(entry.fees_implementation),
+                        U256::from_be_slice(entry.fees_implementation_hash.as_slice()),
+                        address_word(entry.asset),
+                        address_word(entry.earn_share),
+                        U256::ZERO,
+                    ],
+                ),
+            ] {
+                for (field, value) in [
+                    EarnRegistrationField::Kind,
+                    EarnRegistrationField::Pair,
+                    EarnRegistrationField::Implementation,
+                    EarnRegistrationField::ImplementationHash,
+                    EarnRegistrationField::Asset,
+                    EarnRegistrationField::EarnShare,
+                    EarnRegistrationField::EngineHash,
+                ]
+                .into_iter()
+                .zip(values)
+                {
+                    let slot = earn_registration_slot(account, field);
+                    if self.earn_slot(NATIVE_EARN_REGISTRY_ADDRESS, slot)? != U256::ZERO {
+                        return Err(BlockValidationError::msg(
+                            "native Earn registry slot occupied",
+                        )
+                        .into());
+                    }
+                    state.insert_storage(NATIVE_EARN_REGISTRY_ADDRESS, slot, U256::ZERO, value);
+                }
+            }
+        }
+        let marker = Bytecode::new_raw(Bytes::from_static(&[0xef]));
+        state.insert_account(
+            NATIVE_EARN_REGISTRY_ADDRESS,
+            registry.clone(),
+            Some(registry.unwrap_or_default().with_code(marker)),
+        );
+        self.inner.commit_pending_state(&state);
         Ok(())
     }
 
@@ -575,6 +767,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
+        if self.evm().config_spec_id().is_t16() {
+            self.migrate_native_earn_at_boundary()?;
+        }
 
         Ok(())
     }
@@ -602,6 +797,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             && original.is_native_portal_settlement_candidate();
         let native_withdrawal_candidate = self.evm().config_spec_id().is_t15()
             && original.is_native_portal_withdrawal_candidate();
+        let native_earn_candidate =
+            self.evm().config_spec_id().is_t16() && original.is_native_earn_payment_candidate();
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
@@ -621,7 +818,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     .evm()
                     .ext()
                     .native_call_context
-                    .verified_portal_settlement());
+                    .verified_portal_settlement())
+            || (native_earn_candidate
+                && self.evm().ext().native_call_context.verified_earn_payment());
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -808,6 +1007,10 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
+    use tempo_contracts::earn::{
+        EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_REGISTRY_ADDRESS,
+        earn_fees_clone_runtime, earn_registration_slot,
+    };
     use tempo_contracts::{
         precompiles::{
             CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
@@ -1881,6 +2084,184 @@ mod tests {
             reth_execution_types::revm_account(&original_info),
             "state hook account should preserve existing original_info"
         );
+    }
+
+    #[test]
+    fn native_earn_fork_migrates_only_manifest_accounts_atomically() {
+        for corrupt_fee_binding in [false, true] {
+            let vault_address = Address::with_last_byte(0x91);
+            let fees_address = Address::with_last_byte(0x92);
+            let vault_implementation = Address::with_last_byte(0x93);
+            let fees_implementation = Address::with_last_byte(0x94);
+            let engine = Address::with_last_byte(0x95);
+            let asset = Address::with_last_byte(0x96);
+            let earn_share = Address::with_last_byte(0x97);
+            let unrelated = Address::with_last_byte(0x98);
+            let vault_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x00, 0x56]));
+            let fees_code = Bytecode::new_raw(Bytes::copy_from_slice(&earn_fees_clone_runtime(
+                fees_implementation,
+            )));
+            let vault_impl_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01, 0x56]));
+            let fees_impl_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x02, 0x56]));
+            let engine_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x03, 0x56]));
+            let unrelated_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x04, 0x56]));
+            let entry = NativeEarnStack {
+                vault: vault_address,
+                vault_runtime_hash: vault_code.hash_slow(),
+                vault_implementation,
+                vault_implementation_hash: vault_impl_code.hash_slow(),
+                fees: fees_address,
+                fees_runtime_hash: fees_code.hash_slow(),
+                fees_implementation,
+                fees_implementation_hash: fees_impl_code.hash_slow(),
+                asset,
+                earn_share,
+                engine,
+                engine_hash: engine_code.hash_slow(),
+            };
+            let mut genesis = DEV.genesis().clone();
+            genesis
+                .config
+                .extra_fields
+                .insert_value(
+                    "nativeEarnManifest".into(),
+                    serde_json::to_value([&entry]).unwrap(),
+                )
+                .unwrap();
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t15Time".into(), 0)
+                .unwrap();
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t16Time".into(), 10)
+                .unwrap();
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            assert_eq!(chainspec.info.native_earn_manifest(), &[entry]);
+            let mut db = InMemoryDB::default();
+            for (address, code) in [
+                (vault_address, vault_code.clone()),
+                (fees_address, fees_code.clone()),
+                (vault_implementation, vault_impl_code),
+                (fees_implementation, fees_impl_code),
+                (engine, engine_code),
+                (unrelated, unrelated_code.clone()),
+            ] {
+                db.insert_account_info(
+                    &address,
+                    AccountInfo {
+                        balance: U256::from(123),
+                        nonce: 7,
+                        code_hash: code.hash_slow(),
+                        code: Some(code),
+                        ..Default::default()
+                    },
+                );
+            }
+            let word = |address: Address| U256::from_be_slice(address.as_slice());
+            for (address, slot, value) in [
+                (
+                    vault_address,
+                    EARN_IMPLEMENTATION_SLOT,
+                    word(vault_implementation),
+                ),
+                (vault_address, U256::ZERO, word(engine)),
+                (vault_address, U256::from(1), word(asset)),
+                (vault_address, U256::from(2), word(earn_share)),
+                (vault_address, U256::from(3), word(fees_address)),
+                (fees_address, U256::ZERO, word(vault_address)),
+                (
+                    fees_address,
+                    U256::from(1),
+                    word(if corrupt_fee_binding {
+                        unrelated
+                    } else {
+                        earn_share
+                    }),
+                ),
+                (vault_address, U256::from(42), U256::from(777)),
+            ] {
+                db.insert_account_storage(&address, &slot, &value);
+            }
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T16)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build(&mut db, &chainspec);
+            let mut block = *executor.evm().block();
+            block.timestamp = U256::from(10);
+            executor.evm_mut().set_block(block);
+            let result = executor.apply_pre_execution_changes();
+            if corrupt_fee_binding {
+                assert!(result.is_err());
+                assert_eq!(
+                    executor
+                        .earn_account(vault_address, vault_code.hash_slow())
+                        .unwrap()
+                        .nonce,
+                    7
+                );
+                assert_eq!(
+                    executor
+                        .earn_account(fees_address, fees_code.hash_slow())
+                        .unwrap()
+                        .nonce,
+                    7
+                );
+                assert_eq!(
+                    executor
+                        .earn_slot(
+                            NATIVE_EARN_REGISTRY_ADDRESS,
+                            earn_registration_slot(vault_address, EarnRegistrationField::Kind)
+                        )
+                        .unwrap(),
+                    U256::ZERO
+                );
+                continue;
+            }
+            result.unwrap();
+            executor.migrate_native_earn_at_boundary().unwrap();
+            let vault = executor
+                .earn_account(vault_address, NATIVE_EARN_DISPATCHER_V1_HASH)
+                .unwrap();
+            let fees = executor
+                .earn_account(fees_address, NATIVE_EARN_DISPATCHER_V1_HASH)
+                .unwrap();
+            assert_eq!((vault.balance, vault.nonce), (U256::from(123), 7));
+            assert_eq!((fees.balance, fees.nonce), (U256::from(123), 7));
+            assert_eq!(
+                executor.earn_slot(vault_address, U256::from(42)).unwrap(),
+                U256::from(777)
+            );
+            assert_eq!(
+                executor
+                    .earn_slot(fees_address, EARN_IMPLEMENTATION_SLOT)
+                    .unwrap(),
+                word(fees_implementation)
+            );
+            assert_eq!(
+                executor
+                    .earn_slot(
+                        NATIVE_EARN_REGISTRY_ADDRESS,
+                        earn_registration_slot(vault_address, EarnRegistrationField::Kind)
+                    )
+                    .unwrap(),
+                U256::from(1)
+            );
+            assert_eq!(
+                executor
+                    .earn_slot(
+                        NATIVE_EARN_REGISTRY_ADDRESS,
+                        earn_registration_slot(fees_address, EarnRegistrationField::Kind)
+                    )
+                    .unwrap(),
+                U256::from(2)
+            );
+            executor
+                .earn_account(unrelated, unrelated_code.hash_slow())
+                .unwrap();
+        }
     }
 
     #[test]

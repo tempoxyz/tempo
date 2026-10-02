@@ -251,6 +251,8 @@ tempo_hardfork!(
         T14,
         /// Unscheduled native payment activation fork.
         T15,
+        /// Unscheduled native Earn migration and payment activation fork.
+        T16,
     }
 );
 
@@ -400,6 +402,7 @@ impl TempoHardfork {
             Self::T13 => None,
             Self::T14 => None,
             Self::T15 => None,
+            Self::T16 => None,
         }
     }
 
@@ -427,6 +430,7 @@ impl TempoHardfork {
             Self::T13 => None,
             Self::T14 => None,
             Self::T15 => None,
+            Self::T16 => None,
         }
     }
 
@@ -454,6 +458,7 @@ impl TempoHardfork {
             Self::T13 => None,
             Self::T14 => None,
             Self::T15 => None,
+            Self::T16 => None,
         }
     }
 
@@ -481,6 +486,7 @@ impl TempoHardfork {
             Self::T13 => None,
             Self::T14 => None,
             Self::T15 => None,
+            Self::T16 => None,
         }
     }
 }

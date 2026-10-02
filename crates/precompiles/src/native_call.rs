@@ -60,6 +60,7 @@ pub struct NativeCallContext {
     budget: RefCell<Option<Rc<NativeCallBudget>>>,
     verified_portal_deposit: Cell<bool>,
     verified_portal_settlement: Cell<bool>,
+    verified_earn_payment: Cell<bool>,
 }
 
 impl Clone for NativeCallContext {
@@ -88,6 +89,7 @@ impl NativeCallContext {
         *self.budget.get_mut() = None;
         self.verified_portal_deposit.set(false);
         self.verified_portal_settlement.set(false);
+        self.verified_earn_payment.set(false);
     }
 
     /// Records that the top-level portal deposit passed its native identity checks.
@@ -108,6 +110,16 @@ impl NativeCallContext {
     /// Whether the current transaction entered a verified native batch.
     pub fn verified_portal_settlement(&self) -> bool {
         self.verified_portal_settlement.get()
+    }
+
+    /// Records a top-level Earn payment after runtime and registry checks.
+    pub fn record_verified_earn_payment(&self) {
+        self.verified_earn_payment.set(true);
+    }
+
+    /// Whether this transaction entered an authenticated native Earn endpoint.
+    pub fn verified_earn_payment(&self) -> bool {
+        self.verified_earn_payment.get()
     }
 }
 
