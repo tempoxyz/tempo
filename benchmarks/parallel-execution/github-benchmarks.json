@@ -1,5 +1,5 @@
 {
-  "status": "not_run",
+  "status": "in_progress",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
@@ -7,21 +7,17 @@
   },
   "repository": "tempoxyz/tempo",
   "published_branch": "onbjerg/parallel-execution",
-  "published_commit": "816a7a153f6b2fce043f8fd3503ef7010589fb54",
-  "source_commit": "3f49b9da4a95c1b50421024f358090fbe464b7c8",
-  "tree": "e8523e8e22fac22ed18add13107c04eb5b45be73",
-  "tree_verified_identical": true,
-  "publication": "Git data API snapshot commit, parent d4f7943fa84991a5aee1f1b335754ca9010f4edc; local commit history retained separately",
+  "published_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
+  "source_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
+  "publication": "Git push; original local history linked to earlier API snapshot and latest main",
   "workflow": ".github/workflows/bench-e2e.yml",
-  "workflow_inspected_at": "69597607de23d5e6a5497b1d67346acd28cff7a0",
+  "workflow_inspected_at": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
   "workflow_ref": "main",
   "trigger": "workflow_dispatch; no PR required",
   "authentication": "Authenticated GitHub CLI verified for onbjerg (repo scope).",
   "compatibility": [
-    "Current benchmark harness uses two validators and supports per-side execution flags.",
-    "Published node is based on Tempo 1.6; inspected main is 1.14.",
-    "Current harness may invoke regenesis and encrypted consensus keys; the published node lacks regenesis and --consensus.secret. Resolve compatibility before dispatching.",
-    "A read-only upstream merge audit found 23 conflicting paths; original worktree is unchanged."
+    "Current-main port: Tempo 1.14, Reth 2.7, revm 43; regenesis and consensus key handling retained.",
+    "Current-main native storage-action replay, payload gas accounting and background state-root building retained."
   ],
   "planned_targets_tps": [
     10000,
@@ -34,6 +30,45 @@
     "Runner gives each validator eight physical cores / sixteen logical CPUs; start with eight execution workers and measure scaling.",
     "Pin both baseline and feature SHAs, record harness SHA, build features, hardfork, workload, runner, input rate, confirmed TPS and failures.",
     "Run root computation normally. Do not use skip-state-root for acceptance measurements.",
-    "No run URL or performance result exists yet."
+    "First current-main benchmark dispatched with pinned baseline, feature, txgen and T14; results pending."
+  ],
+  "previous_publication": {
+    "published_commit": "816a7a153f6b2fce043f8fd3503ef7010589fb54",
+    "source_commit": "3f49b9da4a95c1b50421024f358090fbe464b7c8",
+    "tree": "e8523e8e22fac22ed18add13107c04eb5b45be73",
+    "publication": "Git data API snapshot commit, parent d4f7943fa84991a5aee1f1b335754ca9010f4edc; local commit history retained separately"
+  },
+  "baseline_commit": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
+  "runs": [
+    {
+      "id": 37009502041,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37009502041",
+      "created_at": "2026-10-02T12:54:02Z",
+      "harness_sha": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
+      "runner": "ghr-euw-05",
+      "status": "in_progress",
+      "inputs": {
+        "baseline": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
+        "feature": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "50000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "off",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "true",
+        "run-pairs": "3"
+      }
+    }
   ]
 }

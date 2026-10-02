@@ -51,5 +51,8 @@
       "path": "/tmp/tempo-main-port-node-tip20-debug.log",
       "sha256": "a63805537fd39c85ea8b82974df69d53006adef52aee34647140987ff011fe2f"
     }
-  ]
+  ],
+  "merged_main": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
+  "feature_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
+  "node_build": "cargo +1.98.1 build --release -p tempo --bin tempo passed"
 }
