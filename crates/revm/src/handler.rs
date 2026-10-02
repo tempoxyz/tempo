@@ -67,6 +67,8 @@ use crate::{
     signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
 };
 
+mod funding;
+
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
 
