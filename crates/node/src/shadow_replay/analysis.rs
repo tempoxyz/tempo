@@ -14,16 +14,9 @@ use tempo_primitives::Block;
 pub(super) const MAX_SAMPLES: usize = 8;
 
 /// Compared field names that expectations may accept; `execution` (invalidation) is excluded.
+#[rustfmt::skip]
 pub(super) const ACCEPTABLE_FIELDS: [&str; 9] = [
-    "outcome",
-    "output",
-    "receipt_logs",
-    "existence",
-    "balance",
-    "nonce",
-    "code",
-    "storage_reset",
-    "storage",
+    "outcome", "output", "receipt_logs", "existence", "balance", "nonce", "code", "storage_reset", "storage",
 ];
 
 /// Difference counts, comparison coverage, and bounded diagnostic samples.

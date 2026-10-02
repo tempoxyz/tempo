@@ -41,19 +41,6 @@ pub(super) struct Recorded {
 #[derive(Debug, Clone, Default)]
 pub(super) struct ReplayInspector(Rc<RefCell<Recorded>>);
 
-/// Storage slots and log ranges produced by protocol fee hooks during one transaction.
-#[derive(Debug, Default)]
-pub(super) struct FeeWrites {
-    pub(super) slots: HashSet<(Address, U256)>,
-    pub(super) log_ranges: Vec<Range<usize>>,
-    /// Successful pre-fee charge limit, used to validate the post-fee refund.
-    pub(super) pre_tx_max: Option<U256>,
-    /// Ordered post-fee actions; the first write's old value is the application's final value.
-    pub(super) post_tx_actions: Vec<StorageAction>,
-    /// Log index, token, payer, actual charge, and refund of the successful post-fee hook.
-    pub(super) post_tx_transfer: Option<(usize, Address, Address, U256, U256)>,
-}
-
 impl ReplayInspector {
     /// Returns everything recorded since the last call and resets the recorder.
     pub(super) fn take(&self) -> Recorded {
@@ -111,10 +98,23 @@ impl ReplayInspector {
     }
 }
 
+/// Storage slots and log ranges produced by protocol fee hooks during one transaction.
+#[derive(Debug, Default)]
+pub(super) struct FeeWrites {
+    pub(super) slots: HashSet<(Address, U256)>,
+    pub(super) log_ranges: Vec<Range<usize>>,
+    /// Successful pre-fee charge limit, used to validate the post-fee refund.
+    pub(super) pre_tx_max: Option<U256>,
+    /// Ordered post-fee actions; the first write's old value is the application's final value.
+    pub(super) post_tx_actions: Vec<StorageAction>,
+    /// Log index, token, payer, actual charge, and refund of the successful post-fee hook.
+    pub(super) post_tx_transfer: Option<(usize, Address, Address, U256, U256)>,
+}
+
 /// Slot, entry value, and exit value of a storage-mutating action. `after` is `None` when it
 /// can't be computed (overflow or a failed swap); reads and checks return `None`.
 fn storage_write(action: &StorageAction) -> Option<(U256, U256, Option<U256>)> {
-    let res = match *action {
+    Some(match *action {
         StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => return None,
         StorageAction::Sstore(_, slot, before, after) => (slot, before, Some(after)),
         StorageAction::Sinc(_, slot, before, delta) => (slot, before, before.checked_add(delta)),
@@ -127,8 +127,7 @@ fn storage_write(action: &StorageAction) -> Option<(U256, U256, Option<U256>)> {
             });
             (slot, before, after)
         }
-    };
-    Some(res)
+    })
 }
 
 /// Derives a slot's entry and exit values from ordered writes within the post-fee hook.
@@ -331,6 +330,7 @@ fn frame_transition(entry: &EvmState, exit: &EvmState) -> TransitionState {
 mod tests {
     use super::*;
     use reth_revm::state::{Account, AccountInfo, EvmStorageSlot, TransactionId};
+    use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
     fn account(balance: u64, slots: &[(u64, u64, u64)]) -> Account {
         let mut account = Account::from(AccountInfo {
@@ -433,7 +433,6 @@ mod tests {
         assert_eq!(outcomes, [TxOutcome::Success, TxOutcome::Revert]);
         assert!(recorder.take().calls.is_empty());
     }
-    use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
     #[test]
     fn post_fee_writes_require_continuity() {
