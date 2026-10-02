@@ -510,14 +510,16 @@ impl AA2dPool {
         // Expiring nonce txs are always independent (no nonce dependencies)
         independent.extend(self.expiring_nonce_txs.values().cloned());
 
-        BestAA2dTransactions {
-            independent,
-            by_id: self
-                .by_id
+        let mut by_id = HashMap::with_capacity_and_hasher(self.pending_2d, Default::default());
+        by_id.extend(
+            self.by_id
                 .iter()
                 .filter(|(_, tx)| tx.is_pending())
-                .map(|(id, tx)| (*id, tx.inner.clone()))
-                .collect(),
+                .map(|(id, tx)| (*id, tx.inner.clone())),
+        );
+        BestAA2dTransactions {
+            independent,
+            by_id,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
@@ -1512,8 +1514,8 @@ enum IncomingAA2dTransaction {
 pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
     independent: BTreeSet<PendingTransaction<TxOrdering>>,
-    /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
-    by_id: BTreeMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
+    /// Pending transactions indexed for nonce-chain lookups; `independent` determines ordering.
+    by_id: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
@@ -3641,6 +3643,75 @@ mod tests {
     // ============================================
     // BestAA2dTransactions tests
     // ============================================
+
+    /// Snapshot and selection costs, excluding pool admission and transaction construction.
+    #[test]
+    #[ignore = "release-mode throughput benchmark"]
+    fn best_transactions_throughput() {
+        use std::time::Instant;
+        let scattered = std::env::var_os("TEMPO_POOL_BENCH_SCATTERED").is_some();
+        let counts = std::env::var("TEMPO_POOL_BENCH_COUNTS")
+            .unwrap_or_else(|_| "10000,25000,50000,100000".into());
+        println!("transactions\trepeat\tsnapshot_seconds\tdrain_seconds\tselected_per_second");
+        for count in counts
+            .split(',')
+            .map(|value| value.parse::<usize>().unwrap())
+        {
+            let mut pool = AA2dPool::new(AA2dPoolConfig {
+                pending_limit: SubPoolLimit {
+                    max_txs: count,
+                    max_size: usize::MAX,
+                },
+                max_txs_per_sender: count,
+                ..Default::default()
+            });
+            let mut expected = Vec::with_capacity(count);
+            for i in 0..count {
+                let (sender, nonce_key) = if scattered {
+                    (
+                        Address::from_word(B256::from(U256::from(i % 100 + 1))),
+                        U256::from_be_bytes(alloy_primitives::keccak256((i + 1).to_be_bytes()).0),
+                    )
+                } else {
+                    (
+                        Address::from_word(B256::from(U256::from(i + 1))),
+                        U256::from(i + 1),
+                    )
+                };
+                let tx = TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .calls(vec![Call {
+                        to: TxKind::Call(Address::ZERO),
+                        value: U256::ZERO,
+                        input: Bytes::new(),
+                    }])
+                    .build();
+                expected.push(*tx.hash());
+                pool.add_transaction(
+                    Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                    0,
+                    TempoHardfork::T1,
+                )
+                .unwrap();
+            }
+            // Equal fees retain submission order. Keep output allocation outside timing.
+            let mut selected = Vec::with_capacity(count);
+            for repeat in 0..5 {
+                selected.clear();
+                let start = Instant::now();
+                let best = pool.best_transactions();
+                let snapshot = start.elapsed().as_secs_f64();
+                let start = Instant::now();
+                selected.extend(best.map(|tx| *tx.hash()));
+                let drain = start.elapsed().as_secs_f64();
+                assert_eq!(selected, expected);
+                println!(
+                    "{count}\t{repeat}\t{snapshot:.6}\t{drain:.6}\t{:.0}",
+                    count as f64 / (snapshot + drain)
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_best_transactions_iterator() {

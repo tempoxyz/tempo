@@ -462,6 +462,43 @@ finishing takes 1.959 s. These are separate trials with different transaction
 counts. The node still falls far short of sustained 50k TPS, and speculative
 execution still loses to sequential execution on this cheap shared-state workload.
 
+## AA selection index
+
+The builder profile also identified transaction selection as a serial cost. The
+AA iterator now uses a preallocated hash index for transaction-ID lookups and
+removals. Its separate priority-ordered set still determines selection, including
+submission-order ties; the underlying pool retains its ordered range index.
+All 225 pool tests pass, covering nonce dependencies, invalidation and live updates.
+
+`pool-index.tsv` measures snapshot construction and complete selection at
+10k/25k/50k/100k queued transactions, excluding admission and transaction creation.
+Every repetition checks the complete selected hash sequence. At 100k transactions,
+the median of five repetitions with 100 senders and scattered nonce keys falls
+from 61.4 ms to 48.5 ms. Sorted IDs regress from 35.5 ms to 43.9 ms, so this is a
+workload-dependent improvement. Reproduce with:
+
+```sh
+TEMPO_POOL_BENCH_SCATTERED=1 CARGO_PROFILE_RELEASE_LTO=false \
+  cargo test -p tempo-transaction-pool --release --locked \
+  best_transactions_throughput -- --ignored --nocapture
+```
+
+Omit `TEMPO_POOL_BENCH_SCATTERED` for sorted IDs; `TEMPO_POOL_BENCH_COUNTS`
+overrides the queue sizes. These are selection timings, not EVM TPS.
+
+`pool-index-node.json` and `node/index-*.json` retain two real-node comparisons
+against `1ab7292d`, using five-second sends at 50k offered TPS and a 5B-gas genesis.
+The second comparison reverses variant order. Confirmed rates include backlog:
+
+| Index | Sequential TPS, first / repeat | 16 workers TPS, first / repeat |
+| --- | ---: | ---: |
+| Tree | 26,528 / 26,460 | 23,383 / 23,240 |
+| Hash | 27,057 / 27,353 | 24,364 / 24,863 |
+
+All 1,851,870 accepted user transactions confirmed with zero execution failures.
+The gain persists in the repeat, but these short trials are not steady-state
+throughput evidence and remain well below sustained 50k node TPS.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
