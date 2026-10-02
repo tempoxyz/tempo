@@ -82,6 +82,7 @@ serde = [
 	"tempo-primitives/serde",
 	"p256/serde",
 	"p384/serde",
+	"secp256k1/serde",
 	"rand_08/serde",
 ]
 # Devnet-only: allow `ZoneVerifier::verify` to use PCRs supplied at startup.
