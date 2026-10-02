@@ -797,11 +797,54 @@ where
             return Ok(oog);
         }
 
-        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
-            self.execute_multi_call(evm, &adjusted_gas, calls)
+        if let Some(candidate) = evm.body_replay.candidate.take()
+            && let Some(result) = candidate.try_apply(&mut evm.ctx, &adjusted_gas)
+        {
+            evm.body_replay.reused = true;
+            return Ok(result);
+        }
+
+        // Plain fee-free transactions have no pre-execution storage to rebase.
+        // CREATE needs full replay because it can clear unobserved storage.
+        let recording = evm.body_replay.recording
+            && (evm.tx().inner.gas_price != 0 || evm.tx().tempo_tx_env.is_some())
+            && evm.tx().calls().all(|(kind, _)| kind.is_call());
+        let before = recording.then(|| evm.ctx.journaled_state.inner.clone());
+        let before_error_context = recording
+            .then(|| evm.ctx.local.precompile_error_message.clone())
+            .flatten();
+        let mut execute = || {
+            if let Some(tempo_tx_env) = evm.tx().tempo_tx_env.as_ref() {
+                let calls = tempo_tx_env.aa_calls.clone();
+                self.execute_multi_call(evm, &adjusted_gas, calls)
+            } else {
+                self.execute_single_call(evm, &adjusted_gas)
+            }
+        };
+        if let Some(before) = before {
+            let start = std::time::Instant::now();
+            let (result, accesses) = tempo_precompiles::storage::access::record(execute);
+            let worth_reusing = start.elapsed().saturating_sub(accesses.database_time)
+                >= evm.body_replay.minimum_duration;
+            evm.body_replay.captured =
+                result
+                    .as_ref()
+                    .ok()
+                    .filter(|_| worth_reusing)
+                    .and_then(|result| {
+                        crate::replay::BodyCache::capture(
+                            before,
+                            evm.ctx.journaled_state.inner.clone(),
+                            adjusted_gas,
+                            accesses,
+                            result.clone(),
+                            before_error_context,
+                            evm.ctx.local.precompile_error_message.clone(),
+                        )
+                    });
+            result
         } else {
-            self.execute_single_call(evm, &adjusted_gas)
+            execute()
         }
     }
 

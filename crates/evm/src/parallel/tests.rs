@@ -110,7 +110,8 @@ fn differential_with_backoff(
     parallel.set_speculative_executor(Some(
         SpeculativeExecutor::new(threads, batch_size)
             .unwrap()
-            .with_adaptive_backoff(adaptive),
+            .with_adaptive_backoff(adaptive)
+            .with_minimum_body_duration(Duration::ZERO),
     ));
     let mut sequential_gas = 0;
     let mut parallel_gas = 0;
@@ -201,6 +202,41 @@ fn speculative_nonce_errors_are_retried_in_order() {
 }
 
 #[test]
+fn failed_speculation_does_not_hide_the_next_transactions_reads() {
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    let txs = [
+        transaction(
+            0,
+            PATH_USD_ADDRESS,
+            0,
+            &ITIP20::transferCall {
+                to: address(2),
+                amount: U256::from(17),
+            }
+            .abi_encode(),
+        ),
+        // Validation loads sender 2's balance, then fails on its nonce.
+        transaction(2, address(900), 1, &[]),
+        transaction(
+            2,
+            PATH_USD_ADDRESS,
+            0,
+            &ITIP20::transferCall {
+                to: address(100),
+                amount: U256::from(3),
+            }
+            .abi_encode(),
+        ),
+    ];
+    // One worker makes the error immediately precede the last execution. That
+    // execution must record the balance read even if revm retained it on error.
+    let stats = differential(funded_tip20_db(3), &txs, 1, 3);
+    assert_eq!(stats.retries, 1);
+    assert_eq!(stats.conflicts, 1);
+}
+
+#[test]
 fn conflict_backoff_preserves_results_and_resumes_parallel_work() {
     let shared = address(900);
     let independent = address(901);
@@ -245,35 +281,45 @@ fn reverted_reads_remain_dependencies() {
 
 #[test]
 fn generated_dependency_graphs_match_across_workers_and_windows() {
-    let target = address(900);
-    let mut db = TestDB::default();
-    // Increment the storage key in calldata and emit the new value.
-    contract(
-        &mut db,
-        target,
-        &[0x60, 0, 0x35, 0x80, 0x54, 0x60, 1, 1, 0x90, 0x55, 0],
-    );
-    let mut seed = 0x1234_5678u64;
-    let mut nonces = [0; 16];
-    let txs = (0..160)
-        .map(|_| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            let sender = (seed % 16) as usize;
-            let tx = transaction(
-                sender as u64,
-                target,
-                nonces[sender],
-                &U256::from(seed % 31).to_be_bytes::<32>(),
-            );
-            nonces[sender] += 1;
-            tx
-        })
-        .collect::<Vec<_>>();
-    for threads in [1, 2, 4] {
-        for window in [1, 7, 32] {
-            differential(db.clone(), &txs, threads, window);
+    for paid in [false, true] {
+        let target = address(900);
+        let mut db = if paid {
+            funded_tip20_db(16)
+        } else {
+            TestDB::default()
+        };
+        if paid {
+            contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
+        }
+        // Increment the storage key in calldata and emit the new value.
+        contract(
+            &mut db,
+            target,
+            &[0x60, 0, 0x35, 0x80, 0x54, 0x60, 1, 1, 0x90, 0x55, 0],
+        );
+        let mut seed = 0x1234_5678u64;
+        let mut nonces = [0; 16];
+        let txs = (0..160)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let sender = (seed % 16) as usize;
+                let mut tx = transaction(
+                    sender as u64,
+                    target,
+                    nonces[sender],
+                    &U256::from(seed % 31).to_be_bytes::<32>(),
+                );
+                tx.inner.gas_price = u128::from(paid);
+                nonces[sender] += 1;
+                tx
+            })
+            .collect::<Vec<_>>();
+        for threads in [1, 2, 4] {
+            for window in [1, 7, 32] {
+                differential(db.clone(), &txs, threads, window);
+            }
         }
     }
 }
@@ -326,7 +372,8 @@ fn tip20_transfers_track_balances_and_fee_counters() {
     use alloy_sol_types::SolCall;
     use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
     for paid in [false, true] {
-        let db = funded_tip20_db(16);
+        let mut db = funded_tip20_db(16);
+        contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
         let txs = (0..16)
             .map(|i| {
                 let mut tx = transaction(
@@ -355,6 +402,10 @@ fn tip20_transfers_track_balances_and_fee_counters() {
                 assert!(
                     stats.conflicts > 0,
                     "shared fee updates must conflict at {spec:?}"
+                );
+                assert!(
+                    stats.bodies_reused > 0,
+                    "independent transfer bodies at {spec:?}"
                 );
             } else {
                 assert_eq!(stats.reused, 16);
@@ -583,6 +634,309 @@ fn keychain_spending_limits_and_revocation_invalidate_candidates() {
     }
 }
 
+#[test]
+fn paid_call_bodies_reuse_success_revert_and_halt() {
+    for ending in [0x00, 0xfd, 0xfe] {
+        let mut db = funded_tip20_db(16);
+        contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
+        let target = address(900);
+        // Disjoint write, transient write, LOG0, then success/revert/invalid opcode.
+        let mut code = vec![
+            0x60, 1, 0x60, 0, 0x35, 0x55, 0x60, 1, 0x60, 0, 0x5d, 0x60, 0, 0x60, 0, 0xa0, 0x60, 0,
+            0x60, 0,
+        ];
+        code.push(ending);
+        contract(&mut db, target, &code);
+        let txs = (0..16)
+            .map(|i| {
+                let mut tx = transaction(i, target, 0, &U256::from(i).to_be_bytes::<32>());
+                tx.inner.gas_price = 1;
+                tx
+            })
+            .collect::<Vec<_>>();
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T1B,
+            TempoHardfork::T3,
+            TempoHardfork::T4,
+        ] {
+            let stats = differential_at_spec(db.clone(), &txs, 4, 16, spec);
+            assert!(
+                stats.bodies_reused >= 14,
+                "ending={ending:x} spec={spec:?}: {stats:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_fee_balance_reads_prevent_body_reuse_including_reverts() {
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::ITIP20};
+    for wrapped in [false, true] {
+        let mut db = funded_tip20_db(8);
+        contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+        let target = if wrapped {
+            address(900)
+        } else {
+            PATH_USD_ADDRESS
+        };
+        if wrapped {
+            // Read the native fee balance through STATICCALL, then REVERT with its
+            // return data. The reverted read must remain a dependency.
+            let mut code = vec![
+                0x60, 36, 0x60, 0, 0x60, 0, 0x37, 0x60, 32, 0x60, 0, 0x60, 36, 0x60, 0, 0x73,
+            ];
+            code.extend_from_slice(PATH_USD_ADDRESS.as_slice());
+            code.extend_from_slice(&[0x62, 0x0f, 0x42, 0x40, 0xfa, 0x50, 0x60, 32, 0x60, 0, 0xfd]);
+            contract(&mut db, target, &code);
+        }
+        let txs = (0..8)
+            .map(|i| {
+                let mut tx = transaction(
+                    i,
+                    target,
+                    0,
+                    &ITIP20::balanceOfCall {
+                        account: TIP_FEE_MANAGER_ADDRESS,
+                    }
+                    .abi_encode(),
+                );
+                tx.inner.gas_price = 1;
+                tx
+            })
+            .collect::<Vec<_>>();
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T1B,
+            TempoHardfork::T3,
+            TempoHardfork::T4,
+        ] {
+            let stats = differential_at_spec(db.clone(), &txs, 4, 8, spec);
+            assert_eq!(stats.conflicts, 7);
+            assert_eq!(stats.bodies_reused, 0, "wrapped={wrapped} spec={spec:?}");
+        }
+    }
+}
+
+#[test]
+fn body_replay_preserves_precompile_failure() {
+    let mut db = funded_tip20_db(16);
+    contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
+    // Invalid pairing input halts the transaction rather than returning success.
+    let target = Address::with_last_byte(8);
+    let txs = (0..16)
+        .map(|i| {
+            let mut tx = transaction(i, target, 0, &[1]);
+            tx.inner.gas_price = 1;
+            tx
+        })
+        .collect::<Vec<_>>();
+    let stats = differential(db, &txs, 4, 16);
+    assert_eq!(stats.bodies_reused, 15);
+}
+
+#[test]
+fn expiring_aa_bodies_rebase_nonce_ring_and_atomic_reverts() {
+    use alloy_evm::FromRecoveredTx;
+    use tempo_primitives::{
+        TempoSignature, TempoTransaction,
+        transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
+    };
+    let mut db = funded_tip20_db(16);
+    for native in [
+        tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
+        tempo_precompiles::NONCE_PRECOMPILE_ADDRESS,
+    ] {
+        contract(&mut db, native, &[0]);
+    }
+    let writer = address(900);
+    let reverter = address(901);
+    contract(
+        &mut db,
+        writer,
+        &[0x60, 1, 0x60, 0, 0x35, 0x55, 0x60, 0, 0x60, 0, 0xa0, 0],
+    );
+    contract(&mut db, reverter, &[0x60, 0, 0x60, 0, 0xfd]);
+    let mut txs = (0..16)
+        .map(|i| {
+            let tx = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: 1,
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                valid_before: std::num::NonZeroU64::new(25),
+                calls: vec![
+                    Call {
+                        to: writer.into(),
+                        value: U256::ZERO,
+                        input: U256::from(i).to_be_bytes::<32>().into(),
+                    },
+                    Call {
+                        to: if i % 2 == 0 { writer } else { reverter }.into(),
+                        value: U256::ZERO,
+                        input: U256::from(i).to_be_bytes::<32>().into(),
+                    },
+                ],
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::default());
+            TempoTxEnv::from_recovered_tx(&tx, address(i))
+        })
+        .collect::<Vec<_>>();
+    txs.push(txs[0].clone());
+    for spec in [
+        TempoHardfork::T1,
+        TempoHardfork::T1B,
+        TempoHardfork::T3,
+        TempoHardfork::T4,
+    ] {
+        let stats = differential_at_spec(db.clone(), &txs, 4, 32, spec);
+        assert_eq!(stats.bodies_reused, 15, "{spec:?}: {stats:?}");
+        assert_eq!(
+            stats.conflicts, 16,
+            "duplicate nonce must still fail at {spec:?}"
+        );
+    }
+}
+
+#[test]
+fn body_reuse_does_not_bypass_fee_settlement_overflow() {
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::StorageKey, tip_fee_manager::slots,
+    };
+    let mut db = funded_tip20_db(2);
+    contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+    let collected =
+        PATH_USD_ADDRESS.mapping_slot(Address::ZERO.mapping_slot(slots::COLLECTED_FEES));
+    db.insert_account_storage(
+        TIP_FEE_MANAGER_ADDRESS,
+        collected,
+        U256::MAX - U256::from(1),
+    )
+    .unwrap();
+    let target = address(900);
+    contract(&mut db, target, &[0x60, 1, 0x60, 0, 0x35, 0x55, 0]);
+    let txs = (0..2)
+        .map(|i| {
+            let mut tx = transaction(i, target, 0, &U256::from(i).to_be_bytes::<32>());
+            tx.inner.gas_price = 1;
+            tx
+        })
+        .collect::<Vec<_>>();
+    let stats = differential(db, &txs, 2, 2);
+    assert_eq!(stats.reused, 1);
+    assert_eq!(stats.conflicts, 1);
+    assert_eq!(stats.bodies_reused, 1);
+}
+
+#[test]
+fn body_reuse_rechecks_amm_liquidity_and_reservations() {
+    use revm::context_interface::JournalTr;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        storage::{ContractStorage, Handler, Mapping, StorageCtx},
+        test_util::TIP20Setup,
+        tip_fee_manager::{
+            amm::{Pool, PoolKey},
+            slots,
+        },
+        tip20::{ITIP20, TIP20Token},
+    };
+    let mut db = funded_tip20_db(64);
+    contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+    let mut setup = test_evm_with_basefee(db, 0);
+    let fee_token = StorageCtx::enter_ctx(setup.ctx_mut(), || {
+        let mut token =
+            TIP20Setup::create("Fee asset", "FEE", address(999)).with_issuer(address(999));
+        for i in 0..64 {
+            token = token.with_mint(address(i), U256::from(1_000_000_000u64));
+        }
+        let fee_token = token.apply().unwrap().address();
+        TIP20Token::from_address(PATH_USD_ADDRESS)
+            .unwrap()
+            .mint(
+                address(999),
+                ITIP20::mintCall {
+                    to: TIP_FEE_MANAGER_ADDRESS,
+                    amount: U256::from(250),
+                },
+            )
+            .unwrap();
+        let mut pools = Mapping::<B256, Pool>::new(slots::POOLS, TIP_FEE_MANAGER_ADDRESS);
+        pools[PoolKey::new(fee_token, PATH_USD_ADDRESS).get_id()]
+            .write(Pool {
+                reserve_user_token: 0,
+                reserve_validator_token: 250,
+            })
+            .unwrap();
+        fee_token
+    });
+    let state = setup.ctx_mut().journaled_state.finalize();
+    setup.db_mut().commit(state);
+    let mut db = setup.finish().0;
+    let target = address(900);
+    contract(&mut db, target, &[0x60, 1, 0x60, 0, 0x35, 0x55, 0]);
+    let txs = (0..64)
+        .map(|i| {
+            let mut tx = transaction(i, target, 0, &U256::from(i).to_be_bytes::<32>());
+            tx.inner.gas_price = 100_000_000;
+            tx.fee_token = Some(fee_token);
+            tx
+        })
+        .collect::<Vec<_>>();
+    for spec in [
+        TempoHardfork::T0,
+        TempoHardfork::T1B,
+        TempoHardfork::T1C,
+        TempoHardfork::T4,
+    ] {
+        let stats = differential_at_spec(db.clone(), &txs, 4, 64, spec);
+        assert!(stats.bodies_reused > 0, "{spec:?}: {stats:?}");
+        assert!(
+            stats.bodies_reused < 63,
+            "liquidity must eventually run out at {spec:?}"
+        );
+    }
+}
+
+#[test]
+fn body_replay_preserves_storage_gas_and_warmness() {
+    use revm::context::transaction::AccessListItem;
+    for warm in [false, true] {
+        let mut db = funded_tip20_db(16);
+        contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
+        let target = address(900);
+        // SSTORE's gas/refund depends on the old value even without an SLOAD.
+        contract(
+            &mut db,
+            target,
+            &[0x60, 0, 0x35, 0x60, 0, 0x55, 0x60, 0, 0x54, 0x00],
+        );
+        let txs = (0..16)
+            .map(|i| {
+                let mut tx = transaction(i, target, 0, &U256::from(i % 3).to_be_bytes::<32>());
+                tx.inner.gas_price = 1;
+                if warm {
+                    tx.inner.access_list.0.push(AccessListItem {
+                        address: target,
+                        storage_keys: vec![B256::ZERO],
+                    });
+                }
+                tx
+            })
+            .collect::<Vec<_>>();
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T1B,
+            TempoHardfork::T3,
+            TempoHardfork::T4,
+        ] {
+            differential_at_spec(db.clone(), &txs, 4, 16, spec);
+        }
+    }
+}
+
 /// In-memory execution benchmark. This includes scheduling, read validation, replay,
 /// receipt construction and commits, but excludes signing, networking and trie hashing.
 /// Run with `cargo test -p tempo-evm --release execution_throughput -- --ignored --nocapture`.
@@ -595,9 +949,11 @@ fn execution_throughput() {
     let counts =
         std::env::var("TEMPO_BENCH_COUNTS").unwrap_or_else(|_| "10000,25000,50000,100000".into());
     let workers = std::env::var("TEMPO_BENCH_WORKERS").unwrap_or_else(|_| "0,1,4,16,32".into());
-    println!("workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff");
+    println!(
+        "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused"
+    );
     for count in counts.split(',').map(|s| s.parse::<u64>().unwrap()) {
-        for workload in ["storage", "compute", "tip20", "tip20_paid"] {
+        for workload in ["storage", "compute", "compute_paid", "tip20", "tip20_paid"] {
             let mut db = if matches!(workload, "storage" | "compute") {
                 TestDB::default()
             } else {
@@ -607,7 +963,7 @@ fn execution_throughput() {
             if workload == "storage" {
                 contract(&mut db, target, &[0x60, 0x20, 0x35, 0x60, 0, 0x35, 0x55, 0]);
             }
-            if workload == "compute" {
+            if workload.starts_with("compute") {
                 // 500 KECCAK256 iterations per transaction.
                 contract(
                     &mut db,
@@ -620,8 +976,10 @@ fn execution_throughput() {
             }
             let txs = (0..count)
                 .map(|i| {
-                    if workload == "compute" {
-                        transaction(i, target, 0, &[])
+                    if workload.starts_with("compute") {
+                        let mut tx = transaction(i, target, 0, &[]);
+                        tx.inner.gas_price = u128::from(workload == "compute_paid");
+                        tx
                     } else if workload == "storage" {
                         let mut input = U256::from(i).to_be_bytes::<32>().to_vec();
                         input.extend_from_slice(&U256::from(i + 1).to_be_bytes::<32>());
@@ -682,12 +1040,13 @@ fn execution_throughput() {
                     baseline = Some(output);
                 }
                 println!(
-                    "{workload}\t{count}\t{threads}\t{elapsed:.6}\t{:.0}\t{}\t{}\t{}\t{}",
+                    "{workload}\t{count}\t{threads}\t{elapsed:.6}\t{:.0}\t{}\t{}\t{}\t{}\t{}",
                     count as f64 / elapsed,
                     stats.reused,
                     stats.conflicts,
                     stats.retries,
-                    stats.backoff
+                    stats.backoff,
+                    stats.bodies_reused
                 );
             }
         }

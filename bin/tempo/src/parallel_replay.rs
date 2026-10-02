@@ -66,7 +66,8 @@ impl ParallelReplay {
         let sequential = TempoEvmConfig::new(chain.clone());
         let speculative = sequential.clone().with_speculative_executor(
             SpeculativeExecutor::new(self.threads as usize, self.batch_size as usize)?
-                .with_adaptive_backoff(false),
+                .with_adaptive_backoff(false)
+                .with_minimum_body_duration(std::time::Duration::ZERO),
         );
         let consensus = TempoConsensus::new(chain);
         let mut report = self

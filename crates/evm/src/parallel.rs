@@ -5,7 +5,8 @@
 //! so even providers that are neither `Send` nor `Sync` are supported without unsafe code.
 //! Every database read (including reads in reverted calls and transaction validation) is
 //! recorded. A result may be reused only after validating those reads against the state
-//! produced by the committed prefix. Otherwise the ordinary EVM replays the transaction.
+//! produced by the committed prefix. Otherwise the ordinary EVM replays the transaction,
+//! optionally reusing a separately validated call body while rerunning fee processing.
 //!
 //! This deliberately treats shared fee counters as dependencies. Making fee updates
 //! commute requires a separate proof covering overflow, gas, logs and contract reads.
@@ -24,7 +25,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     mpsc,
 };
+use std::time::Duration;
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_revm::replay::{BodyCache, ReadKey, ReadValue, read};
 use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
 
 type Env = EvmEnv<TempoHardfork, TempoBlockEnv>;
@@ -36,6 +39,7 @@ pub struct SpeculativeExecutor {
     pool: Arc<ThreadPool>,
     batch_size: usize,
     adaptive_backoff: bool,
+    minimum_body_duration: Duration,
 }
 
 impl SpeculativeExecutor {
@@ -58,6 +62,7 @@ impl SpeculativeExecutor {
             ),
             batch_size,
             adaptive_backoff: true,
+            minimum_body_duration: Duration::from_micros(20),
         })
     }
 
@@ -65,6 +70,13 @@ impl SpeculativeExecutor {
     /// candidates are useful. Disable for experiments that need forced speculation.
     pub fn with_adaptive_backoff(mut self, enabled: bool) -> Self {
         self.adaptive_backoff = enabled;
+        self
+    }
+
+    /// Skip partial replay for bodies cheaper than its bookkeeping. This affects
+    /// scheduling only; use zero to exercise all reuse paths in differential tests.
+    pub fn with_minimum_body_duration(mut self, duration: Duration) -> Self {
+        self.minimum_body_duration = duration;
         self
     }
 
@@ -130,8 +142,11 @@ impl SpeculativeExecutor {
                         cache,
                         prefetched,
                         reads: Vec::new(),
+                        body_reads: Vec::new(),
                     };
                     let mut evm = TempoEvm::new(db, inputs[0].1.clone());
+                    evm.inner_mut()
+                        .enable_body_recording(self.minimum_body_duration);
                     loop {
                         let index = next.fetch_add(1, Ordering::Relaxed);
                         let Some((tx, env)) = inputs.get(index) else {
@@ -140,12 +155,20 @@ impl SpeculativeExecutor {
                         if evm.ctx().cfg != env.cfg_env {
                             let (db, _) = evm.finish();
                             evm = TempoEvm::new(db, env.clone());
+                            evm.inner_mut()
+                                .enable_body_recording(self.minimum_body_duration);
                         } else {
                             evm.ctx_mut().block = env.block_env.clone();
                         }
                         let result = evm.transact_raw(tx.clone());
                         let reads =
                             std::mem::take(&mut evm.ctx_mut().journaled_state.database.reads);
+                        let body_reads =
+                            std::mem::take(&mut evm.ctx_mut().journaled_state.database.body_reads);
+                        let mut body = evm.inner_mut().take_recorded_body();
+                        if let Some(body) = &mut body {
+                            body.set_database_reads(body_reads);
+                        }
                         // A panic drops this worker's senders. The receiver can
                         // terminate and the scope propagates the panic.
                         let _ = sender.send(Message::Finished(
@@ -155,6 +178,7 @@ impl SpeculativeExecutor {
                                 env: env.clone(),
                                 reads,
                                 result,
+                                body,
                             }),
                         ));
                     }
@@ -196,6 +220,8 @@ pub struct ExecutionStats {
     pub speculated: u64,
     /// Successful speculative results reused after validating their reads.
     pub reused: u64,
+    /// Call bodies reused after rerunning validation and pre-execution in order.
+    pub bodies_reused: u64,
     /// Candidates replayed after their state dependencies changed.
     pub conflicts: u64,
     /// Speculative errors retried against the committed prefix.
@@ -210,6 +236,7 @@ pub(crate) struct SpeculativeResult<E> {
     pub(crate) env: Env,
     reads: Vec<(ReadKey, ReadValue)>,
     pub(crate) result: Outcome<E>,
+    pub(crate) body: Option<BodyCache>,
 }
 
 impl<E: DBErrorMarker> SpeculativeResult<E> {
@@ -225,31 +252,6 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum ReadKey {
-    Account(Address),
-    Storage(Address, U256),
-    Code(B256),
-    BlockHash(u64),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ReadValue {
-    Account(Option<AccountInfo>),
-    Storage(U256),
-    Code(Bytecode),
-    BlockHash(B256),
-}
-
-fn read<DB: Database>(db: &mut DB, key: ReadKey) -> Result<ReadValue, DB::Error> {
-    match key {
-        ReadKey::Account(address) => db.basic(address).map(ReadValue::Account),
-        ReadKey::Storage(address, slot) => db.storage(address, slot).map(ReadValue::Storage),
-        ReadKey::Code(hash) => db.code_by_hash(hash).map(ReadValue::Code),
-        ReadKey::BlockHash(number) => db.block_hash(number).map(ReadValue::BlockHash),
-    }
-}
-
 #[derive(Debug)]
 enum Message<E> {
     Read(ReadKey, mpsc::SyncSender<Result<ReadValue, E>>),
@@ -262,10 +264,12 @@ struct RecordingDatabase<'a, E> {
     cache: &'a RwLock<HashMap<ReadKey, ReadValue>>,
     prefetched: &'a HashMap<ReadKey, ReadValue>,
     reads: Vec<(ReadKey, ReadValue)>,
+    body_reads: Vec<(ReadKey, ReadValue)>,
 }
 
 impl<E> RecordingDatabase<'_, E> {
     fn read(&mut self, key: ReadKey) -> Result<ReadValue, E> {
+        let start = tempo_revm::replay::is_recording_body().then(std::time::Instant::now);
         // Release the read lock before waiting for the coordinator to populate it.
         let cached = self.prefetched.get(&key).cloned().or_else(|| {
             self.cache
@@ -284,6 +288,10 @@ impl<E> RecordingDatabase<'_, E> {
             receiver.recv().expect("database coordinator stopped")?
         };
         self.reads.push((key, value.clone()));
+        if let Some(start) = start {
+            self.body_reads.push((key, value.clone()));
+            tempo_revm::replay::record_database_time(start.elapsed());
+        }
         Ok(value)
     }
 }

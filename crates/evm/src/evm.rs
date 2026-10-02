@@ -148,7 +148,9 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             return;
         };
         let sampled = self.execution_stats.speculated - self.last_sample.speculated;
-        let reused = self.execution_stats.reused - self.last_sample.reused;
+        let reused = self.execution_stats.reused - self.last_sample.reused
+            + self.execution_stats.bodies_reused
+            - self.last_sample.bodies_reused;
         if executor.adaptive_backoff() && sampled >= 32 && reused * 8 < sampled {
             // This is only a scheduling choice. No result bypasses read validation.
             // Retry periodically so a later independent workload can use the pool.
@@ -295,6 +297,7 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        self.inner.set_body_replay(None);
         if self.backoff_remaining > 0 && !tx.is_system_tx {
             self.backoff_remaining -= 1;
             self.execution_stats.backoff += 1;
@@ -336,6 +339,7 @@ where
                     return candidate.result;
                 } else {
                     self.execution_stats.conflicts += 1;
+                    self.inner.set_body_replay(candidate.body);
                 }
             }
         }
@@ -365,7 +369,11 @@ where
         } else if self.inspect {
             self.inner.inspect_tx(tx)
         } else {
-            self.inner.transact(tx)
+            let result = self.inner.transact(tx);
+            if self.inner.body_was_reused() {
+                self.execution_stats.bodies_reused += 1;
+            }
+            result
         }
     }
 

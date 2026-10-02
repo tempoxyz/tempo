@@ -3,6 +3,7 @@
 //! Provides traits and types for reading/writing contract state from EVM storage,
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
+pub mod access;
 pub mod evm;
 pub mod hashmap;
 

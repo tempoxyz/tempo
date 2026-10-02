@@ -36,6 +36,7 @@ Workloads:
 
 - `storage`: one distinct SSTORE per sender, with no fees.
 - `compute`: 500 KECCAK256 iterations per transaction, with no fees.
+- `compute_paid`: the same compute loop with shared fee collection and settlement.
 - `tip20`: independent funded pathUSD transfers, with no fees.
 - `tip20_paid`: the same transfers with a nonzero gas price, sharing fee state.
 
@@ -98,6 +99,52 @@ requires repeated measurements before drawing smaller performance conclusions.
 The stable conclusion is substantial compute scaling and continuing overhead on
 cheap transactions. The local node matrix predates this last read-cache change.
 
+## Partial call-body replay
+
+`body-replay.tsv` adds a second reuse boundary. When a complete transaction
+conflicts, validation, pre-execution and settlement run again in order, but an
+unchanged call body can be reused. At 100,000 transactions:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Compute, no fees | 7,642 | 72,908 | 74,101 |
+| Compute, paid | 7,439 | 34,648 | 35,727 |
+| TIP-20, paid | 114,067 | 96,782 | 94,745 |
+
+The paid compute run reuses 98,075 call bodies, compared with 774 complete
+transactions. Fee processing remains sequential, so this workload improves by
+4.8x but does not reach 50k TPS. Full receipt vectors and state roots still match.
+
+`body-replay-initial.tsv` records the first version: caching cheap TIP-20 bodies
+reduced throughput to 45–57k TPS. The scheduler now keeps bodies only when their
+measured execution time, excluding worker database round trips, reaches 20 μs.
+This is a scheduling heuristic, not a consensus decision. Differential tests and
+canonical replay set the threshold to zero to exercise all supported reuse paths.
+Adaptive backoff counts both complete results and reused bodies as useful work.
+
+Workers record journal storage accesses as well as database reads, including
+attempts inside reverted calls. Reuse requires equal account metadata, original
+and present values for accessed slots, warm/cold status, transient state, gas
+inputs and execution context. Only unobserved pre-execution storage is replaced
+with its freshly executed values; the fresh journal/log prefix is preserved.
+Creation and destruction use full replay. Plain fee-free transactions skip body
+capture. Inspectors and custom EVM components remain on the ordinary path.
+
+Targeted tests cover native fee-balance observations, reverted reads, successful/
+reverted/halted bodies, storage gas, precompile failures, expiring AA nonce rings,
+atomic multicall reverts, and post-execution fee-accumulator overflow. Tests compare
+complete per-transaction outcomes and final trie roots, not just scheduling counts.
+AMM tests cover liquidity exhaustion and pre-/post-T1C transient reservations while
+the call bodies remain independent. The current EVM/revm suites pass 202 tests
+(one throughput benchmark is ignored by default); Clippy with warnings denied
+and the EVM build without default features also pass.
+
+The wider suite also exposed a pre-existing process-wide key-authorization gas
+table initialized from the first EVM's configuration. The failure was reproduced
+on the previous commit; deriving the table from the active configuration passed
+40 repeated concurrent runs of all 128 revm tests. This is recorded separately
+in commit `8ea53ad8`.
+
 ## Local node trials
 
 Build the actual node and load generator, then run isolated trials:
@@ -142,6 +189,32 @@ The execution section includes pool iteration and speculative scheduling, and
 does not isolate interpreter time. These measurements do not establish that
 execution has ceased to be a bottleneck.
 
+`node/body-replay-workers-*.json` repeats the same eight trials with partial replay
+and its 20 μs body cutoff. Actual accepted submissions per second:
+
+| Target TPS | Sequential | Partial replay, 16 workers |
+| --- | ---: | ---: |
+| 10,000 | 10,008 | 9,995 |
+| 25,000 | 17,350 | 16,183 |
+| 50,000 | 17,522 | 16,163 |
+| 75,000 | 17,416 | 16,280 |
+
+Every accepted transaction confirmed, with no generation, submission or
+confirmation failures. At the 50k target, the speculative run reused 203 call
+bodies and spent 2.630 s in the transaction execution section, 0.982 s finishing
+busy payloads, and 4.149 s building them overall. Shared senders/balances and cheap
+TIP-20 calls leave little reusable work in this workload. These results still do
+not meet the requested sustained 50k+ node throughput.
+
+This matrix also has a protocol gas ceiling: 450M of the 500M block budget is
+available to the proposer. Creating a fresh 2D nonce slot costs about 285k gas per
+transfer in this workload. Busy blocks contain about 1,575 user transactions,
+which permits roughly 15.75k confirmed TPS at the 100 ms target interval. The
+slightly higher accepted rate includes queueing followed by the confirmation drain.
+A higher benchmark genesis gas limit or a workload that reuses nonce lanes is
+needed to measure node execution capacity above that ceiling. This matrix cannot
+separate that limit from execution or load-generator limits.
+
 Earlier `node/sequential-*.json` and `node/speculative-*.json` trials used expiring
 nonces, default queue sizes, and the load generator before parallel signing.
 Both modes accepted and confirmed the 10k and 25k target workloads. The 50k
@@ -167,8 +240,8 @@ tempo parallel-replay --chain /path/to/genesis.json --datadir /path/to/node-data
 ```
 
 Bounds are inclusive. The database must retain parent state and canonical
-receipts. Backoff is disabled in this command so all windows exercise speculative
-validation. The execution timers exclude trie hashing; sequential runs first,
+receipts. Backoff and the minimum call-body duration are disabled in this command
+so all windows exercise speculative validation and partial reuse. The execution timers exclude trie hashing; sequential runs first,
 so the timing columns are diagnostic and may have unequal cache warmth.
 Historical trie reconstruction can be expensive far behind the database head.
 
@@ -179,6 +252,13 @@ receipts and canonical state roots. The 10k replay overlapped a test compilation
 its timing columns should not be used as throughput measurements. These are
 stored generated-chain blocks, not mainnet or testnet history.
 
+`body-replay-canonical-2d.tsv` and `body-replay-canonical-expiring.tsv` repeat
+verification with partial replay forced on for 120 stored local blocks containing
+100,000 user transactions and 120 system transactions. They cover both 2D and
+expiring AA nonces. Complete state deltas, stored receipts, receipt roots, gas and
+state roots match. These replays ran concurrently with correctness checks; their
+timing columns are not benchmark results.
+
 ## Correctness model and integration
 
 Workers execute against a frozen batch view. Database cache misses are served on
@@ -187,8 +267,8 @@ between threads without unsafe code. Accounts named by a transaction are prefetc
 other reads are cached on demand. Every read is recorded, including reads in
 transaction validation, native precompiles and reverted calls. Before reusing a
 result, its transaction and environment must match and every read must still
-match the committed prefix. Conflicting transactions and speculative errors run
-again through the ordinary EVM.
+match the committed prefix. Conflicting transactions run again through the ordinary
+EVM, with the call-body reuse check described above. Speculative errors use full replay.
 
 Windows are bounded by both transaction count and total declared gas. Candidates
 that do not fit the speculative gas budget retain the ordinary execution path.
@@ -213,7 +293,7 @@ differential check also compares actual receipts and ordered state hooks.
 ## Outstanding goal work
 
 - Reduce cheap-transaction scheduling and read-validation overhead.
-- Avoid full payment replays without changing fee behavior or contract observations.
+- Reduce the remaining serial fee-processing and partial-replay overhead.
 - Expand AMM liquidity, authorization/delegation, hardfork-boundary and adversarial
   differential coverage, including independent implementations or state-test corpora.
 - Replay historical blocks against verified parent state and canonical receipts and
@@ -221,4 +301,5 @@ differential check also compares actual receipts and ordered state hooks.
   mainnet/testnet replay is claimed. The local replay harness is available.
 - Sustain 50k+ actual node TPS, measure transaction confirmation latency, and profile
   execution separately from pool iteration and block finishing on a larger host.
+  First remove the local benchmark's block-gas ceiling as a confounding limit.
   The local offered-load matrix does not meet this acceptance criterion.
