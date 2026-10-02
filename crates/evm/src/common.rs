@@ -6,13 +6,16 @@ use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
     bytecode::Bytecode,
-    evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
+    evm::{AccountInfo, Database, DynDatabase},
     registry::{HandlerError, HandlerResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
+    storage::{
+        Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCheckpoint,
+        StorageCtx,
+    },
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
@@ -431,15 +434,15 @@ where
         unreachable!("'refund_gas' not supported in read-only context")
     }
 
-    fn checkpoint(&mut self) -> StateCheckpoint {
+    fn checkpoint(&mut self) -> StorageCheckpoint {
         unreachable!("'checkpoint' not supported in read-only context")
     }
 
-    fn checkpoint_commit(&mut self, _: StateCheckpoint) {
+    fn checkpoint_commit(&mut self, _: StorageCheckpoint) {
         unreachable!("'checkpoint_commit' not supported in read-only context")
     }
 
-    fn checkpoint_revert(&mut self, _: StateCheckpoint) {
+    fn checkpoint_revert(&mut self, _: StorageCheckpoint) {
         unreachable!("'checkpoint_revert' not supported in read-only context")
     }
 

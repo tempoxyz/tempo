@@ -5,7 +5,7 @@ use alloy::{
 use evm2::{
     Evm, EvmTypes,
     bytecode::Bytecode,
-    evm::{AccountInfo, StateCheckpoint, precompile::PrecompileOutput},
+    evm::{AccountInfo, precompile::PrecompileOutput},
     interpreter::GasTracker,
     precompiles::{PrecompileError, PrecompileResult},
     version::GasParams,
@@ -18,7 +18,7 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
-        PrecompileStorageProvider, StorageActions,
+        PrecompileStorageProvider, StorageActions, StorageCheckpoint,
         evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
 };
@@ -359,7 +359,7 @@ impl StorageCtx {
 /// guard.commit();  // finalizes all mutations
 /// ```
 pub struct CheckpointGuard {
-    checkpoint: Option<StateCheckpoint>,
+    checkpoint: Option<StorageCheckpoint>,
 }
 
 impl CheckpointGuard {
