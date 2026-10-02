@@ -71,6 +71,7 @@ impl TempoEvmConfig {
 
     /// Enables ordered speculative execution for node validation and block building.
     pub fn with_speculative_executor(mut self, executor: parallel::SpeculativeExecutor) -> Self {
+        self.block_assembler.pool = Some(executor.thread_pool());
         self.speculative_executor = Some(executor);
         self
     }

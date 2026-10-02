@@ -1,0 +1,32 @@
+{
+  "metadata": {"target_tps": 50000, "run_duration_secs": 5, "accounts": 100, "chain_id": 1337, "total_connections": 256, "start_block": 4, "end_block": 18, "mode": "local-workers-16-expiring", "tip20_weight": 1.0, "tip20_virtual_weight": 0.0, "place_order_weight": 0.0, "swap_weight": 0.0, "erc20_weight": 0.0, "mpp_weight": 0.0, "block_gas_limit": 5000000000},
+  "sending": {"accepted": 243603, "rejected": 0, "timed_out": 0, "generation_failed": 0, "unconfirmed": 0, "send_duration_secs": 5.007708686},
+  "blocks": [
+    {"number": 6, "tx_count": 4, "ok_count": 4, "err_count": 0, "gas_used": 146238, "timestamp": 1790920213361, "latency_ms": null},
+    {"number": 7, "tx_count": 4987, "ok_count": 4987, "err_count": 0, "gas_used": 242385432, "timestamp": 1790920213460, "latency_ms": 99},
+    {"number": 8, "tx_count": 11656, "ok_count": 11656, "err_count": 0, "gas_used": 566938218, "timestamp": 1790920213685, "latency_ms": 225},
+    {"number": 9, "tx_count": 30280, "ok_count": 30280, "err_count": 0, "gas_used": 1472589102, "timestamp": 1790920214299, "latency_ms": 614},
+    {"number": 10, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1789509122, "timestamp": 1790920215868, "latency_ms": 1569},
+    {"number": 11, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1789402406, "timestamp": 1790920217954, "latency_ms": 2086},
+    {"number": 12, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1789164434, "timestamp": 1790920219174, "latency_ms": 1220},
+    {"number": 13, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1789284002, "timestamp": 1790920220328, "latency_ms": 1154},
+    {"number": 14, "tx_count": 36814, "ok_count": 36814, "err_count": 0, "gas_used": 1790463726, "timestamp": 1790920221547, "latency_ms": 1219},
+    {"number": 15, "tx_count": 12720, "ok_count": 12720, "err_count": 0, "gas_used": 618683746, "timestamp": 1790920222697, "latency_ms": 1150},
+    {"number": 16, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790920223264, "latency_ms": 567},
+    {"number": 17, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790920223383, "latency_ms": 119},
+    {"number": 18, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790920223427, "latency_ms": 44}
+  ],
+  "payload_builds": [
+    {"number": "6", "hash": "0x7a395ccb47ff5ccca4a61b9c3e00b3255e1d3c0e9d1a2640ca54a6a00215f318", "total_transactions": "4", "elapsed": "891.002µs", "total_transaction_execution_elapsed": "267.482µs", "builder_finish_elapsed": "546.335µs"},
+    {"number": "7", "hash": "0x52aa5546c0c7417e700a2f2261a8c24c5041596f0362513986ccef51c6a37eea", "total_transactions": "4987", "elapsed": "153.719073ms", "total_transaction_execution_elapsed": "116.51521ms", "builder_finish_elapsed": "33.967491ms"},
+    {"number": "8", "hash": "0x73d5b6d37521c48bf510d1c9d8b61fe68c661668eff6047e28b83e2d76ac8141", "total_transactions": "11656", "elapsed": "428.096711ms", "total_transaction_execution_elapsed": "317.146301ms", "builder_finish_elapsed": "99.501328ms"},
+    {"number": "9", "hash": "0x973415e70e95edd5d7bc8956fbb71a9b6acc6fe4819ef60a61b7ee03b1bfe603", "total_transactions": "30280", "elapsed": "1.160124179s", "total_transaction_execution_elapsed": "835.618319ms", "builder_finish_elapsed": "293.84878ms"},
+    {"number": "10", "hash": "0x75e24dba5b04389e3e5bf18238c28509b782b59c29af70724e510a7eed3fa69d", "total_transactions": "36788", "elapsed": "1.526042852s", "total_transaction_execution_elapsed": "1.033994481s", "builder_finish_elapsed": "446.086545ms"},
+    {"number": "11", "hash": "0x41593ae8e49cd418060ad311d8f264be2f2c4356915ebf3227e0fa1bc8028c26", "total_transactions": "36788", "elapsed": "1.096096181s", "total_transaction_execution_elapsed": "765.430242ms", "builder_finish_elapsed": "290.334558ms"},
+    {"number": "12", "hash": "0xdfbb9829f41240d4405dcd401f60b103f8b18b21d007cf0a01ee59ae3d8f485d", "total_transactions": "36788", "elapsed": "1.024802258s", "total_transaction_execution_elapsed": "666.663492ms", "builder_finish_elapsed": "323.346707ms"},
+    {"number": "13", "hash": "0x432311677f89a95f2d3499333a21a3875f02402452a3c2e32c044d715864f1f9", "total_transactions": "36788", "elapsed": "1.092897092s", "total_transaction_execution_elapsed": "667.90328ms", "builder_finish_elapsed": "387.462815ms"},
+    {"number": "14", "hash": "0x2bc50c1f2d0978147d10c7bfcd4c319a63249f3f7c99280aae02c19756e230d1", "total_transactions": "36814", "elapsed": "1.048950699s", "total_transaction_execution_elapsed": "619.374478ms", "builder_finish_elapsed": "403.634748ms"},
+    {"number": "15", "hash": "0xf2e91edd855cc88668080b2b4bd2bd0379fc4ec2e6edbcd5e48cf2f35cf3ad8a", "total_transactions": "12720", "elapsed": "540.101493ms", "total_transaction_execution_elapsed": "304.5869ms", "builder_finish_elapsed": "223.885996ms"}
+  ],
+  "speculative_counter_delta": {"reth_tempo_payload_builder_conflicting_transactions_total": 24506.0, "reth_tempo_payload_builder_rebased_fee_transactions_total": 143.0, "reth_tempo_payload_builder_reused_call_bodies_total": 319.0, "reth_tempo_payload_builder_reused_transactions_total": 253.0, "reth_tempo_payload_builder_speculated_transactions_total": 47126.0, "reth_tempo_payload_builder_speculative_backoff_total": 373111.0, "reth_tempo_payload_builder_speculative_retries_total": 19209.0}
+}

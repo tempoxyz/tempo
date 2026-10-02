@@ -746,6 +746,75 @@ completed cleanly. The runner now saves process return codes before and after
 cleanup plus starting/ending free disk space; `candidate-vector-exit-status.json`
 retains those diagnostics for the completed reverse-order comparisons.
 
+## Parallel block assembly
+
+The assembler now computes each receipt bloom once and combines those blooms
+for the block header. With an execution worker pool and at least 128
+transactions, it computes the transaction root alongside receipt processing,
+and calculates receipt blooms in parallel while retaining receipt order. It
+shares the configured bounded pool; smaller blocks and the default configuration
+use sequential root calculation with the same bloom reuse.
+
+Tempo now constructs the Ethereum header fields directly, preserving the pinned
+Reth assembler's fork logic. A differential test compares complete headers and
+bodies against that upstream assembler across Shanghai, Cancun, Prague and
+Osaka boundaries, including the first post-Cancun block. It covers empty blocks,
+counts around the parallel threshold, mixed legacy/EIP-1559/AA transactions,
+varied logs, withdrawals, execution requests and 0/1/4 workers. All 86 EVM tests
+pass; two throughput benchmarks are ignored in the regular suite. Both
+sequential and parallel mixed-payment-lane node integration tests and the
+parallel TIP-20 transfer test also pass. Release Clippy checks all EVM targets,
+and the EVM crate builds with default features disabled.
+
+`assembly-roots.tsv` measures transaction roots, receipt roots and block blooms
+at 10k, 25k and 50k generated transactions, with three repetitions per worker
+count. Every result equals the upstream root/bloom tuple. At 50k transactions,
+median times are:
+
+| Worker count | Upstream calculation | Updated calculation |
+| --- | ---: | ---: |
+| 0 | 181.619 ms | 129.025 ms |
+| 16 | 181.377 ms | 58.742 ms |
+| 32 | 181.021 ms | 56.875 ms |
+
+This excludes execution, state-trie roots and node overhead. Each upstream
+measurement precedes its updated measurement on already initialized data;
+these component timings are not node TPS or sustained-load results.
+
+`assembly-node.json` and `node/assembly-*.json` compare the `2b0d2eea` node
+against parallel assembly, using the same five-second, 50k offered-load setup
+in both orders. All 1,837,758 accepted transactions in the eight trials confirm
+with zero failures. Return codes and disk headroom are retained in
+`assembly-exit-status.json`.
+
+| Execution workers | Previous confirmed TPS | Updated confirmed TPS | Previous, reverse order | Updated, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 27,155 | 27,307 | 26,925 | 27,195 |
+| 16 | 25,156 | 26,197 | 25,548 | 26,397 |
+
+The 16-worker comparisons improve by 4.1% and 3.3%, while the default sequential
+path changes little. Whole-trial finalization falls from 2.250 / 2.165 seconds
+to 1.908 / 1.903 seconds with 16 workers, even though state-root calculation
+increases slightly. Those timings are nested and include setup and empty
+blocks. Sequential execution still leads on this shared-account payment load;
+parallel assembly does not establish sustained 50k+ node throughput.
+
+The updated 16-worker sweep at 10k / 25k / 75k offered TPS accepts
+10,008 / 25,008 / 45,185 TPS and confirms 9,906 / 23,890 / 26,239 TPS including
+backlog. All 401,260 accepted transactions confirm without failures
+(`node/assembly-matrix-*.json`). Together with the 50k comparisons, the updated
+node still levels off near 26k confirmed TPS on this workload.
+
+An expiring-AA trial at 50k offered TPS accepts 48,646 TPS and confirms 24,563
+TPS including backlog. All 243,603 accepted transactions confirm without
+failures (`node/assembly-expiring-*.json`). This single run exercises the second
+nonce mode; it does not establish a throughput improvement for that workload.
+
+```sh
+CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
+  cargo test -p tempo-evm --release assembly_roots_throughput -- --ignored --nocapture
+```
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -835,6 +904,18 @@ expiring AA nonces: 84,238 user transactions and three system transactions,
 with the same full-result and canonical-root checks. Across the two candidate
 snapshot replays, all 122,814 user transactions and six system transactions
 match. Replay timings remain diagnostic only.
+
+`assembly-canonical.tsv` verifies three large blocks built with parallel
+assembly: 39,886 user transactions and three system transactions match full
+execution results, state deltas, stored receipts, gas, receipt roots and
+canonical state roots. This is generated local-chain evidence; replay timings
+overlap correctness checks and are diagnostic only.
+
+`assembly-canonical-expiring.tsv` adds three freshly built expiring-AA blocks
+with 86,319 user transactions and three system transactions. All full results,
+state deltas, canonical receipts, gas and roots match. Across both assembly
+replays, 126,205 user transactions and six system transactions match; this is
+still local generated-chain evidence rather than public historical replay.
 
 ## Correctness model and integration
 

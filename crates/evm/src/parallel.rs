@@ -103,6 +103,10 @@ impl SpeculativeExecutor {
         self.adaptive_backoff
     }
 
+    pub(crate) fn thread_pool(&self) -> Arc<ThreadPool> {
+        self.pool.clone()
+    }
+
     /// Maximum speculative lookahead. Memory usage is bounded by this window.
     pub const fn batch_size(&self) -> usize {
         self.batch_size
