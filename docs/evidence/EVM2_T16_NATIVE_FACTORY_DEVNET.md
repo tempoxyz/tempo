@@ -241,6 +241,26 @@ are saved with the checker:
 python3 scripts/native-payments/check-t16-combined-sustained.py --l1-rpc-url http://127.0.0.1:55545 --zone-rpc-url http://127.0.0.1:57545 --zone-private-rpc-url http://127.0.0.1:57544 --tempo-binary target/release/tempo --zones-binary /path/to/tempo-zone
 ```
 
+To repeat the mixed load after provisioning the T16 Earn vault and T15 Zone,
+fund both senders, approve the vault for assets and shares, set
+`TEMPO_BENCH_L1_KEY` and `TEMPO_BENCH_ZONE_KEY`, then run:
+
+```sh
+python3 scripts/native-payments/run-t16-combined-load.py \
+  --l1-rpc-url http://127.0.0.1:55545 --zone-rpc-url http://127.0.0.1:57545 \
+  --metrics-url http://127.0.0.1:56001/metrics \
+  --vault 0xdc17c27ae8be831af07cc38c02930007060020f4 \
+  --asset 0x20c0000000000000000000000000000000000000 \
+  --earn-share 0x20c0000000000000000000008add4f9444dc5350 \
+  --zone-token 0x20c0000000000000000000000000000000000000 \
+  --zone-recipient 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
+  --cycles 60 --count 100 --out-dir /tmp/t16-combined-repeat
+```
+
+The runner fails on reverted transactions or an Earn block without a matching
+zero-general payment-lane sample. It writes per-leg receipts, lane samples,
+genesis hashes, and elapsed throughput to the output directory.
+
 Authenticated private balance checks additionally require
 `EVM2_ZONE_SENDER_KEY` and `EVM2_ZONE_RECIPIENT_KEY` for the two local dev
 accounts. The run used a single client, a one-second L1 block schedule, and
