@@ -42,7 +42,7 @@ pub fn normalize_p256_s(s_bytes: &[u8]) -> Result<B256, &'static str> {
         return Err("P256 s value out of range");
     }
     let normalized_s = if s > P256N_HALF { P256_ORDER - s } else { s };
-    Ok(B256::from(normalized_s.to_be_bytes::<32>()))
+    Ok(B256::from(normalized_s))
 }
 
 /// Signature type identifiers
@@ -1834,7 +1834,7 @@ mod tests {
         let p256_sig =
             TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r,
-                s: B256::from(high_s.to_be_bytes::<32>()),
+                s: B256::from(high_s),
                 pub_key_x,
                 pub_key_y,
                 pre_hash: false,
