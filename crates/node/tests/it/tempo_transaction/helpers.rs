@@ -772,6 +772,7 @@ pub(crate) fn create_basic_aa_tx(
     gas_limit: u64,
 ) -> TempoTransaction {
     TempoTransaction {
+        require_funds: None,
         chain_id,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,

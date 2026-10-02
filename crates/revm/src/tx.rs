@@ -33,6 +33,9 @@ pub struct TempoBatchCallEnv {
     /// Multiple calls for Tempo transactions
     pub aa_calls: Vec<Call>,
 
+    /// Signed funding requirements, retained even while admission is disabled.
+    pub require_funds: Vec<tempo_primitives::transaction::FundingRequirement>,
+
     /// Authorization list (EIP-7702 with Tempo signatures)
     ///
     /// Each authorization lazily recovers the authority on first access and caches the result.
@@ -315,6 +318,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             valid_after,
             key_authorization,
             tempo_authorization_list,
+            require_funds,
         } = tx;
 
         // Extract to/value/input from calls (use first call or defaults)
@@ -371,6 +375,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
+                require_funds: require_funds.clone().unwrap_or_default(),
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
                     .iter()
@@ -1188,5 +1193,20 @@ mod tests {
     fn test_calls_count_non_aa_tx() {
         let non_aa_tx = make_tx_env(21_000, 0, alloy_primitives::U256::ZERO);
         assert_eq!(non_aa_tx.calls().count(), 1);
+    }
+    #[test]
+    fn funding_survives_signed_transaction_conversion() {
+        use tempo_primitives::transaction::{FundingRequirement, TempoTransaction};
+        let requirements = vec![FundingRequirement {
+            amount: U256::from(50),
+            ..Default::default()
+        }];
+        let tx = TempoTransaction {
+            require_funds: Some(requirements.clone()),
+            ..Default::default()
+        };
+        let signed = AASigned::new_unhashed(tx, TempoSignature::default());
+        let env = TempoTxEnv::from_recovered_tx(&signed, Address::ZERO);
+        assert_eq!(env.tempo_tx_env.unwrap().require_funds, requirements);
     }
 }

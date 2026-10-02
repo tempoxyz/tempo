@@ -540,6 +540,7 @@ impl TxBuilder {
 
     fn build(self) -> TempoTransaction {
         TempoTransaction {
+            require_funds: None,
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
