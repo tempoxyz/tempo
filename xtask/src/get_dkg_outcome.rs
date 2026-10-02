@@ -24,7 +24,8 @@ pub(crate) struct GetDkgOutcome {
     #[arg(long)]
     rpc_url: Option<String>,
 
-    /// Epoch number to query. Defaults to the latest DKG outcome available at the current block.
+    /// Epoch the outcome is used in; read from genesis for epoch 0, otherwise from the previous
+    /// epoch's boundary. Defaults to the latest DKG outcome available at the current block.
     #[arg(long)]
     epoch: Option<u64>,
 }
@@ -75,6 +76,16 @@ fn latest_dkg_block(epocher: &FixedEpocher, height: Height) -> Height {
     }
 }
 
+/// Returns the block storing the DKG outcome used in `epoch`: genesis for epoch 0, otherwise the
+/// last block of the previous epoch.
+fn epoch_dkg_block(epocher: &FixedEpocher, epoch: Epoch) -> eyre::Result<Height> {
+    epoch.previous().map_or(Ok(Height::zero()), |previous| {
+        epocher
+            .last(previous)
+            .ok_or_eyre("epoch boundary block number overflows u64")
+    })
+}
+
 impl GetDkgOutcome {
     pub(crate) async fn run(self) -> eyre::Result<()> {
         let Self {
@@ -101,9 +112,7 @@ impl GetDkgOutcome {
 
         let epocher = FixedEpocher::new(epoch_length);
         let block_number = if let Some(epoch) = epoch {
-            epocher
-                .last(Epoch::new(epoch))
-                .expect("fixed epocher is valid for all epochs")
+            epoch_dkg_block(&epocher, Epoch::new(epoch))?
         } else {
             let height = provider
                 .get_block_number()
@@ -192,5 +201,18 @@ mod tests {
                 "at height {height}"
             );
         }
+    }
+
+    #[test]
+    fn epoch_dkg_uses_the_previous_boundary_or_genesis() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        for (epoch, expected) in [(0, 0), (1, 9), (2, 19), (10, 99)] {
+            assert_eq!(
+                epoch_dkg_block(&epocher, Epoch::new(epoch)).unwrap().get(),
+                expected,
+                "at epoch {epoch}"
+            );
+        }
+        assert!(epoch_dkg_block(&FixedEpocher::new(NZU64!(2)), Epoch::new(u64::MAX)).is_err());
     }
 }
