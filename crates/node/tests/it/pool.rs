@@ -10,23 +10,17 @@ use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum::{
-    evm::revm::primitives::hex,
-    node::builder::{NodeBuilder, NodeHandle},
-    pool::TransactionPool,
-    primitives::SignerRecoverable,
-    tasks::Runtime,
+    evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
 };
 use reth_node_builder::BuiltPayload;
-use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionError};
 use reth_transaction_pool::{
     TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::AddedTransactionState,
 };
-use std::{num::NonZeroU64, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TempoChainSpec};
-use tempo_node::node::TempoNode;
+use std::num::NonZeroU64;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
@@ -36,24 +30,11 @@ use tempo_primitives::{
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let runtime = Runtime::test();
-    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
-    ))?);
-
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-    let NodeHandle {
-        node,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config.clone())
-        .testing_node(runtime.clone())
-        .node(TempoNode::default())
-        .launch()
-        .await?;
+    let node = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?
+        .node
+        .inner;
 
     // <cast mktx 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)' 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000 --gas-price 44000000000000 --priority-gas-price 1 --chain-id 1337 --nonce 0>
     let raw = hex!(
@@ -83,27 +64,14 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_insufficient_funds() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let runtime = Runtime::test();
-    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
-    ))?);
-
-    let node_config = NodeConfig::new(Arc::new(chain_spec.clone()))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-    let NodeHandle {
-        node,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config.clone())
-        .testing_node(runtime.clone())
-        .node(TempoNode::default())
-        .launch()
-        .await?;
+    let node = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?
+        .node
+        .inner;
 
     let tx = TempoTransaction {
-        chain_id: chain_spec.chain_id(),
+        chain_id: node.chain_spec().chain_id(),
         nonce: U64::random().to(),
         fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,

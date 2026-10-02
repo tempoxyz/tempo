@@ -279,13 +279,8 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::PayloadAttributes;
 use eyre::WrapErr;
 use reth_e2e_test_utils::E2ETestSetupExt;
-use reth_ethereum::tasks::Runtime;
-use reth_node_api::FullNodeComponents;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
-use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
@@ -299,7 +294,6 @@ use tempo_contracts::precompiles::{
     ITIP20Factory,
 };
 use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadAttributes;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -351,19 +345,8 @@ pub(crate) enum NodeSource {
     LocalNode(String),
 }
 
-/// Type alias for a local test node and task manager
-pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, Runtime);
-
-/// Trait wrapper around NodeHandle to simplify function return types
-pub(crate) trait TestNodeHandle: Send {}
-
-/// Generic [`TestNodeHandle`] implementation for NodeHandle
-impl<Node, AddOns> TestNodeHandle for NodeHandle<Node, AddOns>
-where
-    Node: FullNodeComponents,
-    AddOns: RethRpcAddOns<Node>,
-{
-}
+/// A local test node, kept alive for the duration of a test.
+pub(crate) type LocalTestNode = reth_e2e_test_utils::NodeHelperType<TempoNode>;
 
 /// Set up a test node from the provided source configuration
 pub(crate) async fn setup_test_node(
@@ -444,7 +427,7 @@ pub(crate) struct MultiNodeSetup {
 pub(crate) struct HttpOnlySetup {
     /// HTTP RPC URL for provider connections
     pub http_url: Url,
-    /// Optional local node and task manager (None if using external RPC)
+    /// Optional local node (None if using external RPC)
     pub local_node: Option<LocalTestNode>,
 }
 
@@ -453,10 +436,8 @@ pub(crate) struct TestNodeBuilder {
     genesis_content: String,
     custom_gas_limit: Option<String>,
     node_count: usize,
-    is_dev: bool,
     block_time: Option<Duration>,
     external_rpc: Option<Url>,
-    custom_validator: Option<Address>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
 }
@@ -468,10 +449,8 @@ impl TestNodeBuilder {
             genesis_content: include_str!("../assets/test-genesis.json").to_string(),
             custom_gas_limit: None,
             node_count: 1,
-            is_dev: true,
             block_time: Some(Duration::from_millis(100)),
             external_rpc: None,
-            custom_validator: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
         }
@@ -539,13 +518,10 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
-            .with_dev_mode(self.is_dev)
-            .with_attributes_generator(default_attributes_generator)
-            .build()
+        let (node, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
+            .with_dev_mode(true)
+            .build_single()
             .await?;
-
-        let node = nodes.remove(0);
 
         Ok(SingleNodeSetup { node, hardfork })
     }
@@ -567,8 +543,7 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
 
         let (nodes, _wallet) = TempoNode::test_setup(self.node_count, Arc::new(chain_spec))
-            .with_dev_mode(self.is_dev)
-            .with_attributes_generator(default_attributes_generator)
+            .with_dev_mode(true)
             .build()
             .await?;
 
@@ -592,30 +567,13 @@ impl TestNodeBuilder {
             });
         }
 
-        let runtime = Runtime::test();
         let chain_spec = self.build_chain_spec()?;
-        let static_validator = self
-            .custom_validator
-            .unwrap_or(chain_spec.inner.genesis.coinbase);
+        let static_validator = chain_spec.inner.genesis.coinbase;
         let dynamic_validator = self.dynamic_validator.clone();
 
-        let mut node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(
-                RpcServerArgs::default()
-                    .with_unused_ports()
-                    .with_http()
-                    .with_http_api(http_api),
-            );
-        node_config.txpool.max_account_slots = usize::MAX;
-        node_config.dev.block_time = self.block_time;
-
-        let node_handle = NodeBuilder::new(node_config.clone())
-            .testing_node(runtime.clone())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .map_debug_payload_attributes(move |mut attributes| {
+        let (node, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
+            .with_dev_mining(self.block_time)
+            .map_dev_payload_attributes(move |mut attributes| {
                 let validator = dynamic_validator
                     .as_ref()
                     .map(|v| *v.lock().unwrap())
@@ -623,19 +581,17 @@ impl TestNodeBuilder {
                 attributes.suggested_fee_recipient = validator;
                 attributes
             })
+            .with_rpc_modifier(move |rpc| rpc.with_http_api(http_api.clone()))
+            .with_node_config_modifier(|mut config| {
+                config.txpool.max_account_slots = usize::MAX;
+                config
+            })
+            .build_single()
             .await?;
 
-        let http_url = node_handle
-            .node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
         Ok(HttpOnlySetup {
-            http_url,
-            local_node: Some((Box::new(node_handle), runtime)),
+            http_url: node.rpc_url(),
+            local_node: Some(node),
         })
     }
 
@@ -652,18 +608,4 @@ impl TestNodeBuilder {
             genesis,
         )?))
     }
-}
-
-/// Default attributes generator for payload building
-fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
-    PayloadAttributes {
-        timestamp,
-        prev_randao: alloy::primitives::B256::ZERO,
-        suggested_fee_recipient: alloy::primitives::Address::ZERO,
-        withdrawals: Some(vec![]),
-        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        slot_number: None,
-        target_gas_limit: None,
-    }
-    .into()
 }
