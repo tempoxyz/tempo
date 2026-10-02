@@ -1320,7 +1320,9 @@ where
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        self.protocol_pool.on_canonical_state_change(update)
+        let info = update.block_info();
+        self.protocol_pool.on_canonical_state_change(update);
+        self.aa_2d_pool.write().set_base_fee(info.pending_basefee);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
@@ -1471,11 +1473,12 @@ mod tests {
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use reth_primitives_traits::Recovered;
+    use reth_primitives_traits::{Recovered, SealedBlock};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        PoolConfig, PoolUpdateKind, TransactionOrigin, TransactionPool,
+        TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -1679,6 +1682,84 @@ mod tests {
             },
         );
         provider
+    }
+
+    #[test_case::test_case(PoolUpdateKind::Commit, U256::ONE; "commit_regular")]
+    #[test_case::test_case(PoolUpdateKind::Commit, U256::MAX; "commit_expiring")]
+    #[test_case::test_case(PoolUpdateKind::Reorg, U256::ONE; "reorg_regular")]
+    #[test_case::test_case(PoolUpdateKind::Reorg, U256::MAX; "reorg_expiring")]
+    fn canonical_updates_reprice_and_filter_aa_transactions(
+        update_kind: PoolUpdateKind,
+        nonce_key: U256,
+    ) {
+        let pool = create_test_pool(create_provider_with_tip());
+        pool.set_block_info(BlockInfo {
+            pending_basefee: 20_000_000_000,
+            ..pool.protocol_pool.inner().block_info()
+        });
+        let capped = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .max_priority_fee(10_000_000_000)
+            .max_fee(30_000_000_001)
+            .build();
+        let steady = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .max_priority_fee(5_000_000_000)
+            .max_fee(35_000_000_000)
+            .build();
+        let (capped_hash, steady_hash) = (*capped.hash(), *steady.hash());
+        for tx in [capped, steady] {
+            pool.aa_2d_pool
+                .write()
+                .add_transaction(
+                    Arc::new(crate::test_utils::wrap_valid_tx(
+                        tx,
+                        TransactionOrigin::Local,
+                    )),
+                    0,
+                    TempoHardfork::T1,
+                )
+                .unwrap();
+        }
+
+        let best_hashes = || {
+            pool.best_transactions()
+                .map(|tx| *tx.hash())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(best_hashes(), vec![capped_hash, steady_hash]);
+
+        // Rising fees reverse priority and then exclude the capped transaction.
+        // Falling fees make it executable and highest-priority again.
+        for (index, (base_fee, expected)) in [
+            (30_000_000_000, vec![steady_hash, capped_hash]),
+            (32_000_000_000, vec![steady_hash]),
+            (20_000_000_000, vec![capped_hash, steady_hash]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let new_tip = SealedBlock::seal_slow(Block {
+                header: TempoHeader {
+                    inner: Header {
+                        number: index as u64 + 1,
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            pool.on_canonical_state_change(CanonicalStateUpdate {
+                new_tip: &new_tip,
+                pending_block_base_fee: base_fee,
+                pending_block_blob_fee: None,
+                changed_accounts: Vec::new(),
+                mined_transactions: Vec::new(),
+                update_kind,
+            });
+            assert_eq!(best_hashes(), expected, "pending base fee {base_fee}");
+        }
     }
 
     #[test]
