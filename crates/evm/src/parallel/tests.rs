@@ -164,6 +164,35 @@ fn differential_worker_mode(
     adaptive: bool,
     (streaming, fee_rebasing, chained): (bool, bool, bool),
 ) -> ExecutionStats {
+    differential_forwarding_mode(
+        db.clone(),
+        transactions,
+        threads,
+        batch_size,
+        spec,
+        adaptive,
+        (streaming, fee_rebasing, chained, true),
+    );
+    differential_forwarding_mode(
+        db,
+        transactions,
+        threads,
+        batch_size,
+        spec,
+        adaptive,
+        (streaming, fee_rebasing, chained, false),
+    )
+}
+
+fn differential_forwarding_mode(
+    db: TestDB,
+    transactions: &[TempoTxEnv],
+    threads: usize,
+    batch_size: usize,
+    spec: TempoHardfork,
+    adaptive: bool,
+    (streaming, fee_rebasing, chained, forwarding): (bool, bool, bool, bool),
+) -> ExecutionStats {
     let env = EvmEnv {
         cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
             spec,
@@ -187,6 +216,7 @@ fn differential_worker_mode(
             .with_streaming(streaming)
             .with_fee_rebasing(fee_rebasing)
             .with_chained_workers(chained)
+            .with_state_forwarding(forwarding)
             .with_minimum_body_duration(Duration::ZERO),
     ));
     let mut sequential_gas = 0;
@@ -326,6 +356,100 @@ fn chained_workers_revalidate_transitive_predictions() {
         assert_eq!(stats.reused, 1);
         assert_eq!(stats.conflicts, 3);
     }
+}
+
+#[test]
+fn forwarding_revalidates_skipped_native_balance_predecessors() {
+    use alloy_evm::FromRecoveredTx;
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+    let mut db = funded_tip20_db(4);
+    contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
+    contract(&mut db, tempo_precompiles::NONCE_PRECOMPILE_ADDRESS, &[0]);
+    let txs = (0..3)
+        .map(|i| {
+            let tx = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 1,
+                nonce_key: U256::ONE,
+                calls: vec![Call {
+                    to: PATH_USD_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: ITIP20::transferCall {
+                        to: address(i + 1),
+                        amount: U256::from(17),
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::default());
+            TempoTxEnv::from_recovered_tx(&tx, address(i))
+        })
+        .collect::<Vec<_>>();
+    for spec in FEE_SPECS {
+        let stats = differential_forwarding_mode(
+            db.clone(),
+            &txs,
+            4,
+            3,
+            spec,
+            false,
+            (false, true, false, true),
+        );
+        assert_eq!(stats.reused, 3, "{spec:?}");
+        assert_eq!(stats.conflicts + stats.retries, 0, "{spec:?}");
+    }
+    let mut reference = test_evm_with_basefee(db.clone(), 0);
+    let mut parallel = test_evm_with_basefee(db, 0);
+    parallel.set_speculative_executor(Some(
+        SpeculativeExecutor::new(4, 3)
+            .unwrap()
+            .with_state_forwarding(true)
+            .with_streaming(false),
+    ));
+    parallel.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+    // The first incoming transfer disappears from authoritative selection.
+    for tx in &txs[1..] {
+        let expected = reference.transact_raw(tx.clone()).unwrap();
+        let actual = parallel.transact_raw(tx.clone()).unwrap();
+        assert_eq!(actual, expected);
+        reference.db_mut().commit(expected.state);
+        parallel.db_mut().commit(actual.state);
+    }
+    assert_eq!(parallel.execution_stats().conflicts, 1);
+    assert_eq!(parallel.execution_stats().reused, 1);
+    assert_eq!(root(reference.db()), root(parallel.db()));
+}
+
+#[test]
+fn forwarding_cancellation_wakes_predecessor_waiters() {
+    let mut db = TestDB::default();
+    let target = address(900);
+    contract(&mut db, target, &[0x60, 0, 0x54, 0]);
+    let (_, env) = test_evm_with_basefee(TestDB::default(), 0).finish();
+    let pool = SpeculativeExecutor::new(4, 16)
+        .unwrap()
+        .with_state_forwarding(true);
+    let batch = pool.speculate(
+        &mut db,
+        (0..16)
+            .map(|nonce| (transaction(0, target, nonce, &[]), env.clone()))
+            .collect(),
+        HashMap::default(),
+    );
+    let shared = Arc::downgrade(&batch.shared);
+    // One worker waits for an owner-thread read; all remaining jobs depend on
+    // that worker. Closing the read reply and dropping the batch must join all.
+    let message = batch.receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(message, Message::Read(..)));
+    drop(message);
+    drop(batch);
+    assert!(shared.upgrade().is_none());
 }
 
 #[test]
@@ -1930,6 +2054,7 @@ fn execution_throughput() {
     let streaming = std::env::var("TEMPO_BENCH_STREAMING").map_or(true, |value| value != "0");
     let fee_rebasing = std::env::var("TEMPO_BENCH_FEE_REBASING").map_or(true, |value| value != "0");
     let chained = std::env::var("TEMPO_BENCH_CHAINED").map_or(true, |value| value != "0");
+    let forwarding = std::env::var("TEMPO_BENCH_FORWARDING").is_ok_and(|value| value != "0");
     println!(
         "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused\tfees_rebased"
     );
@@ -2040,7 +2165,8 @@ fn execution_throughput() {
                             .unwrap()
                             .with_streaming(streaming)
                             .with_fee_rebasing(fee_rebasing)
-                            .with_chained_workers(chained),
+                            .with_chained_workers(chained)
+                            .with_state_forwarding(forwarding),
                     ));
                 }
                 let mut receipts = Vec::with_capacity(txs.len());
@@ -2510,6 +2636,7 @@ fn worker_panic_releases_other_workers_waiting_for_reads() {
         cache: RwLock::default(),
         next: AtomicUsize::new(0),
         cancelled: AtomicBool::new(false),
+        forwarding: None,
     });
     let (sender, receiver) = mpsc::channel();
     // Deliver a worker failure before another worker's outstanding read.

@@ -1,0 +1,39 @@
+{
+  "status": "not_run",
+  "pull_request": null,
+  "user_preferences": {
+    "open_pull_request": false,
+    "performance_gate": "Periodically run the real GitHub benchmark workflows after substantial scheduler changes; local measurements are diagnostic."
+  },
+  "repository": "tempoxyz/tempo",
+  "published_branch": "onbjerg/parallel-execution",
+  "published_commit": "816a7a153f6b2fce043f8fd3503ef7010589fb54",
+  "source_commit": "3f49b9da4a95c1b50421024f358090fbe464b7c8",
+  "tree": "e8523e8e22fac22ed18add13107c04eb5b45be73",
+  "tree_verified_identical": true,
+  "publication": "Git data API snapshot commit, parent d4f7943fa84991a5aee1f1b335754ca9010f4edc; local commit history retained separately",
+  "workflow": ".github/workflows/bench-e2e.yml",
+  "workflow_inspected_at": "69597607de23d5e6a5497b1d67346acd28cff7a0",
+  "workflow_ref": "main",
+  "trigger": "workflow_dispatch; no PR required",
+  "authentication": "Authenticated GitHub CLI verified for onbjerg (repo scope).",
+  "compatibility": [
+    "Current benchmark harness uses two validators and supports per-side execution flags.",
+    "Published node is based on Tempo 1.6; inspected main is 1.14.",
+    "Current harness may invoke regenesis and encrypted consensus keys; the published node lacks regenesis and --consensus.secret. Resolve compatibility before dispatching.",
+    "A read-only upstream merge audit found 23 conflicting paths; original worktree is unchanged."
+  ],
+  "planned_targets_tps": [
+    10000,
+    25000,
+    50000,
+    75000
+  ],
+  "proposed_feature_args": "--execution.threads 8 --execution.batch-size 128",
+  "notes": [
+    "Runner gives each validator eight physical cores / sixteen logical CPUs; start with eight execution workers and measure scaling.",
+    "Pin both baseline and feature SHAs, record harness SHA, build features, hardfork, workload, runner, input rate, confirmed TPS and failures.",
+    "Run root computation normally. Do not use skip-state-root for acceptance measurements.",
+    "No run URL or performance result exists yet."
+  ]
+}

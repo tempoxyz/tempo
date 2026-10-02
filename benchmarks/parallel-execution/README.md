@@ -1811,6 +1811,60 @@ and confirmation checks. Their reports, metrics, logs and retention metadata
 remain; the latest `prefetch-plan` after databases are available for further
 replay. The separate shutdown-anomaly database remains retained.
 
+## Cross-worker predecessor forwarding (opt-in)
+
+`--execution.state-forwarding` lets completed speculative transactions forward
+likely account, native TIP-20 balance and AA nonce values to dependent workers.
+Dependencies point only to earlier candidates within the bounded window. Every
+actual read is still recorded and checked against the authoritative prefix;
+skipped candidates, unexpected writes and stale predictions cause normal replay.
+Cancellation wakes both database-read waiters and dependency waiters. Forwarding
+is disabled by default; `TEMPO_BENCH_FORWARDING=1` enables the same experiment in
+the in-memory benchmark, and `parallel-replay --state-forwarding` checks it
+against canonical execution.
+
+The selective-wakeup experiment runs off/on/on/off, with 50,000 transactions,
+16 workers, a 128-transaction window, a 5B gas budget and phase clocks. Mean
+execution throughput changes from 107,689 to 117,657 TPS for transfers among
+existing funded recipients, but from 136,049 to 103,164 TPS for new recipients.
+The predictions remove most balance conflicts, while their construction and
+synchronization add overhead. The earlier notify-all prototype and both sets of
+results are retained in `forwarding[-selective]-micro.{json,tsv}`.
+
+Six isolated five-second node trials offer 50k TPS with the same saved binary,
+16 workers, shared background trie computation and one builder task. Existing
+recipient trials run off/on/on/off and average 29,240 versus 30,572 confirmed TPS
+including backlog drain (+4.6%). One new-recipient pair changes from 24,614 to
+23,945 TPS (-2.7%). All 1,300,413 accepted transactions confirm, with no execution
+failures or rejected payloads and six clean shutdowns. These short local runs
+are diagnostic; GitHub benchmark acceptance remains outstanding. Reports,
+metrics and process CPU measurements are in `forwarding-node.json`.
+
+The EVM suite passes 96 tests. Differential helpers exercise forwarding both on
+and off, including 768 existing-recipient fork/window/configuration comparisons.
+Targeted regressions cover transitive native balances, a skipped predecessor,
+and cancellation with dependent workers asleep. Release Clippy and the normal
+node build pass. Canonical replay verifies 27 generated blocks from old fixtures
+and all six new trials, comparing full outcomes, state, receipts, gas and roots.
+See `forwarding-validation.json` and the associated canonical TSV reports.
+
+## GitHub performance gate
+
+Use the repository's GitHub benchmark workflows periodically after substantial
+scheduler changes. No pull request should be opened for this task. The current
+`bench-e2e.yml` supports manual dispatch on `main`, with separately pinned
+baseline/feature refs and node arguments. The benchmark runner assigns eight
+physical cores to each of two validators; begin with eight execution workers
+per validator and measure scaling. Include 10k, 25k, 50k and higher offered
+loads with normal state-root computation.
+
+`github-benchmarks.json` records the published tested snapshot, workflow revision
+and outstanding access/compatibility work. No GitHub benchmark has run yet.
+The current harness targets newer node interfaces than this checkout, including
+conditional regenesis and encrypted consensus keys. Resolve those differences
+before interpreting results. Local in-memory TPS is not the GitHub performance
+gate, and forwarding remains opt-in pending that measurement.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed

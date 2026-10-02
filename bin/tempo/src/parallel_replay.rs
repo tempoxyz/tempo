@@ -47,6 +47,9 @@ pub(crate) struct ParallelReplay {
     /// Maximum speculative lookahead.
     #[arg(long, default_value = "128", value_parser = clap::value_parser!(u32).range(1..))]
     batch_size: u32,
+    /// Forward completed predecessor predictions while retaining ordered validation.
+    #[arg(long)]
+    state_forwarding: bool,
     /// Optional TSV report; flushed after each successfully verified block.
     #[arg(long)]
     output: Option<PathBuf>,
@@ -66,6 +69,7 @@ impl ParallelReplay {
         let sequential = TempoEvmConfig::new(chain.clone());
         let speculative = sequential.clone().with_speculative_executor(
             SpeculativeExecutor::new(self.threads as usize, self.batch_size as usize)?
+                .with_state_forwarding(self.state_forwarding)
                 .with_adaptive_backoff(false)
                 .with_minimum_body_duration(std::time::Duration::ZERO),
         );

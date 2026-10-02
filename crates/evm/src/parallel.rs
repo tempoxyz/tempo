@@ -33,6 +33,8 @@ use tempo_precompiles::storage::fee_updates::{self, FeeUpdate};
 use tempo_revm::replay::{BodyCache, ReadKey, ReadValue, read};
 use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
 
+mod forwarding;
+
 type Env = EvmEnv<TempoHardfork, TempoBlockEnv>;
 type Outcome<E> = Result<ResultAndState<TempoHaltReason>, EVMError<E, TempoInvalidTransaction>>;
 
@@ -46,6 +48,7 @@ pub struct SpeculativeExecutor {
     streaming: bool,
     fee_rebasing: bool,
     chained_workers: bool,
+    state_forwarding: bool,
 }
 
 impl SpeculativeExecutor {
@@ -72,6 +75,7 @@ impl SpeculativeExecutor {
             streaming: true,
             fee_rebasing: true,
             chained_workers: true,
+            state_forwarding: false,
         })
     }
 
@@ -107,6 +111,13 @@ impl SpeculativeExecutor {
     /// from the same payer. Every resulting read still requires ordered validation.
     pub fn with_chained_workers(mut self, enabled: bool) -> Self {
         self.chained_workers = enabled;
+        self
+    }
+
+    /// Forward completed predecessor predictions for likely native dependencies.
+    /// Every actual read still requires validation against the ordered prefix.
+    pub fn with_state_forwarding(mut self, enabled: bool) -> Self {
+        self.state_forwarding = enabled;
         self
     }
 
@@ -150,18 +161,22 @@ impl SpeculativeExecutor {
             });
         }
         let count = inputs.len();
+        let forwarding = self
+            .state_forwarding
+            .then(|| forwarding::Forwarding::new(&inputs));
         let shared = Arc::new(Work {
             inputs,
             prefetched,
             cache: RwLock::new(HashMap::default()),
             next: AtomicUsize::new(0),
             cancelled: AtomicBool::new(false),
+            forwarding,
         });
         let (sender, receiver) = mpsc::channel();
         let workers = count.min(self.pool.current_num_threads());
         let mut lanes = vec![Vec::new(); workers];
         let mut chained_workers = false;
-        if self.chained_workers {
+        if self.chained_workers && shared.forwarding.is_none() {
             let mut payers: HashMap<Address, usize> = HashMap::default();
             for (index, (tx, _)) in shared.inputs.iter().enumerate() {
                 let next_lane = payers.len() % workers;
@@ -249,6 +264,7 @@ struct Work {
     cache: RwLock<HashMap<ReadKey, ReadValue>>,
     next: AtomicUsize,
     cancelled: AtomicBool,
+    forwarding: Option<forwarding::Forwarding>,
 }
 
 fn run_worker<E: DBErrorMarker>(
@@ -271,6 +287,7 @@ fn run_worker<E: DBErrorMarker>(
         }),
         reads: Vec::new(),
         body_reads: Vec::new(),
+        forwarded: None,
     };
     let mut indices = indices.map(Vec::into_iter);
     let mut evm = TempoEvm::new(db, shared.inputs[0].1.clone());
@@ -278,12 +295,21 @@ fn run_worker<E: DBErrorMarker>(
     let mut standard_fee_gas = fee_rebasing
         && evm.ctx().cfg.gas_params == tempo_revm::gas_params::tempo_gas_params(evm.ctx().cfg.spec);
     while !shared.cancelled.load(Ordering::Relaxed) {
-        let index = match &mut indices {
-            Some(indices) => match indices.next() {
-                Some(index) => index,
-                None => break,
-            },
-            None => shared.next.fetch_add(1, Ordering::Relaxed),
+        let index = if let Some(forwarding) = &shared.forwarding {
+            let Some(index) = forwarding.next(&shared.cancelled) else {
+                break;
+            };
+            evm.ctx_mut().journaled_state.database.forwarded =
+                Some(forwarding.seed(index, &shared.prefetched));
+            index
+        } else {
+            match &mut indices {
+                Some(indices) => match indices.next() {
+                    Some(index) => index,
+                    None => break,
+                },
+                None => shared.next.fetch_add(1, Ordering::Relaxed),
+            }
         };
         let Some((tx, env)) = shared.inputs.get(index) else {
             break;
@@ -329,6 +355,18 @@ fn run_worker<E: DBErrorMarker>(
             // reads, so any skipped, failed or conflicting predecessor is checked
             // against the real committed prefix before a later result is reused.
             overlay.commit(result.state.clone());
+        }
+        if let Some(forwarding) = &shared.forwarding {
+            forwarding.complete(
+                index,
+                result.as_ref().ok().map(|result| &result.state),
+                evm.ctx()
+                    .journaled_state
+                    .database
+                    .forwarded
+                    .as_ref()
+                    .expect("forwarded seed"),
+            );
         }
         let _ = sender.send(Message::Finished(
             index,
@@ -452,6 +490,9 @@ impl<E: DBErrorMarker> SpeculativeBatch<E> {
 impl<E> Drop for SpeculativeBatch<E> {
     fn drop(&mut self) {
         self.shared.cancelled.store(true, Ordering::Relaxed);
+        if let Some(forwarding) = &self.shared.forwarding {
+            forwarding.cancel();
+        }
         // Closing replies wakes workers waiting for DB reads. Join even on unwind,
         // so replacing or abandoning batches cannot accumulate background work.
         while self.workers > 0 {
@@ -591,6 +632,7 @@ struct RecordingDatabase<'a, E> {
     overlay: Option<CacheDB<RemoteDatabase<'a, E>>>,
     reads: Vec<(ReadKey, ReadValue)>,
     body_reads: Vec<(ReadKey, ReadValue)>,
+    forwarded: Option<HashMap<ReadKey, ReadValue>>,
 }
 
 impl<E: DBErrorMarker> RecordingDatabase<'_, E> {
@@ -599,9 +641,14 @@ impl<E: DBErrorMarker> RecordingDatabase<'_, E> {
             return Err(ProxyError::Cancelled);
         }
         let start = tempo_revm::replay::is_recording_body().then(std::time::Instant::now);
-        let value = match &mut self.overlay {
-            Some(overlay) => read(overlay, key)?,
-            None => self.remote.read(key)?,
+        let value = if let Some(value) = self.forwarded.as_ref().and_then(|values| values.get(&key))
+        {
+            value.clone()
+        } else {
+            match &mut self.overlay {
+                Some(overlay) => read(overlay, key)?,
+                None => self.remote.read(key)?,
+            }
         };
         self.reads.push((key, value.clone()));
         if let Some(start) = start {

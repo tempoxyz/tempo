@@ -37,6 +37,7 @@ alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
 
 derive_more.workspace = true
 thiserror.workspace = true
@@ -44,7 +45,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 alloy-trie = "0.9.5"
-alloy-sol-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 revm.workspace = true
 reth-storage-api.workspace = true

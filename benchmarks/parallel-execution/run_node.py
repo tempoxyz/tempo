@@ -60,6 +60,8 @@ def trial(args, threads, target):
                 "--log.file.directory", str(directory / "logs"), "--log.stdout.filter", "info"]
     if args.share_sparse_trie:
         node_cmd.append("--engine.share-sparse-trie-with-payload-builder")
+    if args.state_forwarding:
+        node_cmd.append("--execution.state-forwarding")
     if args.builder_max_tasks is not None:
         node_cmd.extend(["--builder.max-tasks", str(args.builder_max_tasks)])
     bench_cmd = [str(ROOT / "target/release/tempo-bench"), "run-max-tps",
@@ -169,6 +171,8 @@ def main():
     parser.add_argument("--builder-max-tasks", type=int,
                         help="Override concurrent payload tasks, including for matched trie comparisons")
     parser.add_argument("--nonces", choices=["2d", "expiring"], default="2d")
+    parser.add_argument("--state-forwarding", action="store_true",
+                        help="Forward completed speculative predecessor state")
     parser.add_argument("--recipients", choices=["existing", "new"], default="existing",
                         help="Use funded signer recipients or new random addresses")
     parser.add_argument("--block-gas-limit", type=int,
@@ -200,6 +204,7 @@ def main():
     (args.output / "host.json").write_text(json.dumps({"platform": platform.platform(),
         "processor": platform.processor(), "block_gas_limit": args.block_gas_limit,
         "share_sparse_trie": args.share_sparse_trie,
+        "state_forwarding": args.state_forwarding,
         "recipients": args.recipients,
         "builder_max_tasks": args.builder_max_tasks,
         "tokio_worker_threads": os.environ.get("TOKIO_WORKER_THREADS"),

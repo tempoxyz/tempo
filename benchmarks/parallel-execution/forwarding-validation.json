@@ -1,0 +1,84 @@
+{
+  "base_source": "3f49b9da4a95c1b50421024f358090fbe464b7c8",
+  "evm": {
+    "passed": 96,
+    "ignored": 2,
+    "log": "/tmp/tempo-forwarding-selective-tests.log",
+    "contention_matrix_comparisons": 768
+  },
+  "clippy": {
+    "command": "cargo clippy --release --locked -p tempo-evm -p tempo-revm -p tempo-payload-builder -p tempo-node --all-targets -- -D warnings",
+    "status": "passed",
+    "log": "/tmp/tempo-forwarding-clippy.log"
+  },
+  "build": {
+    "command": "cargo build --release --locked -p tempo --bin tempo",
+    "status": "passed",
+    "binary": "/tmp/tempo-forwarding-node",
+    "sha256": "bc5667a0848e549368bea68a4c0403b74310a3ac94a84f5bd82cb490bd398076",
+    "log": "/tmp/tempo-forwarding-node-build.log"
+  },
+  "canonical_replay": {
+    "status": "passed",
+    "mode": "forwarding enabled, ordered validation, full results/state/receipts/gas/canonical roots checked",
+    "reports": [
+      {
+        "report": "forwarding-canonical-existing.tsv",
+        "blocks": 3,
+        "transactions": 47266
+      },
+      {
+        "report": "forwarding-canonical-expiring.tsv",
+        "blocks": 3,
+        "transactions": 110402
+      },
+      {
+        "report": "forwarding-canonical-new.tsv",
+        "blocks": 3,
+        "transactions": 25332
+      },
+      {
+        "report": "forwarding-node-canonical-existing-off-repeat.tsv",
+        "blocks": 3,
+        "transactions": 47266
+      },
+      {
+        "report": "forwarding-node-canonical-existing-off.tsv",
+        "blocks": 3,
+        "transactions": 47265
+      },
+      {
+        "report": "forwarding-node-canonical-existing-on-repeat.tsv",
+        "blocks": 3,
+        "transactions": 47265
+      },
+      {
+        "report": "forwarding-node-canonical-existing-on.tsv",
+        "blocks": 3,
+        "transactions": 47265
+      },
+      {
+        "report": "forwarding-node-canonical-new-off-first.tsv",
+        "blocks": 3,
+        "transactions": 25332
+      },
+      {
+        "report": "forwarding-node-canonical-new-on-first.tsv",
+        "blocks": 3,
+        "transactions": 25332
+      }
+    ]
+  },
+  "node": {
+    "report": "forwarding-node.json",
+    "trials": 6,
+    "accepted_and_confirmed": 1300413,
+    "execution_failures": 0,
+    "clean_exits": 6
+  },
+  "limitations": [
+    "No GitHub benchmark has run.",
+    "Local generated databases only; no public historical chain replay.",
+    "Forwarding remains opt-in: new-recipient workloads regress."
+  ]
+}

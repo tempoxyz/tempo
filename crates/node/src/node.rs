@@ -65,6 +65,9 @@ pub struct TempoNodeArgs {
     /// Maximum transactions in a speculative execution window.
     #[arg(long = "execution.batch-size", default_value_t = 128, value_parser = clap::value_parser!(u32).range(1..))]
     pub execution_batch_size: u32,
+    /// Forward likely native dependencies between speculative workers.
+    #[arg(long = "execution.state-forwarding", default_value_t = false)]
+    pub execution_state_forwarding: bool,
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
@@ -120,7 +123,14 @@ impl TempoNode {
         self.executor_builder = TempoExecutorBuilder {
             threads,
             batch_size: batch_size.max(1),
+            state_forwarding: self.executor_builder.state_forwarding,
         };
+        self
+    }
+
+    /// Enables advisory predecessor forwarding within speculative windows.
+    pub fn with_execution_state_forwarding(mut self, enabled: bool) -> Self {
+        self.executor_builder.state_forwarding = enabled;
         self
     }
 
@@ -130,6 +140,7 @@ impl TempoNode {
             executor_builder: TempoExecutorBuilder {
                 threads: args.execution_threads,
                 batch_size: args.execution_batch_size.max(1) as usize,
+                state_forwarding: args.execution_state_forwarding,
             },
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
@@ -380,6 +391,8 @@ pub struct TempoExecutorBuilder {
     pub threads: usize,
     /// Maximum speculative transactions per window.
     pub batch_size: usize,
+    /// Forward completed predecessor predictions; ordered read validation still applies.
+    pub state_forwarding: bool,
 }
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
@@ -394,7 +407,8 @@ where
             let executor = tempo_evm::parallel::SpeculativeExecutor::new(
                 self.threads,
                 self.batch_size.max(1),
-            )?;
+            )?
+            .with_state_forwarding(self.state_forwarding);
             evm_config = evm_config.with_speculative_executor(executor);
         }
         Ok(evm_config)

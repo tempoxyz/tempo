@@ -1,0 +1,681 @@
+[
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1849.0,
+        "peak": 2061.0,
+        "mean_system": 834.8
+      },
+      "client": {
+        "mean": 292.8,
+        "peak": 337.0,
+        "mean_system": 48.5
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 82.8,
+      "client:|__tokio-rt-worker": 209.2,
+      "node:|__engine": 18.0,
+      "node:|__mdbx-rs-txn-mgr": 2.8,
+      "node:|__persistence": 6.2,
+      "node:|__rayon-00": 24.5,
+      "node:|__rayon-01": 21.0,
+      "node:|__rayon-02": 20.0,
+      "node:|__rayon-03": 19.2,
+      "node:|__rayon-04": 18.0,
+      "node:|__rayon-05": 12.2,
+      "node:|__rayon-06": 11.2,
+      "node:|__rayon-07": 9.0,
+      "node:|__rayon-08": 8.2,
+      "node:|__rayon-09": 7.5,
+      "node:|__rayon-10": 6.2,
+      "node:|__rayon-11": 5.8,
+      "node:|__rayon-12": 5.8,
+      "node:|__rayon-13": 5.5,
+      "node:|__rayon-14": 5.2,
+      "node:|__rayon-15": 5.2,
+      "node:|__rayon-16": 5.0,
+      "node:|__rayon-17": 5.0,
+      "node:|__rayon-18": 5.0,
+      "node:|__rayon-19": 4.8,
+      "node:|__rayon-20": 5.2,
+      "node:|__rayon-21": 5.0,
+      "node:|__rayon-22": 4.8,
+      "node:|__rayon-23": 4.5,
+      "node:|__rayon-24": 4.8,
+      "node:|__rayon-25": 4.5,
+      "node:|__rayon-26": 4.2,
+      "node:|__rayon-27": 4.5,
+      "node:|__rayon-28": 4.2,
+      "node:|__rayon-29": 4.2,
+      "node:|__rayon-30": 4.0,
+      "node:|__rayon-31": 4.0,
+      "node:|__sparse-trie": 28.5,
+      "node:|__storage-00": 6.5,
+      "node:|__storage-02": 3.5,
+      "node:|__storage-03": 2.5,
+      "node:|__tempo-execution": 30.0,
+      "node:|__tokio-rt": 1412.2,
+      "node:|__trie-hashing": 18.0
+    },
+    "sending": {
+      "accepted": 221685,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007279069
+    },
+    "accepted_tps": 44273,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.62544,
+      "execution_loop": 5.015737,
+      "pool_snapshot": 0.349628,
+      "finalization": 0.729966,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.035849,
+      "hashed_post_state": 0.057859,
+      "payload_build": 6.222168
+    },
+    "speculative_execution_counts": {
+      "speculated": 25491,
+      "nonce_filtered": 110148,
+      "reused": 6129,
+      "bodies_reused": 0,
+      "fees_rebased": 6023,
+      "conflicts": 18639,
+      "retries": 0,
+      "backoff": 197746
+    },
+    "confirmation": {
+      "user_transactions": 221685,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 7.615375,
+      "confirmed_tps_including_backlog": 29110
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "forwarding": false,
+    "recipients": "existing",
+    "directory": "/tmp/tempo-forwarding-node-existing-off/workers-16-target-50000",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 4805656576,
+      "disk_free_bytes_end": 4529164288
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1922.0,
+        "peak": 2157.0,
+        "mean_system": 836.0
+      },
+      "client": {
+        "mean": 284.0,
+        "peak": 326.0,
+        "mean_system": 49.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 81.5,
+      "client:|__tokio-rt-worker": 203.0,
+      "node:|__engine": 18.8,
+      "node:|__mdbx-rs-txn-mgr": 3.8,
+      "node:|__persistence": 9.2,
+      "node:|__rayon-00": 16.8,
+      "node:|__rayon-01": 14.2,
+      "node:|__rayon-02": 14.2,
+      "node:|__rayon-03": 13.0,
+      "node:|__rayon-04": 12.2,
+      "node:|__rayon-05": 9.8,
+      "node:|__rayon-06": 9.2,
+      "node:|__rayon-07": 8.2,
+      "node:|__rayon-08": 8.2,
+      "node:|__rayon-09": 8.0,
+      "node:|__rayon-10": 7.8,
+      "node:|__rayon-11": 7.5,
+      "node:|__rayon-12": 7.2,
+      "node:|__rayon-13": 7.0,
+      "node:|__rayon-14": 7.0,
+      "node:|__rayon-15": 6.8,
+      "node:|__rayon-16": 6.8,
+      "node:|__rayon-17": 7.0,
+      "node:|__rayon-18": 6.5,
+      "node:|__rayon-19": 6.2,
+      "node:|__rayon-20": 6.2,
+      "node:|__rayon-21": 6.5,
+      "node:|__rayon-22": 6.2,
+      "node:|__rayon-23": 6.2,
+      "node:|__rayon-24": 6.2,
+      "node:|__rayon-25": 6.2,
+      "node:|__rayon-26": 6.0,
+      "node:|__rayon-27": 6.0,
+      "node:|__rayon-28": 6.0,
+      "node:|__rayon-29": 6.0,
+      "node:|__rayon-30": 5.8,
+      "node:|__rayon-31": 5.5,
+      "node:|__sparse-trie": 24.8,
+      "node:|__storage-00": 10.5,
+      "node:|__storage-01": 5.8,
+      "node:|__storage-05": 2.8,
+      "node:|__tempo-execution": 129.0,
+      "node:|__tokio-rt": 1381.5,
+      "node:|__trie-hashing": 16.5
+    },
+    "sending": {
+      "accepted": 212903,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.013124561
+    },
+    "accepted_tps": 42469,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 1.74414,
+      "execution_loop": 4.339758,
+      "pool_snapshot": 0.287005,
+      "finalization": 0.756537,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.037893,
+      "hashed_post_state": 0.055985,
+      "payload_build": 5.516295
+    },
+    "speculative_execution_counts": {
+      "speculated": 214310,
+      "nonce_filtered": 93424,
+      "reused": 196647,
+      "bodies_reused": 0,
+      "fees_rebased": 195756,
+      "conflicts": 13204,
+      "retries": 0,
+      "backoff": 0
+    },
+    "confirmation": {
+      "user_transactions": 212903,
+      "execution_failures": 0,
+      "last_busy_block": 32,
+      "send_start_to_last_canonical_seconds": 6.967071,
+      "confirmed_tps_including_backlog": 30558
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "forwarding": true,
+    "recipients": "existing",
+    "directory": "/tmp/tempo-forwarding-node-existing-on/workers-16-target-50000",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 4528828416,
+      "disk_free_bytes_end": 4249329664
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 2023.5,
+        "peak": 2065.0,
+        "mean_system": 923.5
+      },
+      "client": {
+        "mean": 323.0,
+        "peak": 341.0,
+        "mean_system": 52.5
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 90.0,
+      "client:|__tokio-rt-worker": 232.2,
+      "node:|__engine": 20.2,
+      "node:|__mdbx-rs-txn-mgr": 2.5,
+      "node:|__persistence": 5.0,
+      "node:|__rayon-00": 17.2,
+      "node:|__rayon-01": 14.8,
+      "node:|__rayon-02": 14.2,
+      "node:|__rayon-03": 13.0,
+      "node:|__rayon-04": 12.5,
+      "node:|__rayon-05": 10.0,
+      "node:|__rayon-06": 10.0,
+      "node:|__rayon-07": 8.5,
+      "node:|__rayon-08": 8.0,
+      "node:|__rayon-09": 7.5,
+      "node:|__rayon-10": 7.2,
+      "node:|__rayon-11": 7.0,
+      "node:|__rayon-12": 6.8,
+      "node:|__rayon-13": 6.8,
+      "node:|__rayon-14": 6.5,
+      "node:|__rayon-15": 6.5,
+      "node:|__rayon-16": 6.5,
+      "node:|__rayon-17": 6.0,
+      "node:|__rayon-18": 6.0,
+      "node:|__rayon-19": 6.0,
+      "node:|__rayon-20": 6.0,
+      "node:|__rayon-21": 6.0,
+      "node:|__rayon-22": 6.0,
+      "node:|__rayon-23": 5.8,
+      "node:|__rayon-24": 5.8,
+      "node:|__rayon-25": 5.8,
+      "node:|__rayon-26": 5.5,
+      "node:|__rayon-27": 5.5,
+      "node:|__rayon-28": 5.5,
+      "node:|__rayon-29": 5.5,
+      "node:|__rayon-30": 5.2,
+      "node:|__rayon-31": 5.2,
+      "node:|__sparse-trie": 23.2,
+      "node:|__storage-00": 6.5,
+      "node:|__storage-03": 3.2,
+      "node:|__tempo-execution": 104.5,
+      "node:|__tokio-rt": 1543.8,
+      "node:|__trie-hashing": 15.2
+    },
+    "sending": {
+      "accepted": 218629,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007326297
+    },
+    "accepted_tps": 43662,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 2.049752,
+      "execution_loop": 4.582672,
+      "pool_snapshot": 0.310785,
+      "finalization": 0.771973,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.036555,
+      "hashed_post_state": 0.05874,
+      "payload_build": 5.798303
+    },
+    "speculative_execution_counts": {
+      "speculated": 203967,
+      "nonce_filtered": 99190,
+      "reused": 178380,
+      "bodies_reused": 0,
+      "fees_rebased": 177627,
+      "conflicts": 19287,
+      "retries": 0,
+      "backoff": 16010
+    },
+    "confirmation": {
+      "user_transactions": 218629,
+      "execution_failures": 0,
+      "last_busy_block": 21,
+      "send_start_to_last_canonical_seconds": 7.148302,
+      "confirmed_tps_including_backlog": 30585
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "forwarding": true,
+    "recipients": "existing",
+    "directory": "/tmp/tempo-forwarding-node-existing-on-repeat/workers-16-target-50000",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 4239544320,
+      "disk_free_bytes_end": 3960725504
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1985.0,
+        "peak": 2053.0,
+        "mean_system": 930.8
+      },
+      "client": {
+        "mean": 326.0,
+        "peak": 338.0,
+        "mean_system": 51.0
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 89.8,
+      "client:|__tokio-rt-worker": 235.2,
+      "node:|__engine": 19.5,
+      "node:|__mdbx-rs-txn-mgr": 2.5,
+      "node:|__persistence": 4.8,
+      "node:|__rayon-00": 21.8,
+      "node:|__rayon-01": 19.0,
+      "node:|__rayon-02": 17.8,
+      "node:|__rayon-03": 16.5,
+      "node:|__rayon-04": 15.2,
+      "node:|__rayon-05": 11.5,
+      "node:|__rayon-06": 10.2,
+      "node:|__rayon-07": 8.5,
+      "node:|__rayon-08": 7.5,
+      "node:|__rayon-09": 7.0,
+      "node:|__rayon-10": 6.5,
+      "node:|__rayon-11": 6.0,
+      "node:|__rayon-12": 5.8,
+      "node:|__rayon-13": 5.8,
+      "node:|__rayon-14": 5.8,
+      "node:|__rayon-15": 5.5,
+      "node:|__rayon-16": 5.5,
+      "node:|__rayon-17": 5.5,
+      "node:|__rayon-18": 5.2,
+      "node:|__rayon-19": 5.2,
+      "node:|__rayon-20": 5.0,
+      "node:|__rayon-21": 5.0,
+      "node:|__rayon-22": 5.0,
+      "node:|__rayon-23": 4.8,
+      "node:|__rayon-24": 4.8,
+      "node:|__rayon-25": 4.8,
+      "node:|__rayon-26": 4.8,
+      "node:|__rayon-27": 4.8,
+      "node:|__rayon-28": 4.5,
+      "node:|__rayon-29": 4.5,
+      "node:|__rayon-30": 4.5,
+      "node:|__rayon-31": 4.2,
+      "node:|__sparse-trie": 26.2,
+      "node:|__storage-00": 5.5,
+      "node:|__storage-06": 3.2,
+      "node:|__tempo-execution": 29.8,
+      "node:|__tokio-rt": 1574.5,
+      "node:|__trie-hashing": 16.8
+    },
+    "sending": {
+      "accepted": 220208,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.072239611
+    },
+    "accepted_tps": 43414,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.59923,
+      "execution_loop": 4.898601,
+      "pool_snapshot": 0.33753,
+      "finalization": 0.732003,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.036344,
+      "hashed_post_state": 0.056695,
+      "payload_build": 6.096269
+    },
+    "speculative_execution_counts": {
+      "speculated": 25257,
+      "nonce_filtered": 100061,
+      "reused": 6801,
+      "bodies_reused": 0,
+      "fees_rebased": 6637,
+      "conflicts": 18273,
+      "retries": 0,
+      "backoff": 196304
+    },
+    "confirmation": {
+      "user_transactions": 220208,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 7.497758,
+      "confirmed_tps_including_backlog": 29370
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "forwarding": false,
+    "recipients": "existing",
+    "directory": "/tmp/tempo-forwarding-node-existing-off-repeat/workers-16-target-50000",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 3960389632,
+      "disk_free_bytes_end": 3682000896
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 5,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1896.0,
+        "peak": 2096.0,
+        "mean_system": 845.2
+      },
+      "client": {
+        "mean": 285.2,
+        "peak": 333.0,
+        "mean_system": 44.8
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 81.4,
+      "client:|__tokio-rt-worker": 203.4,
+      "node:|__engine": 24.2,
+      "node:|__mdbx-rs-txn-mgr": 5.2,
+      "node:|__persistence": 11.2,
+      "node:|__rayon-00": 14.6,
+      "node:|__rayon-01": 13.4,
+      "node:|__rayon-02": 12.8,
+      "node:|__rayon-03": 11.6,
+      "node:|__rayon-04": 11.4,
+      "node:|__rayon-05": 9.8,
+      "node:|__rayon-06": 9.4,
+      "node:|__rayon-07": 8.0,
+      "node:|__rayon-08": 7.2,
+      "node:|__rayon-09": 6.8,
+      "node:|__rayon-10": 6.6,
+      "node:|__rayon-11": 6.2,
+      "node:|__rayon-12": 6.0,
+      "node:|__rayon-13": 5.6,
+      "node:|__rayon-14": 5.8,
+      "node:|__rayon-15": 5.4,
+      "node:|__rayon-16": 5.4,
+      "node:|__rayon-17": 5.2,
+      "node:|__rayon-18": 5.2,
+      "node:|__rayon-19": 5.0,
+      "node:|__rayon-20": 4.8,
+      "node:|__rayon-21": 4.8,
+      "node:|__rayon-22": 4.8,
+      "node:|__rayon-23": 5.0,
+      "node:|__rayon-24": 4.8,
+      "node:|__rayon-25": 4.8,
+      "node:|__rayon-26": 4.6,
+      "node:|__rayon-27": 4.6,
+      "node:|__rayon-28": 4.6,
+      "node:|__rayon-29": 4.2,
+      "node:|__rayon-30": 4.2,
+      "node:|__rayon-31": 4.0,
+      "node:|__sparse-trie": 22.0,
+      "node:|__storage-00": 5.8,
+      "node:|__storage-01": 2.4,
+      "node:|__tempo-execution": 91.8,
+      "node:|__tokio-rt": 1414.4,
+      "node:|__trie-hashing": 12.8
+    },
+    "sending": {
+      "accepted": 212939,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.009057265
+    },
+    "accepted_tps": 42511,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 1.729137,
+      "execution_loop": 5.137429,
+      "pool_snapshot": 0.622611,
+      "finalization": 0.788878,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.032717,
+      "hashed_post_state": 0.108007,
+      "payload_build": 6.669315
+    },
+    "speculative_execution_counts": {
+      "speculated": 213224,
+      "nonce_filtered": 123645,
+      "reused": 202955,
+      "bodies_reused": 0,
+      "fees_rebased": 201848,
+      "conflicts": 5265,
+      "retries": 0,
+      "backoff": 0
+    },
+    "confirmation": {
+      "user_transactions": 212939,
+      "execution_failures": 0,
+      "last_busy_block": 32,
+      "send_start_to_last_canonical_seconds": 8.651016,
+      "confirmed_tps_including_backlog": 24614
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "forwarding": false,
+    "recipients": "new",
+    "directory": "/tmp/tempo-forwarding-node-new-off-first/workers-16-target-50000",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 3681665024,
+      "disk_free_bytes_end": 3269664768
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 2009.5,
+        "peak": 2054.0,
+        "mean_system": 905.5
+      },
+      "client": {
+        "mean": 320.0,
+        "peak": 328.0,
+        "mean_system": 52.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 89.5,
+      "client:|__tokio-rt-worker": 230.5,
+      "node:|__engine": 22.8,
+      "node:|__mdbx-rs-txn-mgr": 5.5,
+      "node:|__persistence": 10.0,
+      "node:|__rayon-00": 14.8,
+      "node:|__rayon-01": 14.0,
+      "node:|__rayon-02": 13.2,
+      "node:|__rayon-03": 12.0,
+      "node:|__rayon-04": 11.5,
+      "node:|__rayon-05": 10.5,
+      "node:|__rayon-06": 10.0,
+      "node:|__rayon-07": 8.2,
+      "node:|__rayon-08": 8.0,
+      "node:|__rayon-09": 7.2,
+      "node:|__rayon-10": 6.8,
+      "node:|__rayon-11": 6.5,
+      "node:|__rayon-12": 6.0,
+      "node:|__rayon-13": 6.0,
+      "node:|__rayon-14": 5.5,
+      "node:|__rayon-15": 5.2,
+      "node:|__rayon-16": 5.5,
+      "node:|__rayon-17": 4.8,
+      "node:|__rayon-18": 5.0,
+      "node:|__rayon-19": 5.2,
+      "node:|__rayon-20": 5.0,
+      "node:|__rayon-21": 5.0,
+      "node:|__rayon-22": 4.8,
+      "node:|__rayon-23": 4.5,
+      "node:|__rayon-24": 4.8,
+      "node:|__rayon-25": 4.5,
+      "node:|__rayon-26": 4.5,
+      "node:|__rayon-27": 4.5,
+      "node:|__rayon-28": 4.5,
+      "node:|__rayon-29": 4.5,
+      "node:|__rayon-30": 4.2,
+      "node:|__rayon-31": 4.2,
+      "node:|__sparse-trie": 22.5,
+      "node:|__storage-00": 5.2,
+      "node:|__tempo-execution": 90.2,
+      "node:|__tokio-rt": 1536.5,
+      "node:|__trie-hashing": 12.2
+    },
+    "sending": {
+      "accepted": 214049,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007574674
+    },
+    "accepted_tps": 42745,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 1.776666,
+      "execution_loop": 5.435955,
+      "pool_snapshot": 0.654967,
+      "finalization": 0.795446,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.028711,
+      "hashed_post_state": 0.108204,
+      "payload_build": 7.007954
+    },
+    "speculative_execution_counts": {
+      "speculated": 214312,
+      "nonce_filtered": 116519,
+      "reused": 203645,
+      "bodies_reused": 0,
+      "fees_rebased": 202382,
+      "conflicts": 5321,
+      "retries": 0,
+      "backoff": 0
+    },
+    "confirmation": {
+      "user_transactions": 214049,
+      "execution_failures": 0,
+      "last_busy_block": 32,
+      "send_start_to_last_canonical_seconds": 8.939266,
+      "confirmed_tps_including_backlog": 23945
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "forwarding": true,
+    "recipients": "new",
+    "directory": "/tmp/tempo-forwarding-node-new-on-first/workers-16-target-50000",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 3269328896,
+      "disk_free_bytes_end": 2854400000
+    }
+  }
+]
