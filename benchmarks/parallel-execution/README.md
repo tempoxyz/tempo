@@ -145,4 +145,18 @@ measures 15,984 baseline versus 13,747 feature TPS (-14.00%). Builder gas
 throughput falls 26.09% and validator gas throughput falls 29.19%. Engine signature
 crypto falls below 0.1% of sampled CPU, but 90.84% of builder conflicts concern
 account/code/block metadata. A State-backed reproduction identified incorrect
-empty-account hints for repeated AA senders; the correction awaits node benchmarks.
+empty-account hints for repeated AA senders.
+
+[Account-lifecycle comparison 37046803134](https://github.com/tempoxyz/tempo/actions/runs/37046803134)
+confirms zero metadata conflicts, with 81.76% builder reuse and 85.79% validator
+reuse. It still loses: 14,297 baseline versus 13,237 feature TPS (-7.41%, below
+the workflow's significance threshold), builder gas throughput -17.02%, and
+validator gas throughput -33.83%. Both gas-throughput regressions are significant.
+Remaining conflicts concern storage and 64 builder nonce-pointer predictions.
+This is a correctness and reuse improvement, not an end-to-end performance win.
+
+[Expanded replay 37046812230](https://github.com/tempoxyz/tempo/actions/runs/37046812230)
+passes both 50,000-block pairs over 42,241,314–42,291,313 after selecting an older
+snapshot within the source's available range. Historical validation throughput
+falls 17.20%; p90 and p99 newPayload latency rise 14.78% and 20.00%. Both this
+replay and the account-lifecycle e2e workflow suppress win-only Slack messages.
