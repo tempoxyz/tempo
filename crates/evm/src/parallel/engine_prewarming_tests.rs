@@ -6,16 +6,18 @@ use crate::{
     evm::{TempoEvm, TempoEvmFactory},
     parallel::SpeculativeExecutor,
 };
+use alloy_consensus::{Signed, TxLegacy};
 use alloy_evm::{
     Evm, EvmFactory, FromRecoveredTx,
-    block::{BlockExecutor, BlockExecutorFactory},
+    block::{BlockExecutor, BlockExecutorFactory, TxResult},
 };
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
 use alloy_sol_types::SolCall;
 use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
 };
+use reth_primitives_traits::Recovered;
 use revm::{
     Database, DatabaseCommit,
     context::{CfgEnv, JournalTr, TxEnv},
@@ -30,7 +32,7 @@ use tempo_precompiles::{
     test_util::TIP20Setup,
     tip20::ITIP20,
 };
-use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+use tempo_primitives::{TempoSignature, TempoTransaction, TempoTxEnvelope, transaction::Call};
 
 type TestDB = CacheDB<EmptyDB>;
 
@@ -443,4 +445,283 @@ fn expiring_aa_offsets_are_applied_once_and_candidates_remain_canonical() {
     assert_eq!(actual.execution_stats().reused, 3);
     assert!(actual.execution_stats().fees_rebased > 0);
     assert_eq!(root(actual.db()), root(canonical.db()));
+}
+
+fn block_context() -> TempoBlockExecutionCtx<'static> {
+    TempoBlockExecutionCtx {
+        transactions: &[],
+        senders: &[],
+        inner: alloy_evm::eth::EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            extra_data: Bytes::new(),
+            tx_count_hint: None,
+            slot_number: None,
+        },
+        general_gas_limit: 30_000_000,
+        shared_gas_limit: 0,
+        consensus_context: None,
+    }
+}
+
+fn legacy_transaction(nonce: u64) -> Recovered<TempoTxEnvelope> {
+    Recovered::new_unchecked(
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                nonce,
+                gas_limit: 1_000_000,
+                to: address(900).into(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        )),
+        address(0),
+    )
+}
+
+#[test]
+fn only_block_commits_publish_engine_prefix_after_misses_and_discarded_results() {
+    let env = env(TempoHardfork::T0);
+    // Every accepted transaction changes both the sender nonce and shared storage.
+    let db = contract(&[0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0]);
+    let recovered = (0..3).map(legacy_transaction).collect::<Vec<_>>();
+    let transactions = recovered
+        .iter()
+        .map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()))
+        .collect::<Vec<_>>();
+    for capture_first in [false, true] {
+        let (factory, session) = factory(&env, &transactions);
+        let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+            .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+        let mut actual =
+            config.create_executor(factory.create_evm(db.clone(), env.clone()), block_context());
+        let mut canonical =
+            config.create_executor(TempoEvm::new(db.clone(), env.clone()), block_context());
+        let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+        if capture_first {
+            worker.transact_raw(transactions[0].clone()).unwrap();
+        }
+        // A capture is a proof hint only. It cannot make the next nonce valid.
+        worker.transact_raw(transactions[1].clone()).unwrap();
+        assert!(!session.retained.lock().unwrap().results.contains_key(&1));
+        let discarded = actual
+            .execute_transaction_without_commit(&recovered[0])
+            .unwrap();
+        assert!(discarded.result().result.is_success());
+        drop(discarded);
+        // Executing an output without committing it must not publish its nonce
+        // or storage either, even when that output came from a reusable capture.
+        worker.transact_raw(transactions[1].clone()).unwrap();
+        assert!(!session.retained.lock().unwrap().results.contains_key(&1));
+        for (index, tx) in recovered.iter().enumerate() {
+            if index > 0 {
+                // A fresh parent-owned provider must see the shared session hints.
+                worker = factory.create_evm(db.clone(), relaxed(&env));
+                worker.transact_raw(transactions[index].clone()).unwrap();
+                assert!(
+                    session
+                        .retained
+                        .lock()
+                        .unwrap()
+                        .results
+                        .contains_key(&index)
+                );
+            }
+            let expected = canonical.execute_transaction_without_commit(tx).unwrap();
+            let output = actual.execute_transaction_without_commit(tx).unwrap();
+            assert_eq!(output.result(), expected.result());
+            canonical.commit_transaction(expected);
+            actual.commit_transaction(output);
+        }
+        assert_eq!(actual.evm().execution_stats().conflicts, 0);
+        assert_eq!(
+            actual.evm().execution_stats().reused,
+            2 + u64::from(capture_first)
+        );
+        assert_eq!(actual.receipts(), canonical.receipts());
+        assert_eq!(root(actual.evm().db()), root(canonical.evm().db()));
+        assert_eq!(
+            root(worker.db()),
+            root(&db),
+            "workers never commit the prefix"
+        );
+    }
+}
+
+#[test]
+fn engine_prefix_publication_honors_execution_guards() {
+    let env = env(TempoHardfork::T0);
+    let db = contract(&[0]);
+    let recovered = [legacy_transaction(0), legacy_transaction(1)];
+    let transactions = recovered
+        .iter()
+        .map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()))
+        .collect::<Vec<_>>();
+    for excluded in [
+        "capture",
+        "inspector",
+        "custom",
+        "actions",
+        "cfg",
+        "block",
+        "journal",
+    ] {
+        let (factory, session) = factory(&env, &transactions);
+        let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+            .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+        let mut evm = factory.create_evm(
+            db.clone(),
+            if excluded == "capture" {
+                relaxed(&env)
+            } else {
+                env.clone()
+            },
+        );
+        if excluded == "actions" {
+            evm = evm.with_actions();
+        }
+        let mut actual = config.create_executor(evm, block_context());
+        let output = actual
+            .execute_transaction_without_commit(&recovered[0])
+            .unwrap();
+        match excluded {
+            "inspector" => actual.evm_mut().set_inspector_enabled(true),
+            "custom" => {
+                let _ = actual.evm_mut().inner_mut();
+            }
+            "cfg" => actual.evm_mut().ctx_mut().cfg.disable_fee_charge = true,
+            "block" => actual.evm_mut().ctx_mut().block.inner.beneficiary = address(800),
+            "journal" => {
+                actual
+                    .evm_mut()
+                    .ctx_mut()
+                    .journaled_state
+                    .state
+                    .insert(address(801), revm::state::Account::default());
+            }
+            _ => {}
+        }
+        actual.commit_transaction(output);
+        let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+        worker.transact_raw(transactions[1].clone()).unwrap();
+        assert!(
+            !session.retained.lock().unwrap().results.contains_key(&1),
+            "{excluded} must not publish the committed sender nonce"
+        );
+    }
+}
+
+#[test]
+fn committed_engine_prefix_preserves_parent_relative_expiring_offsets() {
+    let spec = TempoHardfork::T14;
+    let caller = address(0);
+    let mut setup = crate::test_utils::test_evm_with_basefee(TestDB::default(), 0);
+    StorageCtx::enter_ctx(setup.ctx_mut(), StorageActions::disabled(), || {
+        TIP20Setup::path_usd(address(999))
+            .with_issuer(address(999))
+            .with_mint(caller, U256::from(1_000_000_000u64))
+            .apply()
+            .unwrap();
+    });
+    let state = setup.ctx_mut().journaled_state.finalize();
+    setup.db_mut().commit(state);
+    let mut db = setup.finish().0;
+    for &(address, activation) in tempo_precompiles::SYSTEM_PRECOMPILES {
+        if spec >= activation {
+            db.insert_account_info(
+                address,
+                AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+            );
+        }
+    }
+    // Keep the fixture's CacheDB account lifecycle identical to revm State for
+    // this focused pointer test; node tests cover empty AA caller deletion.
+    db.insert_account_info(
+        caller,
+        AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        },
+    );
+    let parent_ptr = spec.expiring_nonce_set_capacity() - 2;
+    db.insert_account_storage(
+        NONCE_PRECOMPILE_ADDRESS,
+        crate::parallel::nonce_slots::EXPIRING_NONCE_RING_PTR,
+        U256::from(parent_ptr),
+    )
+    .unwrap();
+    let recovered = (0..5)
+        .map(|index| {
+            let signed = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 1,
+                fee_token: Some(PATH_USD_ADDRESS),
+                nonce: index,
+                nonce_key: U256::MAX,
+                valid_before: std::num::NonZeroU64::new(25),
+                calls: vec![Call {
+                    to: PATH_USD_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: ITIP20::transferCall {
+                        to: address(100),
+                        amount: U256::from(index + 1),
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::default());
+            Recovered::new_unchecked(TempoTxEnvelope::AA(signed), caller)
+        })
+        .collect::<Vec<_>>();
+    let transactions = recovered
+        .iter()
+        .map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()))
+        .collect::<Vec<_>>();
+    let env = env(spec);
+    let (factory, session) = factory(&env, &transactions);
+    let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+        .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+    let mut actual =
+        config.create_executor(factory.create_evm(db.clone(), env.clone()), block_context());
+    let mut canonical =
+        config.create_executor(TempoEvm::new(db.clone(), env.clone()), block_context());
+    let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+    for (index, tx) in recovered.iter().enumerate() {
+        let mut prewarm = transactions[index].clone();
+        prewarm.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(index);
+        worker.transact_raw(prewarm).unwrap();
+        assert!(
+            session
+                .retained
+                .lock()
+                .unwrap()
+                .results
+                .contains_key(&index)
+        );
+        let expected = canonical.execute_transaction_without_commit(tx).unwrap();
+        let output = actual.execute_transaction_without_commit(tx).unwrap();
+        assert_eq!(output.result(), expected.result());
+        canonical.commit_transaction(expected);
+        actual.commit_transaction(output);
+    }
+    assert_eq!(actual.evm().execution_stats().reused, 5);
+    assert_eq!(actual.evm().execution_stats().conflicts, 0);
+    assert_eq!(actual.receipts(), canonical.receipts());
+    assert_eq!(root(actual.evm().db()), root(canonical.evm().db()));
+    assert_eq!(
+        worker
+            .db_mut()
+            .storage(
+                NONCE_PRECOMPILE_ADDRESS,
+                crate::parallel::nonce_slots::EXPIRING_NONCE_RING_PTR
+            )
+            .unwrap(),
+        U256::from(parent_ptr),
+    );
 }

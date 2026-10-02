@@ -34,7 +34,8 @@ use crate::{
     TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult,
     parallel::{
         EnginePrewarmingCache, EnginePrewarmingSession, ExecutionStats, PreexecutedTransaction,
-        PrewarmingExecutor, SpeculativeBatch, SpeculativeExecutor, SpeculativeResult,
+        PrewarmingExecutor, PrewarmingState, SpeculativeBatch, SpeculativeExecutor,
+        SpeculativeResult,
     },
 };
 
@@ -48,6 +49,7 @@ type CandidateValidator<DB> = fn(
 type EngineCapture<DB> = fn(
     &mut DB,
     EvmEnv<TempoHardfork, TempoBlockEnv>,
+    PrewarmingState,
     TempoTxEnv,
     Option<usize>,
 ) -> Result<
@@ -93,8 +95,11 @@ impl EvmFactory for TempoEvmFactory {
         let session = cache.session(&canonical);
         let mut evm = TempoEvm::new(db, input);
         if session.is_some() && capture {
-            evm.engine_capture =
-                Some(|db, env, tx, offset| PrewarmingExecutor::new(db, env).execute(tx, offset));
+            evm.engine_capture = Some(|db, env, prefix, tx, offset| {
+                PrewarmingExecutor::new(db, env)
+                    .with_state(prefix)
+                    .execute(tx, offset)
+            });
         }
         evm.engine_session = session;
         evm
@@ -182,6 +187,31 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     pub(crate) fn has_engine_prewarming(&self) -> bool {
         self.engine_session.is_some() && self.engine_capture.is_none()
+    }
+
+    /// Publishes accepted block state as advisory hints for Engine workers.
+    /// This is deliberately separate from transact_raw: executing or discarding
+    /// a candidate must never advance the prefix seen by other workers.
+    pub(crate) fn record_engine_commit(&self, state: &reth_revm::state::EvmState) {
+        let Some(session) = &self.engine_session else {
+            return;
+        };
+        if self.engine_capture.is_some()
+            || self.speculative_batch_size() == 0
+            || self.inner.ctx.cfg != self.worker_cfg
+            || self.inner.ctx.cfg != session.env().cfg_env
+            || self.inner.ctx.block != session.env().block_env
+            || self.inner.ctx.cfg.disable_fee_charge
+            || self.inner.actions().is_enabled()
+            || self.inner.skip_valid_after_check
+            || self.inner.skip_liquidity_check
+            || !self.inner.ctx.journaled_state.state.is_empty()
+            || !self.inner.ctx.journaled_state.transient_storage.is_empty()
+            || !self.inner.ctx.journaled_state.logs.is_empty()
+        {
+            return;
+        }
+        session.record_commit(state);
     }
 
     /// Enables bounded speculative execution using the standard Tempo EVM configuration.
@@ -559,6 +589,7 @@ where
                     if let Ok(candidate) = capture(
                         &mut self.inner.ctx.journaled_state.database,
                         session.env().clone(),
+                        session.prefix(),
                         strict_tx,
                         offset,
                     ) {

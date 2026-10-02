@@ -3,7 +3,7 @@
 //! A hash locates a candidate; it never validates one. The recipient must still
 //! check the complete transaction, environment, configuration and recorded reads.
 
-use super::{Env, PreexecutedTransaction, ReadValue};
+use super::{Env, PreexecutedTransaction, PrewarmingState, ReadValue};
 use alloy_primitives::{B256, map::HashMap};
 use std::{
     collections::BTreeMap,
@@ -57,6 +57,7 @@ impl EnginePrewarmingCache {
                 indices,
                 next: AtomicUsize::new(0),
                 retained: Mutex::default(),
+                prefix: PrewarmingState::default(),
             })
         });
         *self.current.lock().ok()? = session.clone();
@@ -74,14 +75,16 @@ impl EnginePrewarmingCache {
     }
 }
 
-/// A block's hash index and bounded completed results. Contains no provider,
-/// database reference or unchecked result constructor.
+/// A block's hash index, bounded completed results and accepted-prefix hints.
+/// The prefix retains the block's published state footprint separately from the
+/// completed-result byte estimate. Contains no provider or database reference.
 #[derive(Debug)]
 pub(crate) struct EnginePrewarmingSession {
     env: Env,
     indices: HashMap<B256, usize>,
     next: AtomicUsize,
     retained: Mutex<Retained>,
+    prefix: PrewarmingState,
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +96,18 @@ struct Retained {
 impl EnginePrewarmingSession {
     pub(crate) const fn env(&self) -> &Env {
         &self.env
+    }
+
+    pub(crate) fn prefix(&self) -> PrewarmingState {
+        self.prefix.clone()
+    }
+
+    /// Called only for accepted state in the block executor's commit path.
+    /// Never seed this prefix from a cache: Engine offsets remain relative to
+    /// the worker's parent state. With no source offset, the nonce cursor stays
+    /// absent and the recorder applies that original parent offset exactly once.
+    pub(crate) fn record_commit(&self, state: &reth_revm::state::EvmState) {
+        self.prefix.record(state, None);
     }
 
     fn index(&self, tx: &TempoTxEnv) -> Option<usize> {

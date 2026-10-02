@@ -7,8 +7,11 @@ main (Tempo 1.14, Reth 2.7, revm 43), with ordered read validation and replay.
 
 Engine payload validation now consumes strict results from its existing
 prewarming workers when available, and executes ordered misses directly.
-The handoff retains at most 128 results and 32 MiB of estimated payload; this
-estimate is not an allocator/RSS bound. Small blocks, disabled prewarming and
+Workers receive advisory state hints only from accepted block commits; discarded
+execution results never advance those hints. The handoff retains at most 128
+completed results and 32 MiB of estimated result payload, with the block's
+accepted-state hints retained separately. The estimate is not an allocator/RSS
+bound. Small blocks, disabled prewarming and
 BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
 
@@ -218,3 +221,8 @@ available for 78.69% of canonical transactions, but only 9.37% of all transactio
 are reused: stale storage reads dominate conflicts. Full execution after misses
 or conflicts takes 41.74% of sampled Engine CPU. Builder reuse remains 85.88%.
 This is not a win, and the workflow suppresses Slack.
+
+[Engine-prewarming replay 37065079966](https://github.com/tempoxyz/tempo/actions/runs/37065079966)
+validates all 250,000 submitted blocks, including warmup. Execution throughput
+falls 2.26% and p99 latency rises 8.42%. Only 47 measured blocks per pass contain
+at least five transactions, so historical coverage of the handoff is limited.

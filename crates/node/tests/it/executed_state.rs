@@ -120,8 +120,14 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     Ok(())
 }
 
+#[test_case::test_case(64, 64, 64; "independent")]
+#[test_case::test_case(128, 16, 8; "repeated_senders_and_recipients")]
 #[tokio::test(flavor = "multi_thread")]
-async fn engine_prewarming_preserves_paid_expiring_transfer_block() -> eyre::Result<()> {
+async fn engine_prewarming_preserves_paid_expiring_transfer_block(
+    transaction_count: usize,
+    sender_count: usize,
+    recipient_count: usize,
+) -> eyre::Result<()> {
     use crate::{
         tempo_transaction::helpers::{create_basic_aa_tx, sign_aa_tx_secp256k1},
         utils::{ForkSchedule, TestNodeBuilder},
@@ -161,7 +167,9 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block() -> eyre::Res
     producer.set_next_payload_timestamp(2)?;
     let chain_spec = producer.inner.chain_spec();
     let chain_id = chain_spec.chain().id();
-    let signers = (0..64).map(test_signer).collect::<Vec<_>>();
+    let signers = (0..sender_count)
+        .map(|index| test_signer(u32::try_from(index).unwrap()))
+        .collect::<Vec<_>>();
     {
         let genesis = producer.inner.provider.latest()?;
         for signer in &signers {
@@ -177,9 +185,11 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block() -> eyre::Res
             );
         }
     }
-    let mut recipients = Vec::new();
-    for (index, signer) in signers.iter().enumerate() {
-        let recipient = Address::from_word(B256::from(U256::from(0x10000 + index)));
+    let mut recipients = std::collections::BTreeMap::<Address, u64>::new();
+    for index in 0..transaction_count {
+        let signer = &signers[index % sender_count];
+        let recipient =
+            Address::from_word(B256::from(U256::from(0x10000 + index % recipient_count)));
         let mut tx = create_basic_aa_tx(
             chain_id,
             index as u64,
@@ -206,7 +216,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block() -> eyre::Res
             .rpc
             .inject_tx(envelope.encoded_2718().into())
             .await?;
-        recipients.push(recipient);
+        *recipients.entry(recipient).or_default() += 4;
     }
     let payload = producer.advance_block().await?;
     let block_hash = payload.block().hash();
@@ -218,8 +228,8 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block() -> eyre::Res
             .iter()
             .filter(|tx| !tx.is_system_tx())
             .count(),
-        64,
-        "all independent transfers must reach the same prewarmed block"
+        transaction_count,
+        "all transfers must reach the same prewarmed block"
     );
     let expected_receipts = producer
         .inner
@@ -284,15 +294,15 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block() -> eyre::Res
             expected_output = Some(pending.execution_output().clone());
         }
         let state = executed_state.state_by_block_hash(observer.provider.clone(), block_hash)?;
-        for recipient in &recipients {
+        for (recipient, balance) in &recipients {
             assert_eq!(
                 state.storage(DEFAULT_FEE_TOKEN, recipient.mapping_slot(BALANCES).into())?,
-                Some(U256::from(4))
+                Some(U256::from(*balance))
             );
         }
         assert_eq!(
             state.storage(NONCE_PRECOMPILE_ADDRESS, EXPIRING_NONCE_RING_PTR.into())?,
-            Some(U256::from(64))
+            Some(U256::from(transaction_count))
         );
         if let Some(workers) = &observer.evm_config.speculative_executor {
             // This observer has no pool or builder jobs. A prewarming session

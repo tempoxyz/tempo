@@ -676,6 +676,10 @@ where
             validator_fee: _,
         } = output;
 
+        // Publication belongs to the accepted, infallible commit path. Borrow
+        // the state before the inner executor consumes it, avoiding a full clone.
+        // Workers still validate all hints against the resulting ordered state.
+        self.inner.evm.record_engine_commit(&inner.result.state);
         let gas_output = self.inner.commit_transaction(inner);
 
         self.section = next_section;
