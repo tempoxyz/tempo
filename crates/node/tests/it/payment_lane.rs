@@ -10,11 +10,16 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
+#[test_case::test_case(0; "sequential")]
+#[test_case::test_case(4; "parallel")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
+async fn test_payment_lane_with_mixed_load(execution_threads: usize) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_execution_threads(execution_threads)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

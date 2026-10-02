@@ -1,0 +1,176 @@
+[
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1530.8,
+        "peak": 1704.0,
+        "mean_system": 756.8
+      },
+      "client": {
+        "mean": 320.8,
+        "peak": 364.0,
+        "mean_system": 55.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 83.5,
+      "client:|__tokio-rt-worker": 237.8,
+      "node:|__engine": 12.0,
+      "node:|__persistence": 2.2,
+      "node:|__storage-01": 2.5,
+      "node:|__storage-03": 2.2,
+      "node:|__tempo-execution": 8.2,
+      "node:|__tokio-rt": 1497.5
+    },
+    "sending": {
+      "accepted": 232822,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.098117127
+    },
+    "accepted_tps": 45668,
+    "confirmation": {
+      "user_transactions": 232822,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 9.452854,
+      "confirmed_tps_including_backlog": 24630
+    },
+    "variant": "before"
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1490.5,
+        "peak": 1707.0,
+        "mean_system": 733.5
+      },
+      "client": {
+        "mean": 316.5,
+        "peak": 367.0,
+        "mean_system": 55.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 83.2,
+      "client:|__tokio-rt-worker": 233.5,
+      "node:|__engine": 12.2,
+      "node:|__persistence": 2.8,
+      "node:|__storage-01": 2.5,
+      "node:|__storage-03": 2.5,
+      "node:|__tempo-execution": 5.2,
+      "node:|__tokio-rt": 1459.0
+    },
+    "sending": {
+      "accepted": 227344,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.00855411
+    },
+    "accepted_tps": 45391,
+    "confirmation": {
+      "user_transactions": 227344,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.934217,
+      "confirmed_tps_including_backlog": 25446
+    },
+    "variant": "after"
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1461.0,
+        "peak": 1695.0,
+        "mean_system": 722.5
+      },
+      "client": {
+        "mean": 309.2,
+        "peak": 363.0,
+        "mean_system": 55.8
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 81.8,
+      "client:|__tokio-rt-worker": 226.8,
+      "node:|__engine": 11.2,
+      "node:|__mdbx-rs-txn-mgr": 2.2,
+      "node:|__persistence": 2.2,
+      "node:|__storage-00": 2.2,
+      "node:|__storage-01": 2.5,
+      "node:|__tempo-execution": 8.0,
+      "node:|__tokio-rt": 1428.2
+    },
+    "sending": {
+      "accepted": 225842,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.008084806
+    },
+    "accepted_tps": 45095,
+    "confirmation": {
+      "user_transactions": 225842,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.837983,
+      "confirmed_tps_including_backlog": 25554
+    },
+    "variant": "after-repeat"
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1686.0,
+        "peak": 1710.0,
+        "mean_system": 842.0
+      },
+      "client": {
+        "mean": 354.0,
+        "peak": 362.0,
+        "mean_system": 61.5
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 90.8,
+      "client:|__tokio-rt-worker": 263.8,
+      "node:|__engine": 13.5,
+      "node:|__mdbx-rs-txn-mgr": 2.2,
+      "node:|__persistence": 3.5,
+      "node:|__storage-00": 4.0,
+      "node:|__storage-01": 2.5,
+      "node:|__tempo-execution": 8.8,
+      "node:|__tokio-rt": 1643.8
+    },
+    "sending": {
+      "accepted": 231849,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007736583
+    },
+    "accepted_tps": 46298,
+    "confirmation": {
+      "user_transactions": 231849,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 9.433107,
+      "confirmed_tps_including_backlog": 24578
+    },
+    "variant": "before-repeat"
+  }
+]

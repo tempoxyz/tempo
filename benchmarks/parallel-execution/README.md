@@ -525,6 +525,30 @@ demonstrate an additional throughput gain from the filter alone. The remaining
 pool scan still visits candidates that cannot fit, and cheap shared-state
 transactions still favor sequential execution.
 
+## Deferred proposer preview
+
+The proposer now advances speculative lookahead only after a candidate passes
+gas-budget and block-size checks. Rejected candidates advance the authoritative
+iterator; preview catch-up is deferred until another candidate can execute.
+Catch-up checks cancellation and interruption between bounded chunks. Empty
+live-feed polls consume neither cursor. If the rejected tail fills the remainder
+of the pool, only the authoritative iterator scans it. Transaction identity and
+read validation still guard every speculative result.
+
+`lazy-preview-node.json` and `node/lazy-*.json` compare the change with `fa529f33`
+at 50k offered TPS, five-second sends, 16 execution workers and 5B block gas.
+The second comparison reverses variant order:
+
+| Preview | Confirmed TPS, first / repeat |
+| --- | ---: |
+| Eager | 24,630 / 24,578 |
+| Deferred | 25,446 / 25,554 |
+
+All 917,857 accepted transactions confirmed with zero execution failures. Rates
+include backlog and iterator cleanup; they remain short-trial measurements. The
+mixed payment/non-payment node integration test now runs in both sequential and
+speculative modes; both cases and Clippy pass.
+
 ## Runtime contention trials
 
 `run_node.py --node-tokio-threads N` sets `TOKIO_WORKER_THREADS` only for the node;
@@ -606,6 +630,11 @@ outstanding.
 Sequential and forced speculative execution match full results, state deltas,
 canonical receipts, gas, receipt roots and state roots. These remain generated
 local-chain blocks, and replay timings are diagnostic only.
+
+`lazy-preview-canonical.tsv` verifies three large blocks built with deferred
+preview: 44,935 user transactions and three system transactions. Full results,
+state deltas, canonical receipts, gas, receipt roots and state roots match between
+sequential and forced speculative execution. This is local generated-chain evidence.
 
 ## Correctness model and integration
 

@@ -433,7 +433,8 @@ where
         // iterator is still advanced one transaction at a time: mark_invalid and
         // payment-lane switching must retain their original ordering semantics.
         let mut speculative_txs = (batch_size > 0).then(|| best_txs(pool_attributes));
-        let mut speculation_remaining = 0;
+        let mut pool_position = 0;
+        let mut preview_position = 0;
         let mut best_txs = best_txs(pool_attributes);
         self.metrics
             .pool_fetch_duration_seconds
@@ -441,38 +442,12 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        loop {
+        'fill: loop {
             if attributes.is_interrupted() {
                 break;
             }
 
             check_cancel!();
-
-            if speculation_remaining == 0 {
-                if let Some(preview) = speculative_txs.as_mut() {
-                    let beneficiary = builder.evm().block().beneficiary;
-                    let remaining_gas = non_shared_gas_limit - cumulative_gas_used;
-                    let remaining_general_gas = general_gas_limit - non_payment_gas_used;
-                    builder.evm_mut().prepare_transactions_with(
-                        // Advance the same raw window, but don't execute candidates
-                        // that cannot fit either of the proposer's remaining budgets.
-                        preview.by_ref().take(batch_size).filter(|tx| {
-                            tx.gas_limit() <= remaining_gas
-                                && (tx.transaction.is_payment()
-                                    || tx.gas_limit() <= remaining_general_gas)
-                        }),
-                        |tx| {
-                            (
-                                tx.transaction.clone().into_with_tx_env().tx_env,
-                                beneficiary,
-                            )
-                        },
-                    );
-                    check_cancel!();
-                }
-                speculation_remaining = batch_size.max(1);
-            }
-            speculation_remaining -= 1;
 
             let Some(pool_tx) = best_txs.next() else {
                 if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
@@ -481,6 +456,8 @@ where
                 }
                 break;
             };
+            let candidate_position = pool_position;
+            pool_position += 1;
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
@@ -540,6 +517,41 @@ where
                 );
                 self.metrics.inc_pool_tx_skipped("oversized_block");
                 continue;
+            }
+
+            if candidate_position >= preview_position
+                && let Some(preview) = speculative_txs.as_mut()
+            {
+                // Defer preview work for rejected candidates. If no later candidate
+                // fits, the tail is scanned only by the authoritative iterator.
+                // Otherwise catch up in bounded chunks before preparing another window.
+                while preview_position < candidate_position {
+                    let count = (candidate_position - preview_position).min(batch_size);
+                    preview.by_ref().take(count).for_each(drop);
+                    preview_position += count;
+                    check_cancel!();
+                    if attributes.is_interrupted() {
+                        break 'fill;
+                    }
+                }
+                let beneficiary = builder.evm().block().beneficiary;
+                let remaining_gas = non_shared_gas_limit - cumulative_gas_used;
+                let remaining_general_gas = general_gas_limit - non_payment_gas_used;
+                builder.evm_mut().prepare_transactions_with(
+                    preview.by_ref().take(batch_size).filter(|tx| {
+                        tx.gas_limit() <= remaining_gas
+                            && (tx.transaction.is_payment()
+                                || tx.gas_limit() <= remaining_general_gas)
+                    }),
+                    |tx| {
+                        (
+                            tx.transaction.clone().into_with_tx_env().tx_env,
+                            beneficiary,
+                        )
+                    },
+                );
+                preview_position += batch_size;
+                check_cancel!();
             }
 
             let effective_gas_price = pool_tx.transaction.effective_gas_price(Some(base_fee));
