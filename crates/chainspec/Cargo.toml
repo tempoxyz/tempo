@@ -26,6 +26,7 @@ reth-network-peers = { workspace = true, optional = true }
 tempo-dkg-onchain-artifacts = { workspace = true, optional = true }
 
 alloy-evm = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 alloy-genesis.workspace = true
 once_cell.workspace = true
 alloy-primitives.workspace = true
@@ -73,4 +74,10 @@ reth = [
     "dep:tempo-dkg-onchain-artifacts",
     "tempo-primitives/reth",
 ]
-cli = ["reth", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]
+cli = [
+    "reth",
+    "dep:clap",
+    "dep:reth-cli",
+    "dep:eyre",
+    "tempo-primitives/reth-codec",
+]

@@ -18,6 +18,9 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
+  # Pin vergen's build timestamp so reth-node-core and tempo-node compile identically across runs;
+  # otherwise they and every crate depending on them miss sccache on every build.
+  SOURCE_DATE_EPOCH: "1700000000"
 
 jobs:
   clippy:

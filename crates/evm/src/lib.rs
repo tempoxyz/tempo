@@ -25,6 +25,8 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+#[cfg(feature = "genesis")]
+pub mod genesis;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
