@@ -58,6 +58,7 @@ impl NativeCallBudget {
 #[derive(Debug, Default)]
 pub struct NativeCallContext {
     budget: RefCell<Option<Rc<NativeCallBudget>>>,
+    verified_portal_deposit: Cell<bool>,
 }
 
 impl Clone for NativeCallContext {
@@ -84,6 +85,17 @@ impl NativeCallContext {
     /// This is a runtime hook and must never be called by a native handler.
     pub fn reset(&mut self) {
         *self.budget.get_mut() = None;
+        self.verified_portal_deposit.set(false);
+    }
+
+    /// Records that the top-level portal deposit passed its native identity checks.
+    pub fn record_verified_portal_deposit(&self) {
+        self.verified_portal_deposit.set(true);
+    }
+
+    /// Whether the current transaction entered a verified native portal deposit.
+    pub fn verified_portal_deposit(&self) -> bool {
+        self.verified_portal_deposit.get()
     }
 }
 
@@ -410,7 +422,10 @@ mod tests {
         assert_eq!(root.remaining_calls.get(), 0);
         assert_eq!(root.remaining_work.get(), 0);
 
+        context.record_verified_portal_deposit();
+        assert!(context.verified_portal_deposit());
         context.reset();
+        assert!(!context.verified_portal_deposit());
         let next_transaction = context.budget(2, 100_000);
         assert!(!Rc::ptr_eq(&root, &next_transaction));
         next_transaction.reserve(100_000, 0).unwrap();

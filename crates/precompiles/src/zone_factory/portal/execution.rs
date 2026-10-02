@@ -7,7 +7,7 @@ use crate::{
     DelegateCallNotAllowed,
     error::{Result, TempoPrecompileError},
     input_cost,
-    native_call::{NativeCallBudget, NativeCallLimits, native_call},
+    native_call::{NativeCallBudget, NativeCallExt, NativeCallLimits, native_call},
     storage::{Handler, StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider},
     storage_credits::NonCreditableSlots,
     zone_factory::ZoneFactory,
@@ -80,7 +80,10 @@ impl NativePortalExecution<'_> {
         evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
-    ) -> PrecompileResult {
+    ) -> PrecompileResult
+    where
+        T::EvmExt: NativeCallExt,
+    {
         if message.destination != message.code_address {
             return Err(PrecompileError::Revert(
                 DelegateCallNotAllowed {}.abi_encode().into(),
@@ -151,6 +154,11 @@ impl NativePortalExecution<'_> {
             Ok(prepared) => prepared,
             Err(error) => return error.into_precompile_result(),
         };
+        if message.depth == 0 {
+            evm.ext()
+                .native_call_context()
+                .record_verified_portal_deposit();
+        }
         let token = prepared.token();
         native_call(
             evm,
@@ -333,6 +341,7 @@ mod tests {
         let logs_before = evm.logs().len();
         let result = run_deposit(&mut evm, sender);
         assert!(result.stop.is_success(), "{:?}", result.stop);
+        assert!(evm.ext().verified_portal_deposit());
         assert!(result.gas.used() > 0);
         let (sender_balance, portal_balance, fee_balance, supply, allowance, count, hash) =
             balances(&mut evm, sender);
@@ -358,6 +367,7 @@ mod tests {
         let before = balances(&mut evm, sender);
         let logs_before = evm.logs().len();
         let result = run_deposit(&mut evm, sender);
+        assert!(evm.ext().verified_portal_deposit());
         assert!(result.stop.is_revert(), "{:?}", result.stop);
         assert_eq!(balances(&mut evm, sender), before);
         assert_eq!(evm.logs().len(), logs_before);
@@ -370,6 +380,7 @@ mod tests {
         let before = balances(&mut evm, sender);
         let logs_before = evm.logs().len();
         let result = run_deposit(&mut evm, sender);
+        assert!(evm.ext().verified_portal_deposit());
         assert!(result.stop.is_revert(), "{:?}", result.stop);
         assert_eq!(balances(&mut evm, sender), before);
         assert_eq!(evm.logs().len(), logs_before);

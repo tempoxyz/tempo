@@ -158,6 +158,11 @@ impl TempoTxResult {
         self.block_gas_used
     }
 
+    /// Returns the lane determined by consensus after native identity checks.
+    pub const fn is_payment(&self) -> bool {
+        self.is_payment
+    }
+
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
         self.inner.result().result.state_gas_spent()
@@ -590,10 +595,23 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let next_section = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
-        let is_payment = self.is_payment(original);
+        let baseline_payment = self.is_payment(original);
+        let native_portal_candidate =
+            self.evm().config_spec_id().is_t15() && original.is_native_portal_deposit_candidate();
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
+        // A portal-looking destination is not payment authority. The native handler
+        // records this only after checking factory registration, initialized storage,
+        // and exact proxy code on the top-level frame. Delegated or forged bytecode
+        // therefore remains subject to the general-lane limit.
+        let is_payment = baseline_payment
+            || (native_portal_candidate
+                && self
+                    .evm()
+                    .ext()
+                    .native_call_context
+                    .verified_portal_deposit());
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.

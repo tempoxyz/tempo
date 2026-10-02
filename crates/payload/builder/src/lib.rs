@@ -565,7 +565,10 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
+            let is_payment = if hardfork.is_t15() {
+                tx.transaction.is_payment()
+                    || tx.transaction.inner().is_native_portal_deposit_candidate()
+            } else if hardfork.is_t5() {
                 tx.transaction.is_payment()
             } else {
                 tx.transaction.inner().is_payment_v1()
@@ -586,10 +589,6 @@ where
             }
 
             check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
-
             let tx_rlp_length =
                 block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
@@ -611,10 +610,12 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
+            let mut included_payment = false;
             let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
-                if !is_payment {
+                included_payment = result.is_payment();
+                if !included_payment {
                     non_payment_gas_used += result.block_gas_used();
                 }
 
@@ -699,6 +700,9 @@ where
 
             trace!("Transaction executed");
             pool_transactions_included += 1;
+            if included_payment {
+                payment_transactions += 1;
+            }
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
             if !receipt.success {
