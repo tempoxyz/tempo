@@ -1,7 +1,8 @@
 name: Tempo Network E2E
 
 on:
-  pull_request:
+  # Detection reads PR data through pinned actions; fork code is never executed.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize, ready_for_review]
   merge_group:
 
@@ -23,7 +24,7 @@ jobs:
       sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - name: Resolve exact revision
         id: target
         env:
@@ -44,7 +45,7 @@ jobs:
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
       - name: Detect consensus changes
         id: paths
-        uses: tempoxyz/gh-actions/actions/changed-paths@c28778f589e9cd5b6e17a395a3203cedbd0f3f6f # 2026-09-28T07-25-04Z-c28778f5
+        uses: tempoxyz/gh-actions/actions/changed-paths@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           base: ${{ steps.target.outputs.base }}
           head: ${{ steps.target.outputs.sha }}
@@ -53,15 +54,16 @@ jobs:
               - 'crates/consensus/**'
       - name: Detect Reth revision changes
         id: reth
-        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@f7d27204eeb7d11e0148267e070b179efa053fa3 # 2026-09-28T13-05-41Z-f7d27204
+        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           base: ${{ steps.target.outputs.base }}
           head: ${{ steps.target.outputs.sha }}
           package-prefix: reth
       - name: Decide whether tests are required
         id: decision
+        if: steps.paths.outcome == 'success' && steps.reth.outcome == 'success'
         env:
-          REQUIRED: ${{ contains(fromJSON(steps.paths.outputs.changes), 'consensus') || steps.reth.outputs.changed == 'true' }}
+          REQUIRED: ${{ contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true' }}
           SAME_REPO: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           if [[ "$REQUIRED" == true && "$SAME_REPO" != true ]]; then
@@ -79,7 +81,8 @@ jobs:
       pull-requests: read
       packages: write
       id-token: write
-    uses: ./.github/workflows/docker.yml
+    # Pinned CI actionlint 1.7.12 does not support the newer $/ syntax yet.
+    uses: ./.github/workflows/docker.yml # zizmor: ignore[self-repository]
     secrets: inherit # zizmor: ignore[secrets-inherit]
 
   dispatch:
@@ -93,7 +96,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@ee2960a6cc25d99bda45614135bfe1197d879bac # 2026-09-26T06-46-03Z-ee2960a6
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - name: Initialize status for this dispatch attempt
         env:
           GH_TOKEN: ${{ github.token }}

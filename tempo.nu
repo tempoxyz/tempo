@@ -7,7 +7,7 @@ source contrib/bench/txgen/helpers.nu
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
 const LOGS_DIR = "contrib/bench/logs"
-const RUSTFLAGS = "-C target-cpu=native"
+const RUSTFLAGS = "-C target-cpu=native -C force-frame-pointers=yes"
 const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 const BENCH_WORKTREES_DIR = ".bench-worktrees"
@@ -74,7 +74,7 @@ def tracy-build-config [features: string, tracy: string] {
         { features: $features, extra_rustflags: "" }
     } else {
         let tracy_features = if $features == "" { "tracy" } else { $"($features),tracy" }
-        { features: $tracy_features, extra_rustflags: " -C force-frame-pointers=yes" }
+        { features: $tracy_features, extra_rustflags: "" }
     }
 }
 
@@ -144,27 +144,37 @@ def find-tempo-pids [] {
 # 1. Run `tempo init` to create the database
 # 2. Generate state bloat binary file
 # 3. Run `tempo init-from-binary-dump` to load the bloat
-# Generate the bloat binary file once (skips if already exists)
+def recorded-bloat-size [marker: string] {
+    if not ($marker | path exists) { return (-1) }
+    try { open $marker | str trim | into int } catch { -1 }
+}
+
+# Reuse the bloat file only when its recorded size matches the request.
 def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-    if ($bloat_file | path exists) {
+    let size_marker = $"($LOCALNET_DIR)/state_bloat.mib"
+    if ($bloat_file | path exists) and (recorded-bloat-size $size_marker) == $bloat_size {
         print $"State bloat file already exists \(($bloat_size) MiB\)"
         return
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
     run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
+    $bloat_size | into string | save -f $size_marker
 }
 
 # Load the bloat file into a single node's database
-def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string] {
+def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string, bloat_size: int] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
     let db_path = $"($datadir)/db"
+    let size_marker = $"($datadir)/state_bloat.mib"
 
-    # Skip if this node already has a database with bloat loaded
     if ($db_path | path exists) {
-        print $"State bloat already loaded into ($datadir | path basename)"
-        return
+        if (recorded-bloat-size $size_marker) == $bloat_size {
+            print $"State bloat already loaded into ($datadir | path basename)"
+            return
+        }
+        error make { msg: $"Existing database ($datadir) has unknown or different state bloat; rerun localnet with --reset or bench with --force" }
     }
 
     # Remove existing reth database files while preserving key files (signing.key, signing.share, etc.)
@@ -184,6 +194,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
 
     print $"Loading state bloat into ($datadir | path basename)..."
     run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
+    $bloat_size | into string | save -f $size_marker
 }
 
 # ============================================================================
@@ -423,9 +434,11 @@ def resolve-git-ref-label [sha: string, fallback: string] {
     $fallback
 }
 
-def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
+def bench-cache-key [commit_sha: string, features: string, no_default_features: bool, profile: string, rustflags: string] {
+    # Include build settings so older binaries without frame pointers are not reused.
+    let build_key = ([$profile $rustflags] | to json --raw | hash sha256 | str substring 0..15)
     if (not $no_default_features) and $features == $DEFAULT_FEATURES {
-        return $commit_sha
+        return $"($commit_sha)-($build_key)"
     }
 
     let feature_key = if $features == "" {
@@ -438,7 +451,7 @@ def bench-cache-key [commit_sha: string, features: string, no_default_features: 
     }
 
     let mode_key = if $no_default_features { "no-default" } else { "features" }
-    $"($commit_sha)-($mode_key)-($feature_key)"
+    $"($commit_sha)-($mode_key)-($feature_key)-($build_key)"
 }
 
 # Try to download cached binaries from MinIO for a given commit SHA.
@@ -518,7 +531,8 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 
 # Build tempo binary in a git worktree (with optional MinIO cache)
 def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
-    let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
+    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
+    let cache_key = (bench-cache-key $commit_sha $features $no_default_features $profile $rustflags)
 
     # Try cache first
     if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
@@ -526,7 +540,6 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     }
 
     print $"Building tempo for ($ref) in ($worktree_dir)..."
-    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     let feature_args = (cargo-feature-args $features $no_default_features)
     let build_cmd = ["cargo" "build" "--profile" $profile]
         | append $feature_args
@@ -1934,7 +1947,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         # Custom genesis provided - check if bloat requires init
         if $bloat > 0 {
             generate-bloat-file $bloat $profile $skip_build
-            load-bloat-into-node $tempo_bin $genesis $datadir
+            load-bloat-into-node $tempo_bin $genesis $datadir $bloat
         }
         $genesis
     } else {
@@ -1956,7 +1969,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         # Apply state bloat if requested (requires fresh init)
         if $bloat > 0 {
             generate-bloat-file $bloat $profile $skip_build
-            load-bloat-into-node $tempo_bin $default_genesis $datadir
+            load-bloat-into-node $tempo_bin $default_genesis $datadir $bloat
         }
 
         $default_genesis
@@ -2081,7 +2094,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
     if $bloat > 0 {
         generate-bloat-file $bloat $profile $skip_build
         for node_dir in $validator_dirs {
-            load-bloat-into-node $tempo_bin $genesis_path $node_dir
+            load-bloat-into-node $tempo_bin $genesis_path $node_dir $bloat
         }
     }
 
@@ -2340,6 +2353,10 @@ def apply-system-tuning [] {
     # Print environment info for reproducibility
     print $"  Kernel: (^uname -r | str trim)"
     print $"  CPU: (open /proc/cpuinfo | lines | find 'model name' | first | split row ':' | last | str trim)"
+    print "  NVMe devices:"
+    ^lsblk --nodeps --output NAME,MODEL,REV,SIZE | lines | where { |line|
+        ($line | str trim | str starts-with "nvme") or ($line | str starts-with "NAME")
+    } | each { |line| print $"    ($line)" }
     print $"  Port range: (sysctl -n net.ipv4.ip_local_port_range | str trim)"
     print ""
 
@@ -2440,7 +2457,7 @@ def "main bench-init" [
 # Run a full benchmark: start infra, localnet, and txgen traffic
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
-    --preset: string = ""                           # Txgen preset name
+    --preset: string = "default"                    # Txgen preset name
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
@@ -2459,7 +2476,7 @@ def "main bench" [
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
-    --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
+    --bloat: int = 1024                             # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
     --feature: string = ""                          # Git ref for feature (comparison mode)
@@ -2747,7 +2764,7 @@ def "main bench" [
                 rm -rf $feature_genesis_dir
 
                 # Generate bloat file (shared, fork-agnostic)
-                if $bloat > 0 and not ($bloat_file | path exists) {
+                if $bloat > 0 {
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
@@ -2821,7 +2838,7 @@ def "main bench" [
                     }
                 }
 
-                if $bloat > 0 and not ($bloat_file | path exists) {
+                if $bloat > 0 {
                     print $"Generating state bloat \(($bloat) MiB\) from baseline..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
