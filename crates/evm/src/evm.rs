@@ -12,7 +12,7 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, Bytes, TxKind, map::HashMap};
 use reth_revm::{
-    InspectSystemCallEvm, MainContext,
+    InspectSystemCallEvm, MainContext, State,
     context::{
         CfgEnv,
         result::{ExecutionResult, HaltReason},
@@ -32,8 +32,16 @@ use tempo_revm::{
 
 use crate::{
     TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult,
-    parallel::{ExecutionStats, PreexecutedTransaction, SpeculativeBatch, SpeculativeExecutor},
+    parallel::{
+        ExecutionStats, PreexecutedTransaction, SpeculativeBatch, SpeculativeExecutor,
+        SpeculativeResult,
+    },
 };
+
+type CandidateValidator<DB> = fn(
+    &mut SpeculativeResult<<DB as reth_revm::Database>::Error>,
+    &mut DB,
+) -> Result<bool, <DB as reth_revm::Database>::Error>;
 
 /// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
@@ -80,6 +88,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     speculative: Option<SpeculativeExecutor>,
     prepared: Option<SpeculativeBatch<DB::Error>>,
     preexecuted: Option<PreexecutedTransaction>,
+    candidate_validator: Option<CandidateValidator<DB>>,
     execution_stats: ExecutionStats,
     last_sample: ExecutionStats,
     backoff_remaining: usize,
@@ -106,12 +115,21 @@ impl<DB: Database> TempoEvm<DB> {
             speculative: None,
             prepared: None,
             preexecuted: None,
+            candidate_validator: None,
             execution_stats: ExecutionStats::default(),
             last_sample: ExecutionStats::default(),
             backoff_remaining: 0,
             worker_cfg,
             standard_configuration: true,
         }
+    }
+}
+
+impl<P: Database, I> TempoEvm<&mut State<P>, I> {
+    /// Uses the current authoritative State cache for exact speculative read
+    /// validation. Cold reads and BAL-backed state retain Database validation.
+    pub fn enable_state_cache_validation(&mut self) {
+        self.candidate_validator = Some(|candidate, db| candidate.validate_state(*db));
     }
 }
 
@@ -322,6 +340,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             speculative: self.speculative,
             prepared: None,
             preexecuted: None,
+            candidate_validator: self.candidate_validator,
             execution_stats: self.execution_stats,
             last_sample: self.last_sample,
             backoff_remaining: self.backoff_remaining,
@@ -497,9 +516,13 @@ where
         {
             if candidate.result.is_err() {
                 self.execution_stats.retries += 1;
-            } else if candidate
-                .validate(&mut self.inner.ctx.journaled_state.database)
-                .unwrap_or(false)
+            } else if match self.candidate_validator {
+                Some(validate) => {
+                    validate(&mut candidate, &mut self.inner.ctx.journaled_state.database)
+                }
+                None => candidate.validate(&mut self.inner.ctx.journaled_state.database),
+            }
+            .unwrap_or(false)
             {
                 self.execution_stats.reused += 1;
                 if prewarmed && let Some(executor) = &self.speculative {

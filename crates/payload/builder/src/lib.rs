@@ -418,7 +418,8 @@ where
             .context_for_next_block(&parent_header, next_attributes)
             .map_err(PayloadBuilderError::other)?;
 
-        let evm = self.evm_config.evm_with_env(&mut db, evm_env);
+        let mut evm = self.evm_config.evm_with_env(&mut db, evm_env);
+        evm.enable_state_cache_validation();
         let mut executor = self.evm_config.create_executor(evm, ctx.clone());
 
         check_cancel!();

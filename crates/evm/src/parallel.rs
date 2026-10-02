@@ -50,6 +50,9 @@ mod forwarding;
 mod prewarming;
 #[cfg(test)]
 mod prewarming_guard_tests;
+mod state_validation;
+#[cfg(test)]
+mod state_validation_tests;
 pub use prewarming::{PreexecutedTransaction, PrewarmingExecutor, PrewarmingState};
 
 type Env = EvmEnv<TempoHardfork, TempoBlockEnv>;
@@ -736,10 +739,21 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
     /// Read values, rather than touched addresses, determine dependencies. Two transfers
     /// touching distinct balances in the same TIP-20 therefore need not conflict.
     pub(crate) fn validate<DB: Database<Error = E>>(&mut self, db: &mut DB) -> Result<bool, E> {
+        self.validate_with(|key, expected| {
+            let actual = read(db, key)?;
+            Ok((actual != *expected).then_some(actual))
+        })
+    }
+
+    /// Both validators use identical dependency checks and defer all fee patches
+    /// until every read validates. The matcher returns only differing values.
+    fn validate_with(
+        &mut self,
+        mut differing_value: impl FnMut(ReadKey, &ReadValue) -> Result<Option<ReadValue>, E>,
+    ) -> Result<bool, E> {
         let mut patches = Vec::new();
         for (key, expected) in &self.reads {
-            let actual = read(db, *key)?;
-            if actual != *expected {
+            if let Some(actual) = differing_value(*key, expected)? {
                 let (
                     ReadKey::Storage(address, slot),
                     ReadValue::Storage(old),

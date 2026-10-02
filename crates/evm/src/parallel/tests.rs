@@ -7,7 +7,7 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use revm::{
-    DatabaseCommit,
+    Database as _, DatabaseCommit,
     context::TxEnv,
     database::{CacheDB, EmptyDB},
 };
@@ -2456,6 +2456,9 @@ fn execution_throughput() {
     let prewarming = std::env::var("TEMPO_BENCH_PREWARMING").is_ok_and(|value| value != "0");
     let publish_prefix =
         std::env::var("TEMPO_BENCH_PREWARMING_PREFIX").map_or(true, |value| value != "0");
+    let state_validation =
+        std::env::var("TEMPO_BENCH_STATE_VALIDATION").is_ok_and(|value| value != "0");
+    println!("# state_cache_validation={state_validation}");
     let mut worker_counts = workers
         .split(',')
         .map(|s| s.parse::<usize>().unwrap())
@@ -2650,12 +2653,13 @@ fn execution_throughput() {
                 });
                 // Use the node's commit semantics, including EIP-161 deletion
                 // of touched empty accounts (not implemented by CacheDB).
-                let mut evm = TempoEvm::new(
-                    revm::database::State::builder()
-                        .with_database(db.clone())
-                        .build(),
-                    env,
-                );
+                let mut state = revm::database::State::builder()
+                    .with_database(db.clone())
+                    .build();
+                let mut evm = TempoEvm::new(&mut state, env);
+                if state_validation {
+                    evm.enable_state_cache_validation();
+                }
                 if threads > 0 {
                     evm.set_speculative_executor(Some(
                         SpeculativeExecutor::new(threads, batch_size)
@@ -3440,5 +3444,104 @@ fn worker_hash_cache_preserves_memory_gas_and_digest_results() {
         );
         let stats = differential_at_spec(db.clone(), &txs, 4, 16, spec);
         assert!(stats.reused > 0);
+    }
+}
+
+#[test]
+fn state_cache_validation_preserves_fee_rebasing_and_overflow_checks() {
+    use revm::database::State;
+    for spec in [TempoHardfork::T8, TempoHardfork::T14] {
+        let mut parent = funded_tip20_db(2);
+        for &(address, activation) in tempo_precompiles::SYSTEM_PRECOMPILES {
+            if spec >= activation {
+                contract(&mut parent, address, &[0xef]);
+            }
+        }
+        let (_, mut env) = test_evm_with_basefee(TestDB::default(), 0).finish();
+        env.cfg_env = revm::context::CfgEnv::new_with_spec_and_gas_params(
+            spec,
+            tempo_revm::gas_params::tempo_gas_params(spec),
+        );
+        let mut tx = transaction(0, address(900), 0, &[]);
+        tx.inner.gas_price = 1;
+        let mut worker = PrewarmingExecutor::new(parent.clone(), env);
+        for case in ["rebase", "overflow", "journal_mismatch"] {
+            let mut normal = worker
+                .execute(tx.clone(), None)
+                .unwrap()
+                .into_candidate(&tx)
+                .unwrap();
+            let mut fast = worker
+                .execute(tx.clone(), None)
+                .unwrap()
+                .into_candidate(&tx)
+                .unwrap();
+            let fee = normal
+                .fee_updates
+                .iter()
+                .find(|update| {
+                    update.address == tempo_precompiles::TIP_FEE_MANAGER_ADDRESS
+                        && update.apply(U256::MAX).is_none()
+                })
+                .expect("positive fee accumulator");
+            let (fee_address, slot) = (fee.address, fee.slot);
+            let key = ReadKey::Storage(fee_address, slot);
+            let ReadValue::Storage(original) = normal
+                .reads
+                .iter()
+                .find(|(read, _)| *read == key)
+                .unwrap()
+                .1
+            else {
+                unreachable!()
+            };
+            let current = if case == "overflow" {
+                U256::MAX
+            } else {
+                original + U256::ONE
+            };
+            let expected_present = fee.apply(current);
+            let mut canonical = State::builder().with_database(parent.clone()).build();
+            let mut cached = State::builder().with_database(parent.clone()).build();
+            for db in [&mut canonical, &mut cached] {
+                db.storage(fee_address, slot).unwrap();
+                db.cache
+                    .accounts
+                    .get_mut(&fee_address)
+                    .unwrap()
+                    .account
+                    .as_mut()
+                    .unwrap()
+                    .storage
+                    .insert(slot, current);
+            }
+            if case == "journal_mismatch" {
+                for candidate in [&mut normal, &mut fast] {
+                    candidate
+                        .result
+                        .as_mut()
+                        .unwrap()
+                        .state
+                        .get_mut(&fee_address)
+                        .unwrap()
+                        .storage
+                        .get_mut(&slot)
+                        .unwrap()
+                        .original_value += U256::ONE;
+                }
+            }
+            let expected = normal.validate(&mut canonical).unwrap();
+            let actual = fast.validate_state(&mut cached).unwrap();
+            assert_eq!(actual, expected, "{spec:?}, {case}");
+            assert_eq!(actual, case == "rebase", "{spec:?}, {case}");
+            assert_eq!(fast.fees_rebased, normal.fees_rebased);
+            let actual_state = &fast.result.as_ref().unwrap().state;
+            assert_eq!(actual_state, &normal.result.as_ref().unwrap().state);
+            if actual {
+                let storage = &actual_state[&fee_address].storage[&slot];
+                assert_eq!(storage.original_value, current);
+                assert_eq!(Some(storage.present_value), expected_present);
+            }
+        }
     }
 }

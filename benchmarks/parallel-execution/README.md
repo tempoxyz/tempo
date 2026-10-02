@@ -42,12 +42,20 @@ networking, consensus and trie hashing are excluded from execution throughput.
 `TEMPO_BENCH_PREWARMING=1` instead exercises the builder's recorded-execution
 path with persistent workers and twice as many pending candidates as workers.
 `TEMPO_BENCH_PREWARMING_PREFIX=0` disables accepted-prefix hints for comparison.
+`TEMPO_BENCH_STATE_VALIDATION=1` selects the builder's authoritative State-cache
+validator; unset or `0` uses generic database reads. Compare both settings using
+the same compiled binary.
 This mode always includes a sequential receipt/root comparison. It models the
 ordered reuse path with an in-memory provider and a standard thread queue;
 it excludes the node's provider I/O, shared Rayon pool, pool coordinator, bundle
 transitions and state hooks. Regular scheduler tuning switches are unsupported
 in this mode. Results before the switch from `CacheDB` commits to `State` also
 used different account-deletion rules and are not comparable throughput figures.
+
+A final paired 1,000,000-transaction T14 diagnostic with eight workers measures
+155,245 TPS with generic validation versus 168,645 with State-cache validation
+(+8.63%), with matching sequential receipts and roots. This is an in-memory
+result; the node benchmark remains the performance gate.
 
 For historical data, use the read-only differential replay command:
 
