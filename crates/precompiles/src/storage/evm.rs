@@ -2,8 +2,8 @@ use crate::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
-        account_config_commitment, actions::StorageAction,
+        ConfigCommitmentWriteGas, GasCheckpoint, PrecompileStorageProvider, StorageActions,
+        StorageCheckpoint, account_config_commitment, actions::StorageAction,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
@@ -12,7 +12,7 @@ use bitflags::bitflags;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
-    evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
+    evm::{AccountExtension, AccountInfo, SLoad, SStore},
     interpreter::{GasTracker, gas},
     version::{GasId, GasParams},
 };
@@ -31,9 +31,6 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     evm: &'evm mut Evm<'db, T>,
     version: Version,
     gas_tracker: GasTrackerStorage<'gas>,
-    /// Gas snapshots for native atomic operations whose errors may be caught
-    /// without reverting the enclosing EVM frame.
-    gas_checkpoints: Vec<(StateCheckpoint, GasTracker)>,
     spec: TempoHardfork,
     is_static: bool,
     tip1060_storage_credits_enabled: bool,
@@ -83,7 +80,6 @@ where
             version: *evm.version(),
             evm,
             gas_tracker,
-            gas_checkpoints: Vec::new(),
             spec,
             is_static,
             tip1060_storage_credits_enabled: spec.is_t7(),
@@ -658,36 +654,35 @@ where
     }
 
     #[inline]
-    fn checkpoint(&mut self) -> StateCheckpoint {
-        let checkpoint = self.evm.state_mut().checkpoint();
-        if self.spec.is_t7() && self.version.feature(EvmFeatures::EIP8037) {
-            self.gas_checkpoints
-                .push((checkpoint.clone(), *self.gas_tracker));
-        }
-        checkpoint
-    }
-
-    #[inline]
-    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
-        if let Some((expected, _)) = self.gas_checkpoints.pop() {
-            assert_eq!(expected, checkpoint, "out-of-order gas checkpoint commit");
+    fn checkpoint(&mut self) -> StorageCheckpoint {
+        StorageCheckpoint {
+            state: self.evm.state_mut().checkpoint(),
+            gas: self
+                .version
+                .feature(EvmFeatures::EIP8037)
+                .then_some(GasCheckpoint {
+                    state_gas_spent: self.gas_tracker.state_gas_spent(),
+                    refunded: self.gas_tracker.refunded(),
+                }),
         }
     }
 
     #[inline]
-    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
-        if let Some((expected, gas)) = self.gas_checkpoints.pop() {
-            assert_eq!(expected, checkpoint, "out-of-order gas checkpoint revert");
+    fn checkpoint_commit(&mut self, _checkpoint: StorageCheckpoint) {}
+
+    #[inline]
+    fn checkpoint_revert(&mut self, checkpoint: StorageCheckpoint) {
+        if let Some(gas) = checkpoint.gas {
             // TIP-1060 only refills state gas at transaction settlement, so
             // state spending within a native checkpoint is nonnegative.
-            let state = u64::try_from(self.gas_tracker.state_gas_spent() - gas.state_gas_spent())
+            let state = u64::try_from(self.gas_tracker.state_gas_spent() - gas.state_gas_spent)
                 .expect("native checkpoint cannot settle storage credits");
             self.gas_tracker.refill_reservoir(state);
-            self.gas_tracker.set_refunded(gas.refunded());
+            self.gas_tracker.set_refunded(gas.refunded);
         }
         self.evm
             .state_mut()
-            .rollback(checkpoint, self.version.features);
+            .rollback(checkpoint.state, self.version.features);
     }
 
     #[inline]
@@ -1901,6 +1896,39 @@ mod tests {
         provider.sstore(address, key, U256::from(3))?;
         provider.checkpoint_commit(checkpoint);
         assert_eq!(provider.sload(address, key)?, U256::from(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_nested_checkpoint_restores_refunds_and_preserves_committed_gas() -> eyre::Result<()>
+    {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut provider = evm.provider_with_reservoir(1_000_000);
+        let address = Address::repeat_byte(0x22);
+
+        provider.sstore(address, U256::ZERO, U256::ONE)?;
+        provider.sstore(address, U256::ZERO, U256::ZERO)?;
+        assert_eq!(provider.gas_refunded(), 5_000);
+
+        let outer = provider.checkpoint();
+        provider.sstore(address, U256::ONE, U256::ONE)?;
+        let inner = provider.checkpoint();
+        provider.sstore(address, U256::ONE, U256::ZERO)?;
+        assert_eq!(provider.gas_refunded(), 10_000);
+
+        provider.checkpoint_revert(inner);
+        assert_eq!(provider.gas_refunded(), 5_000);
+        assert_eq!(provider.sload(address, U256::ONE)?, U256::ONE);
+        provider.checkpoint_commit(outer);
+        assert_eq!(provider.state_gas_used(), 490_000);
+        assert_eq!(provider.reservoir(), 510_000);
+
+        let committed = provider.checkpoint();
+        provider.sstore(address, U256::ONE, U256::ZERO)?;
+        provider.checkpoint_commit(committed);
+        assert_eq!(provider.gas_refunded(), 10_000);
+        assert_eq!(provider.state_gas_used(), 490_000);
+        assert_eq!(provider.reservoir(), 510_000);
         Ok(())
     }
 
