@@ -1,5 +1,5 @@
 {
-  "status": "historical_replay_in_progress",
+  "status": "nonce_prediction_throughput_in_progress",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
@@ -151,7 +151,7 @@
       "id": 37016709789,
       "url": "https://github.com/tempoxyz/tempo/actions/runs/37016709789",
       "created_at": "2026-10-02T13:59:17Z",
-      "status": "in_progress",
+      "status": "completed",
       "workflow": ".github/workflows/bench-replay.yml",
       "harness_sha": "4caada90d070419af2e72900914849867f4bb5e8",
       "inputs": {
@@ -167,7 +167,40 @@
         "slack": "never"
       },
       "purpose": "Replay 5000 historical mainnet blocks with normal Engine API root verification, after 1250 warmup blocks; compare two pairs against latest main.",
-      "runner": "ghr-euw-03"
+      "runner": "ghr-euw-03",
+      "conclusion": "failure",
+      "result": "No historical blocks executed. Rust 1.99 LLVM SIGILL during compilation of both baseline and feature; pinning workflow to Rust 1.98.1 for rerun."
+    },
+    {
+      "id": 37017467322,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37017467322",
+      "created_at": "2026-10-02T14:05:42Z",
+      "status": "in_progress",
+      "workflow": ".github/workflows/bench-e2e.yml",
+      "harness_sha": "4caada90d070419af2e72900914849867f4bb5e8",
+      "inputs": {
+        "baseline": "4caada90d070419af2e72900914849867f4bb5e8",
+        "feature": "844f7bb21",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "50000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "off",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "true",
+        "run-pairs": "3"
+      },
+      "purpose": "Measure expiring nonce cursor prediction and prefetch with normal builder prewarming; profiling disabled, three pairs."
     }
   ]
 }
