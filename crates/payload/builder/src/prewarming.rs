@@ -16,7 +16,7 @@ use reth_transaction_pool::{
 use tempo_evm::{
     ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig,
     evm::TempoEvm,
-    parallel::{PreexecutedTransaction, PrewarmingExecutor},
+    parallel::{PreexecutedTransaction, PrewarmingExecutor, PrewarmingState},
 };
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
@@ -66,6 +66,7 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        speculative_in_flight: 0,
                     },
                 );
             });
@@ -96,6 +97,11 @@ impl BestTransactionsPrewarming {
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+                if ctx.prewarm.speculative
+                    && ctx.speculative_in_flight >= pool.current_num_threads() * 2
+                {
+                    return;
+                }
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
                     return;
@@ -114,15 +120,18 @@ impl BestTransactionsPrewarming {
                 let transactions_tx = ctx.transactions_tx.clone();
 
                 if prewarm.speculative {
+                    ctx.speculative_in_flight += 1;
                     // Publish handles in source order, before workers finish. The
                     // authoritative iterator can still skip or invalidate them.
                     let (result_tx, result_rx) = mpsc::channel();
+                    let completion = Arc::new(SpeculativeCompletion { commands_tx });
                     let _ = transactions_tx.send(Some(PrewarmedTransaction {
                         tx: tx.clone(),
                         replay: None,
                         preexecuted: Some(PreexecutedHandle {
                             result_rx,
-                            commands_tx,
+                            _completion: completion.clone(),
+                            expiring_nonce_offset,
                         }),
                     }));
                     scope.spawn(move |_| {
@@ -137,6 +146,7 @@ impl BestTransactionsPrewarming {
                                 .ok()
                         });
                         let _ = result_tx.send(result);
+                        drop(completion);
                     });
                     return;
                 }
@@ -166,6 +176,10 @@ impl BestTransactionsPrewarming {
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
+                        advance(&mut ctx);
+                    }
+                    BestTransactionsCommand::ConsumedSpeculative => {
+                        ctx.speculative_in_flight -= 1;
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid {
@@ -367,6 +381,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    speculative_in_flight: usize,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -391,19 +406,31 @@ impl PrewarmedTransaction {
     pub(crate) fn take_preexecuted(&mut self) -> Option<PreexecutedTransaction> {
         self.preexecuted.take()?.result_rx.recv().ok().flatten()
     }
+
+    pub(crate) fn expiring_nonce_offset(&self) -> Option<usize> {
+        self.preexecuted.as_ref()?.expiring_nonce_offset
+    }
 }
 
 #[derive(Debug)]
 struct PreexecutedHandle {
     result_rx: Receiver<Option<PreexecutedTransaction>>,
+    _completion: Arc<SpeculativeCompletion>,
+    expiring_nonce_offset: Option<usize>,
+}
+
+/// Capacity belongs to both the worker and the consumer. Discarding a handle
+/// never blocks, but cannot admit more work while its producer is still running.
+#[derive(Debug)]
+struct SpeculativeCompletion {
     commands_tx: Sender<BestTransactionsCommand>,
 }
 
-impl Drop for PreexecutedHandle {
+impl Drop for SpeculativeCompletion {
     fn drop(&mut self) {
-        // Refill when a candidate is consumed or discarded, rather than when a
-        // worker finishes. This bounds completed results as well as running work.
-        let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::ConsumedSpeculative);
     }
 }
 
@@ -424,6 +451,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     stop: Arc<AtomicBool>,
     parallel: bool,
     speculative: bool,
+    prefix: Option<PrewarmingState>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -447,6 +475,7 @@ where
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
             speculative: false,
+            prefix: None,
         }
     }
 
@@ -454,14 +483,19 @@ where
     /// scheduling a second execution. Native storage-action replay stays separate.
     pub(crate) fn with_speculative(mut self, enabled: bool) -> Self {
         self.speculative = enabled && !self.parallel;
+        self.prefix = self.speculative.then(PrewarmingState::default);
         self
     }
 
+    pub(crate) fn prefix(&self) -> Option<PrewarmingState> {
+        self.prefix.clone()
+    }
+
     fn speculative_evm_for_ctx(&self) -> SpeculativePrewarmState {
-        Some(PrewarmingExecutor::new(
-            self.database_for_ctx()?,
-            self.evm_env.clone(),
-        ))
+        Some(
+            PrewarmingExecutor::new(self.database_for_ctx()?, self.evm_env.clone())
+                .with_state(self.prefix.clone()?),
+        )
     }
 
     fn database_for_ctx(&self) -> Option<StateProviderDatabase<EvmStateProviderBox>> {
@@ -529,6 +563,7 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    ConsumedSpeculative,
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -834,6 +869,7 @@ mod tests {
             stop: Arc::default(),
             parallel,
             speculative: false,
+            prefix: None,
         }
     }
 
@@ -1111,6 +1147,44 @@ mod tests {
     }
 
     #[test]
+    fn discarded_speculative_handles_wait_for_worker_completion_to_refill() {
+        for worker_first in [false, true] {
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let completion = Arc::new(SpeculativeCompletion { commands_tx });
+            let handle = PreexecutedHandle {
+                result_rx,
+                _completion: completion.clone(),
+                expiring_nonce_offset: None,
+            };
+            let (finish_tx, finish_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                finish_rx.recv().unwrap();
+                let _ = result_tx.send(None);
+                drop(completion);
+            });
+            if worker_first {
+                finish_tx.send(()).unwrap();
+                worker.join().unwrap();
+                assert!(commands_rx.try_recv().is_err());
+                drop(handle);
+            } else {
+                // This must return before the worker can finish. It must also
+                // retain admission capacity until that queued work completes.
+                drop(handle);
+                assert!(commands_rx.try_recv().is_err());
+                finish_tx.send(()).unwrap();
+                worker.join().unwrap();
+            }
+            assert!(matches!(
+                commands_rx.try_recv(),
+                Ok(BestTransactionsCommand::ConsumedSpeculative)
+            ));
+            assert!(commands_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
     fn speculative_prewarming_preserves_order_and_bounds_completed_results() {
         let executor = TaskExecutor::test();
         let window = executor.prewarming_pool().current_num_threads() * 2;
@@ -1128,6 +1202,17 @@ mod tests {
             executor,
         };
         wait_until(|| log.lock().unwrap().yielded == window);
+        // Empty-buffer polls can race with pending refill commands. They must
+        // not grant additional speculative capacity before a handle is consumed.
+        for _ in 0..window * 3 {
+            prewarming
+                .commands_tx
+                .send(BestTransactionsCommand::Advance)
+                .unwrap();
+        }
+        prewarming.no_updates();
+        wait_until(|| log.lock().unwrap().no_updates == 1);
+        assert_eq!(log.lock().unwrap().yielded, window);
         // Waiting for the first result must not let worker completion drain the
         // whole source. Consumption (or invalidation) releases exactly one slot.
         let mut first = prewarming.next().expect("first source candidate");
@@ -1139,7 +1224,7 @@ mod tests {
             let candidate = prewarming.next().expect("source candidate");
             assert_eq!(candidate.tx.hash(), hash);
             assert!(candidate.preexecuted.is_some());
-            // Discarded candidates release capacity without waiting for their result.
+            // Discarding never waits; capacity returns once its worker also finishes.
             drop(candidate);
         }
         wait_until(|| log.lock().unwrap().yielded == window * 2);

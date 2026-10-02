@@ -48,7 +48,9 @@ use reth_revm::context::result::HaltReason as TempoHaltReason;
 
 mod forwarding;
 mod prewarming;
-pub use prewarming::{PreexecutedTransaction, PrewarmingExecutor};
+#[cfg(test)]
+mod prewarming_guard_tests;
+pub use prewarming::{PreexecutedTransaction, PrewarmingExecutor, PrewarmingState};
 
 type Env = EvmEnv<TempoHardfork, TempoBlockEnv>;
 type Outcome<E> = Result<ResultAndState<TempoHaltReason>, EVMError<E, TempoInvalidTransaction>>;

@@ -186,9 +186,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
+    /// Records opcode accesses for speculative fee validation, including accesses
+    /// served from the journal cache and reverted calls. Does not retain bodies.
+    pub fn enable_storage_access_recording(&mut self) {
+        instructions::record_storage_accesses(&mut self.inner.instruction);
+    }
+
     /// Record call bodies on a standard speculative worker without an inspector.
     pub fn enable_body_recording(&mut self, minimum_duration: std::time::Duration) {
-        instructions::record_storage_accesses(&mut self.inner.instruction);
+        self.enable_storage_access_recording();
         self.body_replay.recording = true;
         self.body_replay.minimum_duration = minimum_duration;
     }
@@ -353,3 +359,6 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod access_recording_tests;

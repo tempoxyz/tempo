@@ -128,7 +128,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Supplies a worker-owned prewarming result for the next transaction. This
     /// does not bypass environment, transaction, configuration or read checks.
     pub fn set_preexecuted_transaction(&mut self, candidate: PreexecutedTransaction) {
-        if self.speculative_batch_size() > 0 {
+        if self.speculative_batch_size() > 0 && self.inner.ctx.cfg == self.worker_cfg {
             self.execution_stats.speculated += 1;
             self.preexecuted = Some(candidate);
         }
@@ -469,6 +469,10 @@ where
         }
         if !self.inspect
             && self.standard_configuration
+            // Changing the context does not rebuild instructions or precompiles.
+            // Provider-owned candidates must honor the same construction guard
+            // as candidates scheduled through prepare_transactions_with.
+            && self.inner.ctx.cfg == self.worker_cfg
             && !self.inner.actions().is_enabled()
             && !self.inner.skip_valid_after_check
             && !self.inner.skip_liquidity_check

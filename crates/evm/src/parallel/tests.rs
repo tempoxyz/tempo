@@ -92,6 +92,7 @@ fn differential_with_backoff(
     adaptive: bool,
 ) -> ExecutionStats {
     differential_preexecuted(db.clone(), transactions, spec, None);
+    differential_preexecuted_with_prefix(db.clone(), transactions, spec, None, Some(4));
     for streaming in [true, false] {
         differential_mode(
             db.clone(),
@@ -305,6 +306,16 @@ fn differential_preexecuted(
     spec: TempoHardfork,
     order: Option<&[usize]>,
 ) -> ExecutionStats {
+    differential_preexecuted_with_prefix(db, transactions, spec, order, None)
+}
+
+fn differential_preexecuted_with_prefix(
+    db: TestDB,
+    transactions: &[TempoTxEnv],
+    spec: TempoHardfork,
+    order: Option<&[usize]>,
+    prefix_window: Option<usize>,
+) -> ExecutionStats {
     let env = EvmEnv {
         cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
             spec,
@@ -319,23 +330,27 @@ fn differential_preexecuted(
             ..Default::default()
         },
     };
+    let prefix = PrewarmingState::default();
     let mut recorder = PrewarmingExecutor::new(db.clone(), env.clone());
+    if prefix_window.is_some() {
+        recorder = recorder.with_state(prefix.clone());
+    }
     let mut offset = 0;
-    let mut candidates = transactions
+    let offsets = transactions
         .iter()
         .map(|tx| {
-            let prediction = tx
-                .tempo_tx_env
+            tx.tempo_tx_env
                 .as_ref()
                 .filter(|aa| aa.nonce_key == U256::MAX)
                 .map(|_| {
                     let current = offset;
                     offset += 1;
                     current
-                });
-            recorder.execute(tx.clone(), prediction).ok()
+                })
         })
         .collect::<Vec<_>>();
+    let mut candidates = (0..transactions.len()).map(|_| None).collect::<Vec<_>>();
+    let mut prepared = 0;
     let mut sequential = TempoEvm::new(db.clone(), env.clone());
     let mut parallel = TempoEvm::new(db, env);
     parallel.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
@@ -344,6 +359,13 @@ fn differential_preexecuted(
     let mut actual_receipts = Vec::new();
     let (mut expected_gas, mut actual_gas) = (0, 0);
     for &index in order.unwrap_or(&default_order) {
+        let end = prefix_window.map_or(transactions.len(), |window| {
+            index.saturating_add(window).min(transactions.len())
+        });
+        for i in prepared..end {
+            candidates[i] = recorder.execute(transactions[i].clone(), offsets[i]).ok();
+        }
+        prepared = prepared.max(end);
         let tx = &transactions[index];
         if let Some(candidate) = candidates[index].take() {
             parallel.set_preexecuted_transaction(candidate);
@@ -367,6 +389,9 @@ fn differential_preexecuted(
                 };
                 expected_receipts.push(receipt(&expected, expected_gas));
                 actual_receipts.push(receipt(&actual, actual_gas));
+                if prefix_window.is_some() {
+                    prefix.record(&actual.state, offsets[index]);
+                }
                 sequential.db_mut().commit(expected.state);
                 parallel.db_mut().commit(actual.state);
             }
@@ -1662,6 +1687,27 @@ fn expiring_nonce_predictions_preserve_order_and_rejections() {
     assert!(reordered.reused > 0);
     assert!(reordered.conflicts > 0);
 
+    let filtered = [0, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 15];
+    let stale = differential_preexecuted(db.clone(), &txs, TempoHardfork::T14, Some(&filtered));
+    let updated = differential_preexecuted_with_prefix(
+        db.clone(),
+        &txs,
+        TempoHardfork::T14,
+        Some(&filtered),
+        Some(2),
+    );
+    assert!(
+        updated.reused > stale.reused,
+        "cursor recovery: {updated:?} vs {stale:?}"
+    );
+    differential_preexecuted_with_prefix(
+        db.clone(),
+        &txs,
+        TempoHardfork::T14,
+        Some(&[0, 2, 1, 4, 3, 8, 15]),
+        Some(2),
+    );
+
     // A builder may omit or reorder preview candidates after validation. Those
     // predictions must not change which transactions succeed or their state.
     let (_, mut env) = test_evm_with_basefee(TestDB::default(), 0).finish();
@@ -1878,15 +1924,14 @@ fn selfdestruct_balance_changes_invalidate_later_reads() {
     observe.extend_from_slice(beneficiary.as_slice());
     observe.extend_from_slice(&[0x31, 0x60, 0, 0x55, 0]);
     contract(&mut db, observer, &observe);
-    let stats = differential(
-        db,
-        &[
-            transaction(0, source, 0, &[]),
-            transaction(1, observer, 0, &[]),
-        ],
-        2,
-        2,
-    );
+    let txs = [
+        transaction(0, source, 0, &[]),
+        transaction(1, observer, 0, &[]),
+    ];
+    let updated =
+        differential_preexecuted_with_prefix(db.clone(), &txs, TempoHardfork::T14, None, Some(1));
+    assert_eq!(updated.reused, txs.len() as u64);
+    let stats = differential(db, &txs, 2, 2);
     assert_eq!(stats.reused, 1);
     assert_eq!(stats.conflicts, 1);
 }
@@ -2864,6 +2909,14 @@ fn contract_creation_invalidates_later_code_reads() {
         transaction(2, created, 0, &[]),
         transaction(1, created, 1, &[]),
     ];
+    let updated = differential_preexecuted_with_prefix(
+        TestDB::default(),
+        &txs,
+        TempoHardfork::T14,
+        None,
+        Some(1),
+    );
+    assert_eq!(updated.reused, txs.len() as u64);
     let stats = differential(TestDB::default(), &txs, 3, 3);
     assert_eq!(stats.reused, 1);
     assert_eq!(stats.conflicts, 1);

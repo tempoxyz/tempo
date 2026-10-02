@@ -42,7 +42,7 @@ use reth_engine_tree::tree::{
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError, TxResult},
     execute::BlockAssemblerInput,
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -494,6 +494,7 @@ where
             self.config.enable_parallel,
         )
         .with_speculative(speculative_prewarming);
+        let prewarming_prefix = prewarm_ctx.prefix();
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
@@ -671,6 +672,7 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
+            let prewarming_offset = pool_tx.expiring_nonce_offset();
             if let Some(candidate) = pool_tx.take_preexecuted() {
                 executor.evm_mut().set_preexecuted_transaction(candidate);
                 check_cancel!();
@@ -689,6 +691,9 @@ where
 
                 // Notify transactions iterator about the new state.
                 best_txs.on_new_result(result);
+                if let Some(prefix) = &prewarming_prefix {
+                    prefix.record(&result.result().state, prewarming_offset);
+                }
             };
 
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
