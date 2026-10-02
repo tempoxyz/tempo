@@ -147,8 +147,10 @@ impl<DB: Database> ProtocolFeeManager<DB> for ValidatorTokenLookupFailsFeeManage
         _fee_payer: Address,
         _spec: TempoHardfork,
         _actions: StorageActions,
-    ) -> tempo_precompiles::error::Result<Address> {
-        Ok(tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN))
+    ) -> Result<crate::FeeTokenSelection, crate::FeeTokenResolutionError> {
+        Ok(crate::FeeTokenSelection::fixed(
+            tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN),
+        ))
     }
 
     fn get_validator_token(
@@ -217,6 +219,97 @@ fn test_invalid_fee_token_rejected() {
 }
 
 #[test]
+fn test_fallback_insufficient_funds_does_not_consume_nonce() {
+    let caller = Address::repeat_byte(0x71);
+    let mut test = TestHandlerEvm::tx(TempoHardfork::T14, |tx| {
+        tx.inner.caller = caller;
+        tx.inner.kind = alloy_primitives::TxKind::Call(Address::repeat_byte(0x72));
+        tx.inner.gas_limit = 1_000_000;
+        tx.inner.gas_price = 20_000_000_000;
+    });
+    let error = test.validate_against_state_and_deduct_caller().unwrap_err();
+    assert!(matches!(error, EVMError::Transaction(
+        TempoInvalidTransaction::InsufficientFallbackFeeBalance { required }
+    ) if required == U256::from(20_000)));
+    assert_eq!(
+        test.evm
+            .ctx()
+            .journal_mut()
+            .load_account(caller)
+            .unwrap()
+            .data
+            .info
+            .nonce,
+        0
+    );
+    assert!(
+        !TempoInvalidTransaction::InsufficientFallbackFeeBalance {
+            required: U256::ONE,
+        }
+        .is_bad_transaction()
+    );
+}
+
+#[test]
+fn test_early_fee_choices_do_not_fall_back_after_insufficient_balance() {
+    use alloy_sol_types::SolCall;
+    use tempo_contracts::precompiles::{IFeeManager, ITIP20};
+    let payer = Address::repeat_byte(0x51);
+    for choice in 0..3 {
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T14, |tx| {
+            tx.inner.caller = payer;
+            tx.inner.kind = TxKind::Call(Address::repeat_byte(0x52));
+            tx.inner.gas_limit = 100_000;
+            tx.inner.gas_price = 1_000_000_000;
+        });
+        let later =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                TIP20Setup::path_usd(payer)
+                    .with_issuer(payer)
+                    .with_mint(payer, U256::ONE)
+                    .apply()?;
+                let token = TIP20Setup::create("Later USD", "LUSD", payer)
+                    .with_issuer(payer)
+                    .with_mint(payer, U256::from(1_000))
+                    .apply()?;
+                if choice == 1 {
+                    TipFeeManager::new().set_user_token(
+                        payer,
+                        IFeeManager::setUserTokenCall {
+                            token: PATH_USD_ADDRESS,
+                        },
+                    )?;
+                }
+                Ok::<_, TempoPrecompileError>(token.address())
+            })
+            .unwrap();
+        if choice == 0 {
+            test.evm.inner.ctx.tx.fee_token = Some(PATH_USD_ADDRESS);
+        }
+        if choice == 2 {
+            test.evm.inner.ctx.tx.inner.kind = TxKind::Call(PATH_USD_ADDRESS);
+            test.evm.inner.ctx.tx.inner.data = ITIP20::transferCall {
+                to: Address::repeat_byte(0x53),
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into();
+        }
+        test = test.with_fee_manager(crate::TestFallbackFeeManager(vec![PATH_USD_ADDRESS, later]));
+        assert!(matches!(
+            test.validate_against_state_and_deduct_caller(),
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    revm::context::result::InvalidTransaction::LackOfFundForMaxFee { .. }
+                )
+            ))
+        ));
+        assert_eq!(test.evm.fee_token, Some(PATH_USD_ADDRESS));
+        assert!(test.evm.fallback_selection.is_none());
+    }
+}
+
+#[test]
 fn test_non_usd_fee_token_rejected() {
     let admin = Address::random();
     let mut test = TestHandlerEvm::tx(TempoHardfork::default(), |tx_env| {
@@ -252,100 +345,164 @@ fn test_non_usd_fee_token_rejected() {
 
 #[test]
 fn test_paused_fee_token_rejected() {
-    let admin = Address::random();
-    let fee_payer = Address::random();
-    let fee = U256::from(100_000_000_000_000_u64);
-    let mut test = TestHandlerEvm::tx(TempoHardfork::default(), |tx_env| {
-        tx_env.inner.caller = fee_payer;
-        tx_env.inner.gas_limit = 100_000;
-        tx_env.inner.gas_price = 1_000_000_000;
-        tx_env.inner.gas_priority_fee = Some(1_000_000_000);
-    });
+    for (spec, policy_denied) in [
+        (TempoHardfork::default(), false),
+        (TempoHardfork::T14, false),
+        (TempoHardfork::T14, true),
+    ] {
+        let admin = Address::random();
+        let fee_payer = Address::random();
+        let fee = U256::from(100_000_000_000_000_u64);
+        let mut test = TestHandlerEvm::tx(spec, |tx_env| {
+            tx_env.inner.caller = fee_payer;
+            tx_env.inner.gas_limit = 100_000;
+            tx_env.inner.gas_price = 1_000_000_000;
+            tx_env.inner.gas_priority_fee = Some(1_000_000_000);
+        });
 
-    let fee_token =
-        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
-            let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
-                .with_issuer(admin)
-                .with_role(admin, tempo_precompiles::tip20::PAUSE_ROLE)
-                .with_mint(fee_payer, fee)
-                .apply()?;
-            token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
-            Ok::<_, TempoPrecompileError>(token.address())
-        })
-        .expect("paused USD token setup succeeds");
+        let (fee_token, later_token) =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, tempo_precompiles::tip20::PAUSE_ROLE)
+                    .with_mint(fee_payer, fee)
+                    .apply()?;
+                if policy_denied {
+                    token.change_transfer_policy_id(
+                        admin,
+                        tempo_precompiles::tip20::ITIP20::changeTransferPolicyIdCall {
+                            newPolicyId: 0,
+                        },
+                    )?;
+                } else {
+                    token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
+                }
+                let later = TIP20Setup::create("Later USD", "LUSD", admin)
+                    .with_salt(B256::repeat_byte(1))
+                    .with_issuer(admin)
+                    .with_mint(fee_payer, fee)
+                    .apply()?;
+                Ok::<_, TempoPrecompileError>((token.address(), later.address()))
+            })
+            .expect("paused USD token setup succeeds");
 
-    test.evm.inner.ctx.tx.fee_token = Some(fee_token);
+        if spec.is_t14() {
+            test = test.with_fee_manager(crate::TestFallbackFeeManager(vec![
+                PATH_USD_ADDRESS,
+                fee_token,
+                later_token,
+            ]));
+            // Both tokens are funded. The selected token must fail through its ordinary checks.
+            assert!(test.evm.inner.ctx.tx.fee_token.is_none());
+        } else {
+            test.evm.inner.ctx.tx.fee_token = Some(fee_token);
+        }
 
-    let result = test.validate_against_state_and_deduct_caller();
+        let result = test.validate_against_state_and_deduct_caller();
 
-    assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused { address })) if address == fee_token
-        ),
-        "Should reject paused fee token with FeeTokenPaused error"
-    );
+        if policy_denied {
+            assert!(
+                matches!(result, Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(FeePaymentError::Other(reason)))) if reason.contains("PolicyForbids"))
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused { address })) if address == fee_token
+                ),
+                "Should reject paused fee token with FeeTokenPaused error"
+            );
+        }
+        if spec.is_t14() {
+            let selection = test.evm.fallback_selection.as_ref().unwrap();
+            assert!(selection.used_fallback);
+            assert_eq!(selection.token, fee_token);
+            assert_eq!(selection.balance_slots.len(), 2);
+        }
+    }
 }
 
 #[test]
 fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() -> eyre::Result<()> {
     use tempo_contracts::precompiles::IFeeManager;
 
-    let admin = Address::random();
-    let fee_payer = Address::random();
-    let validator = Address::random();
-    let gas_limit = 1_000;
-    let gas_price = 1_000_000_000_000_u128;
-    let fee = calc_gas_balance_spending(gas_limit, gas_price);
+    for spec in [TempoHardfork::T5, TempoHardfork::T14] {
+        let admin = Address::random();
+        let fee_payer = Address::random();
+        let validator = Address::random();
+        let gas_limit = 1_000;
+        let gas_price = 1_000_000_000_000_u128;
+        let fee = calc_gas_balance_spending(gas_limit, gas_price);
 
-    let mut test = TestHandlerEvm::tx(TempoHardfork::T5, |tx_env| {
-        tx_env.inner.caller = fee_payer;
-        tx_env.inner.gas_limit = gas_limit;
-        tx_env.inner.gas_price = gas_price;
-        tx_env.inner.gas_priority_fee = Some(gas_price);
-    });
-    test.evm.inner.ctx.block.beneficiary = validator;
+        let mut test = TestHandlerEvm::tx(spec, |tx_env| {
+            tx_env.inner.caller = fee_payer;
+            tx_env.inner.gas_limit = gas_limit;
+            tx_env.inner.gas_price = gas_price;
+            tx_env.inner.gas_priority_fee = Some(gas_price);
+        });
+        test.evm.inner.ctx.block.beneficiary = validator;
 
-    let (user_token, validator_token) =
-        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
-                .with_mint(fee_payer, fee)
-                .with_approval(fee_payer, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
+        let (user_token, validator_token) =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                    .with_issuer(admin)
+                    .with_mint(fee_payer, fee)
+                    .with_approval(fee_payer, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                    .apply()?;
 
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .apply()?;
+                let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                    .with_issuer(admin)
+                    .with_mint(fee_payer, fee)
+                    .apply()?;
 
-            TipFeeManager::new().set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: validator_token.address(),
-                },
-                Address::random(),
-            )?;
+                TipFeeManager::new().set_validator_token(
+                    validator,
+                    IFeeManager::setValidatorTokenCall {
+                        token: validator_token.address(),
+                    },
+                    Address::random(),
+                )?;
 
-            Ok::<_, TempoPrecompileError>((user_token.address(), validator_token.address()))
-        })?;
+                Ok::<_, TempoPrecompileError>((user_token.address(), validator_token.address()))
+            })?;
 
-    test.evm.inner.ctx.tx.fee_token = Some(user_token);
+        if spec.is_t14() {
+            test = test.with_fee_manager(crate::TestFallbackFeeManager(vec![
+                PATH_USD_ADDRESS,
+                user_token,
+                validator_token,
+            ]));
+        } else {
+            test.evm.inner.ctx.tx.fee_token = Some(user_token);
+        }
 
-    let result = test.validate_against_state_and_deduct_caller();
+        let result = test.validate_against_state_and_deduct_caller();
 
-    assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(ref err)))
-                if *err == FeePaymentError::InsufficientAmmLiquidity {
-                    user_token: Some(user_token),
-                    validator_token: Some(validator_token),
-                    fee,
-                }
-        ),
-        "expected pair-aware insufficient liquidity error, got: {result:?}"
-    );
-
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(ref err)))
+                    if *err == FeePaymentError::InsufficientAmmLiquidity {
+                        user_token: Some(user_token),
+                        validator_token: Some(validator_token),
+                        fee,
+                    }
+            ),
+            "expected pair-aware insufficient liquidity error, got: {result:?}"
+        );
+        if spec.is_t14() {
+            // The later token is the validator token itself, so it can pay without a swap.
+            // Selection must stop at the funded user token even though its AMM is illiquid.
+            let selection = test.evm.fallback_selection.as_ref().unwrap();
+            assert!(selection.used_fallback);
+            assert_eq!(selection.token, user_token);
+            let slot = TIP20Token::from_address_unchecked(user_token).balances[fee_payer].slot();
+            assert_eq!(
+                selection.balance_slots,
+                vec![(PATH_USD_ADDRESS, slot), (user_token, slot)]
+            );
+        }
+    }
     Ok(())
 }
 
@@ -3604,57 +3761,84 @@ mod keychain {
 
     #[test]
     fn test_same_tx_key_authorization_rejects_fee_above_new_limit_before_auth() {
-        let (signer, user) = generate_keypair();
-        let key = Address::random();
-        let gas_limit = 100_000;
-        let fee = U256::from(gas_limit);
-        let spending_limit = fee - U256::ONE;
+        for spec in [TempoHardfork::T3, TempoHardfork::T14] {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let gas_limit = 100_000;
+            let fee = U256::from(gas_limit);
+            let spending_limit = fee - U256::ONE;
 
-        let signed = sign_key_auth(
-            &signer,
-            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_limits(vec![
-                PrimTokenLimit {
-                    token: DEFAULT_FEE_TOKEN,
-                    limit: spending_limit,
-                    period: 60,
-                },
-            ]),
-        );
-        let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T3, None, false);
-        evm.inner.ctx.tx.inner.gas_limit = gas_limit;
-        evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
-        evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_limits(vec![
+                    PrimTokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        limit: spending_limit,
+                        period: 60,
+                    },
+                ]),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, false);
+            evm.inner.ctx.tx.inner.gas_limit = gas_limit;
+            evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
+            evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
 
-        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
-            TIP20Setup::path_usd(user)
-                .with_issuer(user)
-                .with_mint(user, fee * U256::from(2))
-                .apply()
-                .expect("pathUSD setup succeeds");
-        });
+            let later_token =
+                StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+                    TIP20Setup::path_usd(user)
+                        .with_issuer(user)
+                        .with_mint(user, fee * U256::from(2))
+                        .apply()
+                        .expect("pathUSD setup succeeds");
+                    if spec.is_t14() {
+                        TIP20Setup::create("Later USD", "LUSD", user)
+                            .with_issuer(user)
+                            .with_mint(user, fee * U256::from(2))
+                            .apply()
+                            .unwrap()
+                            .address()
+                    } else {
+                        DEFAULT_FEE_TOKEN
+                    }
+                });
 
-        let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            if spec.is_t14() {
+                evm.inner.ctx.tx.fee_token = None;
+                evm = evm.with_fee_manager(crate::TestFallbackFeeManager(vec![
+                    DEFAULT_FEE_TOKEN,
+                    later_token,
+                ]));
+            }
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
 
-        assert!(
-            matches!(
-                &result,
-                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
-                    FeePaymentError::Other(reason)
-                ))) if reason.contains("SpendingLimitExceeded")
-            ),
-            "same-tx auth+use should reject fee above the new key limit before auth, got: {result:?}"
-        );
-        assert_eq!(evm.collected_fee, U256::ZERO);
-        assert!(
-            evm.inner
-                .ctx
-                .journaled_state
-                .inner
-                .logs
-                .iter()
-                .all(|log| log.address != ACCOUNT_KEYCHAIN_ADDRESS),
-            "fee-limit rejection must happen before key authorization emits events"
-        );
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
+                        FeePaymentError::Other(reason)
+                    ))) if reason.contains("SpendingLimitExceeded")
+                ),
+                "same-tx auth+use should reject fee above the new key limit before auth, got: {result:?}"
+            );
+            assert_eq!(evm.collected_fee, U256::ZERO);
+            if spec.is_t14() {
+                assert_eq!(
+                    evm.fallback_selection.as_ref().unwrap().balance_slots.len(),
+                    1
+                );
+            }
+            assert!(
+                evm.inner
+                    .ctx
+                    .journaled_state
+                    .inner
+                    .logs
+                    .iter()
+                    .all(|log| log.address != ACCOUNT_KEYCHAIN_ADDRESS),
+                "fee-limit rejection must happen before key authorization emits events"
+            );
+        }
     }
 
     #[test]

@@ -117,6 +117,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    #[cfg(test)]
+    test_fallback_tokens: Option<Vec<Address>>,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -155,6 +157,8 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            #[cfg(test)]
+            test_fallback_tokens: None,
         }
     }
 
@@ -374,7 +378,14 @@ where
         // Create one throwaway EVM through the configured factory for the whole batch. The
         // capability hook owns all pool-only configuration and per-transaction cleanup while the
         // EVM and tip-scoped state cache keep repeated reads warm.
-        let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
+        let evm = self.inner.evm_config().pool_evm(db, evm_env);
+        #[cfg(test)]
+        let evm = if let Some(tokens) = &self.test_fallback_tokens {
+            evm.with_test_fallback_tokens(tokens.clone())
+        } else {
+            evm
+        };
+        let mut evm = evm;
 
         transactions
             .into_iter()
@@ -528,6 +539,9 @@ where
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(validation_ctx.fee_token);
+        if let Some(selection) = validation_ctx.fallback_selection {
+            transaction.set_fallback_selection(selection);
+        }
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
@@ -1105,6 +1119,298 @@ mod tests {
         validator.on_new_head_block(&mock_block);
 
         validator
+    }
+
+    #[test]
+    fn fallback_pool_revalidation_refreshes_actual_selection_and_balance_cache() {
+        use tempo_revm::TestFallbackFeeManager;
+        let tx = TxBuilder::eip1559(Address::repeat_byte(0x41)).build_eip1559();
+        let payer = tx.fee_payer().unwrap();
+        let validator = setup_validator(&tx, 1).with_disable_fee_amm_check(true);
+        validator
+            .active_hardfork
+            .store(TempoHardfork::T14.variant_index(), Ordering::Relaxed);
+        validator.cached_evm_env.write().cfg_env.spec = TempoHardfork::T14;
+        let second = address!("20c0000000000000000000000000000000000001");
+        let slot = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[payer].slot();
+        let seed = |token, balance| {
+            validator.client().add_account(
+                token,
+                ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                    (
+                        tip20_slots::CURRENCY.into(),
+                        uint!(
+                            0x5553440000000000000000000000000000000000000000000000000000000006_U256
+                        ),
+                    ),
+                    (tip20_slots::TRANSFER_POLICY_ID.into(), U256::ONE << 160),
+                    (slot.into(), U256::from(balance)),
+                ]),
+            );
+        };
+        seed(PATH_USD_ADDRESS, 0u64);
+        seed(second, 20_007u64);
+        let validate = |tx| {
+            let provider = validator.client().latest().unwrap();
+            let db = StateProviderDatabase::new(provider.as_ref().into_evm_state_provider());
+            let mut evm =
+                tempo_evm::evm::TempoEvm::new(db, validator.cached_evm_env.read().clone())
+                    .with_fee_manager(TestFallbackFeeManager(vec![PATH_USD_ADDRESS, second]));
+            evm.configure_for_pool();
+            match validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm) {
+                TransactionValidationOutcome::Valid { transaction, .. } => {
+                    transaction.into_transaction()
+                }
+                outcome => panic!("fallback admission failed: {outcome:?}"),
+            }
+        };
+        let admitted = validate(tx);
+        assert!(admitted.uses_fallback());
+        assert_eq!(admitted.effective_fee_token(), second);
+        assert_eq!(admitted.fee_balance_slot(), Some((second, slot)));
+        assert_eq!(
+            admitted.fallback_balance_slots(),
+            &[(PATH_USD_ADDRESS, slot), (second, slot)]
+        );
+        // Earlier credit makes the cached selection obsolete; maintenance must discard it.
+        seed(PATH_USD_ADDRESS, 20_007u64);
+        let refreshed = validate(admitted.with_discarded_caches());
+        assert_eq!(refreshed.effective_fee_token(), PATH_USD_ADDRESS);
+        assert_eq!(refreshed.fee_balance_slot(), Some((PATH_USD_ADDRESS, slot)));
+        assert_eq!(
+            refreshed.fallback_balance_slots(),
+            &[(PATH_USD_ADDRESS, slot)]
+        );
+        // A selected debit reselects the later candidate again.
+        seed(PATH_USD_ADDRESS, 0u64);
+        let refreshed = validate(refreshed.with_discarded_caches());
+        assert_eq!(refreshed.effective_fee_token(), second);
+        assert_eq!(refreshed.fee_balance_slot(), Some((second, slot)));
+    }
+
+    #[tokio::test]
+    async fn fallback_canonical_events_refresh_selection_and_amm_checks() {
+        use crate::{
+            AA2dPool, TempoTransactionPool, maintain::maintain_tempo_pool_with_events,
+            ordering::TempoTipOrdering, test_utils::MockProviderStorageExt,
+        };
+        use futures::channel::mpsc;
+        use reth_primitives_traits::RecoveredBlock;
+        use reth_provider::{CanonStateNotification, Chain, ExecutionOutcome};
+        use reth_transaction_pool::{
+            Pool, PoolConfig, TransactionPool, TransactionValidationTaskExecutor,
+        };
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use tempo_precompiles::{
+            storage::{ContractStorage, Handler},
+            test_util::TIP20Setup,
+            tip_fee_manager::TipFeeManager,
+        };
+
+        let payer = Address::repeat_byte(0x41);
+        let control_payer = Address::repeat_byte(0x42);
+        let admin = Address::repeat_byte(0x43);
+        let mut genesis = MODERATO.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("t13Time".into(), 0u64.into());
+        genesis
+            .config
+            .extra_fields
+            .insert("t14Time".into(), 100u64.into());
+        let spec = TempoChainSpec::from_genesis(genesis);
+        let provider = MockEthProvider::<TempoPrimitives>::new().with_chain_spec(spec.clone());
+        let mut initial = create_mock_block(99).into_block();
+        initial.header.inner.number = 1;
+        let initial = SealedBlock::seal_slow(initial);
+        provider.add_block(initial.hash(), initial.clone().into_block());
+        for sender in [payer, control_payer] {
+            provider.add_account(sender, ExtendedAccount::new(0, U256::ZERO));
+        }
+        let second = provider
+            .setup_storage(TempoHardfork::T14, || {
+                TIP20Setup::path_usd(admin)
+                    .with_issuer(admin)
+                    .with_mint(admin, U256::from(1_000_000))
+                    .with_mint(payer, U256::from(20_007))
+                    .apply()?;
+                let token = TIP20Setup::create("Fallback", "FB", admin)
+                    .with_salt(B256::repeat_byte(1))
+                    .with_issuer(admin)
+                    .with_mint(admin, U256::from(1_000_000))
+                    .with_mint(payer, U256::from(20_007))
+                    .with_mint(control_payer, U256::from(20_007))
+                    .apply()?;
+                // Real liquid route to the default validator token. AMM checking stays enabled.
+                TipFeeManager::new().mint(
+                    admin,
+                    token.address(),
+                    PATH_USD_ADDRESS,
+                    U256::from(100_000),
+                    admin,
+                )?;
+                Ok::<_, tempo_precompiles::error::TempoPrecompileError>(token.address())
+            })
+            .unwrap();
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(Arc::new(spec)),
+        )
+        .with_custom_tx_type(TempoTxType::AA as u8)
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
+        let mut validator = TempoTransactionValidator::new(
+            inner,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            AmmLiquidityCache::new(provider.clone()).unwrap(),
+        );
+        validator.test_fallback_tokens = Some(vec![PATH_USD_ADDRESS, second]);
+        validator.on_new_head_block(&initial);
+        assert!(!validator.disable_fee_amm_check);
+        let (validation, task) = TransactionValidationTaskExecutor::new(validator);
+        let validation_handle = validation.clone();
+        let worker = tokio::spawn(task.run());
+        let pool = TempoTransactionPool::new(
+            Pool::new(
+                validation,
+                TempoTipOrdering::default(),
+                InMemoryBlobStore::default(),
+                PoolConfig::default(),
+            ),
+            AA2dPool::new(Default::default()),
+        );
+        let calls = vec![tempo_primitives::transaction::Call {
+            to: TxKind::Call(Address::repeat_byte(0x44)),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }];
+        let tx = TxBuilder::aa(payer).calls(calls.clone()).build();
+        let hash = pool
+            .add_transaction(TransactionOrigin::External, tx)
+            .await
+            .unwrap()
+            .hash;
+        let control = TxBuilder::aa(control_payer)
+            .calls(calls)
+            .fee_token(second)
+            .build();
+        let control_hash = pool
+            .add_transaction(TransactionOrigin::External, control)
+            .await
+            .unwrap()
+            .hash;
+        let control = pool.get(&control_hash).unwrap();
+        assert!(!control.transaction.uses_fallback());
+        assert!(!pool.get(&hash).unwrap().transaction.uses_fallback());
+        let (events, stream) = mpsc::unbounded();
+        let maintenance = tokio::spawn(maintain_tempo_pool_with_events(pool.clone(), stream));
+
+        let slot = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[payer].slot();
+        // Establish the preactivation event before crossing T14. Empty blocks have no logs.
+        let chain = Arc::new(Chain::new(
+            vec![RecoveredBlock::new_unhashed(
+                initial.clone().into_block(),
+                vec![],
+            )],
+            ExecutionOutcome::default(),
+            Default::default(),
+        ));
+        events
+            .unbounded_send(CanonStateNotification::Commit { new: chain.clone() })
+            .unwrap();
+        let mut old_chain = chain;
+        for (number, timestamp, before, after, reorg, selected, fallback) in [
+            (2, 100, 20_007u64, 0u64, false, second, true), // activation selects the later candidate
+            (3, 101, 0, 20_007, false, PATH_USD_ADDRESS, true), // skipped credit, no Transfer log
+            (4, 102, 20_007, 0, false, second, true),       // selected debit, no Transfer log
+            (5, 103, 20_007, 20_007, true, PATH_USD_ADDRESS, true), // reorg with no new balance write
+            (6, 99, 20_007, 20_007, true, PATH_USD_ADDRESS, false), // reorg across activation
+            (7, 100, 20_007, 20_007, false, PATH_USD_ADDRESS, true), // activation without a balance write
+        ] {
+            let previous = pool.get(&hash).unwrap();
+            provider
+                .setup_storage(TempoHardfork::T14, || {
+                    TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[payer]
+                        .write(U256::from(after))
+                })
+                .unwrap();
+            let mut block = create_mock_block(timestamp).into_block();
+            block.header.inner.number = number;
+            let sealed = SealedBlock::seal_slow(block.clone());
+            provider.add_block(sealed.hash(), block.clone());
+            // Reth's head notification refreshes the validator environment and state cache.
+            validation_handle.on_new_head_block(&sealed);
+            let mut outcome = ExecutionOutcome::default();
+            if before != after {
+                outcome.bundle.state.insert(
+                    PATH_USD_ADDRESS,
+                    BundleAccount::new(
+                        None,
+                        None,
+                        [(
+                            slot,
+                            StorageSlot::new_changed(U256::from(before), U256::from(after)),
+                        )]
+                        .into_iter()
+                        .collect(),
+                        AccountStatus::Changed,
+                    ),
+                );
+            }
+            let new = Arc::new(Chain::new(
+                vec![RecoveredBlock::new_unhashed(block, vec![])],
+                outcome,
+                Default::default(),
+            ));
+            let event = if reorg {
+                CanonStateNotification::Reorg {
+                    old: old_chain,
+                    new: new.clone(),
+                }
+            } else {
+                CanonStateNotification::Commit { new: new.clone() }
+            };
+            events.unbounded_send(event).unwrap();
+            old_chain = new;
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Some(current) = pool.get(&hash)
+                        && !Arc::ptr_eq(&previous, &current)
+                    {
+                        assert_eq!(current.transaction.effective_fee_token(), selected);
+                        assert_eq!(current.transaction.uses_fallback(), fallback);
+                        assert_eq!(
+                            current.transaction.fee_balance_slot(),
+                            Some((selected, slot))
+                        );
+                        let expected = if !fallback {
+                            vec![]
+                        } else if selected == second {
+                            vec![(PATH_USD_ADDRESS, slot), (second, slot)]
+                        } else {
+                            vec![(PATH_USD_ADDRESS, slot)]
+                        };
+                        assert_eq!(
+                            current.transaction.fallback_balance_slots(),
+                            expected.as_slice()
+                        );
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("canonical maintenance must remove, revalidate and readmit");
+            assert!(
+                Arc::ptr_eq(&control, &pool.get(&control_hash).unwrap()),
+                "nonfallback control must retain its fast path"
+            );
+        }
+        drop(events);
+        maintenance.await.unwrap();
+        worker.abort();
     }
 
     #[test]

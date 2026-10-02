@@ -70,12 +70,14 @@ thiserror.workspace = true
 [features]
 default = ["rpc"]
 test-utils = [
+    "tempo-evm/test-utils",
     "alloy/getrandom",
     "dep:alloy-json-abi",
     "dep:itertools",
     "dep:serde",
     "dep:serde_json",
     "tempo-primitives/test-utils",
+    "tempo-revm/test-utils",
 ]
 rpc = ["tempo-contracts/rpc"]
 serde = [

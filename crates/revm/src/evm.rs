@@ -40,6 +40,7 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    pub(crate) fallback_selection: Option<crate::FeeTokenSelection>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -111,6 +112,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee,
             validator_fee,
             fee_token,
+            fallback_selection,
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
@@ -125,6 +127,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee,
             validator_fee,
             fee_token,
+            fallback_selection,
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
@@ -155,6 +158,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            fallback_selection: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
@@ -230,6 +234,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn clear(&mut self) {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
+        self.fallback_selection = None;
         self.key_expiry = None;
         self.non_creditable_slots.borrow_mut().clear();
     }

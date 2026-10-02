@@ -608,6 +608,27 @@ mod tests {
     }
 
     #[test]
+    fn tip1115_t14_requires_explicit_schedule_and_obeys_boundary() {
+        for scheduled in [false, true] {
+            let mut config = serde_json::json!({"chainId": 1234, "t13Time": 0});
+            if scheduled {
+                config["t14Time"] = 100.into();
+            }
+            let genesis =
+                serde_json::from_value(serde_json::json!({"config": config, "alloc": {}})).unwrap();
+            let cs = super::TempoChainSpec::from_genesis(genesis);
+            for (timestamp, active) in [
+                (99, false),
+                (100, scheduled),
+                (101, scheduled),
+                (u64::MAX, scheduled),
+            ] {
+                assert_eq!(cs.tempo_hardfork_at(timestamp).is_t14(), active);
+            }
+        }
+    }
+
+    #[test]
     fn test_from_genesis_with_hardforks_at_zero() {
         use alloy_genesis::Genesis;
 

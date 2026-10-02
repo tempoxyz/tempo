@@ -22,8 +22,14 @@ mod tx;
 
 pub use error::TempoInvalidTransaction;
 pub use evm::TempoEvm;
-pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
+pub use fee_manager::{
+    FeeTokenResolutionError, FeeTokenResolver, FeeTokenSelection, ProtocolFeeContext,
+    ProtocolFeeManager, TempoFeeManager,
+};
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
 pub use tempo_primitives::TempoBlockEnv;
 pub use tx::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use fee_manager::TestFallbackFeeManager;

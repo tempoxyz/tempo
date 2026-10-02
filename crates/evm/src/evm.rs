@@ -200,6 +200,11 @@ where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
+    #[cfg(feature = "test-utils")]
+    fn with_test_fallback_tokens(self, tokens: Vec<Address>) -> Self {
+        self.with_fee_manager(tempo_revm::TestFallbackFeeManager(tokens))
+    }
+
     fn configure_for_pool(&mut self) {
         // The pool admits future-time and future-nonce transactions and performs its own cached
         // AMM liquidity check after EVM validation.
@@ -1390,6 +1395,101 @@ mod tests {
             .copied()
             .map(str::to_string)
             .unwrap_or_else(|| slot.to_string())
+        }
+    }
+
+    #[test]
+    fn fallback_sponsored_payment_has_constant_gas_and_refunds_selected_token() {
+        use crate::test_utils::fallback_payment_fixture;
+        use tempo_precompiles::tip20::TIP20Token;
+        use tempo_revm::TestFallbackFeeManager;
+        let mut gas_used = None;
+        for (balances, selected, omit_middle) in [
+            ([20_007, 20_007, 20_007], 0, false),
+            ([0, 20_007, 20_007], 1, false),
+            ([0, 0, 20_007], 2, true),
+            ([0, 0, 20_007], 2, false),
+        ] {
+            let (db, tx, _, tokens) = fallback_payment_fixture(balances);
+            let payer = tx.fee_payer().unwrap();
+            // Two versus three probes select the same token, with identical AMM,
+            // collection and user-call slots. The pathUSD case checks refunds separately.
+            let candidates = if omit_middle {
+                vec![tokens[0], tokens[2]]
+            } else {
+                tokens.clone()
+            };
+            let mut env = evm_env_with_spec(TempoHardfork::T14);
+            env.cfg_env.chain_id = 42431;
+            env.block_env.inner.basefee = 1_000_000_000;
+            let mut evm = TempoEvm::new(db, env)
+                .with_fee_manager(TestFallbackFeeManager(candidates.clone()))
+                .with_actions();
+            let result = evm.transact_raw(tx).unwrap();
+            assert!(result.result.is_success(), "{:?}", result.result);
+            let used = result.result.gas().tx_gas_used();
+            if selected == 2 {
+                if let Some(expected) = gas_used {
+                    assert_eq!(
+                        used, expected,
+                        "an extra insufficient probe must not add gas"
+                    );
+                } else {
+                    gas_used = Some(used);
+                }
+            }
+            let actions = evm.take_actions().unwrap();
+            let payer_slot =
+                TIP20Token::from_address_unchecked(tokens[selected]).balances[payer].slot();
+            let selected_position = candidates
+                .iter()
+                .position(|token| *token == tokens[selected])
+                .unwrap();
+            let examined = actions
+                .iter()
+                .filter_map(|action| match action {
+                    StorageAction::Sload(token, key, _)
+                        if tokens.contains(token) && *key == payer_slot =>
+                    {
+                        Some((*token, *key))
+                    }
+                    _ => None,
+                })
+                .take(selected_position + 1)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                examined,
+                candidates[..=selected_position]
+                    .iter()
+                    .map(|token| (*token, payer_slot))
+                    .collect::<Vec<_>>()
+            );
+            for token in tokens
+                .iter()
+                .filter(|token| !candidates[..=selected_position].contains(token))
+            {
+                assert!(!actions.iter().any(|action| matches!(action, StorageAction::Sload(address, key, _) if address == token && *key == payer_slot)), "unexamined payer balance must not be read");
+            }
+            for (index, token) in tokens
+                .iter()
+                .enumerate()
+                .take(selected + 1)
+                .filter(|(_, token)| candidates.contains(token))
+            {
+                let slot = TIP20Token::from_address_unchecked(*token).balances[payer].slot();
+                assert!(actions.iter().any(
+                    |action| matches!(action, StorageAction::Sload(address, key, value)
+                    if address == token && *key == slot && *value == U256::from(balances[index]))
+                ));
+            }
+            evm.db_mut().commit(result.state);
+            let fee = tempo_primitives::transaction::calc_gas_balance_spending(used, 1_000_000_000);
+            for (index, token) in tokens.iter().enumerate() {
+                let slot = TIP20Token::from_address_unchecked(*token).balances[payer].slot();
+                let expected =
+                    U256::from(balances[index]) - if index == selected { fee } else { U256::ZERO };
+                assert_eq!(evm.db().storage_ref(*token, slot).unwrap(), expected);
+            }
         }
     }
 

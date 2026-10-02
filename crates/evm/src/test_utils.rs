@@ -54,6 +54,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) amsterdam_eip8037_enabled: bool,
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
+    pub(crate) fallback_tokens: Option<Vec<alloy_primitives::Address>>,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
 }
@@ -70,6 +71,7 @@ impl Default for TestExecutorBuilder {
             amsterdam_eip8037_enabled: false,
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
+            fallback_tokens: None,
             initial_section: None,
         }
     }
@@ -127,6 +129,11 @@ impl TestExecutorBuilder {
         let mut cfg_env = revm::context::CfgEnv::default();
         cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
         cfg_env.spec = self.spec;
+        if self.fallback_tokens.is_some() {
+            cfg_env.chain_id = 42431;
+            cfg_env.gas_params =
+                tempo_revm::gas_params::tempo_gas_params_with_amsterdam(self.spec, false);
+        }
 
         let evm = TempoEvm::new(
             db,
@@ -160,6 +167,11 @@ impl TestExecutorBuilder {
             consensus_context: None,
         };
 
+        let evm = if let Some(tokens) = self.fallback_tokens {
+            evm.with_fee_manager(tempo_revm::TestFallbackFeeManager(tokens))
+        } else {
+            evm
+        };
         let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
 
         // Apply test-specific initial state
@@ -169,4 +181,129 @@ impl TestExecutorBuilder {
 
         executor
     }
+}
+
+/// T14 environment matching the replay fixture's chain and gas tables.
+pub(crate) fn fallback_test_evm<DB: Database>(db: DB) -> TempoEvm<DB, NoOpInspector> {
+    let mut cfg_env = revm::context::CfgEnv::new_with_spec_and_gas_params(
+        TempoHardfork::T14,
+        tempo_revm::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T14, false),
+    );
+    cfg_env.chain_id = 42431;
+    TempoEvm::new(
+        db,
+        EvmEnv {
+            cfg_env,
+            block_env: TempoBlockEnv {
+                inner: BlockEnv {
+                    basefee: 1,
+                    gas_limit: 30_000_000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        },
+    )
+}
+
+/// A real sponsored payment with a 2D nonce, eligible for parallel prewarming.
+/// The sponsor has no preference and TIP-20 inference is disabled by sponsorship.
+pub(crate) fn fallback_payment_fixture(
+    balances: [u64; 3],
+) -> (
+    revm::database::CacheDB<revm::database::EmptyDB>,
+    tempo_revm::TempoTxEnv,
+    reth_primitives_traits::Recovered<tempo_primitives::TempoTxEnvelope>,
+    Vec<alloy_primitives::Address>,
+) {
+    use alloy_evm::{Evm, FromRecoveredTx};
+    use alloy_primitives::{Address, Signature, TxKind};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolCall;
+    use revm::{
+        DatabaseCommit,
+        context::JournalTr,
+        database::{CacheDB, EmptyDB},
+    };
+    use tempo_contracts::precompiles::ITIP20;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        storage::{ContractStorage, StorageActions, StorageCtx},
+        test_util::TIP20Setup,
+        tip_fee_manager::TipFeeManager,
+    };
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{Call, TempoTransaction},
+    };
+
+    let sender = Address::repeat_byte(0x11);
+    let sponsor = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let payer = sponsor.address();
+    let mut evm = fallback_test_evm(CacheDB::new(EmptyDB::default()));
+    let tokens = StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        TIP20Setup::path_usd(sender)
+            .with_issuer(sender)
+            .with_mint(sender, U256::from(2_000_000))
+            .with_mint(payer, U256::from(balances[0]))
+            .apply()?;
+        let mut tokens = vec![PATH_USD_ADDRESS];
+        for (index, balance) in balances[1..].iter().enumerate() {
+            let token = TIP20Setup::create("Fallback", "FB", sender)
+                .with_salt(B256::repeat_byte(index as u8 + 1))
+                .with_issuer(sender)
+                .with_mint(sender, U256::from(1_000_000))
+                .with_mint(payer, U256::from(*balance))
+                .apply()?;
+            TipFeeManager::new().mint(
+                sender,
+                token.address(),
+                PATH_USD_ADDRESS,
+                U256::from(500_000),
+                sender,
+            )?;
+            tokens.push(token.address());
+        }
+        Ok::<_, tempo_precompiles::error::TempoPrecompileError>(tokens)
+    })
+    .unwrap();
+    // Match genesis: fixed storage precompiles are initialized, making their accounts
+    // nonempty. State (unlike CacheDB) clears touched empty accounts under EIP-161.
+    StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        TipFeeManager::new().initialize()?;
+        tempo_precompiles::nonce::NonceManager::new().initialize()
+    })
+    .unwrap();
+    let setup = evm.ctx_mut().journaled_state.finalize();
+    evm.db_mut().commit(setup);
+    let mut tx = TempoTransaction {
+        chain_id: 42431,
+        gas_limit: 1_000_000,
+        max_fee_per_gas: 20_000_000_000,
+        max_priority_fee_per_gas: 0,
+        nonce_key: U256::ONE,
+        calls: vec![Call {
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: Address::repeat_byte(0x33),
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        ..Default::default()
+    };
+    tx.fee_payer_signature = Some(
+        sponsor
+            .sign_hash_sync(&tx.fee_payer_signature_hash(sender))
+            .unwrap(),
+    );
+    let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+    let tx_env = tempo_revm::TempoTxEnv::from_recovered_tx(&envelope, sender);
+    assert_eq!(tx_env.fee_payer().unwrap(), payer);
+    let recovered = reth_primitives_traits::Recovered::new_unchecked(envelope, sender);
+    let db = evm.db_mut().clone();
+    (db, tx_env, recovered, tokens)
 }

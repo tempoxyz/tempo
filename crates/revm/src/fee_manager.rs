@@ -11,14 +11,26 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
+    DEFAULT_FEE_TOKEN, FALLBACK_FEE_TOKENS, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    error::Result as TempoResult,
+    error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
 };
+use tempo_primitives::transaction::calc_gas_balance_spending;
+
+/// Failure while choosing a fee token, before nonce consumption or fee collection.
+#[derive(Debug, thiserror::Error)]
+pub enum FeeTokenResolutionError {
+    /// A state read failed; do not advance to another token.
+    #[error(transparent)]
+    State(#[from] TempoPrecompileError),
+    /// No fallback candidate covers the maximum fee.
+    #[error("insufficient funds in fallback fee tokens: required {required}")]
+    InsufficientFunds { required: U256 },
+}
 
 /// EVM state needed to install storage for an internal protocol fee hook.
 pub struct ProtocolFeeContext<'a, DB: Database> {
@@ -60,14 +72,14 @@ pub trait FeeTokenResolver {
         fee_payer: Address,
         spec: TempoHardfork,
         actions: StorageActions,
-    ) -> TempoResult<Address>
+    ) -> Result<Address, FeeTokenResolutionError>
     where
         S: TempoStateAccess<M>;
 }
 
 /// Internal protocol fee hooks, separate from the public FeeManager precompile.
 pub trait ProtocolFeeManager<DB: Database>: Debug {
-    /// Resolves the fee token that should pay for `tx`.
+    /// Resolves the payment token and exact dependencies before any fee or nonce writes.
     fn get_fee_token(
         &self,
         journal: &mut Journal<DB>,
@@ -75,8 +87,15 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
         fee_payer: Address,
         spec: TempoHardfork,
         actions: StorageActions,
-    ) -> TempoResult<Address> {
-        TempoFeeManager::new().resolve_fee_token(journal, tx, fee_payer, spec, actions)
+    ) -> Result<FeeTokenSelection, FeeTokenResolutionError> {
+        resolve_fee_token_with_candidates(
+            journal,
+            tx,
+            fee_payer,
+            spec,
+            actions,
+            FALLBACK_FEE_TOKENS,
+        )
     }
 
     /// Validates whether a TIP-20 can be used to pay fees.
@@ -198,6 +217,63 @@ impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for TempoFeeManager {
     }
 }
 
+/// Fixture-only ordered list override. Collection and settlement use real protocol hooks.
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Debug, Clone)]
+pub struct TestFallbackFeeManager(pub Vec<Address>);
+
+#[cfg(any(test, feature = "test-utils"))]
+impl<DB: alloy_evm::Database> ProtocolFeeManager<DB> for TestFallbackFeeManager {
+    fn get_fee_token(
+        &self,
+        journal: &mut Journal<DB>,
+        tx: &TempoTxEnv,
+        fee_payer: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> Result<FeeTokenSelection, FeeTokenResolutionError> {
+        resolve_fee_token_with_candidates(journal, tx, fee_payer, spec, actions, &self.0)
+    }
+
+    fn collect_fee_pre_tx(
+        &self,
+        ctx: ProtocolFeeContext<'_, DB>,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+    ) -> TempoResult<Address> {
+        TempoFeeManager.collect_fee_pre_tx(
+            ctx,
+            fee_payer,
+            user_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+        )
+    }
+
+    fn collect_fee_post_tx(
+        &self,
+        ctx: ProtocolFeeContext<'_, DB>,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+    ) -> TempoResult<U256> {
+        TempoFeeManager.collect_fee_post_tx(
+            ctx,
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+        )
+    }
+}
+
 impl FeeTokenResolver for TempoFeeManager {
     fn resolve_fee_token<S, M>(
         &self,
@@ -206,40 +282,78 @@ impl FeeTokenResolver for TempoFeeManager {
         fee_payer: Address,
         spec: TempoHardfork,
         actions: StorageActions,
-    ) -> TempoResult<Address>
+    ) -> Result<Address, FeeTokenResolutionError>
     where
         S: TempoStateAccess<M>,
     {
-        // If there is a fee token explicitly set on the tx type, use that.
-        if let Some(fee_token) = tx.fee_token() {
-            return Ok(fee_token);
+        resolve_fee_token_with_candidates(state, tx, fee_payer, spec, actions, FALLBACK_FEE_TOKENS)
+            .map(|selection| selection.token)
+    }
+}
+
+/// Resolved payment token and the exact balance slots examined by TIP-1115.
+#[derive(Debug, Clone)]
+pub struct FeeTokenSelection {
+    /// Token used for collection and refunds.
+    pub token: Address,
+    /// True only when the activated final fallback was reached.
+    pub used_fallback: bool,
+    /// Examined candidate slots, including insufficient candidates, in list order.
+    pub balance_slots: Vec<(Address, U256)>,
+}
+
+impl FeeTokenSelection {
+    /// Creates a selection from an explicit, preferred, inferred or custom token.
+    pub fn fixed(token: Address) -> Self {
+        Self {
+            token,
+            used_fallback: false,
+            balance_slots: Vec::new(),
         }
+    }
+}
 
-        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-        // new preference, the newly set preference should be used immediately instead of the
-        // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
-            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
-        {
-            return Ok(call.token);
-        }
+fn resolve_fee_token_with_candidates<S, M>(
+    state: &mut S,
+    tx: &TempoTxEnv,
+    fee_payer: Address,
+    spec: TempoHardfork,
+    actions: StorageActions,
+    candidates: &[Address],
+) -> Result<FeeTokenSelection, FeeTokenResolutionError>
+where
+    S: TempoStateAccess<M>,
+{
+    // If there is a fee token explicitly set on the tx type, use that.
+    if let Some(fee_token) = tx.fee_token() {
+        return Ok(FeeTokenSelection::fixed(fee_token));
+    }
 
-        // Check stored user token preference
-        let user_token = state.with_read_only_storage_ctx(spec, actions.clone(), || {
-            // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            TipFeeManager::new().user_tokens[fee_payer].read()
-        })?;
+    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+    // new preference, the newly set preference should be used immediately instead of the
+    // previously stored one
+    if !tx.is_aa()
+        && fee_payer == tx.caller()
+        && let Some((kind, input)) = tx.calls().next()
+        && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+        && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
+    {
+        return Ok(FeeTokenSelection::fixed(call.token));
+    }
 
-        if !user_token.is_zero() {
-            return Ok(user_token);
-        }
+    // Check stored user token preference
+    let user_token = state.with_read_only_storage_ctx(spec, actions.clone(), || {
+        // ensure TIP_FEE_MANAGER_ADDRESS is loaded
+        TipFeeManager::new().user_tokens[fee_payer].read()
+    })?;
 
-        // Check if the fee can be inferred from the TIP20 token being called
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
-            let can_infer_tip20 =
+    if !user_token.is_zero() {
+        return Ok(FeeTokenSelection::fixed(user_token));
+    }
+
+    // Check if the fee can be inferred from the TIP20 token being called
+    if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
+        let can_infer_tip20 =
                         // AA txs only when fee_payer == tx.origin.
                         if tx.is_aa() && fee_payer != tx.caller() {
                             false
@@ -252,31 +366,433 @@ impl FeeTokenResolver for TempoFeeManager {
                         }
                     ;
 
-            if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
-                return Ok(to);
-            }
+        if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
+            return Ok(FeeTokenSelection::fixed(to));
         }
+    }
 
-        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
-        // use the input token as the fee token (the token that will be pulled from the user).
-        // For AA transactions, this only applies if there's exactly one call.
-        let mut calls = tx.calls();
-        if let Some((kind, input)) = calls.next()
-            && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-            && (!tx.is_aa() || calls.next().is_none())
+    // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
+    // use the input token as the fee token (the token that will be pulled from the user).
+    // For AA transactions, this only applies if there's exactly one call.
+    let mut calls = tx.calls();
+    if let Some((kind, input)) = calls.next()
+        && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
+        && (!tx.is_aa() || calls.next().is_none())
+    {
+        if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
+            && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
         {
-            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-                && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
-            {
-                return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-                && state.is_valid_fee_token(spec, call.tokenIn, actions)?
-            {
-                return Ok(call.tokenIn);
+            return Ok(FeeTokenSelection::fixed(call.tokenIn));
+        } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
+            && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
+        {
+            return Ok(FeeTokenSelection::fixed(call.tokenIn));
+        }
+    }
+
+    if !spec.is_t14() {
+        return Ok(FeeTokenSelection::fixed(DEFAULT_FEE_TOKEN));
+    }
+
+    select_fallback_fee_token(state, tx, fee_payer, spec, actions, candidates)
+}
+
+/// Only the final fallback is balance-dependent. Keep selection reads in the action trace so
+/// replay also depends on candidates skipped for insufficient balance.
+fn select_fallback_fee_token<S, M>(
+    state: &mut S,
+    tx: &TempoTxEnv,
+    fee_payer: Address,
+    spec: TempoHardfork,
+    actions: StorageActions,
+    candidates: &[Address],
+) -> Result<FeeTokenSelection, FeeTokenResolutionError>
+where
+    S: TempoStateAccess<M>,
+{
+    use revm::context::Transaction;
+    // u64 * u128 fits in 192 bits; the existing U256 helper is exact and rounds upward.
+    let max_fee = calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas());
+    if max_fee.is_zero() {
+        return Ok(FeeTokenSelection {
+            token: DEFAULT_FEE_TOKEN,
+            used_fallback: true,
+            balance_slots: Vec::new(),
+        });
+    }
+
+    let mut balance_slots = Vec::new();
+    for &token in candidates {
+        balance_slots.push((
+            token,
+            tempo_precompiles::tip20::TIP20Token::from_address_unchecked(token).balances[fee_payer]
+                .slot(),
+        ));
+        if state.get_token_balance(token, fee_payer, spec, actions.clone())? >= max_fee {
+            return Ok(FeeTokenSelection {
+                token,
+                used_fallback: true,
+                balance_slots,
+            });
+        }
+    }
+
+    // No token was selected. The handler maps this to a pre-nonce validation error, distinct
+    // from fee-collection failures that subblock execution may commit.
+    Err(FeeTokenResolutionError::InsufficientFunds { required: max_fee })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{TxKind, address};
+    use revm::{
+        context::TxEnv,
+        database::{CacheDB, EmptyDB},
+        state::AccountInfo,
+    };
+    use tempo_precompiles::{storage::StorageAction, tip20::TIP20Token};
+
+    const TOKENS: [Address; 3] = [
+        DEFAULT_FEE_TOKEN,
+        address!("20c0000000000000000000000000000000000001"),
+        address!("20c0000000000000000000000000000000000002"),
+    ];
+    const PAYER: Address = Address::repeat_byte(0x11);
+
+    fn tx(gas_limit: u64, gas_price: u128) -> TempoTxEnv {
+        TempoTxEnv {
+            inner: TxEnv {
+                caller: PAYER,
+                kind: TxKind::Call(Address::repeat_byte(0x22)),
+                gas_limit,
+                gas_price,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn funded(balances: [u64; 3]) -> CacheDB<EmptyDB> {
+        let mut db = CacheDB::new(EmptyDB::default());
+        for (token, balance) in TOKENS.into_iter().zip(balances) {
+            db.insert_account_storage(
+                token,
+                TIP20Token::from_address_unchecked(token).balances[PAYER].slot(),
+                U256::from(balance),
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn fallback_order_rounding_and_read_dependencies() {
+        // 1001 * 10^9 attodollars rounds up to TWO microdollars.
+        for (balances, expected, reads) in [
+            ([2, 10, 10], Some(0), 1),
+            ([1, 2, 10], Some(1), 2),
+            ([1, 1, 2], Some(2), 3),
+            ([1, 1, 1], None, 3), // combined funds must not qualify
+            ([0, 0, 0], None, 3),
+        ] {
+            let mut db = funded(balances);
+            let actions = StorageActions::enabled();
+            let result = resolve_fee_token_with_candidates(
+                &mut db,
+                &tx(1001, 1_000_000_000),
+                PAYER,
+                TempoHardfork::T14,
+                actions.clone(),
+                &TOKENS,
+            );
+            if let Some(index) = expected {
+                assert_eq!(result.unwrap().token, TOKENS[index]);
+            } else {
+                assert!(
+                    matches!(result, Err(FeeTokenResolutionError::InsufficientFunds { required }) if required == U256::from(2))
+                );
+            }
+            let mut recorded = actions.take().unwrap();
+            recorded.remove(0); // stored preference read
+            assert_eq!(recorded.len(), reads);
+            for (index, action) in recorded.iter().enumerate() {
+                assert!(matches!(action, StorageAction::Sload(token, _, balance)
+                    if *token == TOKENS[index] && *balance == U256::from(balances[index])));
             }
         }
+    }
 
-        // If no fee token is found, default to the first deployed TIP20
-        Ok(DEFAULT_FEE_TOKEN)
+    #[test]
+    fn fallback_rounds_up_at_microdollar_boundary() {
+        for (price, selected) in [
+            (999_999_999_999, TOKENS[0]),
+            (1_000_000_000_000, TOKENS[0]),
+            (1_000_000_000_001, TOKENS[1]),
+        ] {
+            let selection = resolve_fee_token_with_candidates(
+                &mut funded([1, 2, 2]),
+                &tx(1, price),
+                PAYER,
+                TempoHardfork::T14,
+                StorageActions::disabled(),
+                &TOKENS,
+            )
+            .unwrap();
+            assert_eq!(selection.token, selected);
+        }
+    }
+
+    #[test]
+    fn fallback_zero_fee_reads_no_balances() {
+        let actions = StorageActions::enabled();
+        assert_eq!(
+            resolve_fee_token_with_candidates(
+                &mut funded([0; 3]),
+                &tx(1001, 0),
+                PAYER,
+                TempoHardfork::T14,
+                actions.clone(),
+                &TOKENS
+            )
+            .unwrap()
+            .token,
+            DEFAULT_FEE_TOKEN
+        );
+        assert_eq!(actions.take().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fallback_uses_recovered_payer_and_current_balances() {
+        let mut db = funded([1, 2, 3]);
+        let mut tx = tx(1001, 1_000_000_000);
+        tx.inner.caller = Address::repeat_byte(0x33);
+        let select = |db: &mut CacheDB<EmptyDB>| {
+            resolve_fee_token_with_candidates(
+                db,
+                &tx,
+                PAYER,
+                TempoHardfork::T14,
+                StorageActions::disabled(),
+                &TOKENS,
+            )
+            .unwrap()
+            .token
+        };
+        assert_eq!(select(&mut db), TOKENS[1]);
+        db.insert_account_storage(
+            TOKENS[0],
+            TIP20Token::from_address_unchecked(TOKENS[0]).balances[PAYER].slot(),
+            U256::from(2),
+        )
+        .unwrap();
+        assert_eq!(select(&mut db), TOKENS[0]);
+    }
+
+    #[test]
+    fn fallback_preserves_fork_boundary_and_explicit_precedence() {
+        let mut db = funded([0, 10, 10]);
+        let mut tx = tx(1001, 1_000_000_000);
+        assert_eq!(
+            TempoFeeManager
+                .resolve_fee_token(
+                    &mut db,
+                    &tx,
+                    PAYER,
+                    TempoHardfork::T13,
+                    StorageActions::disabled()
+                )
+                .unwrap(),
+            DEFAULT_FEE_TOKEN
+        );
+        assert!(matches!(
+            TempoFeeManager.resolve_fee_token(
+                &mut db,
+                &tx,
+                PAYER,
+                TempoHardfork::T14,
+                StorageActions::disabled()
+            ),
+            Err(FeeTokenResolutionError::InsufficientFunds { .. })
+        ));
+        tx.fee_token = Some(TOKENS[0]);
+        assert_eq!(
+            TempoFeeManager
+                .resolve_fee_token(
+                    &mut db,
+                    &tx,
+                    PAYER,
+                    TempoHardfork::T14,
+                    StorageActions::disabled()
+                )
+                .unwrap(),
+            TOKENS[0]
+        );
+    }
+
+    #[test]
+    fn fallback_maximum_fee_does_not_overflow() {
+        let result = resolve_fee_token_with_candidates(
+            &mut funded([u64::MAX; 3]),
+            &tx(u64::MAX, u128::MAX),
+            PAYER,
+            TempoHardfork::T14,
+            StorageActions::disabled(),
+            &TOKENS,
+        );
+        // Independently written decimal result for ceil((2^64-1)*(2^128-1)/10^12).
+        let expected =
+            U256::from_str_radix("6277101735386680763495507056286727952620534093", 10).unwrap();
+        assert!(
+            matches!(result, Err(FeeTokenResolutionError::InsufficientFunds { required }) if required == expected)
+        );
+    }
+
+    struct FailedRead {
+        reads: usize,
+    }
+
+    impl TempoStateAccess for FailedRead {
+        type Error = &'static str;
+        fn basic(&mut self, _: Address) -> Result<AccountInfo, Self::Error> {
+            Ok(AccountInfo::default())
+        }
+        fn sload(&mut self, _: Address, _: U256) -> Result<U256, Self::Error> {
+            self.reads += 1;
+            if self.reads == 3 {
+                Err("candidate read failed")
+            } else {
+                Ok(U256::ZERO)
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_storage_failure_does_not_try_later_candidates() {
+        let mut state = FailedRead { reads: 0 };
+        let result = resolve_fee_token_with_candidates(
+            &mut state,
+            &tx(1, 1),
+            PAYER,
+            TempoHardfork::T14,
+            StorageActions::disabled(),
+            &TOKENS,
+        );
+        assert!(
+            matches!(result, Err(FeeTokenResolutionError::State(TempoPrecompileError::Fatal(message))) if message == "candidate read failed")
+        );
+        assert_eq!(state.reads, 3);
+    }
+
+    #[test]
+    fn activated_precedence_does_not_acquire_fallback_dependencies() {
+        use tempo_contracts::precompiles::ITIP20;
+        use tempo_precompiles::tip20::slots as tip20_slots;
+        let mut db = funded([0, 2, 2]);
+        let mut transaction = tx(1001, 1_000_000_000);
+        let resolve = |db: &mut CacheDB<EmptyDB>, tx: &TempoTxEnv| {
+            resolve_fee_token_with_candidates(
+                db,
+                tx,
+                PAYER,
+                TempoHardfork::T14,
+                StorageActions::disabled(),
+                &TOKENS,
+            )
+            .unwrap()
+        };
+        let assert_fixed = |selection: FeeTokenSelection| {
+            assert_eq!(selection.token, TOKENS[0]);
+            assert!(!selection.used_fallback);
+            assert!(selection.balance_slots.is_empty());
+        };
+        transaction.fee_token = Some(TOKENS[0]);
+        assert_fixed(resolve(&mut db, &transaction));
+        transaction.fee_token = None;
+        transaction.inner.kind = TxKind::Call(TIP_FEE_MANAGER_ADDRESS);
+        transaction.inner.data = IFeeManager::setUserTokenCall { token: TOKENS[0] }
+            .abi_encode()
+            .into();
+        assert_fixed(resolve(&mut db, &transaction));
+        transaction = tx(1001, 1_000_000_000);
+        let preference = TipFeeManager::new().user_tokens[PAYER].slot();
+        db.insert_account_storage(
+            TIP_FEE_MANAGER_ADDRESS,
+            preference,
+            U256::from_be_slice(TOKENS[0].as_slice()),
+        )
+        .unwrap();
+        assert_fixed(resolve(&mut db, &transaction));
+        db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, preference, U256::ZERO)
+            .unwrap();
+        db.insert_account_storage(
+            TOKENS[0],
+            tip20_slots::CURRENCY,
+            alloy_primitives::uint!(
+                0x5553440000000000000000000000000000000000000000000000000000000006_U256
+            ),
+        )
+        .unwrap();
+        transaction.inner.kind = TxKind::Call(TOKENS[0]);
+        transaction.inner.data = ITIP20::transferCall {
+            to: Address::repeat_byte(0x44),
+            amount: U256::ONE,
+        }
+        .abi_encode()
+        .into();
+        assert_fixed(resolve(&mut db, &transaction));
+        transaction.inner.kind = TxKind::Call(STABLECOIN_DEX_ADDRESS);
+        transaction.inner.data = IStablecoinDEX::swapExactAmountInCall {
+            tokenIn: TOKENS[0],
+            tokenOut: TOKENS[1],
+            amountIn: 1,
+            minAmountOut: 0,
+        }
+        .abi_encode()
+        .into();
+        assert_fixed(resolve(&mut db, &transaction));
+    }
+
+    #[test]
+    fn legacy_envelope_uses_gas_price_and_dynamic_fee_uses_maximum() {
+        use alloy_consensus::{Signed, TxLegacy};
+        use alloy_evm::FromRecoveredTx;
+        use alloy_primitives::{B256, Signature};
+        use tempo_primitives::TempoTxEnvelope;
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unchecked(
+            TxLegacy {
+                gas_limit: 1001,
+                gas_price: 1_000_000_000,
+                to: TxKind::Call(Address::repeat_byte(0x22)),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        let legacy = TempoTxEnv::from_recovered_tx(&envelope, PAYER);
+        let mut dynamic = tx(1001, 1_000_000_000);
+        dynamic.inner.tx_type = 2;
+        dynamic.inner.gas_priority_fee = Some(0);
+        for transaction in [legacy, dynamic] {
+            let selection = resolve_fee_token_with_candidates(
+                &mut funded([1, 2, 2]),
+                &transaction,
+                PAYER,
+                TempoHardfork::T14,
+                StorageActions::disabled(),
+                &TOKENS,
+            )
+            .unwrap();
+            assert_eq!(selection.token, TOKENS[1]);
+        }
+    }
+
+    #[test]
+    fn fallback_protocol_list_is_distinct_and_starts_with_pathusd() {
+        assert_eq!(FALLBACK_FEE_TOKENS.first(), Some(&DEFAULT_FEE_TOKEN));
+        for (i, token) in FALLBACK_FEE_TOKENS.iter().enumerate() {
+            assert!(TIP20Token::from_address(*token).is_ok());
+            assert!(!FALLBACK_FEE_TOKENS[..i].contains(token));
+        }
     }
 }

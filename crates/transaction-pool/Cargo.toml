@@ -56,6 +56,7 @@ metrics.workspace = true
 [features]
 default = []
 test-utils = [
+	"tempo-evm/test-utils",
 	"reth-chainspec/test-utils",
 	"reth-ethereum-primitives/test-utils",
 	"reth-evm/test-utils",
@@ -64,10 +65,13 @@ test-utils = [
 	"reth-transaction-pool/test-utils",
 	"tempo-precompiles/test-utils",
 	"tempo-primitives/test-utils",
+	"tempo-revm/test-utils",
 	"reth-revm/test-utils"
 ]
 
 [dev-dependencies]
+tempo-evm = { workspace = true, features = ["test-utils"] }
+tempo-revm = { workspace = true, features = ["test-utils"] }
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }

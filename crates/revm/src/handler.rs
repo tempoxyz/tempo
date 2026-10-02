@@ -993,10 +993,27 @@ where
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = fee_manager
-            .get_fee_token(journal, tx, fee_payer, cfg.spec, actions.clone())
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
+        // Simulations with disabled balance checks retain their historical unfunded behavior.
+        // Real admission/execution always resolves against the transaction's strict maximum.
+        let mut simulation_tx;
+        let selection_tx = if cfg.spec.is_t14() && cfg.is_balance_check_disabled() {
+            simulation_tx = tx.clone();
+            simulation_tx.inner.gas_limit = 0;
+            &simulation_tx
+        } else {
+            tx
+        };
+        let selection = fee_manager
+            .get_fee_token(journal, selection_tx, fee_payer, cfg.spec, actions.clone())
+            .map_err(|err| match err {
+                crate::FeeTokenResolutionError::InsufficientFunds { required } => {
+                    TempoInvalidTransaction::InsufficientFallbackFeeBalance { required }.into()
+                }
+                err => EVMError::Custom(err.to_string()),
+            })?;
 
+        let fee_token = selection.token;
+        evm.fallback_selection = selection.used_fallback.then_some(selection);
         evm.fee_token = Some(fee_token);
 
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
@@ -2206,6 +2223,7 @@ where
                 .fee_token
                 .expect("set in `validate_against_state_and_deduct_caller`"),
             key_expiry: evm.key_expiry,
+            fallback_selection: evm.fallback_selection.take(),
         };
         evm.clear();
         Ok(result)
@@ -2218,6 +2236,8 @@ where
 pub struct ValidationContext {
     /// The resolved fee token address used to pay for this transaction.
     pub fee_token: Address,
+    /// Actual fallback use and examined balances from shared resolution.
+    pub fallback_selection: Option<crate::FeeTokenSelection>,
     /// The expiry timestamp of the access key used by this transaction.
     /// Populated for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub key_expiry: Option<u64>,
