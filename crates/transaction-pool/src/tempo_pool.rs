@@ -81,21 +81,31 @@ where
 {
     /// Return the authoritative iterator and an optional independent lookahead.
     /// AA candidates are collected and sorted once when lookahead is requested.
+    /// Gas-limit invalidations constrain the remaining payload budget; AA selection
+    /// stops once all known candidates exceed it, without discarding live updates.
     pub fn best_transactions_with_preview(
         &self,
-        attributes: BestTransactionsAttributes,
+        _attributes: BestTransactionsAttributes,
         preview: bool,
     ) -> (TempoBestTransactions, Option<TempoBestTransactions>) {
-        if !preview {
-            return (self.best_transactions_with_attributes(attributes), None);
-        }
         // Reth's protocol iterator owns private selection state and cannot be
         // forked. Keep its ordinary path; the AA iterators can share construction.
         let protocol = self.protocol_pool.inner().best_transactions();
+        if !preview {
+            let aa = self
+                .aa_2d_pool
+                .read()
+                .best_transactions()
+                .with_remaining_gas_tracking();
+            return (Box::new(MergeBestTransactions::new(protocol, aa)), None);
+        }
         let protocol_preview = self.protocol_pool.inner().best_transactions();
         let (aa, aa_preview) = self.aa_2d_pool.read().best_transactions_pair();
         (
-            Box::new(MergeBestTransactions::new(protocol, aa)),
+            Box::new(MergeBestTransactions::new(
+                protocol,
+                aa.with_remaining_gas_tracking(),
+            )),
             Some(Box::new(MergeBestTransactions::new(
                 protocol_preview,
                 aa_preview,

@@ -526,6 +526,7 @@ impl AA2dPool {
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
+            gas_budget: None,
         }
     }
 
@@ -541,6 +542,7 @@ impl AA2dPool {
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
+            gas_budget: None,
         };
         (best, preview)
     }
@@ -1597,9 +1599,37 @@ pub(crate) struct BestAA2dTransactions {
     new_transaction_receiver: Option<broadcast::Receiver<PendingTransaction<TxOrdering>>>,
     /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
     last_priority: Option<Priority<u128>>,
+    /// Payload-only budget tracking; ordinary pool iterators keep their original
+    /// invalidation behavior. The minimum is a conservative lower bound and is
+    /// never raised when a transaction is removed.
+    gas_budget: Option<SelectionGasBudget>,
+}
+
+#[derive(Debug)]
+struct SelectionGasBudget {
+    remaining: u64,
+    minimum: u64,
 }
 
 impl BestAA2dTransactions {
+    /// Stop scanning when no known transaction can fit the payload's decreasing
+    /// remaining gas budget. Include descendants, not just independent heads.
+    pub(crate) fn with_remaining_gas_tracking(mut self) -> Self {
+        let minimum = self
+            .by_id
+            .values()
+            .chain(self.independent.snapshot.iter())
+            .chain(self.independent.updates.iter())
+            .map(|tx| tx.transaction.gas_limit())
+            .min()
+            .unwrap_or(u64::MAX);
+        self.gas_budget = Some(SelectionGasBudget {
+            remaining: u64::MAX,
+            minimum,
+        });
+        self
+    }
+
     /// Removes the best transaction from the set
     fn pop_best(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let tx = self.independent.pop_last()?;
@@ -1642,6 +1672,9 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Process(tx) => (tx, true),
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
+                if let Some(budget) = &mut self.gas_budget {
+                    budget.minimum = budget.minimum.min(tx.transaction.gas_limit());
+                }
                 if tx.transaction.transaction.is_expiring_nonce() {
                     if process {
                         // Expiring nonce transactions are always independent
@@ -1675,6 +1708,21 @@ impl BestAA2dTransactions {
     )> {
         loop {
             self.add_new_transactions();
+            if self
+                .gas_budget
+                .as_ref()
+                .is_some_and(|budget| budget.minimum > budget.remaining)
+                && self
+                    .new_transaction_receiver
+                    .as_ref()
+                    .is_none_or(|receiver| receiver.is_empty())
+            {
+                // A queued live update might have a smaller gas limit. Preserve
+                // bounded update draining and keep yielding until that queue is
+                // empty before relying on the bound. Retain candidates so a later
+                // next() can resume if a cheaper transaction arrives.
+                return None;
+            }
             let (id, best) = self.pop_best()?;
             if self.invalid.contains(&id.seq_id) {
                 continue;
@@ -1703,7 +1751,12 @@ impl Iterator for BestAA2dTransactions {
 }
 
 impl BestTransactions for BestAA2dTransactions {
-    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
+        if let Some(budget) = &mut self.gas_budget
+            && let InvalidPoolTransactionError::ExceedsGasLimit(_, remaining) = kind
+        {
+            budget.remaining = budget.remaining.min(*remaining);
+        }
         // Skip invalidation for expiring nonce transactions - they are independent
         // and should not block other expiring nonce txs from the same sender
         if transaction.transaction.is_expiring_nonce() {
@@ -3915,6 +3968,198 @@ mod tests {
         let selected = best.map(|tx| *tx.hash()).collect::<Vec<_>>();
         assert_eq!(selected, expected.map(|tx| *tx.hash()).collect::<Vec<_>>());
         assert_eq!(selected, vec![incoming_hash]);
+    }
+
+    fn select_with_gas_budget(
+        mut best: BestAA2dTransactions,
+        mut remaining: u64,
+    ) -> (Vec<TxHash>, usize) {
+        let mut selected = Vec::new();
+        let mut visited = 0;
+        while let Some(tx) = best.next() {
+            visited += 1;
+            if tx.gas_limit() > remaining {
+                best.mark_invalid(
+                    &tx,
+                    &InvalidPoolTransactionError::ExceedsGasLimit(tx.gas_limit(), remaining),
+                );
+            } else {
+                selected.push(*tx.hash());
+                // Actual use can be lower than the declared limit.
+                remaining -= tx.gas_limit() / 2;
+            }
+        }
+        (selected, visited)
+    }
+
+    fn gas_candidate(index: u64, gas: u64, expiring: bool) -> TempoPooledTransaction {
+        TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(if expiring {
+                U256::MAX
+            } else {
+                U256::from(index + 1)
+            })
+            .gas_limit(gas)
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::copy_from_slice(&index.to_be_bytes()),
+            }])
+            .build()
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn gas_budget_stops_oversized_tail(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..64 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    gas_candidate(i, 1_000_000, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let (expected, old_visits) = select_with_gas_budget(pool.best_transactions(), 500_000);
+        let (actual, visits) = select_with_gas_budget(
+            pool.best_transactions().with_remaining_gas_tracking(),
+            500_000,
+        );
+        assert_eq!(actual, expected);
+        assert!(actual.is_empty());
+        assert_eq!(old_visits, 64);
+        assert_eq!(visits, 1);
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn gas_budget_resumes_and_checks_queued_cheaper_arrivals(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..8 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    gas_candidate(i, 1_000_000, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let mut best = pool.best_transactions().with_remaining_gas_tracking();
+        let first = best.next().unwrap();
+        best.mark_invalid(
+            &first,
+            &InvalidPoolTransactionError::ExceedsGasLimit(first.gas_limit(), 500_000),
+        );
+        assert!(best.next().is_none());
+
+        // Put the cheap arrival beyond one bounded channel drain. Returning None
+        // before checking that queue would hide a transaction that fits now.
+        for i in 8..8 + MAX_NEW_TRANSACTIONS_PER_BATCH as u64 + 1 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    gas_candidate(i, 1_000_000, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let cheap = gas_candidate(100, 200_000, expiring);
+        let hash = *cheap.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(cheap, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        assert_eq!(select_with_gas_budget(best, 500_000).0, vec![hash]);
+    }
+
+    #[test]
+    fn gas_budget_accounts_for_cheaper_nonce_descendants() {
+        let mut pool = AA2dPool::default();
+        let parent = TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(U256::from(1))
+            .gas_limit(800_000)
+            .max_fee(20_000_000_000)
+            .max_priority_fee(3_000_000_000)
+            .build();
+        let child = TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(U256::from(1))
+            .nonce(1)
+            .gas_limit(200_000)
+            .max_fee(20_000_000_000)
+            .max_priority_fee(1_000_000_000)
+            .build();
+        let other = TxBuilder::aa(Address::repeat_byte(2))
+            .nonce_key(U256::from(1))
+            .gas_limit(1_000_000)
+            .max_fee(20_000_000_000)
+            .max_priority_fee(2_000_000_000)
+            .build();
+        let hashes = vec![*parent.hash(), *child.hash()];
+        for tx in [parent, child, other] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_gas_budget(pool.best_transactions(), 1_000_000);
+        let actual = select_with_gas_budget(
+            pool.best_transactions().with_remaining_gas_tracking(),
+            1_000_000,
+        );
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.0, hashes);
+    }
+
+    #[test]
+    fn gas_budget_selection_matches_complete_scan() {
+        for seed in 0..32u64 {
+            let mut pool = AA2dPool::default();
+            for nonce in 0..4 {
+                for sender in 0..8 {
+                    let mixed = (seed + 1)
+                        .wrapping_mul(0x9e37_79b9)
+                        .wrapping_add(sender * 17 + nonce * 11);
+                    let tx = TxBuilder::aa(Address::from_word(B256::from(U256::from(sender + 1))))
+                        .nonce_key(U256::from(1))
+                        .nonce(nonce)
+                        .gas_limit([200_000, 500_000, 1_000_000, 2_000_000][mixed as usize % 4])
+                        .max_fee(20_000_000_000)
+                        .max_priority_fee(1_000_000_000 * u128::from(1 + mixed % 7))
+                        .build();
+                    pool.add_transaction(
+                        Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                        0,
+                        TempoHardfork::T1,
+                    )
+                    .unwrap();
+                }
+            }
+            for budget in [0, 200_000, 500_000, 1_000_000, 3_000_000, 10_000_000] {
+                let expected = select_with_gas_budget(pool.best_transactions(), budget);
+                let actual = select_with_gas_budget(
+                    pool.best_transactions().with_remaining_gas_tracking(),
+                    budget,
+                );
+                assert_eq!(actual.0, expected.0, "seed={seed}, budget={budget}");
+            }
+        }
     }
 
     #[test]

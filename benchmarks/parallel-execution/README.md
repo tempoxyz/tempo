@@ -1286,6 +1286,88 @@ after the block fills is therefore the next selection cost to address. Any early
 termination must still allow cheaper candidates, nonce dependencies and live
 arrivals, and preserve payment-lane handling.
 
+## Stop scanning AA candidates that cannot fit
+
+Payload AA selection now tracks a conservative minimum declared gas limit across
+all snapshot candidates, including nonce descendants. Once an invalidation reports
+less remaining proposer gas than that minimum, the iterator stops scanning the
+oversized tail. Removing candidates never raises the bound; live arrivals can
+lower it. Queued updates must be drained before stopping, and later calls can
+resume selection when a cheaper transaction arrives. General payment-lane limits
+do not update this bound. Ordinary pool iterators retain their existing behavior;
+only the payload's authoritative iterator enables budget tracking, with either
+sequential or speculative execution.
+
+`gas-floor-node.json` compares release binaries before and after this change with
+16 workers, shared trie roots, 5B block gas and ten-second submission windows:
+
+| 2D recipients | Offered TPS | Before, confirmed TPS | After, confirmed TPS | Before / after gas-limit skips |
+| --- | ---: | ---: | ---: | ---: |
+| New addresses | 50,000 | 17,568 | 20,914 | 6,955,791 / 48 |
+| Existing signer accounts | 75,000 | 24,887 | 27,525 | 2,719,029 / 25 |
+
+All 1,688,116 accepted transactions confirm without execution failures or rejected
+dev payloads. Confirmed throughput includes draining the backlog; these are
+isolated paired trials, not estimates of sustained production capacity. New-address
+throughput improves by 19%, with execution-loop time falling from 16.88 s to
+11.36 s; existing-account throughput improves by 11%, with the loop falling from
+12.14 s to 9.85 s. Constructing the gas bound adds snapshot work, which remains
+visible in the timing records.
+
+The 234 pool tests pass, including mixed-gas selection against the original
+complete scan across 192 generated cases, cheaper nonce descendants, expiring
+transactions, and live arrivals beyond one bounded update batch. Release Clippy
+passes for the pool and builder. Node integration checks pass for all four
+post-block root-proof configurations, TIP-20 shared trie transfers and three mixed
+payment-lane configurations. `gas-floor-canonical-{new,existing}.tsv` checks six
+busy generated blocks against complete sequential outcomes, state deltas and
+canonical receipts, gas and roots. These replay timings are diagnostic only.
+
+`gas-floor-node-matrix.json` records a separate ten-second, existing-recipient
+2D matrix using the updated binary for both controls:
+
+| Offered TPS | Sequential confirmed TPS | 16-worker confirmed TPS |
+| ---: | ---: | ---: |
+| 10,000 | 9,976 | 9,970 |
+| 25,000 | 24,835 | 24,723 |
+| 50,000 | 28,473 | 27,493 |
+| 75,000 | 28,662 | 27,436 |
+
+All 2,380,952 accepted transactions confirm without execution failures or rejected
+dev payloads. The overloaded trials accept approximately 417k–422k transactions
+over ten seconds, below the offered load. Parallel execution remains slightly
+slower than the sequential control for this shared-account workload, and sustained
+50k+ confirmed node TPS remains outstanding.
+
+`gas-floor-expiring-diagnostic.json` retains the ten-second expiring-nonce pair.
+These are failed load trials: 77,973 of 453,437 accepted transactions before the
+change and 75,457 of 456,436 afterward remain unconfirmed. The benchmark uses a
+25-second expiry, and both runs record expiry evictions. Their execution loops
+take approximately 23 s, with roughly one million encoded-block-size skips and
+2.7 million invalid-transaction skips. Neither run hits the gas-limit stopping
+rule, so this change does not address that workload's remaining selection cost.
+Included transactions have no execution failures or rejected dev payloads.
+`gas-floor-canonical-expiring.tsv` independently verifies three busy included
+blocks against sequential execution and the stored canonical results; it does
+not turn an incomplete drain into a successful throughput measurement.
+
+`gas-floor-profile.json` captures a follow-up twenty-second new-recipient run at
+199 Hz. All 756,972 accepted transactions confirm, but profiler overhead makes it
+diagnostic rather than a throughput comparison. Whole-trial gas-limit skips fall
+to 88. Within the complete ten-second CPU profile, AA snapshot construction now
+dominates builder work: 32.2% for the paired snapshot and 16.7% for the additional
+minimum-gas scan. Speculative preparation accounts for 20.2%; iterator destruction
+accounts for 9.9% (inclusive samples). The next useful targets are snapshot/index
+construction and the separate encoded-size and invalid-candidate costs exposed by
+the expiring-nonce trial.
+
+Reproduce profile summaries with
+`python3 benchmarks/parallel-execution/summarize_profile.py /path/to/profile-output`.
+The tool selects only complete profiles inside the submission window and only the
+`cpu/nanoseconds` sample values. It reproduces the earlier paired-snapshot
+profile's sampled totals, window and skip counters exactly. Raw profile paths and
+SHA-256 hashes are retained in each summary.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed
