@@ -65,9 +65,15 @@ def trial(args, threads, target):
                  "--benchmark-mode", f"local-workers-{threads}-{args.nonces}"]
     if args.nonces == "2d":
         bench_cmd.append("--use-2d-nonces")
-    (directory / "commands.json").write_text(json.dumps({"node": node_cmd, "bench": bench_cmd}, indent=2) + "\n")
+    node_env = {}
+    if args.node_tokio_threads is not None:
+        node_env["TOKIO_WORKER_THREADS"] = str(args.node_tokio_threads)
+    (directory / "commands.json").write_text(json.dumps({
+        "node": node_cmd, "bench": bench_cmd, "node_environment_overrides": node_env,
+    }, indent=2) + "\n")
     with (directory / "node.log").open("wb") as log:
-        node = subprocess.Popen(node_cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        node = subprocess.Popen(node_cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                env={**os.environ, **node_env})
         try:
             deadline = time.monotonic() + 30
             while True:
@@ -135,6 +141,8 @@ def main():
     parser.add_argument("--node-binary", type=pathlib.Path,
                         default=ROOT / "target/release/tempo")
     parser.add_argument("--client-concurrency", type=int, default=256)
+    parser.add_argument("--node-tokio-threads", type=int,
+                        help="Override the node's Tokio workers without changing the client's runtime")
     parser.add_argument("--profile-cpu", action="store_true",
                         help="Record per-thread CPU usage for the node and client using pidstat")
     parser.add_argument("--nonces", choices=["2d", "expiring"], default="2d")
@@ -143,6 +151,8 @@ def main():
     args = parser.parse_args()
     if args.client_concurrency <= 0:
         parser.error("--client-concurrency must be positive")
+    if args.node_tokio_threads is not None and args.node_tokio_threads <= 0:
+        parser.error("--node-tokio-threads must be positive")
     if args.profile_cpu and shutil.which("pidstat") is None:
         parser.error("--profile-cpu requires pidstat")
     if args.block_gas_limit is not None and not 0 < args.block_gas_limit < 2**64:
@@ -161,6 +171,9 @@ def main():
     (args.output / "host.json").write_text(json.dumps({"platform": platform.platform(),
         "processor": platform.processor(), "block_gas_limit": args.block_gas_limit,
         "tokio_worker_threads": os.environ.get("TOKIO_WORKER_THREADS"),
+        "node_tokio_worker_threads": (str(args.node_tokio_threads)
+                                      if args.node_tokio_threads is not None
+                                      else os.environ.get("TOKIO_WORKER_THREADS")),
         "source": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))}, indent=2) + "\n")

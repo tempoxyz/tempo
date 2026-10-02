@@ -525,6 +525,30 @@ demonstrate an additional throughput gain from the filter alone. The remaining
 pool scan still visits candidates that cannot fit, and cheap shared-state
 transactions still favor sequential execution.
 
+## Runtime contention trials
+
+`run_node.py --node-tokio-threads N` sets `TOKIO_WORKER_THREADS` only for the node;
+the client retains its inherited runtime configuration. The override is recorded
+in `commands.json` and `host.json`. Execution worker count is independent.
+
+`runtime-node.json` and `node/runtime-*.json` retain five-second trials on
+`fa529f33`, all using 16 execution workers and the 5B-gas genesis:
+
+| Node Tokio workers | Client concurrency | Offered TPS | Accepted TPS | Confirmed TPS | Node CPU / kernel CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4 | 256 | 50,000 | 25,850 | 21,300 | 871% / 250% |
+| 8 | 256 | 50,000 | 39,547 | 24,706 | 1,054% / 451% |
+| 16 | 256 | 75,000 | 47,981 | 24,537 | 1,567% / 771% |
+| 16 | 1,024 | 75,000 | 39,480 | 25,339 | 1,242% / 570% |
+| Default (32) | 1,024 | 75,000 | 37,775 | 25,365 | 1,199% / 557% |
+
+All 961,657 accepted transactions confirmed with zero execution failures. CPU is
+averaged over complete one-second intervals during sending; 100% is one logical
+core. Confirmed rates include backlog. These trials vary admitted transaction
+counts and do not isolate a steady-state service rate. Fewer Tokio workers reduce
+kernel CPU but also admission capacity; higher client concurrency reduces admission
+in these trials. No production runtime default changes are justified by this data.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
