@@ -22,6 +22,7 @@
 mod analysis;
 mod expectations;
 mod inspector;
+mod rules;
 
 use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_evm::{
@@ -534,7 +535,8 @@ fn transition(state: EvmState) -> TransitionState {
     evidence
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum TxOutcome {
     #[default]
     Success,

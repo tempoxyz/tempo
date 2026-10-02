@@ -9,13 +9,13 @@
 //! paths outside these hooks are not tracked.
 
 use super::{TxOutcome, transition};
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, Selector, U256, keccak256};
 use reth_revm::{
     context::{ContextTr, JournalTr},
     db::TransitionState,
     handler::FrameResult,
     inspector::Inspector,
-    interpreter::FrameInput,
+    interpreter::{CallInputs, CallOutcome, FrameInput},
     state::{AccountStatus, EvmState},
 };
 use std::{cell::RefCell, collections::HashSet, ops::Range, rc::Rc};
@@ -30,9 +30,11 @@ use tempo_revm::{ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 pub(super) struct Recorded {
     pub(super) fee: FeeWrites,
     pub(super) calls: Vec<ObservedCall>,
-    /// Current frame depth and journal state at entry of the current top-level frame.
+    /// Current frame depth, journal state at entry of the current top-level frame, and the calls
+    /// it has invoked so far.
     depth: usize,
     entry: Option<EvmState>,
+    invocations: Vec<Invocation>,
 }
 
 /// Installed as both inspector and fee manager on each replay EVM; drained after every boundary.
@@ -223,10 +225,44 @@ pub(super) struct ObservedCall {
     pub(super) output_hash: B256,
     /// Net account and storage transitions made by this call, including its internal calls.
     pub(super) state: TransitionState,
+    /// Every message call made within this call at any depth, including the call itself.
+    pub(super) invocations: Vec<Invocation>,
 }
 
-/// Records top-level frames; nested frames only adjust the depth.
+impl ObservedCall {
+    /// Whether this call changed any storage slot of `address`.
+    pub(super) fn changed_storage(&self, address: Address) -> bool {
+        self.state
+            .transitions
+            .get(&address)
+            .is_some_and(|account| account.storage.values().any(|slot| slot.is_changed()))
+    }
+}
+
+/// One message call: who called which address with which selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Invocation {
+    pub(super) caller: Address,
+    pub(super) to: Address,
+    pub(super) selector: Option<Selector>,
+}
+
+/// Records top-level frames and the message calls made within them.
 impl<CTX: ContextTr<Journal: JournalTr<State = EvmState>>> Inspector<CTX> for ReplayInspector {
+    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        let selector = inputs
+            .input
+            .as_bytes(context)
+            .first_chunk::<4>()
+            .map(Selector::from);
+        self.0.borrow_mut().invocations.push(Invocation {
+            caller: inputs.caller,
+            to: inputs.target_address,
+            selector,
+        });
+        None
+    }
+
     fn frame_start(&mut self, context: &mut CTX, _: &mut FrameInput) -> Option<FrameResult> {
         let mut recording = self.0.borrow_mut();
         if recording.depth == 0 {
@@ -246,6 +282,7 @@ impl<CTX: ContextTr<Journal: JournalTr<State = EvmState>>> Inspector<CTX> for Re
             return;
         };
         let instruction = result.instruction_result();
+        let invocations = std::mem::take(&mut recording.invocations);
         recording.calls.push(ObservedCall {
             outcome: if instruction.is_ok() {
                 TxOutcome::Success
@@ -256,6 +293,7 @@ impl<CTX: ContextTr<Journal: JournalTr<State = EvmState>>> Inspector<CTX> for Re
             },
             output_hash: keccak256(result.output().data()),
             state: frame_transition(&entry, context.journal_ref().evm_state()),
+            invocations,
         });
     }
 }

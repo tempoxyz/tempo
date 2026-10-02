@@ -13,6 +13,19 @@ use tempo_primitives::Block;
 
 pub(super) const MAX_SAMPLES: usize = 8;
 
+/// Compared field names that expectations may accept; `execution` (invalidation) is excluded.
+pub(super) const ACCEPTABLE_FIELDS: [&str; 9] = [
+    "outcome",
+    "output",
+    "receipt_logs",
+    "existence",
+    "balance",
+    "nonce",
+    "code",
+    "storage_reset",
+    "storage",
+];
+
 /// Difference counts, comparison coverage, and bounded diagnostic samples.
 ///
 /// Each sample carries the first accepting rule's ID, or `None` for an unexplained difference.
@@ -41,7 +54,7 @@ impl Report {
     pub(super) fn analyze(
         real: &Evidence,
         shadow: &Evidence,
-        rules: &[&Expectation],
+        rules: &[Expectation],
         block: &RecoveredBlock<Block>,
     ) -> Self {
         let mut report = Self::default();
@@ -115,11 +128,16 @@ impl Report {
         mut field: Field,
         real: V,
         shadow: V,
-        rules: &[&Expectation],
+        rules: &[Expectation],
     ) {
         if real == shadow {
             return;
         }
+        debug_assert!(
+            field.name == "execution" || ACCEPTABLE_FIELDS.contains(&field.name),
+            "compared field {:?} missing from ACCEPTABLE_FIELDS",
+            field.name
+        );
         if let (Boundary::Transaction(index), Some(address), Some(slot)) =
             (ctx.boundary, field.address, field.slot)
         {
@@ -132,7 +150,7 @@ impl Report {
         }
         let accepted = rules
             .iter()
-            .find_map(|rule| (rule.check)(ctx, &field).map(|()| rule.id));
+            .find_map(|rule| rule.accepts(ctx, &field).then_some(rule.id()));
         let rule_id = match accepted {
             Some(id) => {
                 *self.expected.entry(id).or_default() += 1;
@@ -165,7 +183,7 @@ impl Report {
         ctx: &Context<'_>,
         real: &TransitionState,
         shadow: &TransitionState,
-        rules: &[&Expectation],
+        rules: &[Expectation],
     ) {
         for &address in real.transitions.keys().chain(
             shadow
@@ -216,7 +234,7 @@ pub(super) struct Difference {
 struct Comparison<'a, T> {
     report: &'a mut Report,
     ctx: &'a Context<'a>,
-    rules: &'a [&'a Expectation],
+    rules: &'a [Expectation],
     address: Option<Address>,
     slot: Option<U256>,
     real: &'a T,
@@ -227,7 +245,7 @@ impl<'a, T> Comparison<'a, T> {
     fn new(
         report: &'a mut Report,
         ctx: &'a Context<'a>,
-        rules: &'a [&'a Expectation],
+        rules: &'a [Expectation],
         address: Option<Address>,
         real: &'a T,
         shadow: &'a T,

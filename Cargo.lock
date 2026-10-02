@@ -13864,6 +13864,7 @@ dependencies = [
  "alloy",
  "alloy-eips",
  "alloy-evm",
+ "alloy-json-abi",
  "alloy-network",
  "alloy-primitives",
  "alloy-rlp",

@@ -1,39 +1,60 @@
-//! Reviewed baseline and fork-specific expectations for shadow replay.
+//! Native baseline fee expectation and selection of the embedded data-driven rules.
 //!
-//! Checks receive one difference, not a transaction. `None` means unexplained and `Some(())`
-//! accepts it.
+//! Checks receive one difference, not a transaction, and either accept it or leave it unexplained.
 
 use super::analysis::{AccountDelta, Field};
 use crate::shadow_replay::{
-    Boundary, Evidence, ObservedTx, TxOutcome,
+    Boundary, Evidence, ObservedTx,
     inspector::{ObservedCall, post_fee_slot_change},
+    rules::{self, Rule},
 };
 use alloy::{
     consensus::Transaction as _,
-    primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
+    primitives::{Address, B256, TxKind, U256},
 };
-use reth_revm::context_interface::cfg::gas::CALL_STIPEND;
+use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::{
-    precompiles::*,
-    zones::{
-        T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
-    },
-};
+use tempo_contracts::precompiles::*;
 use tempo_precompiles::{
-    abi_decoder_config_for_spec, storage::StorageAction, storage_credits::StorageCredits,
-    tip_fee_manager::amm::compute_amount_out,
+    abi_decoder_config_for_spec, storage::StorageAction, tip_fee_manager::amm::compute_amount_out,
 };
 use tempo_primitives::{
     TempoAddressExt as _, TempoTxEnvelope, transaction::calc_gas_balance_spending,
 };
 
-#[derive(Debug)]
-pub(crate) struct Expectation {
-    pub id: &'static str,
-    pub check: fn(&Context<'_>, &Field) -> Option<()>,
+/// A check that may accept one difference: native Rust or an embedded data rule.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Expectation {
+    Native {
+        id: &'static str,
+        check: fn(&Context<'_>, &Field) -> Option<()>,
+    },
+    Rule(&'static Rule),
 }
+
+impl Expectation {
+    pub(super) fn id(&self) -> &'static str {
+        match self {
+            Self::Native { id, .. } => id,
+            Self::Rule(rule) => &rule.id,
+        }
+    }
+
+    pub(super) fn accepts(&self, ctx: &Context<'_>, field: &Field) -> bool {
+        match self {
+            Self::Native { check, .. } => check(ctx, field).is_some(),
+            Self::Rule(rule) => rule.accepts(ctx, field),
+        }
+    }
+}
+
+/// An envelope call with its observed `(real, shadow)` results; `None` when not reached.
+pub(super) type EnvelopeCall<'a> = (
+    TxKind,
+    &'a [u8],
+    Option<&'a ObservedCall>,
+    Option<&'a ObservedCall>,
+);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Context<'a> {
@@ -46,7 +67,7 @@ pub(crate) struct Context<'a> {
 
 impl Context<'_> {
     /// Returns the observed transaction pair as `(real, shadow)` at this boundary.
-    fn observed_txs(&self) -> Option<(&ObservedTx, &ObservedTx)> {
+    pub(super) fn observed_txs(&self) -> Option<(&ObservedTx, &ObservedTx)> {
         let Boundary::Transaction(index) = self.boundary else {
             return None;
         };
@@ -72,10 +93,7 @@ impl Context<'_> {
     /// Pairs each envelope call (including AA subcalls) with its observed `(real, shadow)`
     /// results. An arm that never entered the call (an earlier AA call failed) yields `None`.
     /// Internal EVM calls are part of their top-level call.
-    fn calls(
-        &self,
-    ) -> impl Iterator<Item = (TxKind, &[u8], Option<&ObservedCall>, Option<&ObservedCall>)> + '_
-    {
+    pub(super) fn calls(&self) -> impl Iterator<Item = EnvelopeCall<'_>> + '_ {
         let (real, shadow) = self.observed_txs().unzip();
         let calls = self.tx.into_iter().flat_map(TempoTxEnvelope::calls);
         calls.enumerate().map(move |(index, (kind, input))| {
@@ -87,21 +105,10 @@ impl Context<'_> {
             )
         })
     }
-
-    /// Whether a call to one of `targets` itself changed `precompile` storage in either arm.
-    fn target_changed_storage(&self, targets: &[Address], precompile: Address) -> bool {
-        let changed = |call: Option<&ObservedCall>| {
-            call.and_then(|call| call.state.transitions.get(&precompile))
-                .is_some_and(|account| account.storage.values().any(|slot| slot.is_changed()))
-        };
-        self.calls().any(|(kind, _, real, shadow)| {
-            kind.to().is_some_and(|to| targets.contains(to)) && (changed(real) || changed(shadow))
-        })
-    }
 }
 
 /// Accepts only the storage effect of a verified, gas-derived post-transaction fee hook.
-const FEE_STATE: Expectation = Expectation {
+const FEE_STATE: Expectation = Expectation::Native {
     id: "fee.post-tx-state",
     check: |ctx, field| {
         if field.name != "storage" || !field.fee_associated {
@@ -158,17 +165,9 @@ const FEE_STATE: Expectation = Expectation {
     },
 };
 
-/// Storage accepted by a precompile-scoped expectation, including its TIP-1060 credit balance.
-fn precompile_storage(field: &Field, precompile: Address) -> bool {
-    field.name == "storage"
-        && (field.address == Some(precompile)
-            || (field.address == Some(STORAGE_CREDITS_ADDRESS)
-                && field.slot == Some(StorageCredits::slot(precompile))))
-}
-
 /// Returns whether T11 rejects `calldata` for the Tempo precompile at `address` only because of
 /// trailing bytes, which T12 accepts per TIP-1116.
-fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
+pub(super) fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
     fn check<C: alloy::sol_types::SolInterface>(calldata: &[u8]) -> Option<bool> {
         let decodes =
             |spec| C::abi_decode_with_config(calldata, abi_decoder_config_for_spec(spec)).is_ok();
@@ -209,149 +208,23 @@ fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
     .unwrap_or(false)
 }
 
-/// Accepts the effects of a direct precompile call that T11 rejected only for trailing bytes.
-const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
-    id: "t12.allow-abi-suffix",
-    check: |ctx, field| {
-        // The rejected call must be the control's failing call (and therefore the batch result):
-        // after T11's empty-revert rejection, accept any T12 effect except tx invalidation.
-        (field.name != "execution").then_some(())?;
-        ctx.calls()
-            .any(|(kind, calldata, real, _)| {
-                kind.to()
-                    .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata))
-                    && real.is_some_and(|call| {
-                        call.outcome == TxOutcome::Revert && call.output_hash == KECCAK256_EMPTY
-                    })
-            })
-            .then_some(())
-    },
-};
-
-const T12_TIP20_CHANNEL: Expectation = Expectation {
-    id: "t12.tip20-channel-reserve",
-    check: |ctx, field| {
-        if !precompile_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS) {
-            return None;
-        }
-
-        ctx.target_changed_storage(
-            &[TIP20_CHANNEL_RESERVE_ADDRESS],
-            TIP20_CHANNEL_RESERVE_ADDRESS,
-        )
-        .then_some(())
-    },
-};
-
-// LiFiDiamond swaps can call the DEX internally.
-const LIFI_DIAMOND: Address = address!("2cacae8e22418e65dcf7651c67aebe6288eb8243");
-
-// Uniswap Universal Router swaps can reach the DEX through a v4 hook.
-const UNISWAP_UNIVERSAL_ROUTER: Address = address!("182a927119d56008d921126764bf884221b10f59");
-
-const T12_STABLECOIN_DEX: Expectation = Expectation {
-    id: "t12.stablecoin-dex",
-    check: |ctx, field| {
-        if !precompile_storage(field, STABLECOIN_DEX_ADDRESS) {
-            return None;
-        }
-
-        ctx.target_changed_storage(
-            &[
-                STABLECOIN_DEX_ADDRESS,
-                LIFI_DIAMOND,
-                UNISWAP_UNIVERSAL_ROUTER,
-            ],
-            STABLECOIN_DEX_ADDRESS,
-        )
-        .then_some(())
-    },
-};
-
-const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
-    id: "t13.zone-runtime-upgrade",
-    check: |ctx, field| {
-        if ctx.boundary != Boundary::PreBlock || field.name != "code" || field.slot.is_some() {
-            return None;
-        }
-        let address = field.address?;
-        let (old_runtime, new_runtime) = match address {
-            ZONE_PORTAL_IMPL_ADDRESS => (ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME),
-            ZONE_VERIFIER_ADDRESS => (ZONE_VERIFIER_RUNTIME, T13_ZONE_VERIFIER_RUNTIME),
-            ZONE_MESSENGER_ADDRESS => (ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME),
-            _ => return None,
-        };
-        let real = ctx.real.pre_block.as_ref()?;
-        let shadow = ctx.shadow.pre_block.as_ref()?;
-
-        // The canonical arm must not change code. The shadow arm activates the new bytecode.
-        if AccountDelta(real.transitions.get(&address))
-            .info(|info| info.code_hash)
-            .is_some()
-        {
-            return None;
-        }
-        let transition = shadow.transitions.get(&address)?;
-        let before = transition
-            .previous_info
-            .as_ref()
-            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
-        let after = transition.info.as_ref()?.code_hash;
-
-        ((before == KECCAK256_EMPTY || before == keccak256(&old_runtime))
-            && after == keccak256(&new_runtime))
-        .then_some(())
-    },
-};
-
-/// Treats low-headroom success-to-halt transitions as T12 SSTORE sentry failures.
-const T12_SSTORE_SENTRY: Expectation = Expectation {
-    id: "t12.sstore-sentry",
-    check: |ctx, field| {
-        let (real, shadow) = ctx.observed_txs()?;
-        if real.outcome != TxOutcome::Success
-            || shadow.outcome != TxOutcome::Halt
-            || ctx
-                .tx?
-                .gas_limit()
-                .checked_sub(real.gas.total_gas_spent())?
-                > CALL_STIPEND
-            || field.name == "execution"
-        {
-            return None;
-        }
-
-        // This is a pre-refund gas-headroom heuristic, not proof of a sentry failure.
-        // SSTORE can occur in any contract, nested call, or AA batch.
-        Some(())
-    },
-};
-
-/// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
-    (
-        TempoHardfork::T12,
-        &[
-            T12_ALLOW_PRECOMPILE_ABI_SUFFIX,
-            T12_TIP20_CHANNEL,
-            T12_STABLECOIN_DEX,
-            T12_SSTORE_SENTRY,
-        ],
-    ),
-    (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
+/// Embedded rule files by introducing hardfork, oldest first; attribution follows this order.
+const RULE_FILES: &[(TempoHardfork, &str)] = &[
+    (TempoHardfork::T12, include_str!("expectations/t12.json")),
+    (TempoHardfork::T13, include_str!("expectations/t13.json")),
 ];
 
-pub(crate) fn between(
-    canonical: TempoHardfork,
-    candidate: TempoHardfork,
-) -> Vec<&'static Expectation> {
+static RULES: LazyLock<Vec<(TempoHardfork, Rule)>> =
+    LazyLock::new(|| rules::load(RULE_FILES).expect("failed to load embedded expectations"));
+
+pub(crate) fn between(canonical: TempoHardfork, candidate: TempoHardfork) -> Vec<Expectation> {
     // Gas-derived fee differences can occur for any fork pair, not just when T12 is new.
-    std::iter::once(&FEE_STATE)
+    std::iter::once(FEE_STATE)
         .chain(
-            REGISTRY
+            RULES
                 .iter()
-                .filter(|(fork, _)| *fork > canonical && *fork <= candidate)
-                .flat_map(|(_, rules)| *rules),
+                .filter(|(hardfork, _)| *hardfork > canonical && *hardfork <= candidate)
+                .map(|(_, rule)| Expectation::Rule(rule)),
         )
         .collect()
 }
@@ -359,60 +232,128 @@ pub(crate) fn between(
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState},
+        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
         *,
     };
-    use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
-    use alloy::primitives::Signature;
+    use crate::shadow_replay::{
+        analysis::{MAX_SAMPLES, Report},
+        inspector::Invocation,
+    };
+    use alloy::{
+        primitives::{KECCAK256_EMPTY, Selector, Signature, address, keccak256},
+        sol_types::SolCall as _,
+    };
     use reth_revm::{
         context::result::ResultGas,
+        context_interface::cfg::gas::CALL_STIPEND,
         db::states::{StorageSlot, TransitionAccount},
         state::AccountInfo,
+    };
+    use tempo_contracts::zones::{
+        T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
+        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
     };
     use tempo_primitives::{
         TempoTransaction,
         transaction::{AASigned, Call, PrimitiveSignature, TempoSignature},
     };
 
+    fn rule(id: &str) -> Expectation {
+        Expectation::Rule(&RULES.iter().find(|(_, rule)| rule.id == id).unwrap().1)
+    }
+
     #[test]
     fn accepts_exact_bytecode_upgrades() {
-        let address = ZONE_VERIFIER_ADDRESS;
-        let transition = |info: Option<AccountInfo>, code_hash| {
-            let mut state = reth_revm::db::TransitionState::default();
-            state.transitions.insert(
-                address,
-                TransitionAccount {
-                    previous_info: info,
-                    info: Some(AccountInfo {
-                        code_hash,
-                        ..Default::default()
-                    }),
+        let rules = between(TempoHardfork::T12, TempoHardfork::T13);
+        for (address, old, new) in [
+            (
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_PORTAL_RUNTIME,
+                T13_ZONE_PORTAL_RUNTIME,
+            ),
+            (
+                ZONE_VERIFIER_ADDRESS,
+                ZONE_VERIFIER_RUNTIME,
+                T13_ZONE_VERIFIER_RUNTIME,
+            ),
+            (
+                ZONE_MESSENGER_ADDRESS,
+                ZONE_MESSENGER_RUNTIME,
+                T13_ZONE_MESSENGER_RUNTIME,
+            ),
+        ] {
+            let transition = |before: Option<B256>, after| {
+                let info = |code_hash| AccountInfo {
+                    code_hash,
                     ..Default::default()
-                },
-            );
-            Evidence {
-                pre_block: Some(state),
-                ..Default::default()
-            }
-        };
-        let real = transition(Some(AccountInfo::default()), KECCAK256_EMPTY);
-        let ctx = |shadow| Context {
-            boundary: Boundary::PreBlock,
-            real: &real,
-            shadow,
-            base_fee: None,
-            tx: None,
-        };
-        let code = Field {
-            name: "code",
-            address: Some(address),
-            slot: None,
-            fee_associated: false,
-        };
-        let upgraded = transition(None, keccak256(&T13_ZONE_VERIFIER_RUNTIME));
-        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&upgraded), &code).is_some());
-        let unexpected = transition(None, keccak256(&ZONE_VERIFIER_RUNTIME));
-        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unexpected), &code).is_none());
+                };
+                let mut state = reth_revm::db::TransitionState::default();
+                state.transitions.insert(
+                    address,
+                    TransitionAccount {
+                        previous_info: before.map(info),
+                        info: Some(info(after)),
+                        ..Default::default()
+                    },
+                );
+                Evidence {
+                    pre_block: Some(state),
+                    ..Default::default()
+                }
+            };
+            let accepts = |real: &Evidence, shadow: &Evidence| {
+                let ctx = Context {
+                    boundary: Boundary::PreBlock,
+                    real,
+                    shadow,
+                    base_fee: None,
+                    tx: None,
+                };
+                let code = Field {
+                    name: "code",
+                    address: Some(address),
+                    slot: None,
+                    fee_associated: false,
+                };
+                rules.iter().any(|rule| rule.accepts(&ctx, &code))
+            };
+            let unchanged = transition(Some(KECCAK256_EMPTY), KECCAK256_EMPTY);
+            let (old, new) = (keccak256(old), keccak256(new));
+            assert!(accepts(&unchanged, &transition(None, new)));
+            assert!(accepts(&unchanged, &transition(Some(old), new)));
+            assert!(!accepts(&unchanged, &transition(None, old)));
+            assert!(!accepts(
+                &unchanged,
+                &transition(Some(B256::repeat_byte(1)), new)
+            ));
+            assert!(!accepts(&transition(None, old), &transition(None, new)));
+        }
+    }
+
+    /// Every file in `expectations/` is embedded exactly once, under the hardfork it is named for.
+    #[test]
+    fn rule_files_match_the_directory() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/shadow_replay/expectations"
+        );
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        let mut expected: Vec<_> = RULE_FILES
+            .iter()
+            .map(|(hardfork, _)| format!("{}.json", hardfork.to_string().to_lowercase()))
+            .collect();
+        expected.sort();
+        assert_eq!(names, expected);
+        assert!(RULE_FILES.windows(2).all(|w| w[0].0 < w[1].0));
+        for (hardfork, json) in RULE_FILES {
+            let path = format!("{dir}/{}.json", hardfork.to_string().to_lowercase());
+            assert_eq!(std::fs::read_to_string(path).unwrap(), *json);
+        }
+        assert!(!RULES.is_empty());
     }
 
     #[test]
@@ -421,25 +362,33 @@ mod tests {
         let ids = |a, b| {
             between(a, b)
                 .into_iter()
-                .map(|rule| rule.id)
+                .map(|rule| rule.id())
                 .collect::<Vec<_>>()
         };
         assert_eq!(
             ids(T11, T12),
             [
-                FEE_STATE.id,
-                T12_ALLOW_PRECOMPILE_ABI_SUFFIX.id,
-                T12_TIP20_CHANNEL.id,
-                T12_STABLECOIN_DEX.id,
-                T12_SSTORE_SENTRY.id,
+                FEE_STATE.id(),
+                "t12.allow-abi-suffix",
+                "t12.tip20-channel-reserve",
+                "t12.stablecoin-dex",
+                "t12.sstore-sentry",
             ]
         );
-        assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(
+            ids(T12, T13),
+            [
+                FEE_STATE.id(),
+                "t13.zone-runtime-upgrade",
+                "t13.zone-verifier-upgrade",
+                "t13.zone-messenger-upgrade"
+            ]
+        );
         let mut combined = ids(T11, T12);
         combined.extend(ids(T12, T13).into_iter().skip(1)); // baseline runs only once
         assert_eq!(ids(T11, T13), combined);
-        assert_eq!(ids(T12, T12), [FEE_STATE.id]);
-        assert_eq!(ids(T13, T12), [FEE_STATE.id]);
+        assert_eq!(ids(T12, T12), [FEE_STATE.id()]);
+        assert_eq!(ids(T13, T12), [FEE_STATE.id()]);
     }
 
     fn block(txs: Vec<TempoTxEnvelope>) -> RecoveredBlock<Block> {
@@ -494,12 +443,12 @@ mod tests {
 
     #[test]
     fn equal_boundaries_do_not_invoke_rules() {
-        let rule = Expectation {
+        let rule = Expectation::Native {
             id: "must-not-run",
             check: |_, _| panic!("equal values"),
         };
         let real = evidence(&[21_000, 21_000]);
-        let report = Report::analyze(&real, &real, &[&rule], &block(vec![]));
+        let report = Report::analyze(&real, &real, &[rule], &block(vec![]));
         assert_eq!(report.outcome(&real), ReplayOutcome::Match);
         assert_eq!(report.boundaries_evaluated, 4);
         assert_eq!(report.boundaries_not_evaluated, 0);
@@ -513,7 +462,7 @@ mod tests {
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Match);
 
         write_slot(tx_mut(&mut shadow, 0), 800);
-        let report = Report::analyze(&real, &shadow, &[&FEE_STATE], &block(vec![]));
+        let report = Report::analyze(&real, &shadow, &[FEE_STATE], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
         let field = report.samples[0].1.field;
@@ -578,28 +527,25 @@ mod tests {
 
     #[test]
     fn first_accepting_rule_owns_attribution() {
-        let first = Expectation {
+        let first = Expectation::Native {
             id: "test.first-output",
             check: |_, field| (field.name == "output").then_some(()),
         };
-        let second = Expectation {
+        let second = Expectation::Native {
             id: "test.second-output",
             check: |_, field| (field.name == "output").then_some(()),
         };
-        let unreachable = Expectation {
+        let unreachable = Expectation::Native {
             id: "must-not-run",
             check: |_, _| panic!("already accepted"),
         };
         let real = evidence(&[21_000]);
         let mut shadow = evidence(&[21_200]);
         tx_mut(&mut shadow, 0).output_hash = B256::repeat_byte(1);
-        for rules in [
-            [&first, &second, &unreachable],
-            [&second, &first, &unreachable],
-        ] {
+        for rules in [[first, second, unreachable], [second, first, unreachable]] {
             let report = Report::analyze(&real, &shadow, &rules, &block(vec![]));
             assert_eq!(report.unexplained, 0);
-            assert_eq!(report.expected, [(rules[0].id, 1)].into());
+            assert_eq!(report.expected, [(rules[0].id(), 1)].into());
         }
     }
 
@@ -675,9 +621,22 @@ mod tests {
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
     }
 
-    fn observed_call(outcome: TxOutcome, dex_slot: Option<u64>) -> ObservedCall {
+    /// An observed call that optionally invoked the DEX with `selector` and wrote DEX storage.
+    fn observed_call(
+        outcome: TxOutcome,
+        dex_slot: Option<u64>,
+        selector: Option<Selector>,
+    ) -> ObservedCall {
         let mut call = ObservedCall {
             outcome,
+            invocations: selector
+                .map(|selector| Invocation {
+                    caller: Address::repeat_byte(0x22),
+                    to: STABLECOIN_DEX_ADDRESS,
+                    selector: Some(selector),
+                })
+                .into_iter()
+                .collect(),
             ..Default::default()
         };
         if let Some(value) = dex_slot {
@@ -709,7 +668,7 @@ mod tests {
             tx.outcome = TxOutcome::Revert;
             tx.calls = calls
                 .iter()
-                .map(|&outcome| observed_call(outcome, None))
+                .map(|&outcome| observed_call(outcome, None, None))
                 .collect();
         }
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
@@ -723,36 +682,44 @@ mod tests {
     }
 
     #[test]
-    fn dex_expectation_requires_the_dex_call_to_change_dex_storage() {
-        let dex = Call {
-            to: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+    fn dex_expectation_requires_a_swap_call_that_changed_dex_storage() {
+        const SWAP: Selector = Selector::new(IStablecoinDEX::swapExactAmountInCall::SELECTOR);
+        const PLACE: Selector = Selector::new(IStablecoinDEX::placeCall::SELECTOR);
+        let router = Call {
+            to: TxKind::Call(Address::repeat_byte(0x11)),
             value: U256::ZERO,
             input: Default::default(),
         };
-        let other = Call {
-            to: TxKind::Call(Address::repeat_byte(0x11)),
-            ..dex.clone()
-        };
-        let block = block(vec![signed_tx(vec![dex, other])]);
-        let analyze = |dex_call: Option<u64>, other_call: Option<u64>| {
+        let block = block(vec![signed_tx(vec![router.clone(), router])]);
+        let analyze = |calls: [(Option<u64>, Option<Selector>); 2]| {
             let (mut real, mut shadow) = (evidence(&[21_000]), evidence(&[21_000]));
-            tx_mut(&mut real, 0).calls = (0..2)
-                .map(|_| observed_call(TxOutcome::Success, None))
+            tx_mut(&mut real, 0).calls = calls
+                .iter()
+                .map(|&(_, selector)| observed_call(TxOutcome::Success, None, selector))
                 .collect();
             let tx = tx_mut(&mut shadow, 0);
-            tx.state = observed_call(TxOutcome::Success, Some(5)).state;
-            tx.calls = vec![
-                observed_call(TxOutcome::Success, dex_call),
-                observed_call(TxOutcome::Success, other_call),
-            ];
-            Report::analyze(&real, &shadow, &[&T12_STABLECOIN_DEX], &block)
+            tx.state = observed_call(TxOutcome::Success, Some(5), None).state;
+            tx.calls = calls
+                .iter()
+                .map(|&(slot, selector)| observed_call(TxOutcome::Success, slot, selector))
+                .collect();
+            Report::analyze(&real, &shadow, &[rule("t12.stablecoin-dex")], &block)
         };
+        // A router (third-party caller) swapping on the DEX.
         assert_eq!(
-            analyze(Some(5), None).expected,
-            [(T12_STABLECOIN_DEX.id, 1)].into()
+            analyze([(Some(5), Some(SWAP)), (None, None)]).expected,
+            [("t12.stablecoin-dex", 1)].into()
         );
-        // A later non-DEX call writing DEX storage is not attributed to the DEX call.
-        assert_eq!(analyze(None, Some(5)).unexplained, 1);
+        // Non-swap DEX methods are not covered.
+        assert_eq!(
+            analyze([(Some(5), Some(PLACE)), (None, None)]).unexplained,
+            1
+        );
+        // A swap call that did not write DEX storage cannot absorb another call's DEX writes.
+        assert_eq!(
+            analyze([(None, Some(SWAP)), (Some(5), None)]).unexplained,
+            1
+        );
     }
 
     #[test]
@@ -779,7 +746,7 @@ mod tests {
         let rules = between(TempoHardfork::T11, TempoHardfork::T12);
         let report = Report::analyze(&real, &shadow, &rules, &block);
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
-        assert_eq!(report.expected, [(T12_SSTORE_SENTRY.id, 4)].into());
+        assert_eq!(report.expected, [("t12.sstore-sentry", 4)].into());
 
         for gas_spent in [35_212 - CALL_STIPEND, 35_212] {
             tx_mut(&mut real, 0).gas.set_total_gas_spent(gas_spent);
@@ -822,7 +789,7 @@ mod tests {
                 ..call.clone()
             }],
             vec![Call {
-                to: TxKind::Call(LIFI_DIAMOND),
+                to: TxKind::Call(address!("2cacae8e22418e65dcf7651c67aebe6288eb8243")),
                 ..call.clone()
             }],
             vec![Call {
@@ -838,7 +805,7 @@ mod tests {
                 base_fee: None,
                 tx: Some(&tx),
             };
-            assert!((T12_SSTORE_SENTRY.check)(&ctx, &field).is_some());
+            assert!(rule("t12.sstore-sentry").accepts(&ctx, &field));
         }
 
         // No acceptance outside the activation boundary or at another transaction.
