@@ -1,16 +1,10 @@
+//! Zone ABIs, addresses, and genesis initialization.
+
 use crate::zones::{
     T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
     ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
 };
 use alloy_primitives::{Address, Bytes, U256, address};
-
-pub use IZoneFactory::{
-    IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
-};
-pub use IZonePortal::{
-    Capability as ZonePortalCapability, IZonePortalEvents as ZonePortalEvent,
-    Role as ZonePortalRole,
-};
 
 /// Native TIP-1091 ZoneFactory precompile address.
 pub const ZONE_FACTORY_ADDRESS: Address = address!("0x5AF2000000000000000000000000000000000000");
@@ -93,7 +87,129 @@ pub fn t13_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] 
     ]
 }
 
+pub use IZoneFactory::{
+    IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
+};
+pub use IZonePortal::{
+    Capability as ZonePortalCapability, IZonePortalEvents as ZonePortalEvent,
+    Role as ZonePortalRole,
+};
+
 crate::sol! {
+    /// Proof-agnostic Zone verifier ABI retained by TIP-1098.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface IZoneVerifier {
+        struct BlockTransition {
+            bytes32 prevBlockHash;
+            bytes32 nextBlockHash;
+        }
+
+        struct DepositQueueTransition {
+            bytes32 prevProcessedHash;
+            bytes32 nextProcessedHash;
+            uint64 prevDepositNumber;
+            uint64 nextDepositNumber;
+        }
+
+        struct TokenEnablementTransition {
+            uint64 prevProcessedTokenCount;
+            uint64 nextProcessedTokenCount;
+        }
+
+        function verify(
+            uint32 zoneId,
+            uint64 tempoBlockNumber,
+            uint64 anchorBlockNumber,
+            bytes32 anchorBlockHash,
+            uint64 expectedWithdrawalBatchIndex,
+            uint256 nextZoneHeight,
+            BlockTransition calldata blockTransition,
+            DepositQueueTransition calldata depositQueueTransition,
+            TokenEnablementTransition calldata tokenEnablementTransition,
+            bytes32 withdrawalQueueHash,
+            bytes calldata verifierConfig,
+            bytes calldata proof
+        ) external view returns (bool);
+    }
+
+    /// Portal ABI for native initialization and historical batch inspection.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface IZonePortal {
+        enum Role {
+            None,
+            Sequencer,
+            Account,
+            CallbackGateway,
+            PauseGuardian
+        }
+
+        enum Capability {
+            PausePortal,
+            AccessPolicy
+        }
+
+        /// T13 batch submission ABI.
+        function submitBatch(
+            uint64 tempoBlockNumber,
+            uint64 recentTempoBlockNumber,
+            IZoneVerifier.BlockTransition calldata blockTransition,
+            IZoneVerifier.DepositQueueTransition calldata depositQueueTransition,
+            IZoneVerifier.TokenEnablementTransition calldata tokenEnablementTransition,
+            bytes32 withdrawalQueueHash,
+            bytes calldata verifierConfig,
+            bytes calldata proof,
+            uint256 nextZoneHeight,
+            bytes[] calldata signatures
+        ) external;
+
+        /// T13 settlement event used to discover successful batch submissions.
+        event BatchSubmitted(
+            uint64 indexed withdrawalBatchIndex,
+            uint256 indexed withdrawalQueueIndex,
+            bytes32 nextProcessedDepositQueueHash,
+            bytes32 nextBlockHash,
+            bytes32 withdrawalQueueHash,
+            uint64 lastProcessedDepositNumber,
+            uint64 lastProcessedEnabledTokenCount
+        );
+
+        event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
+        event TokenEnabled(address indexed token, string name, string symbol, string currency);
+        event RoleUpdated(address indexed account, Role prev, Role next);
+        event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+        event LeaderUpdated(
+            address indexed previousLeader,
+            address indexed newLeader,
+            uint64 indexed leaderEpoch,
+            uint64 leaderActivationTempoBlock
+        );
+    }
+
+    /// EIP-712 statement committed to a Nitro attestation's `user_data`.
+    #[derive(Debug, PartialEq, Eq)]
+    struct NitroBatchAttestation {
+        uint256 parentChainId;
+        address verifier;
+        uint32 zoneId;
+        uint64 tempoBlockNumber;
+        uint64 anchorBlockNumber;
+        bytes32 anchorBlockHash;
+        uint64 expectedWithdrawalBatchIndex;
+        uint256 nextZoneHeight;
+        bytes32 prevBlockHash;
+        bytes32 nextBlockHash;
+        bytes32 prevProcessedHash;
+        bytes32 nextProcessedHash;
+        uint64 prevDepositNumber;
+        uint64 nextDepositNumber;
+        uint64 prevProcessedTokenCount;
+        uint64 nextProcessedTokenCount;
+        bytes32 withdrawalQueueHash;
+        bytes32 verifierConfigHash;
+    }
+
     /// Zone metadata recorded by the native factory.
     #[derive(Debug, PartialEq, Eq)]
     struct ZoneInfo {
@@ -155,34 +271,5 @@ crate::sol! {
         function nextZoneId() external view returns (uint32);
         function zones(uint32 id) external view returns (ZoneInfo memory info);
         function isZonePortal(address portal) external view returns (bool);
-    }
-
-    /// Minimal portal ABI needed for constructor-equivalent native initialization.
-    #[derive(Debug, PartialEq, Eq)]
-    #[sol(abi)]
-    interface IZonePortal {
-        enum Role {
-            None,
-            Sequencer,
-            Account,
-            CallbackGateway,
-            PauseGuardian
-        }
-
-        enum Capability {
-            PausePortal,
-            AccessPolicy
-        }
-
-        event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
-        event TokenEnabled(address indexed token, string name, string symbol, string currency);
-        event RoleUpdated(address indexed account, Role prev, Role next);
-        event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
-        event LeaderUpdated(
-            address indexed previousLeader,
-            address indexed newLeader,
-            uint64 indexed leaderEpoch,
-            uint64 leaderActivationTempoBlock
-        );
     }
 }
