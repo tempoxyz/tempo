@@ -1,0 +1,66 @@
+{
+  "after-repeat/workers-0-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 2245660672,
+    "disk_free_bytes_end": 1949650944
+  },
+  "after-repeat/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 2539560960,
+    "disk_free_bytes_end": 2245672960
+  },
+  "before-repeat/workers-0-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 1667452928,
+    "disk_free_bytes_end": 1372041216
+  },
+  "before-repeat/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 1949245440,
+    "disk_free_bytes_end": 1667465216
+  },
+  "matrix/workers-16-target-10000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 2363432960,
+    "disk_free_bytes_end": 2295111680
+  },
+  "matrix/workers-16-target-75000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 2135281664,
+    "disk_free_bytes_end": 1841205248
+  },
+  "matrix/workers-16-target-25000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 2295099392,
+    "disk_free_bytes_end": 2135293952
+  },
+  "expiring/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 1840709632,
+    "disk_free_bytes_end": 1382809600
+  }
+}

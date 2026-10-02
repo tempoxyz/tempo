@@ -4,7 +4,8 @@
 
 use crate::{
     amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    tt_2d_pool::AA2dPool, validation_task::TempoValidationTaskExecutor,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -21,8 +22,7 @@ use reth_transaction_pool::{
     BlockInfo, CanonicalStateUpdate, CoinbaseTipOrdering, GetPooledTransactionLimit,
     NewBlobSidecar, Pool, PoolResult, PoolSize, PoolTransaction, PropagatedTransactions,
     TransactionEvents, TransactionOrigin, TransactionPool, TransactionPoolExt,
-    TransactionValidationOutcome, TransactionValidationTaskExecutor, TransactionValidator,
-    ValidPoolTransaction,
+    TransactionValidationOutcome, TransactionValidator, ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
@@ -48,7 +48,7 @@ use tempo_revm::TempoStateAccess;
 pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
-        TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+        TempoValidationTaskExecutor<TempoTransactionValidator<Client>>,
         CoinbaseTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
@@ -56,10 +56,14 @@ pub struct TempoTransactionPool<Client> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
+/// A live, priority-ordered iterator across protocol and AA nonce transactions.
+pub type TempoBestTransactions =
+    Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>>;
+
 impl<Client> TempoTransactionPool<Client> {
     pub fn new(
         protocol_pool: Pool<
-            TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+            TempoValidationTaskExecutor<TempoTransactionValidator<Client>>,
             CoinbaseTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
@@ -75,6 +79,33 @@ impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
+    /// Return the authoritative iterator and an optional independent lookahead.
+    /// AA candidates are collected and sorted once when lookahead is requested.
+    /// Gas and encoded-size invalidations constrain the remaining payload budgets;
+    /// AA selection stops once no known candidate fits, without discarding live updates.
+    pub fn best_transactions_with_preview(
+        &self,
+        _attributes: BestTransactionsAttributes,
+        preview: bool,
+    ) -> (TempoBestTransactions, Option<TempoBestTransactions>) {
+        // Reth's protocol iterator owns private selection state and cannot be
+        // forked. Keep its ordinary path; the AA iterators can share construction.
+        let protocol = self.protocol_pool.inner().best_transactions();
+        if !preview {
+            let aa = self.aa_2d_pool.read().best_transactions_for_payload();
+            return (Box::new(MergeBestTransactions::new(protocol, aa)), None);
+        }
+        let protocol_preview = self.protocol_pool.inner().best_transactions();
+        let (aa, aa_preview) = self.aa_2d_pool.read().best_transactions_pair(true);
+        (
+            Box::new(MergeBestTransactions::new(protocol, aa)),
+            Some(Box::new(MergeBestTransactions::new(
+                protocol_preview,
+                aa_preview,
+            ))),
+        )
+    }
+
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
         self.protocol_pool
@@ -1270,7 +1301,7 @@ mod tests {
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        PoolConfig, TransactionOrigin, TransactionPool,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -1423,7 +1454,7 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, _task) = TempoValidationTaskExecutor::new(validator, 1);
         let protocol_pool = Pool::new(
             executor,
             CoinbaseTipOrdering::default(),

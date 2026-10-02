@@ -11,7 +11,7 @@ use reth_trie_common::{
     AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
     MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
-use std::time::Instant;
+use std::{sync::Mutex, time::Instant};
 use tracing::debug_span;
 
 #[derive(Metrics, Clone)]
@@ -87,9 +87,31 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Time spent awaiting a background root after all execution changes are complete.
+    pub(crate) background_state_root_wait_duration_seconds: Histogram,
 }
 
 impl TempoPayloadBuilderMetrics {
+    /// Records speculative work separately from transactions actually included.
+    pub(crate) fn record_speculative_execution(&self, stats: tempo_evm::parallel::ExecutionStats) {
+        metrics::counter!("tempo_payload_builder_speculated_transactions_total")
+            .increment(stats.speculated);
+        metrics::counter!("tempo_payload_builder_nonce_filtered_candidates_total")
+            .increment(stats.nonce_filtered);
+        metrics::counter!("tempo_payload_builder_reused_transactions_total")
+            .increment(stats.reused);
+        metrics::counter!("tempo_payload_builder_reused_call_bodies_total")
+            .increment(stats.bodies_reused);
+        metrics::counter!("tempo_payload_builder_rebased_fee_transactions_total")
+            .increment(stats.fees_rebased);
+        metrics::counter!("tempo_payload_builder_conflicting_transactions_total")
+            .increment(stats.conflicts);
+        metrics::counter!("tempo_payload_builder_speculative_retries_total")
+            .increment(stats.retries);
+        metrics::counter!("tempo_payload_builder_speculative_backoff_total")
+            .increment(stats.backoff);
+    }
+
     /// Increments the unified pool transaction skip counter with the given reason label.
     ///
     /// Note: `mark_invalid` may also prune descendant transactions from the iterator,
@@ -117,8 +139,32 @@ impl TempoPayloadBuilderMetrics {
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
 /// `state_root_with_updates` with tracing spans and histogram metrics during `builder.finish()`.
 pub(crate) struct InstrumentedFinishProvider<'a> {
-    pub(crate) inner: &'a dyn StateProvider,
-    pub(crate) metrics: TempoPayloadBuilderMetrics,
+    inner: &'a dyn StateProvider,
+    metrics: TempoPayloadBuilderMetrics,
+    background_root: Mutex<Option<BackgroundStateRoot>>,
+}
+
+type BackgroundStateRoot = Box<dyn FnOnce() -> Option<(B256, TrieUpdates)> + Send>;
+
+impl<'a> InstrumentedFinishProvider<'a> {
+    pub(crate) fn new(inner: &'a dyn StateProvider, metrics: TempoPayloadBuilderMetrics) -> Self {
+        Self {
+            inner,
+            metrics,
+            background_root: Mutex::new(None),
+        }
+    }
+
+    /// Await the trie only when the block builder requests its root. At that
+    /// point executor finalization has emitted post-block changes and dropped
+    /// the state hook. Waiting earlier would miss those changes or deadlock.
+    pub(crate) fn with_background_state_root(
+        mut self,
+        root: impl FnOnce() -> Option<(B256, TrieUpdates)> + Send + 'static,
+    ) -> Self {
+        self.background_root = Mutex::new(Some(Box::new(root)));
+        self
+    }
 }
 
 impl<'a> AsRef<dyn StateProvider + 'a> for InstrumentedFinishProvider<'a> {
@@ -187,6 +233,25 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         &self,
         hashed_state: HashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
+        let background_root = self
+            .background_root
+            .lock()
+            .expect("state root lock poisoned")
+            .take();
+        if let Some(root) = background_root {
+            let start = Instant::now();
+            let result = root();
+            self.metrics
+                .background_state_root_wait_duration_seconds
+                .record(start.elapsed());
+            if let Some(result) = result {
+                metrics::counter!("tempo_payload_builder_background_state_root_successes_total")
+                    .increment(1);
+                return Ok(result);
+            }
+            metrics::counter!("tempo_payload_builder_background_state_root_failures_total")
+                .increment(1);
+        }
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "state_root_with_updates").entered();
         let result = self.inner.state_root_with_updates(hashed_state);

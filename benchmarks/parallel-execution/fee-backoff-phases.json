@@ -1,0 +1,218 @@
+[
+  {
+    "workload": "tip20_paid",
+    "count": "10000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000002",
+    "ordered": "0.073877",
+    "commit": "0.004159"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "10000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.039513",
+    "ordered": "0.023362",
+    "commit": "0.007587"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "10000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.042796",
+    "ordered": "0.024319",
+    "commit": "0.007359"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "10000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000002",
+    "ordered": "1.299245",
+    "commit": "0.002945"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "10000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.029509",
+    "ordered": "0.245293",
+    "commit": "0.009645"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "10000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.033107",
+    "ordered": "0.229164",
+    "commit": "0.010194"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "25000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000004",
+    "ordered": "0.197918",
+    "commit": "0.010001"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "25000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.114678",
+    "ordered": "0.052941",
+    "commit": "0.020890"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "25000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.120100",
+    "ordered": "0.054671",
+    "commit": "0.020262"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "25000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000004",
+    "ordered": "3.285430",
+    "commit": "0.007501"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "25000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.088604",
+    "ordered": "0.380111",
+    "commit": "0.027124"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "25000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.098584",
+    "ordered": "0.386351",
+    "commit": "0.028382"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "50000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000008",
+    "ordered": "0.411273",
+    "commit": "0.020550"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "50000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.244657",
+    "ordered": "0.101147",
+    "commit": "0.041942"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "50000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.266589",
+    "ordered": "0.103835",
+    "commit": "0.040266"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "50000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000008",
+    "ordered": "6.585070",
+    "commit": "0.015612"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "50000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.184490",
+    "ordered": "0.635586",
+    "commit": "0.055830"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "50000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.214550",
+    "ordered": "0.596996",
+    "commit": "0.054541"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "0.839723",
+    "commit": "0.043116"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.504864",
+    "ordered": "0.176082",
+    "commit": "0.074011"
+  },
+  {
+    "workload": "tip20_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.550815",
+    "ordered": "0.209214",
+    "commit": "0.081926"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "0",
+    "batch": "128",
+    "prepare": "0.000015",
+    "ordered": "13.061995",
+    "commit": "0.030458"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "16",
+    "batch": "128",
+    "prepare": "0.392105",
+    "ordered": "1.141524",
+    "commit": "0.119718"
+  },
+  {
+    "workload": "compute_paid",
+    "count": "100000",
+    "workers": "32",
+    "batch": "128",
+    "prepare": "0.445988",
+    "ordered": "1.097000",
+    "commit": "0.114698"
+  }
+]

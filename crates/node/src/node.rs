@@ -18,7 +18,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
+        PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
@@ -34,7 +34,10 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
+use reth_transaction_pool::{
+    CoinbaseTipOrdering, Pool, blobstore::InMemoryBlobStore,
+    validate::EthTransactionValidatorBuilder,
+};
 use std::default::Default;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
@@ -45,6 +48,7 @@ use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxTyp
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
+    validation_task::TempoValidationTaskExecutor,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -54,6 +58,13 @@ use tempo_transaction_pool::{
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
 pub struct TempoNodeArgs {
+    /// Worker threads for experimental speculative execution (zero disables it).
+    #[arg(long = "execution.threads", default_value_t = 0)]
+    pub execution_threads: usize,
+
+    /// Maximum transactions in a speculative execution window.
+    #[arg(long = "execution.batch-size", default_value_t = 128, value_parser = clap::value_parser!(u32).range(1..))]
+    pub execution_batch_size: u32,
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
@@ -93,6 +104,7 @@ impl TempoNodeArgs {
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
+    executor_builder: TempoExecutorBuilder,
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
     /// Payload builder builder.
@@ -102,9 +114,23 @@ pub struct TempoNode {
 }
 
 impl TempoNode {
+    /// Enables speculative execution when this node's components are built.
+    /// Zero workers selects the sequential executor.
+    pub fn with_execution_threads(mut self, threads: usize, batch_size: usize) -> Self {
+        self.executor_builder = TempoExecutorBuilder {
+            threads,
+            batch_size: batch_size.max(1),
+        };
+        self
+    }
+
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
         Self {
+            executor_builder: TempoExecutorBuilder {
+                threads: args.execution_threads,
+                batch_size: args.execution_batch_size.max(1) as usize,
+            },
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
@@ -271,6 +297,7 @@ where
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(self.pool_builder, self.payload_builder_builder)
+            .executor(self.executor_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -306,16 +333,31 @@ impl TempoPayloadAttributesBuilder {
     pub const fn new() -> Self {
         Self
     }
+
+    fn timestamp_after(parent: u64, mut clock: impl FnMut() -> u64) -> u64 {
+        // Dev mining can catch up missed interval ticks within one millisecond.
+        // Tempo requires a timestamp strictly after the parent and no later than
+        // wall time, so advancing the parent's timestamp without waiting is invalid.
+        loop {
+            let now = clock();
+            if now > parent {
+                return now;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
 }
 
 impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
-    fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+    fn build(&self, parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
+        let millis = Self::timestamp_after(parent.timestamp_millis(), || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        });
 
         let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
@@ -333,7 +375,12 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 /// A regular ethereum evm and executor builder.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    /// Number of workers; zero retains sequential execution.
+    pub threads: usize,
+    /// Maximum speculative transactions per window.
+    pub batch_size: usize,
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -342,7 +389,14 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        if self.threads > 0 {
+            let executor = tempo_evm::parallel::SpeculativeExecutor::new(
+                self.threads,
+                self.batch_size.max(1),
+            )?;
+            evm_config = evm_config.with_speculative_executor(executor);
+        }
         Ok(evm_config)
     }
 }
@@ -431,19 +485,17 @@ where
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
-        let validator =
-            TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
-                .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
-                .with_local_transactions_config(pool_config.local_transactions_config.clone())
-                .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
-                .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
-                .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
-                .disable_balance_check()
-                .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
-                .with_custom_tx_type(TempoTxType::AA as u8)
-                .no_eip4844()
-                .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
+        let validator = EthTransactionValidatorBuilder::new(ctx.provider().clone(), evm_config)
+            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
+            .with_local_transactions_config(pool_config.local_transactions_config.clone())
+            .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
+            .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
+            .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
+            .disable_balance_check()
+            .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
+            .build(blob_store.clone());
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
@@ -454,17 +506,26 @@ where
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
-        let validator = validator.map(|v| {
-            TempoTransactionValidator::new(
-                v,
-                self.aa_valid_after_max_secs,
-                self.max_tempo_authorizations,
-                amm_liquidity_cache.clone(),
-            )
-        });
-        let protocol_pool = TxPoolBuilder::new(ctx)
-            .with_validator(validator)
-            .build(blob_store, pool_config.clone());
+        let validator = TempoTransactionValidator::new(
+            validator,
+            self.aa_valid_after_max_secs,
+            self.max_tempo_authorizations,
+            amm_liquidity_cache,
+        );
+        let additional_tasks = ctx.config().txpool.additional_validation_tasks;
+        let (validator, task) =
+            TempoValidationTaskExecutor::new(validator, additional_tasks.saturating_add(1));
+        for _ in 0..additional_tasks {
+            ctx.task_executor().spawn_blocking_task(task.clone().run());
+        }
+        ctx.task_executor()
+            .spawn_critical_blocking_task("transaction-validation-service", task.run());
+        let protocol_pool = Pool::new(
+            validator,
+            CoinbaseTipOrdering::default(),
+            blob_store,
+            pool_config.clone(),
+        );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
         let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
@@ -515,5 +576,28 @@ where
             self.state_provider_metrics,
             self.disable_state_cache,
         ))
+    }
+}
+
+#[cfg(test)]
+mod payload_attributes_tests {
+    use super::TempoPayloadAttributesBuilder;
+
+    #[test]
+    fn dev_timestamp_waits_for_wall_clock_to_pass_parent() {
+        for (parent, readings, expected) in [
+            (1_000, vec![1_001], 1_001),
+            (1_000, vec![1_000, 1_000, 1_001], 1_001),
+            (1_000, vec![1_000, 999, 998, 1_005], 1_005),
+            (999, vec![999, 1_000], 1_000),
+        ] {
+            let mut readings = readings.into_iter();
+            let timestamp = TempoPayloadAttributesBuilder::timestamp_after(parent, || {
+                readings.next().expect("clock must advance")
+            });
+            assert_eq!(timestamp, expected);
+            assert!(timestamp > parent);
+            assert!(readings.next().is_none());
+        }
     }
 }

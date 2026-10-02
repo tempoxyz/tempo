@@ -8,6 +8,9 @@ use tempo_primitives::{TempoConsensusContext, subblock::PartialValidatorKey};
 /// Execution context for Tempo block.
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct TempoBlockExecutionCtx<'a> {
+    /// Ordered block transactions, used for bounded speculative lookahead during validation.
+    /// Empty while building a block, where candidates come from the transaction pool.
+    pub transactions: &'a [tempo_primitives::TempoTxEnvelope],
     /// Inner [`EthBlockExecutionCtx`].
     #[deref]
     pub inner: EthBlockExecutionCtx<'a>,

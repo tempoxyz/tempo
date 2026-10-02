@@ -1,0 +1,98 @@
+{
+  "before/workers-0-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 22549098496,
+    "disk_free_bytes_end": 22251819008
+  },
+  "before/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 22251806720,
+    "disk_free_bytes_end": 21966553088
+  },
+  "after/workers-0-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 21966217216,
+    "disk_free_bytes_end": 21667753984
+  },
+  "after/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 21667741696,
+    "disk_free_bytes_end": 21384187904
+  },
+  "after-repeat/workers-0-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 21091328000,
+    "disk_free_bytes_end": 20804390912
+  },
+  "after-repeat/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 21383852032,
+    "disk_free_bytes_end": 21091340288
+  },
+  "before-repeat/workers-0-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 20522594304,
+    "disk_free_bytes_end": 20224323584
+  },
+  "before-repeat/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 20804055040,
+    "disk_free_bytes_end": 20522606592
+  },
+  "matrix/workers-16-target-10000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 20224471040,
+    "disk_free_bytes_end": 20157833216
+  },
+  "matrix/workers-16-target-25000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 20157820928,
+    "disk_free_bytes_end": 19996598272
+  },
+  "matrix/workers-16-target-75000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 19996585984,
+    "disk_free_bytes_end": 19708678144
+  },
+  "expiring/workers-16-target-50000": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 19708342272,
+    "disk_free_bytes_end": 19256594432
+  }
+}

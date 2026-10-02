@@ -1,0 +1,87 @@
+[
+  {
+    "mode": "new-2d",
+    "variant": "before",
+    "block": 8,
+    "database": "/tmp/tempo-node-chained-final-new-2d/workers-16-target-50000/data",
+    "requests": 8772,
+    "counts": [
+      {
+        "type": "Account",
+        "address_or_hash": "0x4e4f4e4345000000000000000000000000000000",
+        "requests": 323
+      },
+      {
+        "type": "Code",
+        "address_or_hash": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+        "requests": 6
+      },
+      {
+        "type": "Storage",
+        "address_or_hash": "0x4e4f4e4345000000000000000000000000000000",
+        "requests": 8443
+      }
+    ],
+    "note": "Worker cache-miss channel requests; coordinator coalesces duplicates. Trace timings are diagnostic only."
+  },
+  {
+    "mode": "new-2d",
+    "variant": "after",
+    "block": 8,
+    "database": "/tmp/tempo-node-chained-final-new-2d/workers-16-target-50000/data",
+    "requests": 8,
+    "counts": [
+      {
+        "type": "Code",
+        "address_or_hash": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+        "requests": 8
+      }
+    ],
+    "note": "Worker cache-miss channel requests; coordinator coalesces duplicates. Trace timings are diagnostic only."
+  },
+  {
+    "mode": "existing-expiring",
+    "variant": "before",
+    "block": 22,
+    "database": "/tmp/tempo-node-chained-final-existing-expiring/workers-16-target-50000/data",
+    "requests": 53854,
+    "counts": [
+      {
+        "type": "Account",
+        "address_or_hash": "0x4e4f4e4345000000000000000000000000000000",
+        "requests": 1446
+      },
+      {
+        "type": "Code",
+        "address_or_hash": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+        "requests": 4
+      },
+      {
+        "type": "Storage",
+        "address_or_hash": "0x4e4f4e4345000000000000000000000000000000",
+        "requests": 52404
+      }
+    ],
+    "note": "Worker cache-miss channel requests; coordinator coalesces duplicates. Trace timings are diagnostic only."
+  },
+  {
+    "mode": "existing-expiring",
+    "variant": "after",
+    "block": 22,
+    "database": "/tmp/tempo-node-chained-final-existing-expiring/workers-16-target-50000/data",
+    "requests": 19749,
+    "counts": [
+      {
+        "type": "Code",
+        "address_or_hash": "0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+        "requests": 12
+      },
+      {
+        "type": "Storage",
+        "address_or_hash": "0x4e4f4e4345000000000000000000000000000000",
+        "requests": 19737
+      }
+    ],
+    "note": "Worker cache-miss channel requests; coordinator coalesces duplicates. Trace timings are diagnostic only."
+  }
+]

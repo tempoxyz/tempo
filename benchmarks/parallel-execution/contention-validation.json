@@ -1,0 +1,44 @@
+{
+  "evm": {
+    "command": "cargo test --release --locked -p tempo-evm --lib",
+    "log": "/tmp/tempo-contention-tests.log",
+    "passed": 94,
+    "ignored": 2
+  },
+  "clippy": {
+    "command": "cargo clippy --release --locked -p tempo-evm --all-targets -- -D warnings",
+    "log": "/tmp/tempo-contention-clippy.log"
+  },
+  "format": {
+    "command": "cargo fmt --all -- --check",
+    "log": "/tmp/tempo-contention-fmt-check.log"
+  },
+  "differential": {
+    "forks": [
+      "T0",
+      "T1",
+      "T1A",
+      "T1B",
+      "T1C",
+      "T2",
+      "T3",
+      "T4"
+    ],
+    "workers": [
+      1,
+      4
+    ],
+    "windows": [
+      8,
+      32,
+      128
+    ],
+    "transactions": 128,
+    "sequential_successes": 109,
+    "sequential_reverts": 19,
+    "scheduler_configurations": 8,
+    "total_comparisons": 384
+  },
+  "production_changes": "Both measured allocation prototypes were reverted. Production executor remains at 77f5953e.",
+  "test_source_sha256": "e48caf59c0b3b4b574b651d08bfd9899f11c33598408c3570ee8196ae17bd675"
+}

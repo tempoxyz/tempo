@@ -1,0 +1,42 @@
+{
+  "metadata": {"target_tps": 50000, "run_duration_secs": 5, "accounts": 100, "chain_id": 1337, "total_connections": 256, "start_block": 4, "end_block": 28, "mode": "local-workers-16-expiring", "tip20_weight": 1.0, "tip20_virtual_weight": 0.0, "place_order_weight": 0.0, "swap_weight": 0.0, "erc20_weight": 0.0, "mpp_weight": 0.0, "block_gas_limit": 5000000000},
+  "sending": {"accepted": 230076, "rejected": 0, "timed_out": 0, "generation_failed": 0, "unconfirmed": 0, "send_duration_secs": 5.008683594},
+  "blocks": [
+    {"number": 6, "tx_count": 501, "ok_count": 501, "err_count": 0, "gas_used": 24286228, "timestamp": 1790921759685, "latency_ms": null},
+    {"number": 7, "tx_count": 4990, "ok_count": 4990, "err_count": 0, "gas_used": 242693358, "timestamp": 1790921759785, "latency_ms": 100},
+    {"number": 8, "tx_count": 11671, "ok_count": 11671, "err_count": 0, "gas_used": 567593532, "timestamp": 1790921760006, "latency_ms": 221},
+    {"number": 9, "tx_count": 27622, "ok_count": 27622, "err_count": 0, "gas_used": 1343509746, "timestamp": 1790921760580, "latency_ms": 574},
+    {"number": 10, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1789012118, "timestamp": 1790921761908, "latency_ms": 1328},
+    {"number": 11, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1789120922, "timestamp": 1790921763758, "latency_ms": 1850},
+    {"number": 12, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1788970238, "timestamp": 1790921765091, "latency_ms": 1333},
+    {"number": 13, "tx_count": 36788, "ok_count": 36788, "err_count": 0, "gas_used": 1789260662, "timestamp": 1790921766031, "latency_ms": 940},
+    {"number": 14, "tx_count": 36873, "ok_count": 36873, "err_count": 0, "gas_used": 1793242348, "timestamp": 1790921767073, "latency_ms": 1042},
+    {"number": 15, "tx_count": 1277, "ok_count": 1277, "err_count": 0, "gas_used": 62037128, "timestamp": 1790921768017, "latency_ms": 944},
+    {"number": 16, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768231, "latency_ms": 214},
+    {"number": 17, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768240, "latency_ms": 9},
+    {"number": 18, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768253, "latency_ms": 13},
+    {"number": 19, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768254, "latency_ms": 1},
+    {"number": 20, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768256, "latency_ms": 2},
+    {"number": 21, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768273, "latency_ms": 17},
+    {"number": 22, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768275, "latency_ms": 2},
+    {"number": 23, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768276, "latency_ms": 1},
+    {"number": 24, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768277, "latency_ms": 1},
+    {"number": 25, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768278, "latency_ms": 1},
+    {"number": 26, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768279, "latency_ms": 1},
+    {"number": 27, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768280, "latency_ms": 1},
+    {"number": 28, "tx_count": 1, "ok_count": 1, "err_count": 0, "gas_used": 0, "timestamp": 1790921768294, "latency_ms": 14}
+  ],
+  "payload_builds": [
+    {"number": "6", "hash": "0x939f174905c2f8673a7f23b14972a27313730914d250b9739dc52933d43caabc", "total_transactions": "501", "elapsed": "17.052013ms", "total_transaction_execution_elapsed": "13.916277ms", "builder_finish_elapsed": "2.769968ms"},
+    {"number": "7", "hash": "0xea6ecf6bce97fc4bc31ff657067752ee97318d5368904bbca821c383dd0a1296", "total_transactions": "4990", "elapsed": "153.094719ms", "total_transaction_execution_elapsed": "134.174761ms", "builder_finish_elapsed": "16.311022ms"},
+    {"number": "8", "hash": "0xb890a44628ee1ed6a765f132ecb06663d2c00fae06fc3e00cd5c52e0dbec116f", "total_transactions": "11671", "elapsed": "393.522091ms", "total_transaction_execution_elapsed": "342.203679ms", "builder_finish_elapsed": "40.268784ms"},
+    {"number": "9", "hash": "0x63bbce9d4728c3f4a80a0e2a430557b622293336e269ca2c6ddf50a6dbdeb018", "total_transactions": "27622", "elapsed": "933.324442ms", "total_transaction_execution_elapsed": "800.39128ms", "builder_finish_elapsed": "105.973575ms"},
+    {"number": "10", "hash": "0x75adfdccc6f515061cf8f5bd749fbc255766f3b03292d3fcabf9092e0a6adec2", "total_transactions": "36788", "elapsed": "1.356698398s", "total_transaction_execution_elapsed": "1.167006244s", "builder_finish_elapsed": "154.240851ms"},
+    {"number": "11", "hash": "0x5eb8459e0f03516900682f2575e1c6c7df185ca095e35c6ef47b02029fe4c280", "total_transactions": "36788", "elapsed": "1.1855735s", "total_transaction_execution_elapsed": "1.056452392s", "builder_finish_elapsed": "91.584521ms"},
+    {"number": "12", "hash": "0x7253f7b92d1e3e4e4822f926361f14d5b744d9927088547c8c3db0a8084c9ab5", "total_transactions": "36788", "elapsed": "805.597892ms", "total_transaction_execution_elapsed": "673.558688ms", "builder_finish_elapsed": "95.203723ms"},
+    {"number": "13", "hash": "0xcffc36185fd1e066974498a6f66f4d94104d2b0c8143245453a3867a1441aa3f", "total_transactions": "36788", "elapsed": "914.319065ms", "total_transaction_execution_elapsed": "796.395061ms", "builder_finish_elapsed": "89.609434ms"},
+    {"number": "14", "hash": "0x2685e3e514123b279fd1e08c2eaf2a42415948fba192f54b8729324b48fb940d", "total_transactions": "36873", "elapsed": "860.357503ms", "total_transaction_execution_elapsed": "737.881947ms", "builder_finish_elapsed": "95.826993ms"},
+    {"number": "15", "hash": "0x1e802d7639e0654faa7e23504f3d4f014057f1401b0a79be29dcb65015215a3d", "total_transactions": "1277", "elapsed": "181.474932ms", "total_transaction_execution_elapsed": "169.786556ms", "builder_finish_elapsed": "4.455101ms"}
+  ],
+  "speculative_counter_delta": {"reth_tempo_payload_builder_conflicting_transactions_total": 19482.0, "reth_tempo_payload_builder_rebased_fee_transactions_total": 122.0, "reth_tempo_payload_builder_reused_call_bodies_total": 247.0, "reth_tempo_payload_builder_reused_transactions_total": 227.0, "reth_tempo_payload_builder_speculated_transactions_total": 40416.0, "reth_tempo_payload_builder_speculative_backoff_total": 318518.0, "reth_tempo_payload_builder_speculative_retries_total": 13016.0}
+}

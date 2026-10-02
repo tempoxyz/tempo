@@ -16,6 +16,7 @@ tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus.workspace = true
 tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
+tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-revm.workspace = true
 
@@ -30,10 +31,11 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-rpc-eth-api = { workspace = true, optional = true }
 
-rayon = { workspace = true, optional = true }
+rayon.workspace = true
 alloy-rlp.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
 
 derive_more.workspace = true
@@ -41,6 +43,9 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+alloy-trie = "0.9.5"
+alloy-sol-types.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 revm.workspace = true
 reth-storage-api.workspace = true
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
@@ -48,4 +53,4 @@ tempo-primitives = { workspace = true, features = ["arbitrary"] }
 [features]
 default = ["rpc", "engine"]
 rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
-engine = ["dep:tempo-payload-types", "dep:rayon"]
+engine = ["dep:tempo-payload-types"]

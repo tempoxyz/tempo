@@ -1,0 +1,1082 @@
+[
+  {
+    "trial": "workers-0-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1685.8,
+        "peak": 1719.0,
+        "mean_system": 835.2
+      },
+      "client": {
+        "mean": 360.2,
+        "peak": 373.0,
+        "mean_system": 64.5
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 92.8,
+      "client:|__tokio-rt-worker": 267.2,
+      "node:|__engine": 15.5,
+      "node:|__mdbx-rs-txn-mgr": 2.0,
+      "node:|__persistence": 4.8,
+      "node:|__storage-01": 3.2,
+      "node:|__storage-03": 5.0,
+      "node:|__tokio-rt": 1651.2
+    },
+    "sending": {
+      "accepted": 231343,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.00755454
+    },
+    "accepted_tps": 46199,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 2.895812,
+      "execution_loop": 4.673797,
+      "pool_snapshot": 0.3205,
+      "finalization": 2.236565,
+      "state_root": 1.24715,
+      "background_state_root_wait": 0.0,
+      "hashed_post_state": 0.09595,
+      "payload_build": 7.360465
+    },
+    "confirmation": {
+      "user_transactions": 231343,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.339584,
+      "confirmed_tps_including_backlog": 27740
+    },
+    "variant": "sync",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 17156018176,
+      "disk_free_bytes_end": 16862875648
+    },
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 4,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1676.0,
+        "peak": 1713.0,
+        "mean_system": 831.5
+      },
+      "client": {
+        "mean": 357.2,
+        "peak": 363.0,
+        "mean_system": 64.0
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 92.2,
+      "client:|__tokio-rt-worker": 264.2,
+      "node:|__engine": 13.8,
+      "node:|__mdbx-rs-txn-mgr": 2.0,
+      "node:|__persistence": 4.2,
+      "node:|__storage-00": 4.2,
+      "node:|__storage-04": 4.5,
+      "node:|__tempo-execution": 23.5,
+      "node:|__tokio-rt": 1620.8
+    },
+    "sending": {
+      "accepted": 224867,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007455191
+    },
+    "accepted_tps": 44906,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.052432,
+      "execution_loop": 4.627754,
+      "pool_snapshot": 0.861985,
+      "finalization": 1.861314,
+      "state_root": 1.207615,
+      "background_state_root_wait": 0.0,
+      "hashed_post_state": 0.093873,
+      "payload_build": 7.472521
+    },
+    "confirmation": {
+      "user_transactions": 224867,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.537769,
+      "confirmed_tps_including_backlog": 26338
+    },
+    "variant": "sync",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 16862863360,
+      "disk_free_bytes_end": 16582983680
+    },
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 7,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-0-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1786.5,
+        "peak": 2004.0,
+        "mean_system": 801.0
+      },
+      "client": {
+        "mean": 293.2,
+        "peak": 345.0,
+        "mean_system": 51.0
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 81.8,
+      "client:|__tokio-rt-worker": 212.0,
+      "node:|__engine": 15.5,
+      "node:|__mdbx-rs-txn-mgr": 2.5,
+      "node:|__persistence": 6.8,
+      "node:|__rayon-00": 19.0,
+      "node:|__rayon-01": 17.2,
+      "node:|__rayon-02": 16.0,
+      "node:|__rayon-03": 14.5,
+      "node:|__rayon-04": 14.2,
+      "node:|__rayon-05": 11.8,
+      "node:|__rayon-06": 10.8,
+      "node:|__rayon-07": 8.2,
+      "node:|__rayon-08": 6.5,
+      "node:|__rayon-09": 5.8,
+      "node:|__rayon-10": 5.5,
+      "node:|__rayon-11": 5.0,
+      "node:|__rayon-12": 4.8,
+      "node:|__rayon-13": 4.8,
+      "node:|__rayon-14": 4.5,
+      "node:|__rayon-15": 4.2,
+      "node:|__rayon-16": 4.5,
+      "node:|__rayon-17": 4.5,
+      "node:|__rayon-18": 4.5,
+      "node:|__rayon-19": 4.2,
+      "node:|__rayon-20": 4.5,
+      "node:|__rayon-21": 4.2,
+      "node:|__rayon-22": 4.0,
+      "node:|__rayon-23": 4.2,
+      "node:|__rayon-24": 4.0,
+      "node:|__rayon-25": 4.2,
+      "node:|__rayon-26": 4.0,
+      "node:|__rayon-27": 4.0,
+      "node:|__rayon-28": 3.8,
+      "node:|__rayon-29": 3.5,
+      "node:|__rayon-30": 3.8,
+      "node:|__rayon-31": 3.5,
+      "node:|__sparse-trie": 24.0,
+      "node:|__storage-00": 6.5,
+      "node:|__storage-02": 5.8,
+      "node:|__tokio-rt": 1437.2,
+      "node:|__trie-hashing": 16.0
+    },
+    "sending": {
+      "accepted": 221469,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007899344
+    },
+    "accepted_tps": 44224,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.474854,
+      "execution_loop": 5.177475,
+      "pool_snapshot": 0.286898,
+      "finalization": 1.018358,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.02658,
+      "hashed_post_state": 0.057287,
+      "payload_build": 6.61751
+    },
+    "confirmation": {
+      "user_transactions": 221469,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 7.82581,
+      "confirmed_tps_including_backlog": 28300
+    },
+    "variant": "shared",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 16582647808,
+      "disk_free_bytes_end": 16302583808
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 200.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 10,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1939.8,
+        "peak": 2015.0,
+        "mean_system": 889.2
+      },
+      "client": {
+        "mean": 326.5,
+        "peak": 336.0,
+        "mean_system": 55.0
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 91.0,
+      "client:|__tokio-rt-worker": 234.5,
+      "node:|__engine": 16.2,
+      "node:|__mdbx-rs-txn-mgr": 2.5,
+      "node:|__persistence": 4.5,
+      "node:|__rayon-00": 21.2,
+      "node:|__rayon-01": 18.0,
+      "node:|__rayon-02": 17.0,
+      "node:|__rayon-03": 16.0,
+      "node:|__rayon-04": 15.5,
+      "node:|__rayon-05": 10.2,
+      "node:|__rayon-06": 8.8,
+      "node:|__rayon-07": 7.5,
+      "node:|__rayon-08": 6.8,
+      "node:|__rayon-09": 6.2,
+      "node:|__rayon-10": 5.8,
+      "node:|__rayon-11": 5.2,
+      "node:|__rayon-12": 5.0,
+      "node:|__rayon-13": 5.0,
+      "node:|__rayon-14": 4.5,
+      "node:|__rayon-15": 4.8,
+      "node:|__rayon-16": 4.5,
+      "node:|__rayon-17": 4.2,
+      "node:|__rayon-18": 4.2,
+      "node:|__rayon-19": 4.2,
+      "node:|__rayon-20": 4.2,
+      "node:|__rayon-21": 4.0,
+      "node:|__rayon-22": 4.0,
+      "node:|__rayon-23": 4.0,
+      "node:|__rayon-24": 4.2,
+      "node:|__rayon-25": 4.2,
+      "node:|__rayon-26": 4.0,
+      "node:|__rayon-27": 3.5,
+      "node:|__rayon-28": 3.5,
+      "node:|__rayon-29": 3.8,
+      "node:|__rayon-30": 3.8,
+      "node:|__rayon-31": 3.8,
+      "node:|__sparse-trie": 27.0,
+      "node:|__storage-00": 5.2,
+      "node:|__storage-04": 2.8,
+      "node:|__tempo-execution": 27.8,
+      "node:|__tokio-rt": 1562.8,
+      "node:|__trie-hashing": 17.2
+    },
+    "sending": {
+      "accepted": 218801,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007257428
+    },
+    "accepted_tps": 43697,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.583944,
+      "execution_loop": 5.121751,
+      "pool_snapshot": 0.79879,
+      "finalization": 0.680856,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.029368,
+      "hashed_post_state": 0.056244,
+      "payload_build": 6.729105
+    },
+    "confirmation": {
+      "user_transactions": 218801,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.016201,
+      "confirmed_tps_including_backlog": 27295
+    },
+    "variant": "shared",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 16302571520,
+      "disk_free_bytes_end": 16024002560
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 201.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 11,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-0-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1777.0,
+        "peak": 2010.0,
+        "mean_system": 803.5
+      },
+      "client": {
+        "mean": 294.8,
+        "peak": 342.0,
+        "mean_system": 49.0
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 81.8,
+      "client:|__tokio-rt-worker": 213.0,
+      "node:|__engine": 15.5,
+      "node:|__mdbx-rs-txn-mgr": 2.5,
+      "node:|__persistence": 6.5,
+      "node:|__rayon-00": 19.0,
+      "node:|__rayon-01": 17.5,
+      "node:|__rayon-02": 16.2,
+      "node:|__rayon-03": 14.8,
+      "node:|__rayon-04": 13.5,
+      "node:|__rayon-05": 11.8,
+      "node:|__rayon-06": 10.5,
+      "node:|__rayon-07": 8.0,
+      "node:|__rayon-08": 6.8,
+      "node:|__rayon-09": 5.8,
+      "node:|__rayon-10": 5.5,
+      "node:|__rayon-11": 5.0,
+      "node:|__rayon-12": 5.0,
+      "node:|__rayon-13": 4.8,
+      "node:|__rayon-14": 4.5,
+      "node:|__rayon-15": 4.5,
+      "node:|__rayon-16": 4.5,
+      "node:|__rayon-17": 4.2,
+      "node:|__rayon-18": 4.2,
+      "node:|__rayon-19": 4.2,
+      "node:|__rayon-20": 4.2,
+      "node:|__rayon-21": 4.0,
+      "node:|__rayon-22": 3.8,
+      "node:|__rayon-23": 4.2,
+      "node:|__rayon-24": 4.0,
+      "node:|__rayon-25": 4.0,
+      "node:|__rayon-26": 3.8,
+      "node:|__rayon-27": 4.0,
+      "node:|__rayon-28": 3.8,
+      "node:|__rayon-29": 3.8,
+      "node:|__rayon-30": 3.8,
+      "node:|__rayon-31": 3.8,
+      "node:|__sparse-trie": 23.0,
+      "node:|__storage-00": 6.0,
+      "node:|__storage-01": 3.5,
+      "node:|__storage-03": 2.2,
+      "node:|__tokio-rt": 1431.0,
+      "node:|__trie-hashing": 15.5
+    },
+    "sending": {
+      "accepted": 222325,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.008135131
+    },
+    "accepted_tps": 44393,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.475268,
+      "execution_loop": 5.200746,
+      "pool_snapshot": 0.2876,
+      "finalization": 1.046281,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.034183,
+      "hashed_post_state": 0.059684,
+      "payload_build": 6.66994
+    },
+    "confirmation": {
+      "user_transactions": 222325,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 7.875525,
+      "confirmed_tps_including_backlog": 28230
+    },
+    "variant": "shared-repeat",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 15744696320,
+      "disk_free_bytes_end": 15463407616
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 202.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 13,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 5,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1839.4,
+        "peak": 2045.0,
+        "mean_system": 828.2
+      },
+      "client": {
+        "mean": 300.0,
+        "peak": 337.0,
+        "mean_system": 48.4
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 84.2,
+      "client:|__tokio-rt-worker": 214.8,
+      "node:|__engine": 13.6,
+      "node:|__mdbx-rs-txn-mgr": 2.0,
+      "node:|__persistence": 3.2,
+      "node:|__rayon-00": 21.4,
+      "node:|__rayon-01": 20.2,
+      "node:|__rayon-02": 18.0,
+      "node:|__rayon-03": 16.6,
+      "node:|__rayon-04": 15.4,
+      "node:|__rayon-05": 12.4,
+      "node:|__rayon-06": 11.2,
+      "node:|__rayon-07": 8.8,
+      "node:|__rayon-08": 7.8,
+      "node:|__rayon-09": 6.8,
+      "node:|__rayon-10": 6.0,
+      "node:|__rayon-11": 5.2,
+      "node:|__rayon-12": 5.2,
+      "node:|__rayon-13": 5.0,
+      "node:|__rayon-14": 4.8,
+      "node:|__rayon-15": 4.6,
+      "node:|__rayon-16": 4.6,
+      "node:|__rayon-17": 4.4,
+      "node:|__rayon-18": 4.2,
+      "node:|__rayon-19": 4.0,
+      "node:|__rayon-20": 4.2,
+      "node:|__rayon-21": 4.4,
+      "node:|__rayon-22": 4.0,
+      "node:|__rayon-23": 3.8,
+      "node:|__rayon-24": 4.0,
+      "node:|__rayon-25": 3.8,
+      "node:|__rayon-26": 3.8,
+      "node:|__rayon-27": 3.6,
+      "node:|__rayon-28": 4.0,
+      "node:|__rayon-29": 3.8,
+      "node:|__rayon-30": 3.8,
+      "node:|__rayon-31": 3.8,
+      "node:|__sparse-trie": 25.2,
+      "node:|__storage-01": 3.6,
+      "node:|__storage-04": 2.0,
+      "node:|__tempo-execution": 27.0,
+      "node:|__tokio-rt": 1459.8,
+      "node:|__trie-hashing": 16.2
+    },
+    "sending": {
+      "accepted": 220682,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007821244
+    },
+    "accepted_tps": 44067,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.619836,
+      "execution_loop": 5.233966,
+      "pool_snapshot": 0.829131,
+      "finalization": 0.671315,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.034477,
+      "hashed_post_state": 0.057301,
+      "payload_build": 6.86114
+    },
+    "confirmation": {
+      "user_transactions": 220682,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.039424,
+      "confirmed_tps_including_backlog": 27450
+    },
+    "variant": "shared-repeat",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 16023666688,
+      "disk_free_bytes_end": 15744708608
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 200.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 14,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-0-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1490.0,
+        "peak": 1711.0,
+        "mean_system": 724.0
+      },
+      "client": {
+        "mean": 319.8,
+        "peak": 372.0,
+        "mean_system": 56.5
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 84.2,
+      "client:|__tokio-rt-worker": 236.0,
+      "node:|__engine": 13.8,
+      "node:|__persistence": 4.5,
+      "node:|__storage-03": 3.0,
+      "node:|__storage-04": 3.2,
+      "node:|__tokio-rt": 1457.2
+    },
+    "sending": {
+      "accepted": 229478,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.046894656
+    },
+    "accepted_tps": 45469,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 2.895633,
+      "execution_loop": 4.649678,
+      "pool_snapshot": 0.298082,
+      "finalization": 2.246155,
+      "state_root": 1.253963,
+      "background_state_root_wait": 0.0,
+      "hashed_post_state": 0.097034,
+      "payload_build": 7.327641
+    },
+    "confirmation": {
+      "user_transactions": 229478,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.304249,
+      "confirmed_tps_including_backlog": 27634
+    },
+    "variant": "sync-repeat",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 15185207296,
+      "disk_free_bytes_end": 14897291264
+    },
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 4,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1628.2,
+        "peak": 1682.0,
+        "mean_system": 793.5
+      },
+      "client": {
+        "mean": 349.2,
+        "peak": 365.0,
+        "mean_system": 61.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 90.8,
+      "client:|__tokio-rt-worker": 257.5,
+      "node:|__engine": 14.8,
+      "node:|__mdbx-rs-txn-mgr": 2.0,
+      "node:|__persistence": 4.0,
+      "node:|__storage-00": 4.0,
+      "node:|__storage-04": 4.2,
+      "node:|__tempo-execution": 25.2,
+      "node:|__tokio-rt": 1571.2
+    },
+    "sending": {
+      "accepted": 224058,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.008730584
+    },
+    "accepted_tps": 44733,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.008489,
+      "execution_loop": 4.519639,
+      "pool_snapshot": 0.848962,
+      "finalization": 1.900583,
+      "state_root": 1.233207,
+      "background_state_root_wait": 0.0,
+      "hashed_post_state": 0.093162,
+      "payload_build": 7.39302
+    },
+    "confirmation": {
+      "user_transactions": 224058,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.343919,
+      "confirmed_tps_including_backlog": 26853
+    },
+    "variant": "sync-repeat",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 15463071744,
+      "disk_free_bytes_end": 15185219584
+    },
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 2,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-10000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 371.8,
+        "peak": 378.0,
+        "mean_system": 108.8
+      },
+      "client": {
+        "mean": 84.5,
+        "peak": 85.0,
+        "mean_system": 17.5
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__futures-timer": 3.5,
+      "client:|__tempo-bench": 24.0,
+      "client:|__tokio-rt-worker": 57.0,
+      "node:|__engine": 3.8,
+      "node:|__mdbx-rs-txn-mgr": 2.8,
+      "node:|__persistence": 4.2,
+      "node:|__rayon-00": 11.5,
+      "node:|__rayon-01": 10.8,
+      "node:|__rayon-02": 9.5,
+      "node:|__rayon-03": 8.8,
+      "node:|__rayon-04": 8.0,
+      "node:|__rayon-05": 6.5,
+      "node:|__rayon-06": 5.8,
+      "node:|__rayon-07": 3.5,
+      "node:|__rayon-08": 2.0,
+      "node:|__rayon-09": 2.0,
+      "node:|__sparse-trie": 9.5,
+      "node:|__storage-00": 2.0,
+      "node:|__tempo-execution": 11.0,
+      "node:|__tokio-rt": 183.0,
+      "node:|__trie-hashing": 6.8
+    },
+    "sending": {
+      "accepted": 50000,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 4.991353337
+    },
+    "accepted_tps": 10017,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 0.681725,
+      "execution_loop": 0.899747,
+      "pool_snapshot": 0.071896,
+      "finalization": 0.151579,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.012535,
+      "hashed_post_state": 0.005858,
+      "payload_build": 1.144872
+    },
+    "confirmation": {
+      "user_transactions": 50000,
+      "execution_failures": 0,
+      "last_busy_block": 56,
+      "send_start_to_last_canonical_seconds": 5.016677,
+      "confirmed_tps_including_backlog": 9967
+    },
+    "variant": "matrix",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 14897528832,
+      "disk_free_bytes_end": 14830174208
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 90.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-25000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1336.8,
+        "peak": 1424.0,
+        "mean_system": 445.2
+      },
+      "client": {
+        "mean": 239.2,
+        "peak": 243.0,
+        "mean_system": 53.0
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__futures-timer": 5.0,
+      "client:|__tempo-bench": 64.8,
+      "client:|__tokio-rt-worker": 168.5,
+      "node:|__engine": 11.8,
+      "node:|__mdbx-rs-txn-mgr": 8.5,
+      "node:|__persistence": 11.2,
+      "node:|__proof-acct-03": 4.8,
+      "node:|__rayon-00": 33.8,
+      "node:|__rayon-01": 29.5,
+      "node:|__rayon-02": 27.8,
+      "node:|__rayon-03": 26.8,
+      "node:|__rayon-04": 25.8,
+      "node:|__rayon-05": 17.2,
+      "node:|__rayon-06": 15.5,
+      "node:|__rayon-07": 9.5,
+      "node:|__rayon-08": 7.5,
+      "node:|__rayon-09": 5.8,
+      "node:|__rayon-10": 4.8,
+      "node:|__rayon-11": 4.2,
+      "node:|__rayon-12": 4.0,
+      "node:|__rayon-13": 3.8,
+      "node:|__rayon-14": 3.5,
+      "node:|__rayon-15": 3.5,
+      "node:|__rayon-16": 3.5,
+      "node:|__rayon-17": 3.5,
+      "node:|__rayon-18": 3.5,
+      "node:|__rayon-19": 3.2,
+      "node:|__rayon-20": 3.5,
+      "node:|__rayon-21": 3.5,
+      "node:|__rayon-22": 3.2,
+      "node:|__rayon-23": 3.2,
+      "node:|__rayon-24": 3.0,
+      "node:|__rayon-25": 3.2,
+      "node:|__rayon-26": 3.2,
+      "node:|__rayon-27": 3.0,
+      "node:|__rayon-28": 3.2,
+      "node:|__rayon-29": 3.0,
+      "node:|__rayon-30": 3.0,
+      "node:|__rayon-31": 2.8,
+      "node:|__sparse-trie": 32.2,
+      "node:|__storage-00": 6.8,
+      "node:|__storage-01": 3.2,
+      "node:|__tempo-execution": 36.0,
+      "node:|__tokio-rt": 824.0,
+      "node:|__trie-hashing": 20.0
+    },
+    "sending": {
+      "accepted": 125000,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.003756057
+    },
+    "accepted_tps": 24981,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 2.306004,
+      "execution_loop": 3.24948,
+      "pool_snapshot": 0.190389,
+      "finalization": 0.519635,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.137132,
+      "hashed_post_state": 0.021829,
+      "payload_build": 4.016135
+    },
+    "confirmation": {
+      "user_transactions": 125000,
+      "execution_failures": 0,
+      "last_busy_block": 53,
+      "send_start_to_last_canonical_seconds": 5.050151,
+      "confirmed_tps_including_backlog": 24752
+    },
+    "variant": "matrix",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 14830161920,
+      "disk_free_bytes_end": 14670569472
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 139.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-75000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1982.8,
+        "peak": 2100.0,
+        "mean_system": 948.0
+      },
+      "client": {
+        "mean": 326.2,
+        "peak": 339.0,
+        "mean_system": 53.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 89.8,
+      "client:|__tokio-rt-worker": 236.8,
+      "node:|__engine": 17.5,
+      "node:|__mdbx-rs-txn-mgr": 2.5,
+      "node:|__persistence": 4.8,
+      "node:|__rayon-00": 19.2,
+      "node:|__rayon-01": 17.0,
+      "node:|__rayon-02": 15.8,
+      "node:|__rayon-03": 15.0,
+      "node:|__rayon-04": 13.8,
+      "node:|__rayon-05": 10.5,
+      "node:|__rayon-06": 9.8,
+      "node:|__rayon-07": 8.0,
+      "node:|__rayon-08": 7.0,
+      "node:|__rayon-09": 6.2,
+      "node:|__rayon-10": 6.2,
+      "node:|__rayon-11": 5.2,
+      "node:|__rayon-12": 5.2,
+      "node:|__rayon-13": 5.2,
+      "node:|__rayon-14": 5.0,
+      "node:|__rayon-15": 4.8,
+      "node:|__rayon-16": 4.8,
+      "node:|__rayon-17": 4.5,
+      "node:|__rayon-18": 4.5,
+      "node:|__rayon-19": 4.2,
+      "node:|__rayon-20": 4.2,
+      "node:|__rayon-21": 4.2,
+      "node:|__rayon-22": 4.2,
+      "node:|__rayon-23": 4.0,
+      "node:|__rayon-24": 4.0,
+      "node:|__rayon-25": 3.8,
+      "node:|__rayon-26": 3.8,
+      "node:|__rayon-27": 3.8,
+      "node:|__rayon-28": 4.0,
+      "node:|__rayon-29": 3.8,
+      "node:|__rayon-30": 4.0,
+      "node:|__rayon-31": 3.8,
+      "node:|__sparse-trie": 24.2,
+      "node:|__storage-00": 5.0,
+      "node:|__storage-02": 2.5,
+      "node:|__tempo-execution": 25.2,
+      "node:|__tokio-rt": 1615.2,
+      "node:|__trie-hashing": 15.5
+    },
+    "sending": {
+      "accepted": 225087,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.007123802
+    },
+    "accepted_tps": 44953,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.727073,
+      "execution_loop": 5.347373,
+      "pool_snapshot": 0.846534,
+      "finalization": 0.679733,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.046589,
+      "hashed_post_state": 0.053435,
+      "payload_build": 6.993498
+    },
+    "confirmation": {
+      "user_transactions": 225087,
+      "execution_failures": 0,
+      "last_busy_block": 22,
+      "send_start_to_last_canonical_seconds": 8.195289,
+      "confirmed_tps_including_backlog": 27465
+    },
+    "variant": "matrix",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 14670557184,
+      "disk_free_bytes_end": 14386679808
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 204.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 14,
+      "other": []
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 4,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 2075.0,
+        "peak": 2241.0,
+        "mean_system": 956.8
+      },
+      "client": {
+        "mean": 347.8,
+        "peak": 360.0,
+        "mean_system": 57.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 96.2,
+      "client:|__tokio-rt-worker": 250.8,
+      "node:|__engine": 25.2,
+      "node:|__mdbx-rs-txn-mgr": 2.5,
+      "node:|__persistence": 7.2,
+      "node:|__rayon-00": 16.0,
+      "node:|__rayon-01": 14.8,
+      "node:|__rayon-02": 13.8,
+      "node:|__rayon-03": 12.0,
+      "node:|__rayon-04": 11.0,
+      "node:|__rayon-05": 10.0,
+      "node:|__rayon-06": 9.0,
+      "node:|__rayon-07": 7.2,
+      "node:|__rayon-08": 6.5,
+      "node:|__rayon-09": 6.2,
+      "node:|__rayon-10": 5.5,
+      "node:|__rayon-11": 6.0,
+      "node:|__rayon-12": 5.8,
+      "node:|__rayon-13": 5.5,
+      "node:|__rayon-14": 5.5,
+      "node:|__rayon-15": 5.5,
+      "node:|__rayon-16": 5.2,
+      "node:|__rayon-17": 5.0,
+      "node:|__rayon-18": 5.2,
+      "node:|__rayon-19": 4.8,
+      "node:|__rayon-20": 5.0,
+      "node:|__rayon-21": 5.0,
+      "node:|__rayon-22": 4.8,
+      "node:|__rayon-23": 5.0,
+      "node:|__rayon-24": 4.8,
+      "node:|__rayon-25": 5.0,
+      "node:|__rayon-26": 4.8,
+      "node:|__rayon-27": 4.5,
+      "node:|__rayon-28": 4.2,
+      "node:|__rayon-29": 4.5,
+      "node:|__rayon-30": 4.8,
+      "node:|__rayon-31": 4.2,
+      "node:|__sparse-trie": 29.0,
+      "node:|__storage-02": 3.8,
+      "node:|__storage-03": 2.8,
+      "node:|__tempo-execution": 21.0,
+      "node:|__tokio-rt": 1687.5,
+      "node:|__trie-hashing": 16.8
+    },
+    "sending": {
+      "accepted": 230076,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 5.008683594
+    },
+    "accepted_tps": 45935,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 4.397471,
+      "execution_loop": 5.902227,
+      "pool_snapshot": 0.110702,
+      "finalization": 0.73655,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.035285,
+      "hashed_post_state": 0.157888,
+      "payload_build": 6.865855
+    },
+    "confirmation": {
+      "user_transactions": 230076,
+      "execution_failures": 0,
+      "last_busy_block": 15,
+      "send_start_to_last_canonical_seconds": 8.573289,
+      "confirmed_tps_including_backlog": 26836
+    },
+    "variant": "expiring",
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 14386343936,
+      "disk_free_bytes_end": 13947461632
+    },
+    "background_root_counter_delta": {
+      "reth_tempo_payload_builder_background_state_root_successes_total": 173.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 15,
+      "other": []
+    }
+  }
+]

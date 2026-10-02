@@ -50,6 +50,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    pub(crate) body_replay: crate::replay::BodyReplay,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -86,11 +87,35 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            body_replay: Default::default(),
         }
     }
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
+    /// Record call bodies on a standard speculative worker without an inspector.
+    pub fn enable_body_recording(&mut self, minimum_duration: std::time::Duration) {
+        instructions::record_storage_accesses(&mut self.inner.instruction);
+        self.body_replay.recording = true;
+        self.body_replay.minimum_duration = minimum_duration;
+    }
+
+    /// Take the worker's most recently recorded call body.
+    pub fn take_recorded_body(&mut self) -> Option<crate::replay::BodyCache> {
+        self.body_replay.captured.take()
+    }
+
+    /// Offer a body from the same transaction and environment for ordered replay.
+    pub fn set_body_replay(&mut self, candidate: Option<crate::replay::BodyCache>) {
+        self.body_replay.candidate = candidate;
+        self.body_replay.reused = false;
+    }
+
+    /// Whether the last offered call body passed validation and was reused.
+    pub const fn body_was_reused(&self) -> bool {
+        self.body_replay.reused
+    }
+
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm::new_inner(self.inner.with_inspector(inspector))
@@ -108,6 +133,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
+        self.body_replay.candidate = None;
         self.initial_gas = 0;
         self.fee_token = None;
         self.key_expiry = None;

@@ -11,6 +11,7 @@ mod max_gas_limit;
 mod operator;
 mod payment_lane;
 mod pool;
+mod shared_trie;
 mod simulate;
 mod stablecoin_dex;
 mod tempo_transaction;

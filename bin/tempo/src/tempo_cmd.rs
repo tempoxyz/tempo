@@ -62,6 +62,8 @@ pub(crate) struct ExtArgs {
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
 pub(crate) enum TempoSubcommand {
+    /// Differential-test execution against a local canonical chain (read-only).
+    ParallelReplay(Box<crate::parallel_replay::ParallelReplay>),
     /// Consensus-related commands.
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
@@ -104,6 +106,11 @@ pub(crate) enum TempoSubcommand {
 impl ExtendedCommand for TempoSubcommand {
     fn execute(self, runner: CliRunner) -> eyre::Result<()> {
         match self {
+            Self::ParallelReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
             Self::Consensus(cmd) => {
                 runner.run_blocking_until_ctrl_c(cmd.run())?;
                 Ok(())

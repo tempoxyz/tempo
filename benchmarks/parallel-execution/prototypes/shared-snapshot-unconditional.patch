@@ -1,0 +1,221 @@
+diff --git a/crates/transaction-pool/src/tt_2d_pool.rs b/crates/transaction-pool/src/tt_2d_pool.rs
+--- a/crates/transaction-pool/src/tt_2d_pool.rs
++++ b/crates/transaction-pool/src/tt_2d_pool.rs
+@@ -533,2 +533,2 @@
+-        let mut by_id = HashMap::with_capacity_and_hasher(self.pending_2d, Default::default());
+-        by_id.extend(
++        let by_id = CandidateIndex::new(
++            self.pending_2d,
+@@ -1567 +1567,4 @@
+-    snapshot: Vec<PendingTransaction<TxOrdering>>,
++    // Sharing the Vec avoids copying its backing allocation when creating a
++    // preview. Each consumer owns its cursor and ordered live-update set.
++    snapshot: Arc<Vec<PendingTransaction<TxOrdering>>>,
++    remaining: usize,
+@@ -1583 +1586,2 @@
+-            snapshot,
++            remaining: snapshot.len(),
++            snapshot: Arc::new(snapshot),
+@@ -1596 +1600 @@
+-            || self.snapshot.binary_search(&tx).is_err()
++            || self.snapshot[..self.remaining].binary_search(&tx).is_err()
+@@ -1603,5 +1607,5 @@
+-        if self
+-            .updates
+-            .last()
+-            .is_some_and(|update| self.snapshot.last().is_none_or(|tx| update > tx))
+-        {
++        if self.updates.last().is_some_and(|update| {
++            self.snapshot[..self.remaining]
++                .last()
++                .is_none_or(|tx| update > tx)
++        }) {
+@@ -1610 +1614,61 @@
+-            self.snapshot.pop()
++            self.remaining = self.remaining.checked_sub(1)?;
++            Some(self.snapshot[self.remaining].clone())
++        }
++    }
++}
++
++/// Immutable nonce lookups shared by paired iterators. A private bitmap records
++/// removals from the snapshot; arrivals and replacements live in a private map.
++/// Consuming or updating one iterator therefore cannot change another's view.
++#[derive(Clone, Debug)]
++struct CandidateIndex {
++    snapshot: Arc<HashMap<AA2dTransactionId, (usize, PendingTransaction<TxOrdering>)>>,
++    removed: Vec<u64>,
++    updates: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
++}
++
++impl CandidateIndex {
++    fn new(
++        capacity: usize,
++        transactions: impl Iterator<Item = (AA2dTransactionId, PendingTransaction<TxOrdering>)>,
++    ) -> Self {
++        let mut snapshot = HashMap::with_capacity_and_hasher(capacity, Default::default());
++        for (id, tx) in transactions {
++            let position = snapshot.len();
++            // Preserve dense positions even if a caller supplies a replacement.
++            match snapshot.entry(id) {
++                hash_map::Entry::Vacant(entry) => {
++                    entry.insert((position, tx));
++                }
++                hash_map::Entry::Occupied(mut entry) => {
++                    entry.get_mut().1 = tx;
++                }
++            }
++        }
++        Self {
++            removed: vec![0; snapshot.len().div_ceil(64)],
++            snapshot: Arc::new(snapshot),
++            updates: Default::default(),
++        }
++    }
++
++    fn get(&self, id: &AA2dTransactionId) -> Option<&PendingTransaction<TxOrdering>> {
++        if let Some(tx) = self.updates.get(id) {
++            return Some(tx);
++        }
++        let (position, tx) = self.snapshot.get(id)?;
++        (self.removed[position / 64] & (1 << (position % 64)) == 0).then_some(tx)
++    }
++
++    fn contains_key(&self, id: &AA2dTransactionId) -> bool {
++        self.get(id).is_some()
++    }
++
++    fn insert(&mut self, id: AA2dTransactionId, tx: PendingTransaction<TxOrdering>) {
++        self.updates.insert(id, tx);
++    }
++
++    fn remove(&mut self, id: &AA2dTransactionId) {
++        self.updates.remove(id);
++        if let Some((position, _)) = self.snapshot.get(id) {
++            self.removed[position / 64] |= 1 << (position % 64);
+@@ -1621 +1685 @@
+-    by_id: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
++    by_id: CandidateIndex,
+@@ -3816,0 +3881,72 @@
++    fn shared_nonce_indexes_match_independent_maps() {
++        let transactions = (0..514u64)
++            .map(|i| {
++                let tx = TxBuilder::aa(Address::repeat_byte(1))
++                    .nonce_key(U256::from(i % 257 + 1))
++                    .calls(vec![Call {
++                        to: TxKind::Call(Address::ZERO),
++                        value: U256::ZERO,
++                        input: Bytes::copy_from_slice(&i.to_be_bytes()),
++                    }])
++                    .build();
++                (
++                    tx.aa_transaction_id().unwrap(),
++                    PendingTransaction {
++                        submission_id: i,
++                        transaction: Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
++                        priority: Priority::Value(u128::from(i % 19)),
++                    },
++                )
++            })
++            .collect::<Vec<_>>();
++        let value = |tx: Option<&PendingTransaction<TxOrdering>>| {
++            tx.map(|tx| {
++                (
++                    tx.submission_id,
++                    tx.priority.clone(),
++                    *tx.transaction.hash(),
++                )
++            })
++        };
++        // Include bitmap boundaries, an empty snapshot, and duplicate IDs in the
++        // initial input. Later operations also replace already-removed entries.
++        for count in [0, 1, 63, 64, 65, 127, 128, 129, 257, 514] {
++            let expected: HashMap<_, _> = transactions[..count].iter().cloned().collect();
++            let actual = CandidateIndex::new(count, transactions[..count].iter().cloned());
++            let mut expected = [expected.clone(), expected];
++            let mut actual = [actual.clone(), actual];
++            let mut seed = 0x1234_5678u64;
++            for step in 0..4096 {
++                if step == 2048 {
++                    expected[1] = expected[0].clone();
++                    actual[1] = actual[0].clone();
++                }
++                seed ^= seed << 13;
++                seed ^= seed >> 7;
++                seed ^= seed << 17;
++                let view = (seed >> 16) as usize % 2;
++                let (id, tx) = &transactions[seed as usize % transactions.len()];
++                if seed.is_multiple_of(3) {
++                    expected[view].remove(id);
++                    actual[view].remove(id);
++                } else {
++                    expected[view].insert(*id, tx.clone());
++                    actual[view].insert(*id, tx.clone());
++                }
++                for view in 0..2 {
++                    assert_eq!(value(actual[view].get(id)), value(expected[view].get(id)));
++                    assert_eq!(
++                        actual[view].contains_key(id),
++                        expected[view].contains_key(id)
++                    );
++                }
++            }
++            for (id, _) in &transactions {
++                for view in 0..2 {
++                    assert_eq!(value(actual[view].get(id)), value(expected[view].get(id)));
++                }
++            }
++        }
++    }
++
++    #[test]
+@@ -3840,2 +3976,4 @@
+-            let mut expected: BTreeSet<_> = initial.clone().collect();
+-            let mut actual = IndependentTransactions::new(initial);
++            let expected: BTreeSet<_> = initial.clone().collect();
++            let actual = IndependentTransactions::new(initial);
++            let mut expected = [expected.clone(), expected];
++            let mut actual = [actual.clone(), actual];
+@@ -3843 +3981,5 @@
+-            for _ in 0..4096 {
++            for step in 0..4096 {
++                if step == 2048 {
++                    expected[1] = expected[0].clone();
++                    actual[1] = actual[0].clone();
++                }
+@@ -3846,0 +3989 @@
++                let view = (seed >> 16) as usize % 2;
+@@ -3849,2 +3992,2 @@
+-                    expected.insert(tx.clone());
+-                    actual.insert(tx.clone());
++                    expected[view].insert(tx.clone());
++                    actual[view].insert(tx.clone());
+@@ -3853,2 +3996,2 @@
+-                        actual.pop_last().map(|tx| *tx.transaction.hash()),
+-                        expected.pop_last().map(|tx| *tx.transaction.hash()),
++                        actual[view].pop_last().map(|tx| *tx.transaction.hash()),
++                        expected[view].pop_last().map(|tx| *tx.transaction.hash()),
+@@ -3858 +4001,9 @@
+-            while let Some(tx) = expected.pop_last() {
++            for (mut actual, mut expected) in actual.into_iter().zip(expected) {
++                while let Some(tx) = expected.pop_last() {
++                    assert_eq!(
++                        actual.pop_last().unwrap().transaction.hash(),
++                        tx.transaction.hash()
++                    );
++                }
++                assert!(actual.pop_last().is_none());
++                actual.insert(transactions[0].clone());
+@@ -3861 +4012 @@
+-                    tx.transaction.hash()
++                    transactions[0].transaction.hash()
+@@ -3862,0 +4014 @@
++                assert!(actual.pop_last().is_none());
+@@ -3864,7 +4015,0 @@
+-            assert!(actual.pop_last().is_none());
+-            actual.insert(transactions[0].clone());
+-            assert_eq!(
+-                actual.pop_last().unwrap().transaction.hash(),
+-                transactions[0].transaction.hash()
+-            );
+-            assert!(actual.pop_last().is_none());

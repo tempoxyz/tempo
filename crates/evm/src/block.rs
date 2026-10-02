@@ -1,7 +1,7 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
-    Database, Evm, RecoveredTx,
+    Database, Evm, FromRecoveredTx, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
         ExecutableTx, GasOutput, OnStateHook, StateChangePreBlockSource, StateChangeSource,
@@ -20,6 +20,7 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_evm::block::StateDB;
+use reth_primitives_traits::SignedTransaction;
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
@@ -116,6 +117,7 @@ impl<H> TxResult for TempoTxResult<H> {
 /// logic on top: section-based transaction ordering ([`BlockSection`]), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
+    transactions: &'a [TempoTxEnvelope],
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -141,6 +143,7 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
+            transactions: ctx.transactions,
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
@@ -451,6 +454,46 @@ where
         }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
+        // Reth's engine submits one transaction at a time. Use the known block body
+        // to prepare a bounded window, then let the existing executor validate and
+        // commit each transaction in the original order.
+        if !self.inner.evm.has_prepared_transactions() && !recovered.tx().is_system_tx() {
+            let batch_size = self.inner.evm.speculative_batch_size();
+            let beneficiary = self.inner.evm.ctx().block.beneficiary;
+            let mut inputs = Vec::new();
+            for (offset, candidate) in self
+                .transactions
+                .iter()
+                .skip(self.inner.receipts.len())
+                .take(batch_size)
+                .enumerate()
+            {
+                if candidate.is_system_tx() {
+                    break;
+                }
+                let fee_recipient = if let Some(proposer) = candidate.subblock_proposer() {
+                    let Some(recipient) = self.subblock_fee_recipients.get(&proposer) else {
+                        break;
+                    };
+                    *recipient
+                } else {
+                    beneficiary
+                };
+                let env = if offset == 0 && candidate == recovered.tx() {
+                    tx_env.clone()
+                } else {
+                    let Ok(signer) = candidate.try_recover() else {
+                        break;
+                    };
+                    tempo_revm::TempoTxEnv::from_recovered_tx(candidate, signer)
+                };
+                inputs.push((env, fee_recipient));
+            }
+            if !inputs.is_empty() {
+                self.inner.evm.prepare_transactions(inputs);
+            }
+        }
+
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
         if let Some(validator) = recovered.tx().subblock_proposer() {
@@ -541,6 +584,10 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+        let stats = self.inner.evm.execution_stats();
+        if stats.speculated > 0 {
+            tracing::debug!(target: "tempo::execution", ?stats, "Finished speculative block execution");
+        }
         self.inner.finish()
     }
 

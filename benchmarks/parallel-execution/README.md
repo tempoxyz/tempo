@@ -1,0 +1,1867 @@
+# Speculative execution measurements
+
+Experimental implementation, disabled by default. This is **not** evidence that
+execution is no longer the bottleneck in a live Tempo node.
+
+Enable node validation and payload building with:
+
+```sh
+tempo node --execution.threads 16 --execution.batch-size 128
+```
+
+Run correctness checks and the in-memory throughput benchmark:
+
+```sh
+cargo test -p tempo-evm --lib
+cargo test -p tempo-node --test it 'tip20::test_tip20_transfer::parallel'
+CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
+  TEMPO_BENCH_COUNTS=10000,25000,50000,100000 \
+  TEMPO_BENCH_WORKERS=0,4,16,32 \
+  cargo test -p tempo-evm --release execution_throughput -- --ignored --nocapture
+```
+
+`workers=0` is the existing sequential EVM. Counts are **transactions per run**,
+not offered TPS. The `tps` column is completed transactions divided by measured
+execution time. This benchmark does not model an offered-load queue.
+
+`TEMPO_BENCH_WORKLOADS` selects a comma-separated subset of the workloads below.
+`TEMPO_BENCH_BATCH_SIZE` changes the window (default 128; the declared-gas bound
+still applies). `TEMPO_BENCH_BLOCK_GAS_LIMIT` changes the benchmark block budget
+(default 500M), allowing larger windows to be compared at the same 5B budget as
+the node measurements. `TEMPO_BENCH_PHASES=1` prints preparation, ordered execution and
+commit times to help distinguish worker scheduling from serial replay costs.
+Phase timing adds per-transaction clock reads, so compare equally instrumented runs.
+`TEMPO_BENCH_STREAMING=0` waits for all workers before ordered execution, for a
+comparison with streaming (the default). With streaming, ordered time includes
+waiting for individual results and serving outstanding worker database reads.
+`TEMPO_BENCH_FEE_REBASING=0` disables fee arithmetic rebasing for comparisons;
+the `fees_rebased` column counts the subset of full results reused this way.
+
+The timer includes speculative scheduling, database reads, conflict validation,
+replays, receipt construction, and state commits. Signing, initial state setup,
+networking, consensus, disk I/O and trie hashing are excluded. After each run,
+the harness compares the complete receipt vector and calculated Ethereum state
+trie root to the sequential run. These are generated workloads with a warm,
+in-memory database and the T0 execution environment; they are not historical or
+end-to-end node benchmarks.
+
+Workloads:
+
+- `storage`: one distinct SSTORE per sender, with no fees.
+- `compute`: 500 KECCAK256 iterations per transaction, with no fees.
+- `compute_paid`: the same compute loop with shared fee collection and settlement.
+- `tip20`: independent funded pathUSD transfers, with no fees.
+- `tip20_paid`: the same transfers with a nonzero gas price, sharing fee state.
+- `tip20_paid_aa_existing`: paid two-dimensional AA transfers among 100 funded
+  accounts, with deterministic pseudorandom recipients and shared balance dependencies.
+
+## Host and results
+
+Measured 2026-10-02 using Rust 1.96.1 on an AMD EPYC 4585PX with 16 physical cores,
+32 logical CPUs, and 62 GiB RAM. Release optimizations, LTO disabled, batch size
+128. Each cell below is one timed run; no confidence interval is claimed.
+
+`initial.tsv` is the initial per-transaction-worker implementation.
+`worker-reuse.tsv` includes account prefetching and reuse of each worker's EVM.
+
+At 100,000 transactions in `worker-reuse.tsv`:
+
+| Workload | Sequential TPS | 4 workers | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: | ---: |
+| Storage | 505,772 | 266,723 | 289,897 | 167,655 |
+| Compute | 7,591 | 26,631 | 61,373 | 74,482 |
+| TIP-20, no fees | 179,939 | 102,152 | 94,532 | 86,623 |
+| TIP-20, paid | 115,046 | 52,389 | 55,060 | 41,943 |
+
+Compute improves by about 9.8x with 32 workers. All cheap workloads remain slower
+than sequential execution. Paid transfers replay 99,218 of 100,000 transactions:
+fee-manager balances and validator fee counters are actual shared dependencies.
+Ignoring these conflicts would produce incorrect state. A payment optimization
+must preserve intermediate balance observations, overflow behavior, gas and logs.
+
+`adaptive.tsv` adds scheduling backoff: after a window with fewer than one eighth
+of its speculative results reused, the next eight windows execute sequentially.
+The scheduler then probes again. This changes scheduling only; every reused
+result still passes all dependency checks. A regression test verifies both the
+backoff and the return to parallel execution.
+
+At 100,000 transactions, the adaptive implementation measured:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Storage | 519,261 | 276,899 | 173,371 |
+| Compute | 7,832 | 74,652 | 74,461 |
+| TIP-20, no fees | 182,336 | 96,797 | 69,147 |
+| TIP-20, paid | 115,821 | 96,677 | 94,944 |
+
+Backoff reduces paid-transfer replays from 99,218 to 11,049 per 100,000
+transactions. It does not make shared fee writes commute or replay individual
+execution phases. Independent cheap transactions still pay scheduling overhead.
+
+`final.tsv` uses Alloy's fast hash maps for speculative read caches and caps each
+window's total declared gas at the block gas limit. The benchmark block gas limit
+is 500M, matching the local node trials. At 100,000 transactions:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Storage | 529,535 | 300,809 | 179,508 |
+| Compute | 7,552 | 58,832 | 73,458 |
+| TIP-20, no fees | 186,396 | 107,860 | 82,226 |
+| TIP-20, paid | 116,694 | 103,149 | 100,478 |
+
+The variation between single runs, especially the 16-worker compute results,
+requires repeated measurements before drawing smaller performance conclusions.
+The stable conclusion is substantial compute scaling and continuing overhead on
+cheap transactions. The local node matrix predates this last read-cache change.
+
+## Partial call-body replay
+
+`body-replay.tsv` adds a second reuse boundary. When a complete transaction
+conflicts, validation, pre-execution and settlement run again in order, but an
+unchanged call body can be reused. At 100,000 transactions:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Compute, no fees | 7,642 | 72,908 | 74,101 |
+| Compute, paid | 7,439 | 34,648 | 35,727 |
+| TIP-20, paid | 114,067 | 96,782 | 94,745 |
+
+The paid compute run reuses 98,075 call bodies, compared with 774 complete
+transactions. Fee processing remains sequential, so this workload improves by
+4.8x but does not reach 50k TPS. Full receipt vectors and state roots still match.
+
+`body-replay-initial.tsv` records the first version: caching cheap TIP-20 bodies
+reduced throughput to 45–57k TPS. The scheduler now keeps bodies only when their
+measured execution time, excluding worker database round trips, reaches 20 μs.
+This is a scheduling heuristic, not a consensus decision. Differential tests and
+canonical replay set the threshold to zero to exercise all supported reuse paths.
+Adaptive backoff counts both complete results and reused bodies as useful work.
+
+Workers record journal storage accesses as well as database reads, including
+attempts inside reverted calls. Reuse requires equal account metadata, original
+and present values for accessed slots, warm/cold status, transient state, gas
+inputs and execution context. Only unobserved pre-execution storage is replaced
+with its freshly executed values; the fresh journal/log prefix is preserved.
+Creation and destruction use full replay. Plain fee-free transactions skip body
+capture. Inspectors and custom EVM components remain on the ordinary path.
+
+Targeted tests cover native fee-balance observations, reverted reads, successful/
+reverted/halted bodies, storage gas, precompile failures, expiring AA nonce rings,
+atomic multicall reverts, and post-execution fee-accumulator overflow. Tests compare
+complete per-transaction outcomes and final trie roots, not just scheduling counts.
+AMM tests cover liquidity exhaustion and pre-/post-T1C transient reservations while
+the call bodies remain independent. Reward tests change the global accumulator
+and shared reward recipient, checking both independent bodies and bodies that
+observe those values. The current EVM/revm suites pass 208 tests
+(one throughput benchmark is ignored by default); Clippy with warnings denied
+and the EVM build without default features also pass.
+
+The wider suite also exposed a pre-existing process-wide key-authorization gas
+table initialized from the first EVM's configuration. The failure was reproduced
+on the previous commit; deriving the table from the active configuration passed
+40 repeated concurrent runs of all 128 revm tests. This is recorded separately
+in commit `8ea53ad8`.
+
+## Prefetching and replay allocation
+
+`prefetch.tsv` records the next optimization: prefetch common fee balances,
+preferences and reward slots, plus sender/recipient slots from the first native
+TIP-20 `transfer` call. Hints are bounded, do not warm the EVM journal, and do not
+replace execution reads or conflict checks. Dynamic reward delegates, token
+preferences and virtual-recipient resolution retain the ordinary database path.
+Call-body reuse now applies its storage changes onto the fresh journal, avoiding
+copies of the fee/nonce journal, logs and unobserved slots.
+
+The file retains two alternating 100k runs of the baseline (`021c07df`) and an
+intermediate version with fee hints only. That intermediate version regressed
+fee-free TIP-20 transfers with 32 workers. Adding transfer hints raised that case
+to 143–145k TPS in two repeated runs, versus 77–91k for the baseline. Paid transfers
+measured 102–103k TPS. Two samples are not a confidence interval.
+
+The `final` rows are a complete 10k/25k/50k/100k transaction matrix with phase
+timing enabled. At 100,000 transactions:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Storage | 489,851 | 354,829 | 233,862 |
+| Compute, no fees | 7,933 | 75,915 | 79,337 |
+| Compute, paid | 7,671 | 37,026 | 38,732 |
+| TIP-20, no fees | 174,796 | 160,365 | 144,337 |
+| TIP-20, paid | 112,574 | 103,162 | 101,971 |
+
+All measured receipt vectors and state roots match. Paid compute still spends
+1.469 s preparing workers, 1.049 s in ordered execution and 0.057 s committing
+100k transactions with 32 workers. Increasing the window to 256 did not produce
+a consistent improvement, so the default remains 128. Cheap transactions still
+benefit from sequential execution, and paid compute remains below 50k TPS.
+
+## Streaming speculative batches
+
+Workers now keep running while the owner validates and executes earlier candidates.
+Preparation prefetches a bounded batch and starts its workers; ordered execution
+waits for the required candidate while serving database requests. Dropping or
+replacing a batch cancels outstanding reads and waits for its workers to finish,
+so work and memory cannot accumulate behind cancelled payloads. Provider access
+stays on the owner thread. Worker panics are caught and passed back to the owner.
+
+The generated differentials run both streaming and a frozen batch, preserving
+coverage of maximum conflicts as well as concurrent scheduling. Additional tests
+cover returning before later reads, cancellation, provider unwind and errors,
+worker panic cleanup, and replay when prefetched accounts and later storage reads describe
+different prefixes. Configuration, full-result read validation and call-body
+validation retain their existing checks.
+
+`streaming-profile-baseline.json` records the preceding node's builder CPU profile.
+On the 16-worker trial, preparation accounted for 34.8% of sampled builder CPU,
+including preview iteration and transaction cloning during backoff. The payload
+builder now defers conversion to an EVM input until the scheduler actually starts
+workers. Backoff still advances the same number of preview candidates. The
+profiled twenty-second trials exceeded the confirmation drain and are diagnostic
+profiles, not successful throughput measurements.
+
+`streaming.tsv` retains both barrier/streaming comparisons and the final
+10k/25k/50k/100k transaction matrix. At 100k paid-compute transactions, two barrier
+runs measured 36,720 and 37,087 TPS with 16 workers. Three streaming runs measured
+51,761, 49,862 and 51,236 TPS. With 32 workers, streaming measured 45,724–46,786 TPS.
+These are individual runs, not confidence intervals or evidence of sustained node
+throughput. The first pair predates removal of an unused transaction clone from
+worker results; the repeated comparison and final matrix use the final code.
+
+At 100,000 transactions in the final streaming matrix:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Storage | 488,643 | 297,572 | 224,913 |
+| Compute, no fees | 7,390 | 69,968 | 88,313 |
+| Compute, paid | 7,234 | 49,862 | 45,724 |
+| TIP-20, no fees | 176,812 | 162,071 | 139,549 |
+| TIP-20, paid | 112,479 | 103,433 | 103,249 |
+
+Every run checks complete receipt vectors and final trie roots against sequential
+execution. Streaming improves paid compute by overlapping its call bodies with
+ordered fee work, but still adds overhead to cheap independent transactions.
+The final paid-compute run spends 0.392 s in preparation, 1.525 s in ordered
+execution (including worker waits), and 0.081 s committing with 16 workers.
+The `speculated` counter now counts scheduled candidates, including work cancelled
+when a prepared batch is abandoned; it must not be read as committed throughput.
+
+## Local node trials
+
+Build the actual node and load generator, then run isolated trials:
+
+```sh
+CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
+  cargo build --release -p tempo -p tempo-bench
+python3 benchmarks/parallel-execution/run_node.py \
+  --output /tmp/tempo-node-trials --duration 5 \
+  --targets 10000,25000,50000,75000 --workers 0,16
+```
+
+The driver starts a fresh dev node for each trial, with the repository test
+genesis, 100 funded accounts, 100 ms target block time, 500M block gas limit,
+prewarming disabled, loopback RPC, and no peers. Node and load generator share
+this host. The enlarged pool and RPC connection limits are recorded in each
+trial's `commands.json`. Two-dimensional nonces are the default; each transaction
+therefore creates a fresh nonce storage entry. This is not distributed consensus
+or a large production state database.
+
+The load generator bounds concurrent gas-estimate initialization, distributes
+signing across runtime tasks, limits the initial send burst, reports generation
+failures, and drains accepted transaction hashes before ending the report range.
+The existing `latency_ms` report field measures **block timestamp spacing**, not
+transaction confirmation latency. Accepted RPC submissions are not confirmations.
+
+`node/matrix-2d-*.json` retains reports, busy-block payload timings, and speculative
+counter deltas from the fresh-node matrix. Actual accepted submissions per second:
+
+| Target TPS | Sequential | Adaptive, 16 workers |
+| --- | ---: | ---: |
+| 10,000 | 9,999 | 10,012 |
+| 25,000 | 17,286 | 16,559 |
+| 50,000 | 17,256 | 16,539 |
+| 75,000 | 17,409 | 16,582 |
+
+All accepted transactions in these eight trials were included; no generation,
+submission or confirmation failures were reported. The higher targets were not
+achieved. At the 50k target, the adaptive run spent 2.713 s in the transaction
+execution section and 1.022 s finishing busy payloads (4.257 s total building).
+The execution section includes pool iteration and speculative scheduling, and
+does not isolate interpreter time. These measurements do not establish that
+execution has ceased to be a bottleneck.
+
+`node/body-replay-workers-*.json` repeats the same eight trials with partial replay
+and its 20 μs body cutoff. Actual accepted submissions per second:
+
+| Target TPS | Sequential | Partial replay, 16 workers |
+| --- | ---: | ---: |
+| 10,000 | 10,008 | 9,995 |
+| 25,000 | 17,350 | 16,183 |
+| 50,000 | 17,522 | 16,163 |
+| 75,000 | 17,416 | 16,280 |
+
+Every accepted transaction confirmed, with no generation, submission or
+confirmation failures. At the 50k target, the speculative run reused 203 call
+bodies and spent 2.630 s in the transaction execution section, 0.982 s finishing
+busy payloads, and 4.149 s building them overall. Shared senders/balances and cheap
+TIP-20 calls leave little reusable work in this workload. These results still do
+not meet the requested sustained 50k+ node throughput.
+
+This matrix also has a protocol gas ceiling: 450M of the 500M block budget is
+available to the proposer. Creating a fresh 2D nonce slot costs about 285k gas per
+transfer in this workload. Busy blocks contain about 1,575 user transactions,
+which permits roughly 15.75k confirmed TPS at the 100 ms target interval. The
+slightly higher accepted rate includes queueing followed by the confirmation drain.
+A higher benchmark genesis gas limit or a workload that reuses nonce lanes is
+needed to measure node execution capacity above that ceiling. This matrix cannot
+separate that limit from execution or load-generator limits.
+
+The follow-up `node/body-replay-5b-*.json` trials remove that ceiling using a fresh
+5B-gas genesis copy. The driver checks the node's reported gas limit before loading:
+
+```sh
+python3 benchmarks/parallel-execution/run_node.py \
+  --output /tmp/tempo-node-body-replay-5b --duration 5 \
+  --targets 50000,75000 --workers 0,16 --block-gas-limit 5000000000
+```
+
+| Target TPS | Sequential accepted TPS | Partial replay, 16 workers |
+| --- | ---: | ---: |
+| 50,000 | 23,188 | 21,068 |
+| 75,000 | 22,989 | 21,471 |
+
+All accepted transactions confirmed without failures. At the 50k target, partial
+replay spent 2.381 s in the transaction execution section and 1.128 s finishing
+busy payloads (3.738 s total). Removing the gas cap improves observed throughput,
+but this workload still benefits from sequential execution. Both node and client
+share the machine; these trials do not isolate the remaining submission, execution
+and finalization limits or demonstrate sustained 50k TPS.
+
+`node/prefetch-5b-*.json` repeats the full offered-load matrix after prefetching:
+
+| Target TPS | Sequential accepted TPS | Prefetch, 16 workers |
+| --- | ---: | ---: |
+| 10,000 | 10,000 | 10,018 |
+| 25,000 | 23,275 | 22,446 |
+| 50,000 | 22,093 | 21,502 |
+| 75,000 | 22,195 | 21,419 |
+
+All 767,635 accepted transactions confirmed, with no generation, submission or
+execution failures. Each trial lasts five seconds of offered load plus its drain;
+the rates divide accepted transactions by measured send duration. These results
+remain in the earlier node range despite the in-memory gains.
+
+At the 50k target, the 16-worker run spent 2.304 s in busy payload execution
+sections and 1.159 s finishing them (3.712 s total). The reports additionally retain
+payload histogram counter deltas: transaction execution, pool fetch, finalization,
+state-root computation and post-state hashing. Their scope includes setup and
+all payload attempts, unlike the busy-payload rows. They are diagnostic component
+timings, not independently measured throughput or confirmation latency. This
+workload still does not sustain 50k node TPS.
+
+Earlier `node/sequential-*.json` and `node/speculative-*.json` trials used expiring
+nonces, default queue sizes, and the load generator before parallel signing.
+Both modes accepted and confirmed the 10k and 25k target workloads. The 50k
+target runs fell short and left accepted transactions unconfirmed. The dev
+engine also rejected some empty catch-up blocks with equal parent/child
+timestamps. `node/adaptive-*.json` records intermediate diagnostic runs, including
+a run whose client concurrency exceeded the default RPC connection limit. These
+are retained as failed/limited trials, not successful throughput results.
+
+The expiring-nonce ring has 300,000 entries and cannot evict an unexpired entry.
+Sustained 50k TPS with 25-second expiry would exceed that protocol capacity.
+Use two-dimensional nonces or shorter expiry windows for longer high-rate
+experiments; changing the ring rules is outside this execution optimization.
+
+## Admission concurrency and pool counting
+
+The locked Reth validation service holds its shared receive-queue mutex while
+awaiting each validation job, serializing the configured workers. A two-worker
+barrier regression reproduced this on the original executor. Tempo now releases
+the queue before running a job and uses a bounded sender without a sender mutex.
+The configured worker count is unchanged; each batch remains one validator call,
+preserving its shared provider snapshot and outcome order. Shutdown, queue capacity,
+batch metadata and head callbacks are covered by tests.
+
+Local stack profiles then identified a second admission bottleneck: every AA
+insertion scanned the entire pool to count pending and queued transactions before
+eviction. Pending counts are now maintained through replacement, promotion,
+demotion and removal, with expiring counts derived from their existing map.
+Eviction decisions and ordering are unchanged. The 225 pool tests pass, including
+8,000 generated mixed operations checked against actual transaction status after
+each mutation. The parallel TIP-20 node integration test and Clippy also pass.
+
+`admission-stacks.json` records two diagnostic profiles with the built-in Pyroscope
+feature at 199 Hz, captured to a local loopback server from an unstripped release
+binary. Only complete ten-second profiles inside the send window are included.
+Before the count change, discard consumed about 18% of sampled CPU in both modes.
+These sampled user-space stacks do not account for all kernel time.
+
+`admission-cpu.json` retains ten independent trials at 75k offered TPS for ten
+seconds, using a 5B-gas genesis. Each table entry is one trial, not a confidence
+interval. All accepted transactions confirmed with zero execution failures.
+
+| Variant | Accepted TPS, sequential | Accepted TPS, 16 workers | Confirmed TPS, sequential | Confirmed TPS, 16 workers |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline `f5db13d1` | 20,964 | 20,311 | 20,589 | 19,907 |
+| Baseline, 1,024 client requests | 20,711 | 19,462 | 20,271 | 19,067 |
+| Concurrent validation | 23,176 | 20,246 | 22,849 | 19,927 |
+| Concurrent validation, four Tokio threads | 20,115 | 18,335 | 19,873 | 17,826 |
+| Concurrent validation and cached counts | 46,169 | 45,211 | 22,408 | 15,774 |
+
+Accepted TPS divides accepted submissions by send duration. Confirmed TPS divides
+those same transactions by wall time from send start to the last busy block being
+added to the canonical chain, including backlog. It is neither confirmation latency
+nor a steady-state throughput estimate. The analyzer checks the receipt count and
+excludes the one system transaction per block in these isolated dev trials.
+
+The count change doubles admission capacity but exposes a large backlog: the final
+trials take 20.62 s and 28.68 s, respectively, to canonicalize all transactions.
+Node CPU during sending rises from about eight to sixteen logical cores, roughly
+half spent in the kernel. The 16-worker run spends 19.53 s in busy payload execution
+sections and 4.21 s finishing payloads. `node/admission-*.json` retains those payload
+measurements and receipts summaries. Execution remains a bottleneck, and the more
+heavily queued speculative workload regresses confirmed throughput.
+
+`admission-matrix.json` and `node/admission-matrix-*.json` repeat the complete
+10k–75k offered-load matrix with five-second send windows after both fixes:
+
+| Target TPS | Accepted, sequential | Accepted, 16 workers | Confirmed, sequential | Confirmed, 16 workers |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 | 10,014 | 9,986 | 9,904 | 9,898 |
+| 25,000 | 24,984 | 24,985 | 24,066 | 23,368 |
+| 50,000 | 46,579 | 46,739 | 26,604 | 21,507 |
+| 75,000 | 46,775 | 46,443 | 26,318 | 21,386 |
+
+All 1,284,190 user transactions confirmed with zero execution failures. These
+shorter trials show the duration sensitivity of backlog measurements; they do not
+establish sustained 50k TPS.
+
+Reproduce CPU and canonical-completion measurements with:
+
+```sh
+python3 benchmarks/parallel-execution/run_node.py \
+  --output /tmp/tempo-node-admission --duration 10 --targets 75000 \
+  --workers 0,16 --block-gas-limit 5000000000 --profile-cpu
+python3 benchmarks/parallel-execution/summarize_cpu.py /tmp/tempo-node-admission
+```
+
+`--profile-cpu` requires `pidstat`. `--node-binary` supports comparisons with a
+saved executable; `--client-concurrency` controls RPC pressure. The driver's host
+record includes `TOKIO_WORKER_THREADS` when explicitly set. CPU summaries use only
+whole one-second intervals inside sending; 100% means one logical core.
+
+`streaming-node-matrix.json` and `node/streaming-matrix-*.json` repeat the five-second
+matrix with streaming and deferred preview conversion:
+
+| Target TPS | Accepted, sequential | Accepted, 16 workers | Confirmed, sequential | Confirmed, 16 workers |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 | 10,004 | 10,001 | 9,935 | 9,880 |
+| 25,000 | 24,980 | 24,982 | 24,035 | 23,612 |
+| 50,000 | 46,268 | 45,735 | 26,626 | 23,625 |
+| 75,000 | 46,232 | 45,980 | 26,571 | 23,509 |
+
+All 1,272,588 user transactions confirmed with no execution failures. At the
+50k offered target, the speculative confirmation rate increases from 21,507 to
+23,625 TPS, while sequential remains about 26.6k TPS. Busy payload execution time
+falls from 6.820 s for 234,048 transactions to 5.717 s for 229,056 transactions;
+finishing takes 1.959 s. These are separate trials with different transaction
+counts. The node still falls far short of sustained 50k TPS, and speculative
+execution still loses to sequential execution on this cheap shared-state workload.
+
+## AA selection index
+
+The builder profile also identified transaction selection as a serial cost. The
+AA iterator now uses a preallocated hash index for transaction-ID lookups and
+removals. Its separate priority-ordered set still determines selection, including
+submission-order ties; the underlying pool retains its ordered range index.
+All 225 pool tests pass, covering nonce dependencies, invalidation and live updates.
+
+`pool-index.tsv` measures snapshot construction and complete selection at
+10k/25k/50k/100k queued transactions, excluding admission and transaction creation.
+Every repetition checks the complete selected hash sequence. At 100k transactions,
+the median of five repetitions with 100 senders and scattered nonce keys falls
+from 61.4 ms to 48.5 ms. Sorted IDs regress from 35.5 ms to 43.9 ms, so this is a
+workload-dependent improvement. Reproduce with:
+
+```sh
+TEMPO_POOL_BENCH_SCATTERED=1 CARGO_PROFILE_RELEASE_LTO=false \
+  cargo test -p tempo-transaction-pool --release --locked \
+  best_transactions_throughput -- --ignored --nocapture
+```
+
+Omit `TEMPO_POOL_BENCH_SCATTERED` for sorted IDs; `TEMPO_POOL_BENCH_COUNTS`
+overrides the queue sizes. These are selection timings, not EVM TPS.
+
+`pool-index-node.json` and `node/index-*.json` retain two real-node comparisons
+against `1ab7292d`, using five-second sends at 50k offered TPS and a 5B-gas genesis.
+The second comparison reverses variant order. Confirmed rates include backlog:
+
+| Index | Sequential TPS, first / repeat | 16 workers TPS, first / repeat |
+| --- | ---: | ---: |
+| Tree | 26,528 / 26,460 | 23,383 / 23,240 |
+| Hash | 27,057 / 27,353 | 24,364 / 24,863 |
+
+All 1,851,870 accepted user transactions confirmed with zero execution failures.
+The gain persists in the repeat, but these short trials are not steady-state
+throughput evidence and remain well below sustained 50k node TPS.
+
+## Candidate gas budgets
+
+Proposer lookahead now filters candidates against the remaining non-shared and
+general-purpose gas budgets before converting them to worker inputs. The preview
+still advances the same raw window, and the authoritative iterator performs its
+usual selection and invalidation. This avoids executing candidates already known
+to exceed the current budget. The parallel TIP-20 node integration test and Clippy
+pass.
+
+`candidate-budget-node.json` and `node/candidate-budget-*.json` repeat the
+five-second offered-load matrix with 16 workers after this filter and the hash
+index change:
+
+| Offered TPS | Accepted TPS | Confirmed TPS including backlog |
+| --- | ---: | ---: |
+| 10,000 | 10,013 | 9,906 |
+| 25,000 | 24,983 | 24,062 |
+| 50,000 | 45,696 | 24,501 |
+| 75,000 | 45,924 | 24,585 |
+
+All 633,862 accepted user transactions confirmed with zero execution failures.
+The 50k trial falls within the preceding hash-index trials; this matrix does not
+demonstrate an additional throughput gain from the filter alone. The remaining
+pool scan still visits candidates that cannot fit, and cheap shared-state
+transactions still favor sequential execution.
+
+## Deferred proposer preview
+
+The proposer now advances speculative lookahead only after a candidate passes
+gas-budget and block-size checks. Rejected candidates advance the authoritative
+iterator; preview catch-up is deferred until another candidate can execute.
+Catch-up checks cancellation and interruption between bounded chunks. Empty
+live-feed polls consume neither cursor. If the rejected tail fills the remainder
+of the pool, only the authoritative iterator scans it. Transaction identity and
+read validation still guard every speculative result.
+
+`lazy-preview-node.json` and `node/lazy-*.json` compare the change with `fa529f33`
+at 50k offered TPS, five-second sends, 16 execution workers and 5B block gas.
+The second comparison reverses variant order:
+
+| Preview | Confirmed TPS, first / repeat |
+| --- | ---: |
+| Eager | 24,630 / 24,578 |
+| Deferred | 25,446 / 25,554 |
+
+All 917,857 accepted transactions confirmed with zero execution failures. Rates
+include backlog and iterator cleanup; they remain short-trial measurements. The
+mixed payment/non-payment node integration test now runs in both sequential and
+speculative modes; both cases and Clippy pass.
+
+## Runtime contention trials
+
+`run_node.py --node-tokio-threads N` sets `TOKIO_WORKER_THREADS` only for the node;
+the client retains its inherited runtime configuration. The override is recorded
+in `commands.json` and `host.json`. Execution worker count is independent.
+
+`runtime-node.json` and `node/runtime-*.json` retain five-second trials on
+`fa529f33`, all using 16 execution workers and the 5B-gas genesis:
+
+| Node Tokio workers | Client concurrency | Offered TPS | Accepted TPS | Confirmed TPS | Node CPU / kernel CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4 | 256 | 50,000 | 25,850 | 21,300 | 871% / 250% |
+| 8 | 256 | 50,000 | 39,547 | 24,706 | 1,054% / 451% |
+| 16 | 256 | 75,000 | 47,981 | 24,537 | 1,567% / 771% |
+| 16 | 1,024 | 75,000 | 39,480 | 25,339 | 1,242% / 570% |
+| Default (32) | 1,024 | 75,000 | 37,775 | 25,365 | 1,199% / 557% |
+
+All 961,657 accepted transactions confirmed with zero execution failures. CPU is
+averaged over complete one-second intervals during sending; 100% is one logical
+core. Confirmed rates include backlog. These trials vary admitted transaction
+counts and do not isolate a steady-state service rate. Fewer Tokio workers reduce
+kernel CPU but also admission capacity; higher client concurrency reduces admission
+in these trials. No production runtime default changes are justified by this data.
+
+## Checked fee arithmetic
+
+Speculative workers annotate three internal fee operations: crediting the fee
+manager with the maximum fee, debiting its refund, and adding the actual fee to
+the validator's accumulator. A candidate can rebase these slots only if no
+ordinary access observes or writes the slot anywhere in the transaction. Native
+precompiles, opcode storage accesses, direct database reads and cached journal
+reads all participate, including reverted accesses. Transfers to the fee manager,
+fee-balance views and fee distribution therefore retain ordinary conflict checks.
+
+For each changed slot, validation checks that the recorded operation sequence
+reproduces the speculative final value from its original value, then applies each
+checked addition/subtraction to the committed value. Checking the net delta is
+insufficient: collecting the maximum fee can overflow even when the final charge
+would fit. Any failed arithmetic check or ordinary dependency triggers replay.
+All checks precede mutation; only the result's original and present storage values
+are adjusted. Logs, outputs, gas and other state are retained from execution.
+
+This applies only to standard Tempo gas schedules. The annotated operations run
+inside maximum-gas native fee contexts whose gas/refund accounting is discarded;
+their storage-value-dependent gas does not enter transaction gas. Custom gas
+schedules disable rebasing. Creation, destruction and native code installation
+also disable fee metadata; created or destroyed result accounts cannot be patched.
+Failed annotated writes and nested recording scopes disqualify reuse. AMM state,
+reward accounting, payer balances and authorization retain ordinary validation.
+
+Generated differentials run with rebasing both enabled and disabled, and with
+streaming and frozen worker views. Dedicated cases cover direct/reverted fee
+reads, contract writes to both shared fee slots, intermediate maximum-fee and
+accumulator overflow, and custom gas schedules at every fork from T0 through T4.
+
+`fee-rebasing.tsv` and `fee-rebasing-phases.json` compare enabled/disabled modes
+in both orders on 100,000-transaction in-memory workloads. All full receipts and
+state roots match sequential execution. Two runs per mode, same 16-core host,
+streaming and phase timers enabled:
+
+These A/B measurements retain the earlier one-eighth reuse threshold for backoff,
+isolating arithmetic rebasing from the scheduling adjustment described below.
+
+| Workload | Workers | Rebasing disabled TPS | Rebasing enabled TPS |
+| --- | ---: | ---: | ---: |
+| Paid TIP-20 | 16 | 105,186 / 106,515 | 133,142 / 121,273 |
+| Paid TIP-20 | 32 | 102,949 / 105,786 | 118,966 / 116,955 |
+| Paid compute | 16 | 50,757 / 46,245 | 60,091 / 61,465 |
+| Paid compute | 32 | 47,659 / 48,300 | 61,486 / 62,423 |
+
+Sequential controls span 112,834–114,672 TPS for paid TIP-20 and 7,413–7,459
+for paid compute. Each enabled parallel run rebases 98,075 results. The initial
+fee-manager account creation still causes 127 conflicts and one backoff period;
+account metadata remains an ordinary dependency. These are isolated execution
+measurements, not sustained node throughput.
+
+`fee-rebasing-node.json` and `node/fee-{before,matrix,after-repeat,before-repeat}-*.json`
+record the corresponding five-second node trials with the 5B-gas genesis and
+16 execution workers. At offered rates of 10k/25k/50k/75k, confirmed rates including
+backlog were 9,882 / 23,805 / 24,481 / 25,004 TPS. All 1,312,157 accepted transactions
+across the matrix and comparisons confirmed with zero failures. At 50k offered,
+the previous node completed 25,463 / 25,410 TPS versus 24,481 / 24,956 with fee
+rebasing: a regression despite the independent-workload gains. Shared sender and
+recipient balances still conflict, and the small increase in reuse keeps too many
+unproductive windows active under the one-eighth threshold.
+
+The scheduler now backs off when fewer than half of a window's results or call
+bodies are reused. It still probes periodically, and correctness checks can
+disable backoff entirely. This is a performance heuristic; low-reuse expensive
+workloads may need a cost-sensitive policy beyond this threshold.
+
+`fee-backoff.tsv` covers 10k/25k/50k/100k transaction counts with that threshold.
+At 100k, 16/32 workers complete paid TIP-20 at 129,911 / 116,165 TPS and paid
+compute at 60,246 / 60,087 TPS, with matching full receipts and roots.
+`fee-backoff-node.json` and `node/fee-backoff-*.json` record 9,927 / 23,507 /
+25,113 / 25,135 confirmed TPS for the 10k/25k/50k/75k offered-load sweep;
+the repeated 50k trial completes 25,209 TPS. All 861,064 accepted transactions
+confirm with zero failures. This recovers most of the earlier node loss, without
+demonstrating an end-to-end gain over the previous node.
+
+The final implementation also computes annotation keys only during speculative
+recording, avoiding the extra lookup in ordinary sequential execution.
+`fee-final.tsv` repeats the 10k–100k transaction-count matrix. At 100k, 16/32
+workers measure 120,690 / 115,775 TPS for paid TIP-20 and 60,349 / 62,187 TPS for
+paid compute, versus sequential controls of 113,190 and 7,515 TPS respectively.
+Every run matches the sequential receipt vector and state root.
+
+`fee-final-node.json` and `node/fee-final-*.json` retain the final five-second
+node trials. With 16 execution workers and the 5B-gas benchmark genesis:
+
+| Offered TPS | Accepted TPS | Confirmed TPS including backlog |
+| --- | ---: | ---: |
+| 10,000 | 10,007 | 9,935 |
+| 25,000 | 24,995 | 23,967 |
+| 50,000 | 44,303 | 25,133 |
+| 75,000 | 46,199 | 25,206 |
+| 50,000, repeated | 44,685 | 25,252 |
+
+All 855,748 accepted transactions confirmed with zero failures. The result remains
+slightly below the earlier 25,410–25,463 TPS node controls; no node-level gain is
+claimed. The independent-workload gains do not remove actual payment-balance
+dependencies, ordered validation, pool selection or block-finishing costs.
+
+`fee-unpaid-controls.tsv` compares recording enabled/disabled on fee-free storage,
+TIP-20 and compute workloads at 100k transactions. Every full receipt vector and
+state root matches. Cheap storage and TIP-20 workloads still favor sequential
+execution; the single comparisons vary in both directions and do not establish
+an improvement from fee recording where no fees are charged.
+
+`fee-sequential-node.json` checks the ordinary node path at 50k offered TPS:
+the previous/current binaries confirm 27,185 / 27,075 TPS, with all 460,342
+accepted transactions confirmed and no failures. This single pair does not
+establish a significant change. Sequential execution still outperforms the
+speculative node on this shared-account payment workload.
+
+## Static AA candidate snapshots
+
+AA selection now sorts the initial independent candidates into a vector and
+drains it from the end. A separate ordered set holds live arrivals and unlocked
+descendants. Selection merges the two maxima and suppresses duplicates that are
+still pending, preserving the previous priority/submission-ID ordering and
+reinsertion behavior. Newer submission IDs skip the snapshot duplicate search.
+A generated insertion/removal oracle compares every selected transaction hash
+against the previous ordered set, including empty snapshots, duplicate entries,
+equal priorities and live updates. All 226 pool tests and both sequential and
+parallel mixed-payment-lane node tests pass.
+
+`candidate-vector.tsv` records five snapshot-and-drain repetitions at 10k, 25k,
+50k and 100k transactions. At 100k, median combined time changes from 51.826 ms
+to 45.519 ms with scattered keys, and from 38.009 ms to 37.512 ms with sorted
+keys. The latter difference is small. These are pool-selection measurements,
+not EVM throughput.
+
+`candidate-vector-node.json` and `node/candidates-*.json` compare the previous
+`df1725b0` binary with the vector implementation. Each trial sends for five
+seconds at 50k offered TPS with the 5B-gas benchmark genesis, 100 accounts and
+256 concurrent client requests. Comparisons run in both orders:
+
+| Execution workers | Previous confirmed TPS | Vector confirmed TPS | Previous, reverse order | Vector, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 26,919 | 27,417 | 27,030 | 27,195 |
+| 16 | 24,875 | 25,661 | 25,432 | 25,604 |
+
+All 1,834,499 accepted transactions in those eight completed trials confirmed
+with zero failures. This is a small increase in these comparisons; sequential
+execution still wins on this shared-account payment workload. With 16 workers,
+pool snapshot time falls from 1.034 / 0.976 seconds to 0.846 / 0.877 seconds.
+The updated runs spend about 3.0 seconds in successful transaction execution,
+4.6 seconds in the full execution loop, and 2.2 seconds in finalization,
+including 1.2 seconds calculating state roots. These metrics span the whole
+trial, including setup and empty blocks, and are nested rather than additive.
+They do not measure confirmation latency or sustained throughput.
+
+The same file and `node/candidates-matrix-*.json` retain a fresh offered-load
+sweep with 16 workers. At 10k / 25k / 75k offered TPS, accepted rates are
+10,015 / 24,979 / 46,600 TPS and confirmed rates including backlog are
+9,912 / 23,733 / 25,301 TPS. All 408,383 accepted transactions confirm with
+zero failures. Together with the 50k trials above, this still shows a node
+ceiling near 25k confirmed TPS on this host and workload.
+
+An additional expiring-nonce trial at 50k offered TPS accepts 49,044 TPS and
+confirms 24,296 TPS including backlog, with all 245,625 accepted transactions
+confirmed and no failures (`node/candidates-expiring-*.json`). Its pool snapshot
+cost is only 0.130 seconds, while state-root calculation takes 2.424 seconds.
+This is an integration check of the other AA nonce mode, without a paired
+baseline or an improvement claim.
+
+The first reverse-order attempt failed with SIGBUS after block 9; it is retained
+in `candidate-vector-failed-trial.json` and excluded from throughput results.
+Disk space was very low, but no core dump was available and the cause remains
+unconfirmed. After deleting obsolete task artifacts, the repeated comparisons
+completed cleanly. The runner now saves process return codes before and after
+cleanup plus starting/ending free disk space; `candidate-vector-exit-status.json`
+retains those diagnostics for the completed reverse-order comparisons.
+
+## Parallel block assembly
+
+The assembler now computes each receipt bloom once and combines those blooms
+for the block header. With an execution worker pool and at least 128
+transactions, it computes the transaction root alongside receipt processing,
+and calculates receipt blooms in parallel while retaining receipt order. It
+shares the configured bounded pool; smaller blocks and the default configuration
+use sequential root calculation with the same bloom reuse.
+
+Tempo now constructs the Ethereum header fields directly, preserving the pinned
+Reth assembler's fork logic. A differential test compares complete headers and
+bodies against that upstream assembler across Shanghai, Cancun, Prague and
+Osaka boundaries, including the first post-Cancun block. It covers empty blocks,
+counts around the parallel threshold, mixed legacy/EIP-1559/AA transactions,
+varied logs, withdrawals, execution requests and 0/1/4 workers. All 86 EVM tests
+pass; two throughput benchmarks are ignored in the regular suite. Both
+sequential and parallel mixed-payment-lane node integration tests and the
+parallel TIP-20 transfer test also pass. Release Clippy checks all EVM targets,
+and the EVM crate builds with default features disabled.
+
+`assembly-roots.tsv` measures transaction roots, receipt roots and block blooms
+at 10k, 25k and 50k generated transactions, with three repetitions per worker
+count. Every result equals the upstream root/bloom tuple. At 50k transactions,
+median times are:
+
+| Worker count | Upstream calculation | Updated calculation |
+| --- | ---: | ---: |
+| 0 | 181.619 ms | 129.025 ms |
+| 16 | 181.377 ms | 58.742 ms |
+| 32 | 181.021 ms | 56.875 ms |
+
+This excludes execution, state-trie roots and node overhead. Each upstream
+measurement precedes its updated measurement on already initialized data;
+these component timings are not node TPS or sustained-load results.
+
+`assembly-node.json` and `node/assembly-*.json` compare the `2b0d2eea` node
+against parallel assembly, using the same five-second, 50k offered-load setup
+in both orders. All 1,837,758 accepted transactions in the eight trials confirm
+with zero failures. Return codes and disk headroom are retained in
+`assembly-exit-status.json`.
+
+| Execution workers | Previous confirmed TPS | Updated confirmed TPS | Previous, reverse order | Updated, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 27,155 | 27,307 | 26,925 | 27,195 |
+| 16 | 25,156 | 26,197 | 25,548 | 26,397 |
+
+The 16-worker comparisons improve by 4.1% and 3.3%, while the default sequential
+path changes little. Whole-trial finalization falls from 2.250 / 2.165 seconds
+to 1.908 / 1.903 seconds with 16 workers, even though state-root calculation
+increases slightly. Those timings are nested and include setup and empty
+blocks. Sequential execution still leads on this shared-account payment load;
+parallel assembly does not establish sustained 50k+ node throughput.
+
+The updated 16-worker sweep at 10k / 25k / 75k offered TPS accepts
+10,008 / 25,008 / 45,185 TPS and confirms 9,906 / 23,890 / 26,239 TPS including
+backlog. All 401,260 accepted transactions confirm without failures
+(`node/assembly-matrix-*.json`). Together with the 50k comparisons, the updated
+node still levels off near 26k confirmed TPS on this workload.
+
+An expiring-AA trial at 50k offered TPS accepts 48,646 TPS and confirms 24,563
+TPS including backlog. All 243,603 accepted transactions confirm without
+failures (`node/assembly-expiring-*.json`). This single run exercises the second
+nonce mode; it does not establish a throughput improvement for that workload.
+
+```sh
+CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
+  cargo test -p tempo-evm --release assembly_roots_throughput -- --ignored --nocapture
+```
+
+## Background state-root finalization
+
+The existing `--engine.share-sparse-trie-with-payload-builder` path computes
+trie updates alongside execution. It requires `--builder.max-tasks 1` because
+the engine and payload builder share the trie. The trial driver exposes these
+as `--share-sparse-trie --builder-max-tasks 1`; comparisons must set the same
+payload-task limit for the synchronous control.
+
+Testing this path exposed an ordering bug: the builder removed its state hook
+and awaited the root before executor finalization. Post-block system calls and
+balance increments therefore could change storage after the root was computed.
+`trie-post-block-reproduction.json` records an independent node reproduction:
+a genesis contract at the EIP-7002 address increments slot zero on each system
+call. The synchronous node passes canonical replay; the shared-trie node stores
+the increment but fails canonical state-root validation at block 1.
+
+The finish provider now awaits the background result only when the block
+builder requests the root, after executor finalization has emitted all state
+changes and dropped the hook. A background failure retains the synchronous
+calculation from the complete hashed post-state. New metrics distinguish
+background waiting, successful roots and fallback failures from synchronous
+root calculation.
+
+The regression deploys state-changing EIP-7002 and EIP-7251 fixtures and verifies
+account and storage proofs against the actual block header. Before the fix,
+both shared-trie cases fail while both synchronous cases pass. After the fix,
+all four cases pass with sequential and speculative execution. Release Clippy
+passes for all payload-builder and node targets.
+
+The rebuilt node also passes the original standalone fixture: all three shared
+roots exactly equal the original synchronous roots (`trie-post-block-canonical.tsv`).
+The ordinary sequential/parallel mixed-payment-lane tests and parallel TIP-20
+transfer test pass as well.
+
+`trie-initial-node.json` and `node/trie-initial-*.json` retain the preliminary
+measurements on the previous binary. With one payload task, the synchronous
+and shared-trie trials confirm 26,334 and 27,266 TPS respectively. These are
+diagnostic only: the shared-trie implementation fails the post-block state
+regression above and is not a valid optimization result.
+
+`trie-fixed-node.json` and `node/trie-fixed-*.json` compare synchronous and
+background roots using the corrected binary, five-second sends at 50k offered
+TPS and one payload task for both variants. Comparisons run in both orders:
+
+| Execution workers | Synchronous root TPS | Background root TPS | Synchronous, reverse order | Background, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 27,740 | 28,300 | 27,634 | 28,230 |
+| 16 | 26,338 | 27,295 | 26,853 | 27,450 |
+
+All 1,793,023 accepted transactions confirm with zero failures. The 16-worker
+comparisons improve by 3.6% and 2.2%. Their whole-trial finalization time falls
+from about 1.9 seconds to 0.68 seconds, but streaming state changes increases
+execution-loop time. Each background-root run records successful background
+roots and no fallback failures. These remain short local trials; the sequential
+EVM still leads on this shared-account workload, and sustained 50k+ node TPS
+has not been demonstrated.
+
+The corrected background-root sweep at 10k / 25k / 75k offered TPS accepts
+10,017 / 24,981 / 44,953 TPS and confirms 9,967 / 24,752 / 27,465 TPS including
+backlog. All 400,087 accepted transactions confirm without failures. The
+expiring-AA trial at 50k offered TPS accepts 45,935 TPS and confirms 26,836 TPS,
+with all 230,076 accepted transactions confirmed. All background roots complete
+without fallback in these runs (`node/trie-fixed-{matrix,expiring}-*.json`).
+
+```sh
+python3 benchmarks/parallel-execution/run_node.py \
+  --output /tmp/tempo-node-shared-trie --workers 16 --duration 5 \
+  --block-gas-limit 5000000000 --profile-cpu \
+  --share-sparse-trie --builder-max-tasks 1
+```
+
+## State-update copying experiment
+
+Copying only touched accounts did not improve node throughput and is not enabled.
+`prototypes/compact-trie-updates.patch` preserves the tested implementation against
+`c0039f32`, including projection and message-order checks and the copy microbenchmark.
+It omits untouched accounts that Reth's trie conversion already ignores, retains
+bulk copies within each touched account, and uses the original whole-map clone
+when every account is touched. The original journal and message ordering stay intact.
+
+`trie-copy-micro-final.tsv` measures 50,000 copies per sample, with seven samples
+and alternating order. Median times on the same host are:
+
+| Journal fixture | Original copy | Touched accounts only |
+| --- | ---: | ---: |
+| 16 accounts × 32 slots, 3 touched accounts | 115.346 ms | 20.863 ms |
+| 8 accounts × 32 slots, all written | 56.828 ms | 58.734 ms |
+| 8 accounts, no storage, 3 touched accounts | 16.780 ms | 6.747 ms |
+
+These measure copying and destruction only. The all-writes fixture adds about
+3.4% overhead to this component. Filtering storage entries individually was also
+rejected: it made the all-writes copy about six times slower. Retained exploration
+records are `trie-copy-micro-initial.tsv` (false = original, true = filter accounts
+and slots) and `trie-copy-micro-variants.tsv` (0 = original, 1 = entry filtering,
+2 = clone touched accounts then retain changed slots, 3 = clone touched accounts).
+The final prototype adds the whole-map fast path for entirely touched journals.
+
+`trie-copy-node.json` and `node/trie-copy-*.json` compare the original and final
+prototype in both orders, with background roots, one payload task, and five-second
+sends at 50k offered TPS. Confirmed throughput includes backlog:
+
+| Execution workers | Original TPS | Prototype TPS | Original, reverse order | Prototype, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 28,930 | 28,383 | 28,483 | 28,683 |
+| 16 | 27,726 | 27,335 | 27,327 | 27,303 |
+
+All 1,773,893 accepted transactions confirm without submission or execution
+failures or background-root fallbacks. The 16-worker comparisons are 1.4% and 0.1% slower with the prototype;
+sequential comparisons are mixed. The component benchmark does not translate to
+a useful end-to-end improvement on this workload, so the production hook retains
+the original full-state copy.
+
+The log audit also found rejected dev payloads with duplicate millisecond
+timestamps. They occur strictly after each trial's last user transaction block,
+so the confirmed-TPS window excludes them. `rejected_dev_payloads` records their
+counts in both `trie-copy-node.json` and the preceding `trie-fixed-node.json`.
+No other invalid-payload reasons occur in those trials. Whole-trial metrics still
+include the dev miner's empty-block catch-up activity.
+
+The prototype's projection test checks all 256 account status combinations and
+three balances against the pinned upstream trie conversion. Its message-order and
+original-journal checks pass, as do all four post-block header-root regressions,
+the shared-trie TIP-20 and mixed payment-lane cases, and release Clippy. The two
+new shared-trie integration cases remain enabled with the production hook.
+
+To reproduce the final prototype in a disposable checkout:
+
+```sh
+git apply benchmarks/parallel-execution/prototypes/compact-trie-updates.patch
+CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
+  cargo test -p tempo-payload-builder --release trie_journal_copy_throughput -- --ignored --nocapture
+```
+
+## Dev-miner timestamp catch-up
+
+When the dev miner catches up interval ticks after a slow block, successive
+payload requests can occur in the same millisecond. Its attributes builder
+previously used the current wall time without checking the parent. Tempo rejects
+timestamps at or before the parent, and also rejects timestamps after wall time.
+The dev builder now waits in one-millisecond sleeps until the clock is strictly
+after the parent, then uses that observed time. This also waits through backward
+clock adjustments.
+
+A clock-controlled regression covers repeated readings, backward readings, and
+the millisecond-to-second boundary. The shared-trie TIP-20, mixed payment-lane,
+and four post-block proof regressions pass. Release Clippy passes. The benchmark
+summary now includes rejected dev payload counts, separating timestamp errors
+before/after the last user transaction block and preserving other error reasons.
+
+`dev-timestamp-node.json` and `node/dev-timestamp-*.json` retain three fresh
+16-worker, shared-trie trials after the fix. The 2D workloads at 50k and 75k
+offered TPS confirm 27,717 and 27,203 TPS; the expiring-AA workload at 50k offered
+confirms 26,296 TPS. All 672,799 accepted transactions confirm, with zero node
+error lines, rejected payloads, submission/execution failures, or background-root
+fallbacks. Catch-up after the backlog clears also completes without rejections.
+These runs validate the clock fix and do not establish a throughput improvement.
+
+## Canonical replay
+
+The new read-only command compares complete execution results and state deltas,
+then checks canonical stored receipts, gas/receipt-root validation, and state root:
+
+```sh
+tempo parallel-replay --chain /path/to/genesis.json --datadir /path/to/node-data \
+  --from 1000 --to 1100 --threads 16 --batch-size 128 --output replay.tsv
+```
+
+Bounds are inclusive. The database must retain parent state and canonical
+receipts. Backoff and the minimum call-body duration are disabled in this command
+so all windows exercise speculative validation and partial reuse. The execution timers exclude trie hashing; sequential runs first,
+so the timing columns are diagnostic and may have unequal cache warmth.
+Historical trie reconstruction can be expensive far behind the database head.
+
+`local-replay-10k.tsv` and `local-replay-25k.tsv` verified all 74 local canonical
+blocks from the corresponding load trials: 174,885 user transactions plus 74
+system transactions. Both executors matched complete state deltas, canonical
+receipts and canonical state roots. The 10k replay overlapped a test compilation;
+its timing columns should not be used as throughput measurements. These are
+stored generated-chain blocks, not mainnet or testnet history.
+
+`body-replay-canonical-2d.tsv` and `body-replay-canonical-expiring.tsv` repeat
+verification with partial replay forced on for 120 stored local blocks containing
+100,000 user transactions and 120 system transactions. They cover both 2D and
+expiring AA nonces. Complete state deltas, stored receipts, receipt roots, gas and
+state roots match. These replays ran concurrently with correctness checks; their
+timing columns are not benchmark results.
+
+`prefetch-canonical-2d.tsv` and `prefetch-canonical-expiring.tsv` revalidate those
+same 120 blocks after prefetching and the journal-allocation changes. All 100,000
+user transactions and 120 system transactions match complete state deltas,
+canonical receipts, gas, receipt roots and state roots. The two replays ran
+concurrently; their timings are diagnostic only.
+
+`admission-canonical-10k.tsv` and `admission-canonical-busy.tsv` verify 54 blocks
+built after the admission changes, including three large blocks from the 50k
+trial. All 94,231 user transactions and 54 system transactions match sequential
+results, complete state deltas, canonical receipts, gas, receipt roots and state
+roots with speculation and call-body reuse forced on. These remain local generated
+chains, not public historical-chain evidence.
+
+`streaming-canonical-2d.tsv`, `streaming-canonical-expiring.tsv` and
+`streaming-canonical-busy.tsv` verify 123 stored local blocks with streaming and
+call-body reuse enabled: 143,247 user transactions plus 123 system transactions.
+This includes both AA nonce modes and three large blocks built by the updated
+node. Complete state deltas, execution results, canonical receipts, gas, receipt
+roots and state roots match. The replay jobs overlap correctness checks and each
+other, so their timings are diagnostic only. Public historical replay remains
+outstanding.
+
+`candidate-budget-canonical.tsv` verifies three large blocks from the updated
+50k offered-load trial: 38,889 user transactions and three system transactions.
+Sequential and forced speculative execution match full results, state deltas,
+canonical receipts, gas, receipt roots and state roots. These remain generated
+local-chain blocks, and replay timings are diagnostic only.
+
+`lazy-preview-canonical.tsv` verifies three large blocks built with deferred
+preview: 44,935 user transactions and three system transactions. Full results,
+state deltas, canonical receipts, gas, receipt roots and state roots match between
+sequential and forced speculative execution. This is local generated-chain evidence.
+
+`fee-rebasing-canonical-2d.tsv` and `fee-rebasing-canonical-expiring.tsv` repeat
+the 120-block AA replay with fee rebasing enabled: 100,000 user transactions and
+120 system transactions match full results, state deltas, stored receipts, gas,
+receipt roots and state roots. Replays overlap correctness builds; their timings
+are diagnostic only. These remain local generated chains.
+
+`fee-rebasing-canonical-busy.tsv` additionally verifies three large blocks built
+with fee rebasing: 36,521 user transactions plus three system transactions, with
+the same complete-result, state-delta and canonical-root checks.
+
+`fee-final-canonical-busy.tsv` verifies three more large blocks after the backoff
+and annotation changes: 35,613 user transactions and three system transactions.
+Together the fee-change replays cover 126 local blocks with 172,134 user and
+126 system transactions; all complete results, state deltas and canonical checks
+match. Public historical blocks are still outstanding.
+
+`candidate-vector-canonical.tsv` verifies three large blocks built with the new
+AA snapshot: 38,576 user transactions and three system transactions. Full
+results, state deltas, stored receipts, gas, receipt roots and canonical state
+roots match sequential execution. These are generated local-chain blocks.
+
+`candidate-vector-canonical-expiring.tsv` verifies three newly built blocks with
+expiring AA nonces: 84,238 user transactions and three system transactions,
+with the same full-result and canonical-root checks. Across the two candidate
+snapshot replays, all 122,814 user transactions and six system transactions
+match. Replay timings remain diagnostic only.
+
+`assembly-canonical.tsv` verifies three large blocks built with parallel
+assembly: 39,886 user transactions and three system transactions match full
+execution results, state deltas, stored receipts, gas, receipt roots and
+canonical state roots. This is generated local-chain evidence; replay timings
+overlap correctness checks and are diagnostic only.
+
+`assembly-canonical-expiring.tsv` adds three freshly built expiring-AA blocks
+with 86,319 user transactions and three system transactions. All full results,
+state deltas, canonical receipts, gas and roots match. Across both assembly
+replays, 126,205 user transactions and six system transactions match; this is
+still local generated-chain evidence rather than public historical replay.
+
+`trie-fixed-canonical.tsv` and `trie-fixed-canonical-expiring.tsv` verify six
+blocks built with the corrected background-root path, including both AA nonce
+modes: 106,869 user transactions and six system transactions. Complete
+execution results, state deltas, stored receipts, gas, receipt roots and
+canonical state roots match sequential execution. The separate post-block
+fixture above adds three system-only blocks whose roots also match the
+original synchronous control. These remain generated local chains, and replay
+timings are diagnostic only.
+
+`dev-timestamp-canonical-2d.tsv` (blocks 19–21) and
+`dev-timestamp-canonical-expiring.tsv` (blocks 13–15) verify six newly built blocks
+after the dev clock fix: 124,392 user transactions plus six system transactions.
+Complete execution results and state deltas, stored receipts, gas, receipt roots,
+and canonical state roots match. Replay timings are diagnostic, with sequential
+execution first.
+
+## Chaining speculative nonce dependencies
+
+Repeated fee payers within a window now stay on the same worker in transaction
+order. Each such worker keeps a private write overlay, allowing later nonce and
+balance checks to see its earlier predictions. Every database read, including an
+overlay hit, still requires validation against the authoritative committed prefix.
+Skipped candidates and cross-worker changes therefore invalidate later predictions
+when they affect the transaction's reads. Windows with independent payers retain
+dynamic worker assignment without the overlay. This remains opt-in through the
+node's existing execution-thread setting.
+
+`chained-micro.tsv` compares the final conditional strategy with the previous
+dynamic strategy in an off/on/on/off sequence. Each run executes 50,000 transactions
+with zero and 16 workers, checking complete receipts and final roots. The new
+`compute_paid_chains` workload interleaves 100 funded senders with sequential
+protocol nonces; each transaction performs 500 KECCAK256 iterations and pays fees.
+With 16 workers, it improves from 21,355–21,597 TPS to 50,249–51,625 TPS
+(about 2.37x comparing the two-run means), versus 7,310–7,441 TPS sequentially.
+Reused outcomes increase from 38,181 to 49,985 out of 50,000, eliminating 10,696
+nonce-error retries. Independent paid compute and TIP-20 controls do not establish
+a performance change in these short runs. These are executor microbenchmarks,
+not sustained node throughput.
+
+```sh
+TEMPO_BENCH_COUNTS=50000 TEMPO_BENCH_WORKERS=0,16 \
+  TEMPO_BENCH_WORKLOADS=tip20_paid,compute_paid,compute_paid_chains \
+  TEMPO_BENCH_CHAINED=1 \
+  cargo test -p tempo-evm --release execution_throughput -- --ignored --nocapture
+```
+
+`chained-prototype-node.json` retains four isolated trials of the earlier prototype,
+which used overlays even for independent payers. At 50k offered TPS, 16 workers,
+5B block gas and shared trie roots, existing-recipient AA transfers measure
+27,396 TPS before and 27,059 after; new-recipient transfers measure 19,750 before
+and 19,545 after. All 886,138 accepted transactions confirm, with no execution
+failures or rejected dev payloads. These single paired trials establish no node
+throughput gain. The benchmark now exposes `--recipients existing|new`; its default
+has always used the same 100 funded accounts as both senders and recipients.
+Most remaining read conflicts in that workload are incoming balance transfers,
+which payer-based assignment cannot predict across workers.
+
+`chained-prototype-canonical-{2d,expiring,new}.tsv` covers seven stored local blocks
+with 132,835 user transactions and seven system transactions. Full execution
+results, state deltas, canonical receipts, gas, receipt roots and state roots
+match sequential execution. These verify the earlier unconditional overlay path;
+replay timings are diagnostic, with sequential execution first. The generated
+suite additionally compares both strategies across forks, frozen/streaming views
+and fee rebasing modes, including transitive conflicts, skipped predecessors and
+contract creation. Public historical replay remains outstanding.
+
+The final conditional scheduler's follow-up (`chained-node.json`) confirms all
+676,054 accepted transactions across three more 50k offered-load trials without
+execution failures or rejected dev payloads. Confirmed throughput is 27,416 TPS
+for existing-recipient 2D nonces, 19,201 for new-recipient 2D nonces, and 26,093
+for existing-recipient expiring nonces. `chained-canonical-*.tsv` verifies nine of
+their busiest blocks: 183,018 user transactions and nine system transactions
+match full results, state deltas, canonical receipts, gas and both roots.
+The release EVM suite passes 89 tests (two ignored benchmarks); node checks
+also pass the four post-block Merkle-proof variants, TIP-20 transfers and mixed
+payment-lane workloads with sequential, synchronous parallel and background-root
+configurations. Release Clippy passes for all EVM targets.
+
+## AA nonce prefetching
+
+Workers now receive bounded hints for the nonce-manager account, each 2D nonce
+slot, and expiring-nonce replay hashes and ring pointers. Hash selection follows
+the T1/T1B fork boundary. The hints only populate the database cache: they neither
+warm the EVM journal nor replace execution reads, replay protection or conflict
+validation. Dynamic ring entries retain the ordinary database path.
+
+`aa-prefetch-read-requests.json` records trace profiles before and after this
+change. In a stored block with 8,443 new-recipient AA user transactions, worker
+cache-miss channel requests fall from 8,772 to eight: all nonce-account and nonce-
+storage requests disappear. In a 36,787-user-transaction expiring-nonce block,
+requests fall from 53,854 to 19,749. These count requests, including duplicates
+coalesced by the coordinator, rather than physical database reads. Both replays
+verify full results, state deltas, canonical receipts, gas and roots; trace-enabled
+timings are diagnostic only (`aa-prefetch-trace-*.tsv`).
+
+`aa-prefetch-micro.tsv` and `aa-prefetch-micro-phases.json` retain an alternating
+before/after/after/before comparison at 10k, 25k, 50k and 100k transactions with
+zero, 16 and 32 workers. The `tip20_paid_aa` workload uses 100 funded senders,
+distinct 2D nonce keys and new recipients, with both maximum and priority fees
+set to one. It verifies AA receipt types, complete receipts and final state roots.
+Like the existing microbenchmarks, it uses T0; the node trials activate T4.
+At 50k transactions, 16-worker throughput improves from 97,861–102,946 TPS to
+110,627–115,190 TPS. At 100k, the ranges are 108,561–113,825 and 113,110–113,280
+TPS, so the advantage is smaller. Sequential execution remains around 105k TPS.
+This removes avoidable coordination; it does not establish linear multicore scaling.
+
+`aa-prefetch-node.json` retains three paired 50k offered-load comparisons with
+16 workers, shared trie roots, 5B block gas and five seconds of submissions:
+
+| AA workload | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: |
+| 2D nonces, existing recipients | 27,310 | 27,622 |
+| 2D nonces, new recipients | 19,462 | 19,762 |
+| Expiring nonces, existing recipients | 25,992 | 27,260 |
+
+All 1,341,695 accepted transactions confirm without execution failures or rejected
+dev payloads. These are single paired trials, so the small throughput differences
+need more evidence. `aa-prefetch-canonical-*.tsv` verifies nine busy blocks built
+with the change: 182,993 user transactions plus nine system transactions match
+full results, state deltas, stored receipts, gas and both canonical roots. Replay
+timings overlap correctness builds and are diagnostic only. The release EVM suite
+passes 90 tests, including a regression that changes a prefetched AA nonce before
+commit and requires canonical rejection. Clippy passes for all EVM and REVM targets;
+the background-root TIP-20 and mixed-payment-lane node tests also pass.
+
+`aa-prefetch-node-matrix.json` adds ten-second submission windows for the existing-
+recipient 2D workload. All 1,543,160 accepted transactions confirm, again without
+execution failures or rejected dev payloads:
+
+| Offered TPS | Sequential, confirmed TPS | 16 workers, confirmed TPS |
+| --- | ---: | ---: |
+| 10,000 | 9,901 | 9,949 |
+| 25,000 | 24,831 | 24,758 |
+| 75,000 | 25,723 | 23,708 |
+
+These longer overload trials perform worse than the five-second trials, and
+speculation remains slower than the sequential control for this shared-account
+workload. Offered 75k also exceeds client/admission capacity: those trials accept
+429,962 and 413,198 transactions over approximately ten seconds. All confirmation
+rates include draining the backlog. The execution bottleneck and sustained 50k+
+node-throughput goal remain unresolved.
+
+## Paired AA selection snapshots
+
+The payload builder now creates its authoritative AA iterator and speculative
+lookahead from one collected/sorted pool snapshot. Each iterator retains its own
+candidate index, live subscription and invalidation state. Both subscriptions
+start under the same pool read lock, preventing admissions between snapshot
+construction and subscription. Protocol-nonce iterators retain the Reth path.
+The authoritative iterator still advances and processes invalidation one
+transaction at a time, including payment-lane transitions.
+
+`paired-snapshot-micro.tsv` compares two independent constructions against the
+paired path in an off/on/on/off sequence, with five measurements per size per run.
+Both iterators must select the exact expected transaction order. At 100k candidates,
+mean construction time falls from 42.96 ms to 25.89 ms (40% less); at 50k it falls
+from 16.42 ms to 10.21 ms. This benchmark includes both iterators' selection and
+destruction separately in `drain_seconds`. To reproduce, set
+`TEMPO_POOL_BENCH_SCATTERED=1` and `TEMPO_POOL_BENCH_PAIR=0` or `1` when running
+the ignored `best_transactions_throughput` test in release mode.
+
+`paired-snapshot-node.json` and `paired-snapshot-node-followup.json` retain five
+paired comparisons, all with 16 workers, shared trie roots and 5B block gas:
+
+| Workload | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: |
+| 2D, existing recipients | 50,000 | 5 | 27,585 | 27,344 |
+| 2D, new recipients | 50,000 | 5 | 20,017 | 21,444 |
+| 2D, existing recipients | 75,000 | 10 | 24,442 | 24,718 |
+| 2D, new recipients | 50,000 | 10 | 15,810 | 17,568 |
+| Expiring, existing recipients | 50,000 | 5 | 26,708 | 26,994 |
+
+All 3,031,532 accepted transactions confirm without execution failures or rejected
+dev payloads. The two new-recipient comparisons improve by 7% and 11%; the other
+workloads show little throughput change. In the longer new-recipient pair, pool
+snapshot time falls from 4.96 s to 2.70 s, while the execution loop stays near
+16.5 s. Thus the remaining execution/preparation cost still limits throughput.
+
+The summary tool now retains scheduler counters separately from confirmed
+transactions. In the short existing-recipient pair, the fraction of scheduled
+candidates reaching reuse/conflict/retry handling increases from 45% to 99%; in
+the short new-recipient pair it increases from 69% to 98%. These counters span
+recorded payload attempts, including abandoned work; they are not counts of
+distinct committed transactions.
+
+The 228 pool tests pass, including new checks that paired iterators preserve live
+arrivals, independent invalidation and preview-only disabling of updates. Release
+Clippy passes for the pool and builder; node checks cover post-block root proofs,
+TIP-20 transfers and mixed payment lanes. `paired-snapshot-canonical-*.tsv` verifies
+15 busy generated blocks (255,590 user transactions and 15 system transactions)
+against full sequential results, state deltas, stored receipts, gas and both
+canonical roots. Replay timings overlap correctness builds
+and are diagnostic only. Public historical replay and sustained 50k+ node TPS
+remain outstanding.
+
+`paired-snapshot-profile.json` records a follow-up CPU profile with the built-in
+Pyroscope feature at 199 Hz. `profile_node.py` captures this profiler locally and
+retains raw protobuf profiles alongside normal node trial artifacts. Only the
+complete ten-second profile inside the twenty-second submission window is used.
+The profiled new-recipient run leaves 133,566 of 808,741 accepted transactions
+unconfirmed at the benchmark's drain deadline, so it is diagnostic evidence, not
+a successful throughput result.
+
+Within sampled builder CPU, merged transaction selection accounts for 47.6%,
+paired snapshot construction for 16.1%, and skipped-transaction metric updates
+for 14.5% (inclusive samples). Whole-trial counters record 19,388,134 candidates
+skipped for the remaining non-shared gas limit. The unprofiled ten-second
+new-recipient trial also records 6,649,645 such skips. Repeatedly draining candidates
+after the block fills is therefore the next selection cost to address. Any early
+termination must still allow cheaper candidates, nonce dependencies and live
+arrivals, and preserve payment-lane handling.
+
+## Stop scanning AA candidates that cannot fit
+
+Payload AA selection now tracks a conservative minimum declared gas limit across
+all snapshot candidates, including nonce descendants. Once an invalidation reports
+less remaining proposer gas than that minimum, the iterator stops scanning the
+oversized tail. Removing candidates never raises the bound; live arrivals can
+lower it. Queued updates must be drained before stopping, and later calls can
+resume selection when a cheaper transaction arrives. General payment-lane limits
+do not update this bound. Ordinary pool iterators retain their existing behavior;
+only the payload's authoritative iterator enables budget tracking, with either
+sequential or speculative execution.
+
+`gas-floor-node.json` compares release binaries before and after this change with
+16 workers, shared trie roots, 5B block gas and ten-second submission windows:
+
+| 2D recipients | Offered TPS | Before, confirmed TPS | After, confirmed TPS | Before / after gas-limit skips |
+| --- | ---: | ---: | ---: | ---: |
+| New addresses | 50,000 | 17,568 | 20,914 | 6,955,791 / 48 |
+| Existing signer accounts | 75,000 | 24,887 | 27,525 | 2,719,029 / 25 |
+
+All 1,688,116 accepted transactions confirm without execution failures or rejected
+dev payloads. Confirmed throughput includes draining the backlog; these are
+isolated paired trials, not estimates of sustained production capacity. New-address
+throughput improves by 19%, with execution-loop time falling from 16.88 s to
+11.36 s; existing-account throughput improves by 11%, with the loop falling from
+12.14 s to 9.85 s. Constructing the gas bound adds snapshot work, which remains
+visible in the timing records.
+
+The 234 pool tests pass, including mixed-gas selection against the original
+complete scan across 192 generated cases, cheaper nonce descendants, expiring
+transactions, and live arrivals beyond one bounded update batch. Release Clippy
+passes for the pool and builder. Node integration checks pass for all four
+post-block root-proof configurations, TIP-20 shared trie transfers and three mixed
+payment-lane configurations. `gas-floor-canonical-{new,existing}.tsv` checks six
+busy generated blocks against complete sequential outcomes, state deltas and
+canonical receipts, gas and roots. These replay timings are diagnostic only.
+
+`gas-floor-node-matrix.json` records a separate ten-second, existing-recipient
+2D matrix using the updated binary for both controls:
+
+| Offered TPS | Sequential confirmed TPS | 16-worker confirmed TPS |
+| ---: | ---: | ---: |
+| 10,000 | 9,976 | 9,970 |
+| 25,000 | 24,835 | 24,723 |
+| 50,000 | 28,473 | 27,493 |
+| 75,000 | 28,662 | 27,436 |
+
+All 2,380,952 accepted transactions confirm without execution failures or rejected
+dev payloads. The overloaded trials accept approximately 417k–422k transactions
+over ten seconds, below the offered load. Parallel execution remains slightly
+slower than the sequential control for this shared-account workload, and sustained
+50k+ confirmed node TPS remains outstanding.
+
+`gas-floor-expiring-diagnostic.json` retains the ten-second expiring-nonce pair.
+These are failed load trials: 77,973 of 453,437 accepted transactions before the
+change and 75,457 of 456,436 afterward remain unconfirmed. The benchmark uses a
+25-second expiry, and both runs record expiry evictions. Their execution loops
+take approximately 23 s, with roughly one million encoded-block-size skips and
+2.7 million invalid-transaction skips. Neither run hits the gas-limit stopping
+rule, so this change does not address that workload's remaining selection cost.
+Included transactions have no execution failures or rejected dev payloads.
+`gas-floor-canonical-expiring.tsv` independently verifies three busy included
+blocks against sequential execution and the stored canonical results; it does
+not turn an incomplete drain into a successful throughput measurement.
+
+`gas-floor-profile.json` captures a follow-up twenty-second new-recipient run at
+199 Hz. All 756,972 accepted transactions confirm, but profiler overhead makes it
+diagnostic rather than a throughput comparison. Whole-trial gas-limit skips fall
+to 88. Within the complete ten-second CPU profile, AA snapshot construction now
+dominates builder work: 32.2% for the paired snapshot and 16.7% for the additional
+minimum-gas scan. Speculative preparation accounts for 20.2%; iterator destruction
+accounts for 9.9% (inclusive samples). The next useful targets are snapshot/index
+construction and the separate encoded-size and invalid-candidate costs exposed by
+the expiring-nonce trial.
+
+Reproduce profile summaries with
+`python3 benchmarks/parallel-execution/summarize_profile.py /path/to/profile-output`.
+The tool selects only complete profiles inside the submission window and only the
+`cpu/nanoseconds` sample values. It reproduces the earlier paired-snapshot
+profile's sampled totals, window and skip counters exactly. Raw profile paths and
+SHA-256 hashes are retained in each summary.
+
+## Collect payload limits with the AA snapshot
+
+Payload iterators now compute their minimum gas and encoded-size bounds during
+the existing snapshot/index traversal. This removes the additional minimum-gas
+scan identified by the profile. Ordinary pool iterators and speculative preview
+iterators retain their unrestricted selection behavior. The encoded-size bound
+uses cached EIP-2718 lengths as conservative lower bounds; an oversized-candidate
+notification uses that candidate's full RLP length to recover the remaining block
+budget. Smaller descendants and live arrivals still prevent premature termination.
+
+`selection-limits-node.json` compares the new binary against `8f3ae43c`, with
+16 execution workers, shared trie roots, 5B block gas and the same local client:
+
+| Workload | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: |
+| 2D, new recipients | 50,000 | 10 | 21,082 | 21,885 |
+| 2D, existing recipients | 75,000 | 10 | 27,080 | 28,083 |
+| Expiring, existing recipients | 50,000 | 5 | 27,017 | 27,499 |
+| Expiring, existing recipients | 25,000 | 10 | 22,568 | 23,636 |
+
+All 2,605,917 accepted transactions confirm without execution failures or rejected
+dev payloads. The two 2D snapshot totals fall from 3.21 s to 2.39 s and 1.54 s to
+1.15 s, approximately 25% less. The short expiring pair reduces encoded-size skips
+from 317,787 to five. These are individual paired trials, not confidence intervals;
+the 25k expiring pair never triggers a size bound, and its timing difference is
+largely background-root waiting, so it is a control rather than evidence of a size
+optimization gain. Confirmed rates include backlog and remain below 50k TPS.
+
+`selection-limits-snapshot.tsv` measures paired iterator construction with payload
+bounds disabled/enabled/enabled/disabled, five repeats per size per trial. At 100k
+candidates, unrestricted construction averages 26.78 ms and construction with
+bounds averages 30.29 ms. This compares the new constructor's incremental cost,
+not the old separate-scan implementation. Both iterators must preserve the full
+expected selection order. Set `TEMPO_POOL_BENCH_LIMITS=1`,
+`TEMPO_POOL_BENCH_PAIR=1` and `TEMPO_POOL_BENCH_SCATTERED=1` to reproduce the
+payload case with the ignored `best_transactions_throughput` test.
+
+`selection-limits-expiring-capacity.json` separately preserves the ten-second,
+50k-offered expiring stress pair. Both exceed the protocol's 300,000-entry
+unexpired replay-protection ring with the benchmark's 25-second expiry. In the
+updated run, cumulative inclusion reaches exactly 300,000 user transactions, then
+pauses until expiry frees entries. Size skips fall from 1,087,680 to eight, but
+85,706/455,098 transactions before the change and 88,400/455,934 afterward remain
+unconfirmed. These are failed load trials, not throughput results. The executor
+must preserve the ring's rejection and eviction rules; increasing its capacity is
+outside this optimization.
+
+The 242 pool tests pass, including 960 generated mixed gas/size budgets checked
+against full scanning, RLP-header boundary cases, descendants and queued arrivals.
+The 91 EVM tests pass, including new differential coverage of ring wrap, rejection
+of unexpired entries and eviction exactly at expiry across T1 through T4 and all
+worker/replay modes. Clippy passes for the EVM, pool and payload builder; shared
+trie root-proof, TIP-20 and mixed payment-lane node checks pass.
+`selection-limits-canonical-*.tsv` verifies 27 generated blocks containing 262,128
+user transactions and 27 system transactions, including the ring-capacity pause
+and subsequent resumption. Full outcomes, state deltas, stored receipts, gas and
+canonical roots agree. Replay timings overlap correctness checks and are
+diagnostic only.
+
+## Share immutable AA snapshots between paired iterators
+
+The authoritative and speculative iterators now share their initial candidate
+vector and nonce index. Each retains a private cursor, removal bitmap, live-update
+map, subscription and invalidation state. Snapshot cloning therefore copies shared
+pointers and a compact bitmap instead of every pending transaction reference.
+Single iterators retain their owned vector/map representation.
+
+`shared-snapshot-node.json` compares this change with `40f6cdeb` on the same
+16-core host, with 5B block gas, shared trie roots and 100 local client signers:
+
+| Workload | Execution workers | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2D, new recipients | 16 | 50,000 | 10 | 21,750 | 22,311 |
+| 2D, existing recipients | 16 | 75,000 | 10 | 27,319 | 28,339 |
+| 2D, new recipients | 0 | 50,000 | 10 | 21,613 | 21,906 |
+| 2D, existing recipients | 0 | 75,000 | 10 | 28,985 | 29,117 |
+| Expiring, existing recipients | 16 | 50,000 | 5 | 27,454 | 27,603 |
+
+All 3,759,352 accepted transactions confirm without execution failures or rejected
+dev payloads. The two parallel 2D snapshot totals fall from 2.32 s to 1.99 s and
+1.21 s to 1.03 s, a 14–15% reduction; confirmed rates improve by 2.6–3.7%. The
+sequential controls and short expiring pair are close. Each configuration has one
+node trial, alternating before/after order across workloads; these are not
+confidence intervals or sustained production capacity. Rates include backlog.
+The existing-recipient parallel run remains slower than the sequential control,
+and sustained 50k+ confirmed node TPS remains outstanding.
+
+`shared-snapshot-micro.tsv` retains before/after/after/before runs, each with five
+repeats per size, using payload bounds and scattered nonce keys. Both paired and
+single iterators assert the complete expected selection order. At 100k candidates,
+paired construction averages 32.15 ms before and 26.24 ms after. Draining both
+iterators adds overhead: combined construction and full draining takes 86.90 ms
+before and 87.40 ms after. The node benefits from cheaper construction when a
+block consumes only part of a large snapshot; this is not a full-drain speedup.
+Single-iterator totals at 100k are 51.19 ms before and 50.83 ms after. At 10k their
+mean rises from 1.82 ms to 2.02 ms, concentrated in the first repeat, while their
+median falls from 1.71 ms to 1.66 ms. Raw repeats are retained to expose that
+variation. The environment flags are `TEMPO_POOL_BENCH_LIMITS=1`,
+`TEMPO_POOL_BENCH_SCATTERED=1`, and `TEMPO_POOL_BENCH_PAIR=1` for the paired case.
+
+An earlier prototype shared storage unconditionally and increased the 100k
+single-iterator construction-plus-drain time by 12%. It was replaced with the
+conditional representation above. `shared-snapshot-prototype-micro.tsv` and
+`prototypes/shared-snapshot-unconditional.patch` preserve that experiment; apply
+the patch to `40f6cdeb` with `git apply --unidiff-zero` to reproduce it.
+
+All 243 pool tests pass, including 40,960 generated nonce-index operations against
+independent hash maps and 16,384 generated candidate operations against ordered
+sets. These cover bitmap boundaries, empty snapshots, replacement after removal,
+and clones after partial consumption. Existing paired live/frozen preview,
+invalidation, descendant and gas/size-budget tests also pass. Release Clippy and
+all nine shared-trie and mixed payment-lane node checks pass.
+`shared-snapshot-canonical-*.tsv` verifies 15 busy generated blocks containing
+255,586 user transactions and 15 system transactions. Blocks built in both
+sequential and speculative modes, including expiring AA transfers, match complete
+sequential outcomes, state deltas, stored receipts, gas, receipt roots and state
+roots. Replay timings are diagnostic: adaptive backoff and the minimum body-time
+threshold for reuse are disabled, and sequential execution runs first, warming
+provider caches.
+
+## Leave stale AA nonce candidates on the ordinary path
+
+`shared-snapshot-profile.json` profiles `ae5c08d9` with existing recipients and
+16 execution workers. All 786,242 accepted transactions confirm. The run records
+319,794 nonce-too-low skips; pre-execution accounts for 24.2% of sampled builder
+CPU, paired snapshot construction 14.2%, and AA iteration 7.7%. These are inclusive
+samples from complete profile windows; profiling changes throughput.
+
+The scheduler now checks a prefetched AA nonce before creating worker inputs.
+A 2D counter above the candidate's nonce, or an unexpired expiring-nonce entry,
+leaves the candidate for ordinary execution. The hint never supplies a validation
+error or changes authoritative selection. A candidate can still succeed if its
+state changes after preparation. Disabled nonce checks, malformed uint64 words
+and failed hint reads do not trigger the filter. The T1/T1B replay-hash rules and
+the pre-T1 counter behavior of the reserved expiring key are preserved.
+
+Payload preparation borrows the pool's cached transaction environment for this
+check and clones only environments selected for workers. It no longer clones the
+whole pooled transaction just to extract that environment. The actual converted
+input still supplies the speculative gas bound and system-transaction check.
+`nonce_filtered_candidates_total` records omitted candidates separately from
+scheduled work, so they do not masquerade as failed worker executions or trigger
+adaptive backoff of otherwise useful speculation.
+
+`nonce-filter-early-node.json` and `nonce-filter-early-repeated-node.json` compare
+this change against `ae5c08d9`, with the same 5B-gas, shared-trie configuration,
+16 execution workers and 100 signers:
+
+| Workload | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: |
+| 2D, new recipients, first pair | 50,000 | 10 | 22,462 | 22,762 |
+| 2D, new recipients, repeat 1 | 50,000 | 10 | 22,572 | 22,747 |
+| 2D, new recipients, repeat 2 | 50,000 | 10 | 22,457 | 22,962 |
+| 2D, existing recipients | 75,000 | 10 | 28,351 | 28,372 |
+| Expiring, existing recipients | 50,000 | 5 | 27,254 | 27,590 |
+
+All 3,689,397 accepted transactions confirm without execution failures or rejected
+dev payloads. Across the three new-recipient pairs, mean confirmed TPS rises from
+22,497 to 22,824 (1.45%). Execution-loop time totals fall from 31.54 s to 30.93 s,
+and successful-execution time from 10.51 s to 9.86 s, with nearly equal accepted
+counts (1,192,917 before; 1,193,721 after). Speculative retries fall from 81,379 to
+zero, 665,224 stale candidates avoid conversion and worker execution, and backoff
+falls from 649,876 to 1,024 attempts. Counters cover payload attempts, including
+cancelled work, and are not counts of distinct canonical transactions.
+
+The existing-recipient pair is effectively unchanged. The short expiring pair's
+confirmed rate rises 1.2%, but its execution-loop time does not improve; that
+single pair is compatibility evidence rather than a demonstrated execution gain.
+These local trials alternate before/after order, include backlog, and provide no
+claim of sustained 50k+ TPS or confidence intervals.
+
+An initial version filtered after cloning worker inputs. It also eliminated 2D
+nonce retries, but still converted stale candidates that backoff had previously
+skipped. `nonce-filter-late-node.json` retains its six trials (2,083,753 accepted,
+all confirmed); the existing-recipient run included 0.48 s more background-root
+waiting. `prototypes/nonce-filter-after-conversion.patch` reproduces this version
+on `ae5c08d9` using `git apply --unidiff-zero`. Its nine canonical replay blocks
+contain 183,039 user transactions and agree with sequential execution. The final
+implementation uses the earlier borrowed-view check described above.
+
+All 93 EVM tests pass, along with release Clippy for the EVM, revm and payload
+builder and all nine shared-trie/payment-lane node checks. New differential cases
+cover mixed stale/valid nonce descendants, empty worker batches, all forks from
+T0 through T4, nonce-check disabling, malformed storage, expiry exactly at the
+block timestamp, and hints invalidated after preparation. The tests also check
+that omitted candidates never call the conversion callback and that changing a
+borrowed view during conversion cannot evade the gas bound.
+`nonce-filter-early-canonical-*.tsv` verifies 15 generated blocks containing
+233,659 user transactions and 15 system transactions against complete sequential
+outcomes, state deltas, canonical receipts, gas, receipt roots and state roots.
+Replay timings are diagnostic: adaptive backoff and the minimum body-time
+threshold are disabled, and sequential execution warms the provider caches first.
+
+## Window-size follow-up (2026-10-02)
+
+`window-sweep.{json,tsv}` compares windows of 128, 256, 512 and 1,024 at a
+5B-gas budget on the same 16-core/32-thread host. Each size appears twice, in
+forward then reverse order, with 50,000 generated transactions per workload and
+0/16/32 workers. The saved executable uses `ccc70f56` plus the benchmark-only gas
+budget parameter. Phase clocks are enabled equally; full receipts and state roots
+are checked against sequential execution for every parallel result.
+
+| Workload | Window | 16-worker execution TPS | 32-worker execution TPS |
+| --- | ---: | ---: | ---: |
+| Paid compute, repeated payers | 128 | 49,302 | 62,918 |
+| Paid compute, repeated payers | 256 | 53,528 | 61,998 |
+| Paid compute, repeated payers | 512 | 54,096 | 64,676 |
+| Paid compute, repeated payers | 1,024 | 56,866 | 66,422 |
+| Paid AA TIP-20 | 128 | 114,152 | 100,764 |
+| Paid AA TIP-20 | 256 | 104,612 | 100,200 |
+| Paid AA TIP-20 | 512 | 109,488 | 106,726 |
+| Paid AA TIP-20 | 1,024 | 110,308 | 107,574 |
+
+Larger windows improve paid compute, but do not consistently improve native AA
+transfers. At 16 workers, AA preparation still takes 0.25–0.26 seconds per 50,000
+transactions, over half of measured execution time. These are in-memory T0
+execution measurements, excluding networking, transaction admission and trie
+hashing.
+
+`window-node.json` records six complete node trials using the normal `ccc70f56`
+executable, 16 workers, shared sparse trie, one concurrent builder, a 5B-gas
+budget, 100 signers and two-dimensional AA nonces. New recipients use a 50k
+sending target and existing recipients use 75k, each for ten seconds. Actual
+confirmed throughput includes the time needed to drain the accepted backlog.
+
+| Recipients | Window | Confirmed TPS | Execution loop (s) | Pool snapshot (s) | Finalization (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| New | 128 | 22,677 | 10.447 | 2.036 | 1.466 |
+| New | 512 | 23,015 | 10.239 | 2.062 | 1.524 |
+| New | 1,024 | 22,048 | 10.538 | 2.264 | 2.407 |
+| Existing | 128 | 28,027 | 9.747 | 1.043 | 1.459 |
+| Existing | 512 | 28,254 | 9.635 | 1.037 | 1.442 |
+| Existing | 1,024 | 28,401 | 9.623 | 0.973 | 1.417 |
+
+All 2,476,001 accepted user transactions confirmed, with zero execution failures
+or rejected payloads. These single trials show no consistent whole-node gain
+that justifies changing the default window of 128. New-recipient finalization at
+1,024 includes 0.928 seconds waiting for the background root; the other five
+trials wait 0.053–0.078 seconds. Payload timings include attempted builders.
+
+The new-recipient 512 trial aborted during shutdown, after all transactions had
+confirmed and SIGTERM was received, with `pthread lock: Invalid argument`. The
+message matches RocksDB's `PthreadCall("lock", ...)` error path; the underlying
+cause is unverified. Its database and logs are retained for investigation, and
+the nonzero exit status is preserved in the results.
+`window-shutdown-anomaly.json` retains the shutdown log excerpt. No clean-shutdown claim is
+made for that trial.
+
+`window-canonical-*.tsv` checks three busy consecutive blocks from each trial
+against sequential execution and canonical receipts, gas, receipt roots and state
+roots: 18 blocks with 217,775 user transactions plus 18 system transactions.
+Replay timings are diagnostic. Disposable 512/1,024 databases with clean shutdown
+were removed after replay; reports, logs and metrics remain, with retention
+metadata in the JSON results. The two 128 controls were subsequently removed
+after their recorded replays to free benchmark space. The anomalous 512 database
+is retained.
+
+## Grouping repeated prefetch keys (2026-10-02)
+
+The per-transaction prefetch planner constructed the same mapping slots repeatedly
+before the database cache discarded duplicate keys. `PrefetchPlan` tracks the
+payers, tokens, fee collectors and token holders already visited in one window.
+It constructs their mapping slots once, emits keys directly into the existing
+prefetch cache, and adds reward-storage hints when a previously balance-only
+holder needs them. All hint state is discarded after preparing that window;
+actual database reads still determine validation dependencies. Account and nonce
+hints, authoritative validation, fee checks and ordered commits retain their
+existing paths.
+
+A generated coverage oracle compares the union of emitted keys after every
+prefix against the previous planner, in forward and reverse order. Its inputs
+mix zero/paid fees, sponsored/ordinary callers, default/explicit/called tokens,
+malformed transfers, contract creation, nonce modes, beneficiaries and forks.
+It verifies identical coverage through balance-to-reward upgrades and repeated
+visits, with more than four times fewer emitted hint keys in the mixed sequence.
+The 93 EVM tests, 129 revm tests, release Clippy for EVM/revm/payload builder, and
+nine shared-trie/payment-lane node checks pass.
+
+`prefetch-plan-micro.{json,tsv}` compares saved before/after test executables at
+50,000 transactions, 5B block gas and 0/16/32 workers. Each combination appears
+twice, with reversed before/after ordering. It includes the same phase clocks in
+both executables and verifies full receipts and final state roots against the
+sequential run. No builds, replays or other throughput runs overlap these trials.
+
+| Workload | Window | Workers | Before execution TPS | After execution TPS | Preparation before → after (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Paid compute, repeated payers | 128 | 16 | 47,808 | 55,612 | 0.174 → 0.093 |
+| Paid compute, repeated payers | 128 | 32 | 62,456 | 69,435 | 0.192 → 0.108 |
+| Paid compute, repeated payers | 1,024 | 16 | 54,914 | 62,784 | 0.141 → 0.027 |
+| Paid compute, repeated payers | 1,024 | 32 | 65,342 | 77,798 | 0.153 → 0.034 |
+| Paid AA TIP-20 | 128 | 16 | 114,939 | 124,690 | 0.260 → 0.194 |
+| Paid AA TIP-20 | 128 | 32 | 100,109 | 122,679 | 0.295 → 0.208 |
+| Paid AA TIP-20 | 1,024 | 16 | 112,200 | 155,209 | 0.248 → 0.132 |
+| Paid AA TIP-20 | 1,024 | 32 | 106,876 | 143,554 | 0.253 → 0.139 |
+
+These are generated T0 in-memory execution results. In particular, the 155k AA
+result does not include transaction admission, networking or trie hashing, and
+is not a full-node throughput claim. Larger windows remain optional.
+
+`prefetch-plan-diverse.{json,tsv}` additionally checks seven workloads at 10,000
+transactions, 0/16 workers and a 128-transaction window, in before/after/after/before
+order. The results below are means of the two 16-worker runs:
+
+| Workload | Before execution TPS | After execution TPS |
+| --- | ---: | ---: |
+| storage | 264,372 | 273,442 |
+| compute | 87,906 | 84,485 |
+| compute_paid | 33,912 | 36,778 |
+| compute_paid_chains | 54,560 | 53,859 |
+| tip20 | 177,188 | 183,322 |
+| tip20_paid | 126,353 | 149,686 |
+| tip20_paid_aa | 112,914 | 127,444 |
+
+Preparation is unchanged for ordinary unpaid compute/storage and decreases for
+all five native fee/token workloads. Total time does not improve uniformly: the
+short unpaid-compute and repeated-payer compute cases are 3.9% and 1.3% slower,
+respectively, despite unchanged or reduced preparation time. The larger repeated-
+payer measurements above show a gain; these short runs do not establish one.
+
+`prefetch-plan-node.json` records the normal-node comparison at 16 workers,
+shared sparse trie, one concurrent builder, 5B block gas and 100 signers.
+New-recipient and existing-recipient two-dimensional AA trials use 50k and 75k
+sending targets for ten seconds, respectively. Expiring nonces use existing
+recipients and a 50k target for five seconds, staying below the 300,000-entry
+protocol capacity. Each trial fully drains before the next starts. The 128-window
+pairs alternate which executable runs first; the two after-only 1,024-window
+trials run last. These are single trials per combination.
+
+| Workload | Variant | Window | Confirmed TPS | Execution loop (s) | Pool snapshot (s) | Finalization (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| new | after | 128 | 23,053 | 10.140 | 1.982 | 1.496 |
+| new | before | 128 | 22,737 | 10.360 | 2.058 | 1.476 |
+| existing | before | 128 | 28,329 | 9.670 | 1.014 | 1.419 |
+| existing | after | 128 | 28,287 | 9.637 | 1.041 | 1.426 |
+| expiring | after | 128 | 27,606 | 5.698 | 0.075 | 0.845 |
+| expiring | before | 128 | 27,629 | 5.761 | 0.078 | 0.829 |
+| new | after | 1,024 | 23,236 | 10.105 | 1.859 | 1.542 |
+| existing | after | 1,024 | 27,785 | 9.604 | 1.012 | 1.830 |
+
+All 2,928,792 accepted transactions confirmed,
+with zero execution failures or rejected payloads and clean shutdown in all eight
+trials. The default-window new-recipient pair improves 1.4%; existing recipients
+and expiring nonces are effectively flat. The execution-only gains do not imply
+equal gains in complete node throughput. The after-only 1,024-window trials
+reach 23,236 TPS for new recipients and 27,785 TPS for existing recipients. The
+latter includes 0.499 seconds waiting for the background root, versus 0.072 at
+128. This is not enough evidence for a universal window increase; the default
+remains 128.
+
+`prefetch-plan-canonical-*.tsv` verifies three busy consecutive blocks from every
+trial, including both executables and both window sizes: 24 blocks containing
+438,573 user transactions plus 24 system
+transactions. Full outcomes, state deltas, canonical receipts, gas, receipt roots
+and state roots match sequential execution. Replay timings are diagnostic, with
+backoff/minimum body-duration gates disabled and sequential execution warming the
+provider caches. Before databases were removed after replay; reports, metrics,
+logs and retention metadata remain. After databases are retained.
+
+## Balance contention experiments (2026-10-02)
+
+`balance-conflict-trace.json` traces canonical block 9 from the retained
+`prefetch-plan` existing-recipient node trial. All 11,469 first failed dependencies
+are ordinary storage reads in pathUSD; 11,369 (99.1%) match the 99 genesis slots
+prefunded with `uint64::MAX`. The other 100 failures are left unclassified. The
+15,755-transaction block still matches full sequential execution and canonical
+receipts/gas/roots (`balance-conflict-canonical.tsv`). This replay disables
+adaptive backoff and emits trace logs, so its timings are diagnostic. It shows
+why the existing-recipient workload falls back frequently, without authorizing
+any relaxation of balance-read validation.
+
+The new `tip20_paid_aa_existing` benchmark keeps the 100 senders and two-dimensional
+nonces of the existing AA benchmark, but draws recipients from those funded
+accounts using a fixed xorshift sequence. `contention-window-sweep.{json,tsv}`
+compares 50,000 transactions at 0/16 workers, a 5B block-gas budget and seven
+window sizes in forward then reverse order. All parallel outputs match sequential
+receipts and final roots. These are generated T0 in-memory results, with phase
+clocks enabled and no overlapping builds or throughput runs.
+
+| Window | 16-worker execution TPS | Fully reused | Conflicts | Sequential backoff |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 81,660 | 47,748 | 2,252 | 0 |
+| 8 | 98,217 | 44,973 | 5,027 | 0 |
+| 16 | 94,538 | 40,032 | 9,968 | 0 |
+| 32 | 93,612 | 30,388 | 17,052 | 2,560 |
+| 64 | 104,721 | 2,436 | 3,388 | 44,176 |
+| 128 | 104,860 | 1,346 | 4,286 | 44,368 |
+| 256 | 104,658 | 672 | 4,960 | 44,368 |
+
+Sequential execution averages 109,605 TPS across the fourteen controls. A smaller
+window recovers more reusable results, but preparing and scheduling cheap native
+transfers costs more than it saves here. Neither the default window nor its
+backoff policy changes. Native balance-dependent work remains a parallel-scaling
+limit; lowering replay counts alone is not sufficient evidence of a speedup.
+
+Two allocation experiments were also rejected and reverted:
+
+- `prototypes/uncached-balance-handlers.patch` returns owned balance handlers
+  without populating mapping caches and computes the fee-validation balance slot
+  directly. In the two-pair phase-instrumented comparison, sequential AA execution
+  drops from 105,052 to 98,536 TPS for new recipients and 109,736 to 103,152 TPS for
+  existing recipients. Existing-recipient execution with 16 workers drops from
+  104,118 to 98,134 TPS (`uncached-balance-micro.{json,tsv}`).
+- `prototypes/direct-balance-slot.patch` retains only the direct fee-validation
+  slot calculation. The initial measurements are mixed
+  (`direct-balance-slot-micro.{json,tsv}`). Six additional before/after repeats per
+  executable, without phase timers, show the tradeoff below
+  (`direct-balance-slot-repeat.{json,tsv}`). The parallel new-recipient regression
+  prevents adopting this change.
+
+| Direct-slot repeat workload | Workers | Before mean TPS | After mean TPS |
+| --- | ---: | ---: | ---: |
+| AA, new recipients | 0 | 107,208 | 108,542 |
+| AA, new recipients | 16 | 131,240 | 126,849 |
+| AA, existing recipients | 0 | 111,394 | 114,012 |
+| AA, existing recipients | 16 | 106,100 | 107,884 |
+
+Both patches apply to `77f5953e` and are independent alternatives. Each passed the
+93-test EVM suite and all measured receipt/root comparisons, but neither changes
+the retained production executor. No full-node throughput gain is claimed from
+these experiments. The saved executables, hashes, run order and patch hashes are
+recorded with the measurements.
+
+The retained differential regression uses 128 AA transactions among 16 funded
+accounts, mixing zero/paid fees, sponsors, zero/nonzero transfers, insufficient-
+balance reverts and multicall balance queries. A sequential preflight requires
+exactly 109 successes and 19 reverts at each fork, preventing an accidentally
+invalid workload from making the differential checks vacuous. Eight forks from
+T0 through T4, 1/4 workers and windows of 8/32/128 give 48 combinations; each runs
+all eight streaming/fee-rebasing/payer-chaining configurations. Full outcomes,
+state deltas, receipts including logs/cumulative gas, and final roots match in
+all 384 comparisons. The final EVM suite passes 94 tests, and release EVM Clippy
+passes with warnings denied.
+
+Completed `window` 128 controls and the three initial `nonce-filter-early` after
+databases were removed only after their previously recorded canonical replays
+and confirmation checks. Their reports, metrics, logs and retention metadata
+remain; the latest `prefetch-plan` after databases are available for further
+replay. The separate shutdown-anomaly database remains retained.
+
+## Correctness model and integration
+
+Workers execute against a cached view while the owner advances the committed
+prefix. Prefetched values come from the batch start; other reads are cached when
+served and may observe later commits. This can produce an inconsistent speculative
+view. Before reuse, every recorded value must match the actual transaction's
+committed prefix, except eligible fee slots that pass the arithmetic checks above.
+Otherwise the result is replayed.
+Database cache misses remain on the database's owning thread, supporting Reth
+providers that cannot be shared between threads without unsafe code. Every
+execution read is recorded, including reads in
+transaction validation, native precompiles and reverted calls. Before reusing a
+result, its transaction and environment must match and every ordinary read must
+still match the committed prefix. Conflicting transactions run again through the ordinary
+EVM, with the call-body reuse check described above. Speculative errors use full replay.
+
+Windows are bounded by both transaction count and total declared gas. Candidates
+that do not fit the speculative gas budget retain the ordinary execution path.
+Runtime configuration changes, custom fee charging, inspectors and custom
+instruction/precompile configuration also retain that path.
+
+The existing block executor owns gas-limit checks, section transitions, receipts,
+state hooks and ordered commits. Known block bodies supply bounded lookahead for
+validation; subblocks supply bounded batches while building. The proposer uses a
+separate pool iterator for speculative candidates so speculation cannot change
+invalidation or payment-lane switching on the authoritative iterator. Inspectors
+and custom precompiles retain the ordinary execution path.
+
+The generated suite covers storage dependencies, original-value gas changes,
+nonce chains, reverted reads, contract creation, transient storage isolation,
+TIP-20 fees, AA multicalls and two-dimensional nonces across T0/T1B/T3/T4,
+shared sponsored expiring nonces across T1 through T4, keychain spending limits
+and revocation, SELFDESTRUCT balance dependencies, environment changes,
+configuration changes, and thread-bound database/panic behavior. A block-executor
+differential check also compares actual receipts and ordered state hooks.
+
+## Outstanding goal work
+
+- Investigate the RocksDB mutex abort seen once during SIGTERM shutdown of the
+  pre-prefetch-plan binary; retained evidence is in `window-shutdown-anomaly.json`.
+
+- Reduce cheap-transaction scheduling and read-validation overhead.
+- Reduce the remaining serial fee-processing and partial-replay overhead.
+- Expand AMM liquidity, authorization/delegation, hardfork-boundary and adversarial
+  differential coverage, including independent implementations or state-test corpora.
+- Replay historical blocks against verified parent state and canonical receipts and
+  roots. The public Moderato endpoint returned HTTP 403 from this host; no historical
+  mainnet/testnet replay is claimed. The local replay harness is available.
+  The snapshot metadata API configured in the node also returns HTTP 403
+  (`historical-snapshot-access.json`, checked 2026-10-02).
+- Sustain 50k+ actual node TPS, measure transaction confirmation latency, and profile
+  execution separately from pool iteration and block finishing on a larger host.
+  The 5B-gas follow-up removes the original benchmark's block-gas ceiling, but
+  the local offered-load matrix still does not meet this acceptance criterion.

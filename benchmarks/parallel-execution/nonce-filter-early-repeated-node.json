@@ -1,0 +1,559 @@
+[
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1860.3,
+        "peak": 2000.0,
+        "mean_system": 816.3
+      },
+      "client": {
+        "mean": 279.4,
+        "peak": 330.0,
+        "mean_system": 44.1
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 79.1,
+      "client:|__tokio-rt-worker": 200.0,
+      "node:|__engine": 20.7,
+      "node:|__mdbx-rs-txn-mgr": 9.4,
+      "node:|__persistence": 11.7,
+      "node:|__rayon-00": 14.7,
+      "node:|__rayon-01": 13.6,
+      "node:|__rayon-02": 12.6,
+      "node:|__rayon-03": 11.3,
+      "node:|__rayon-04": 11.0,
+      "node:|__rayon-05": 10.0,
+      "node:|__rayon-06": 9.0,
+      "node:|__rayon-07": 7.6,
+      "node:|__rayon-08": 7.2,
+      "node:|__rayon-09": 6.8,
+      "node:|__rayon-10": 6.4,
+      "node:|__rayon-11": 6.1,
+      "node:|__rayon-12": 5.9,
+      "node:|__rayon-13": 5.4,
+      "node:|__rayon-14": 5.4,
+      "node:|__rayon-15": 5.3,
+      "node:|__rayon-16": 5.2,
+      "node:|__rayon-17": 5.0,
+      "node:|__rayon-18": 5.0,
+      "node:|__rayon-19": 4.9,
+      "node:|__rayon-20": 4.9,
+      "node:|__rayon-21": 4.9,
+      "node:|__rayon-22": 4.7,
+      "node:|__rayon-23": 4.7,
+      "node:|__rayon-24": 4.6,
+      "node:|__rayon-25": 4.6,
+      "node:|__rayon-26": 4.4,
+      "node:|__rayon-27": 4.3,
+      "node:|__rayon-28": 4.3,
+      "node:|__rayon-29": 4.3,
+      "node:|__rayon-30": 4.2,
+      "node:|__rayon-31": 4.2,
+      "node:|__sparse-trie": 22.3,
+      "node:|__storage-00": 4.6,
+      "node:|__tempo-execution": 87.3,
+      "node:|__tokio-rt": 1377.4,
+      "node:|__trie-hashing": 11.8
+    },
+    "sending": {
+      "accepted": 399272,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.008824224
+    },
+    "accepted_tps": 39892,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.470862,
+      "execution_loop": 10.504115,
+      "pool_snapshot": 2.08355,
+      "finalization": 1.469152,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.065703,
+      "hashed_post_state": 0.203952,
+      "payload_build": 14.27983
+    },
+    "speculative_execution_counts": {
+      "speculated": 406889,
+      "nonce_filtered": 0,
+      "reused": 371089,
+      "bodies_reused": 0,
+      "fees_rebased": 369239,
+      "conflicts": 4445,
+      "retries": 27273,
+      "backoff": 218017
+    },
+    "confirmation": {
+      "user_transactions": 399272,
+      "execution_failures": 0,
+      "last_busy_block": 54,
+      "send_start_to_last_canonical_seconds": 17.688463,
+      "confirmed_tps_including_backlog": 22572
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "mode": "repeat-1",
+    "variant": "before",
+    "source_directory": "/tmp/tempo-node-nonce-filter-early-repeat-1-before/workers-16-target-50000",
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "new",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ae5c08d936e475a7503ed827e8b96a8e1bc684ac",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 4476215296,
+      "disk_free_bytes_end": 3716952064
+    },
+    "duration_seconds": 10,
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 46,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 225183
+    },
+    "binary": {
+      "path": "/tmp/tempo-shared-snapshot",
+      "sha256": "0a62b5927b5024f446121edd6cb1d57342a94a644a1ff39998e3ae18c8a90e71",
+      "source": "ae5c08d9"
+    },
+    "retention": {
+      "removed": [
+        "/tmp/tempo-node-nonce-filter-early-repeat-1-before/workers-16-target-50000/data"
+      ],
+      "reason": "Completed baseline comparison; raw reports, logs, metrics and CPU samples retained."
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1950.8,
+        "peak": 2088.0,
+        "mean_system": 869.4
+      },
+      "client": {
+        "mean": 302.6,
+        "peak": 331.0,
+        "mean_system": 48.7
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 84.9,
+      "client:|__tokio-rt-worker": 217.6,
+      "node:|__engine": 21.9,
+      "node:|__mdbx-rs-txn-mgr": 8.7,
+      "node:|__persistence": 10.6,
+      "node:|__rayon-00": 14.9,
+      "node:|__rayon-01": 13.4,
+      "node:|__rayon-02": 12.3,
+      "node:|__rayon-03": 11.6,
+      "node:|__rayon-04": 10.8,
+      "node:|__rayon-05": 9.6,
+      "node:|__rayon-06": 8.9,
+      "node:|__rayon-07": 7.7,
+      "node:|__rayon-08": 7.2,
+      "node:|__rayon-09": 6.7,
+      "node:|__rayon-10": 6.3,
+      "node:|__rayon-11": 6.0,
+      "node:|__rayon-12": 5.7,
+      "node:|__rayon-13": 5.6,
+      "node:|__rayon-14": 5.3,
+      "node:|__rayon-15": 5.2,
+      "node:|__rayon-16": 5.0,
+      "node:|__rayon-17": 5.0,
+      "node:|__rayon-18": 4.8,
+      "node:|__rayon-19": 4.9,
+      "node:|__rayon-20": 4.8,
+      "node:|__rayon-21": 4.7,
+      "node:|__rayon-22": 4.7,
+      "node:|__rayon-23": 4.7,
+      "node:|__rayon-24": 4.4,
+      "node:|__rayon-25": 4.6,
+      "node:|__rayon-26": 4.3,
+      "node:|__rayon-27": 4.3,
+      "node:|__rayon-28": 4.3,
+      "node:|__rayon-29": 4.1,
+      "node:|__rayon-30": 4.2,
+      "node:|__rayon-31": 4.0,
+      "node:|__sparse-trie": 22.3,
+      "node:|__storage-00": 2.3,
+      "node:|__storage-01": 2.7,
+      "node:|__storage-03": 2.0,
+      "node:|__tempo-execution": 86.2,
+      "node:|__tokio-rt": 1480.9,
+      "node:|__trie-hashing": 11.8
+    },
+    "sending": {
+      "accepted": 399787,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.067239034
+    },
+    "accepted_tps": 39712,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.287424,
+      "execution_loop": 10.333537,
+      "pool_snapshot": 2.123474,
+      "finalization": 1.449589,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.030916,
+      "hashed_post_state": 0.206649,
+      "payload_build": 14.12333
+    },
+    "speculative_execution_counts": {
+      "speculated": 400174,
+      "nonce_filtered": 226008,
+      "reused": 384268,
+      "bodies_reused": 0,
+      "fees_rebased": 382038,
+      "conflicts": 8110,
+      "retries": 0,
+      "backoff": 0
+    },
+    "confirmation": {
+      "user_transactions": 399787,
+      "execution_failures": 0,
+      "last_busy_block": 54,
+      "send_start_to_last_canonical_seconds": 17.575232,
+      "confirmed_tps_including_backlog": 22747
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "mode": "repeat-1",
+    "variant": "after",
+    "source_directory": "/tmp/tempo-node-nonce-filter-early-repeat-1-after/workers-16-target-50000",
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "new",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ae5c08d936e475a7503ed827e8b96a8e1bc684ac",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 3716608000,
+      "disk_free_bytes_end": 2933256192
+    },
+    "duration_seconds": 10,
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 225943,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 46
+    },
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ae5c08d9 plus nonce filtering before worker input conversion"
+    },
+    "retention": {
+      "canonical_database_retained": true
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1857.8,
+        "peak": 2024.0,
+        "mean_system": 807.1
+      },
+      "client": {
+        "mean": 281.3,
+        "peak": 328.0,
+        "mean_system": 45.1
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 79.6,
+      "client:|__tokio-rt-worker": 201.2,
+      "node:|__engine": 19.8,
+      "node:|__mdbx-rs-txn-mgr": 10.0,
+      "node:|__persistence": 12.9,
+      "node:|__rayon-00": 14.6,
+      "node:|__rayon-01": 13.6,
+      "node:|__rayon-02": 12.6,
+      "node:|__rayon-03": 11.8,
+      "node:|__rayon-04": 10.9,
+      "node:|__rayon-05": 9.4,
+      "node:|__rayon-06": 9.0,
+      "node:|__rayon-07": 7.7,
+      "node:|__rayon-08": 7.1,
+      "node:|__rayon-09": 6.7,
+      "node:|__rayon-10": 6.2,
+      "node:|__rayon-11": 6.1,
+      "node:|__rayon-12": 5.7,
+      "node:|__rayon-13": 5.6,
+      "node:|__rayon-14": 5.6,
+      "node:|__rayon-15": 5.2,
+      "node:|__rayon-16": 5.0,
+      "node:|__rayon-17": 4.9,
+      "node:|__rayon-18": 5.0,
+      "node:|__rayon-19": 4.9,
+      "node:|__rayon-20": 4.7,
+      "node:|__rayon-21": 4.7,
+      "node:|__rayon-22": 4.6,
+      "node:|__rayon-23": 4.6,
+      "node:|__rayon-24": 4.4,
+      "node:|__rayon-25": 4.3,
+      "node:|__rayon-26": 4.3,
+      "node:|__rayon-27": 4.3,
+      "node:|__rayon-28": 4.2,
+      "node:|__rayon-29": 4.2,
+      "node:|__rayon-30": 4.2,
+      "node:|__rayon-31": 4.0,
+      "node:|__sparse-trie": 22.3,
+      "node:|__storage-00": 5.3,
+      "node:|__tempo-execution": 86.9,
+      "node:|__tokio-rt": 1373.0,
+      "node:|__trie-hashing": 11.7
+    },
+    "sending": {
+      "accepted": 399191,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.007331301
+    },
+    "accepted_tps": 39890,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.297348,
+      "execution_loop": 10.317822,
+      "pool_snapshot": 2.018873,
+      "finalization": 1.504581,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.058004,
+      "hashed_post_state": 0.205743,
+      "payload_build": 14.059972
+    },
+    "speculative_execution_counts": {
+      "speculated": 398420,
+      "nonce_filtered": 218198,
+      "reused": 384480,
+      "bodies_reused": 0,
+      "fees_rebased": 382053,
+      "conflicts": 6861,
+      "retries": 0,
+      "backoff": 1024
+    },
+    "confirmation": {
+      "user_transactions": 399191,
+      "execution_failures": 0,
+      "last_busy_block": 64,
+      "send_start_to_last_canonical_seconds": 17.384724,
+      "confirmed_tps_including_backlog": 22962
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "mode": "repeat-2",
+    "variant": "after",
+    "source_directory": "/tmp/tempo-node-nonce-filter-early-repeat-2-after/workers-16-target-50000",
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "new",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ae5c08d936e475a7503ed827e8b96a8e1bc684ac",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 2932916224,
+      "disk_free_bytes_end": 2178768896
+    },
+    "duration_seconds": 10,
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 218003,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 46
+    },
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ae5c08d9 plus nonce filtering before worker input conversion"
+    },
+    "retention": {
+      "canonical_database_retained": true
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1955.4,
+        "peak": 2088.0,
+        "mean_system": 885.1
+      },
+      "client": {
+        "mean": 301.0,
+        "peak": 332.0,
+        "mean_system": 49.3
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 84.1,
+      "client:|__tokio-rt-worker": 216.1,
+      "node:|__engine": 22.3,
+      "node:|__mdbx-rs-txn-mgr": 8.2,
+      "node:|__persistence": 10.4,
+      "node:|__rayon-00": 14.2,
+      "node:|__rayon-01": 13.1,
+      "node:|__rayon-02": 12.2,
+      "node:|__rayon-03": 11.6,
+      "node:|__rayon-04": 10.8,
+      "node:|__rayon-05": 9.8,
+      "node:|__rayon-06": 9.1,
+      "node:|__rayon-07": 7.7,
+      "node:|__rayon-08": 7.1,
+      "node:|__rayon-09": 6.8,
+      "node:|__rayon-10": 6.3,
+      "node:|__rayon-11": 6.1,
+      "node:|__rayon-12": 5.7,
+      "node:|__rayon-13": 5.6,
+      "node:|__rayon-14": 5.3,
+      "node:|__rayon-15": 5.1,
+      "node:|__rayon-16": 4.9,
+      "node:|__rayon-17": 5.0,
+      "node:|__rayon-18": 4.9,
+      "node:|__rayon-19": 4.8,
+      "node:|__rayon-20": 4.8,
+      "node:|__rayon-21": 4.7,
+      "node:|__rayon-22": 4.6,
+      "node:|__rayon-23": 4.7,
+      "node:|__rayon-24": 4.6,
+      "node:|__rayon-25": 4.4,
+      "node:|__rayon-26": 4.2,
+      "node:|__rayon-27": 4.2,
+      "node:|__rayon-28": 4.3,
+      "node:|__rayon-29": 4.1,
+      "node:|__rayon-30": 4.1,
+      "node:|__rayon-31": 4.1,
+      "node:|__sparse-trie": 21.8,
+      "node:|__storage-00": 3.7,
+      "node:|__storage-03": 2.2,
+      "node:|__tempo-execution": 87.0,
+      "node:|__tokio-rt": 1485.2,
+      "node:|__trie-hashing": 11.8
+    },
+    "sending": {
+      "accepted": 397578,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.010564839
+    },
+    "accepted_tps": 39716,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.495952,
+      "execution_loop": 10.463794,
+      "pool_snapshot": 2.050559,
+      "finalization": 1.488559,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.054133,
+      "hashed_post_state": 0.206612,
+      "payload_build": 14.227022
+    },
+    "speculative_execution_counts": {
+      "speculated": 405067,
+      "nonce_filtered": 0,
+      "reused": 370279,
+      "bodies_reused": 0,
+      "fees_rebased": 368450,
+      "conflicts": 3951,
+      "retries": 27095,
+      "backoff": 216771
+    },
+    "confirmation": {
+      "user_transactions": 397578,
+      "execution_failures": 0,
+      "last_busy_block": 54,
+      "send_start_to_last_canonical_seconds": 17.704342,
+      "confirmed_tps_including_backlog": 22457
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "mode": "repeat-2",
+    "variant": "before",
+    "source_directory": "/tmp/tempo-node-nonce-filter-early-repeat-2-before/workers-16-target-50000",
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "new",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ae5c08d936e475a7503ed827e8b96a8e1bc684ac",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 2178428928,
+      "disk_free_bytes_end": 1422458880
+    },
+    "duration_seconds": 10,
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 223809,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 46
+    },
+    "binary": {
+      "path": "/tmp/tempo-shared-snapshot",
+      "sha256": "0a62b5927b5024f446121edd6cb1d57342a94a644a1ff39998e3ae18c8a90e71",
+      "source": "ae5c08d9"
+    },
+    "retention": {
+      "removed": [
+        "/tmp/tempo-node-nonce-filter-early-repeat-2-before/workers-16-target-50000/data"
+      ],
+      "reason": "Completed baseline comparison; raw reports, logs, metrics and CPU samples retained."
+    }
+  }
+]

@@ -1,0 +1,852 @@
+[
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1946.9,
+        "peak": 2095.0,
+        "mean_system": 861.1
+      },
+      "client": {
+        "mean": 301.9,
+        "peak": 334.0,
+        "mean_system": 49.6
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 84.7,
+      "client:|__tokio-rt-worker": 217.1,
+      "node:|__engine": 21.4,
+      "node:|__mdbx-rs-txn-mgr": 8.7,
+      "node:|__persistence": 10.6,
+      "node:|__rayon-00": 15.1,
+      "node:|__rayon-01": 13.7,
+      "node:|__rayon-02": 12.7,
+      "node:|__rayon-03": 12.2,
+      "node:|__rayon-04": 11.3,
+      "node:|__rayon-05": 9.9,
+      "node:|__rayon-06": 9.4,
+      "node:|__rayon-07": 8.1,
+      "node:|__rayon-08": 7.3,
+      "node:|__rayon-09": 7.0,
+      "node:|__rayon-10": 6.7,
+      "node:|__rayon-11": 6.2,
+      "node:|__rayon-12": 6.0,
+      "node:|__rayon-13": 5.7,
+      "node:|__rayon-14": 5.4,
+      "node:|__rayon-15": 5.3,
+      "node:|__rayon-16": 5.2,
+      "node:|__rayon-17": 5.1,
+      "node:|__rayon-18": 5.0,
+      "node:|__rayon-19": 4.8,
+      "node:|__rayon-20": 4.9,
+      "node:|__rayon-21": 4.8,
+      "node:|__rayon-22": 4.6,
+      "node:|__rayon-23": 4.7,
+      "node:|__rayon-24": 4.6,
+      "node:|__rayon-25": 4.6,
+      "node:|__rayon-26": 4.4,
+      "node:|__rayon-27": 4.3,
+      "node:|__rayon-28": 4.3,
+      "node:|__rayon-29": 4.3,
+      "node:|__rayon-30": 4.2,
+      "node:|__rayon-31": 4.1,
+      "node:|__sparse-trie": 22.9,
+      "node:|__storage-00": 4.8,
+      "node:|__tempo-execution": 88.8,
+      "node:|__tokio-rt": 1465.8,
+      "node:|__trie-hashing": 11.9
+    },
+    "sending": {
+      "accepted": 397162,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.009748532
+    },
+    "accepted_tps": 39678,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.399584,
+      "execution_loop": 10.446534,
+      "pool_snapshot": 2.035902,
+      "finalization": 1.465919,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.053471,
+      "hashed_post_state": 0.205818,
+      "payload_build": 14.163854
+    },
+    "speculative_execution_counts": {
+      "speculated": 397485,
+      "nonce_filtered": 223730,
+      "reused": 383608,
+      "bodies_reused": 0,
+      "fees_rebased": 381472,
+      "conflicts": 7046,
+      "retries": 0,
+      "backoff": 0
+    },
+    "confirmation": {
+      "user_transactions": 397162,
+      "execution_failures": 0,
+      "last_busy_block": 54,
+      "send_start_to_last_canonical_seconds": 17.513841,
+      "confirmed_tps_including_backlog": 22677
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "batch_size": 128,
+    "recipients": "new",
+    "source_directory": "/tmp/tempo-node-window-new-128/workers-16-target-50000",
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ccc70f56"
+    },
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "new",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ccc70f568af16fcb00a70b12000bdda348148a05",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 8469925888,
+      "disk_free_bytes_end": 7715512320
+    },
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 223600,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 46
+    },
+    "canonical_replay": {
+      "from": 8,
+      "to": 10,
+      "output": "benchmarks/parallel-execution/window-canonical-new-128.tsv",
+      "timing": "diagnostic; overlaps correctness build"
+    },
+    "retention": {
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after previously recorded canonical replay to make room for further executor benchmarks. Reports, logs, metrics and CPU samples retained."
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1877.9,
+        "peak": 1962.0,
+        "mean_system": 855.4
+      },
+      "client": {
+        "mean": 309.2,
+        "peak": 340.0,
+        "mean_system": 48.7
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 85.2,
+      "client:|__tokio-rt-worker": 223.7,
+      "node:|__engine": 22.3,
+      "node:|__mdbx-rs-txn-mgr": 8.2,
+      "node:|__persistence": 10.8,
+      "node:|__rayon-00": 10.9,
+      "node:|__rayon-01": 9.6,
+      "node:|__rayon-02": 8.7,
+      "node:|__rayon-03": 8.1,
+      "node:|__rayon-04": 7.4,
+      "node:|__rayon-05": 6.3,
+      "node:|__rayon-06": 5.9,
+      "node:|__rayon-07": 4.7,
+      "node:|__rayon-08": 4.3,
+      "node:|__rayon-09": 4.0,
+      "node:|__rayon-10": 3.9,
+      "node:|__rayon-11": 3.6,
+      "node:|__rayon-12": 3.3,
+      "node:|__rayon-13": 3.0,
+      "node:|__rayon-14": 3.0,
+      "node:|__rayon-15": 2.9,
+      "node:|__rayon-16": 2.8,
+      "node:|__rayon-17": 2.8,
+      "node:|__rayon-18": 2.7,
+      "node:|__rayon-19": 2.7,
+      "node:|__rayon-20": 2.7,
+      "node:|__rayon-21": 2.7,
+      "node:|__rayon-22": 2.4,
+      "node:|__rayon-23": 2.6,
+      "node:|__rayon-24": 2.6,
+      "node:|__rayon-25": 2.6,
+      "node:|__rayon-26": 2.4,
+      "node:|__rayon-27": 2.4,
+      "node:|__rayon-28": 2.4,
+      "node:|__rayon-29": 2.4,
+      "node:|__rayon-30": 2.4,
+      "node:|__rayon-31": 2.3,
+      "node:|__sparse-trie": 20.6,
+      "node:|__storage-00": 4.1,
+      "node:|__tempo-execution": 72.6,
+      "node:|__tokio-rt": 1496.1,
+      "node:|__trie-hashing": 12.6
+    },
+    "sending": {
+      "accepted": 402977,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.046862897
+    },
+    "accepted_tps": 40110,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.491165,
+      "execution_loop": 10.238882,
+      "pool_snapshot": 2.062405,
+      "finalization": 1.524202,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.065963,
+      "hashed_post_state": 0.208094,
+      "payload_build": 14.056625
+    },
+    "speculative_execution_counts": {
+      "speculated": 409009,
+      "nonce_filtered": 221829,
+      "reused": 392771,
+      "bodies_reused": 0,
+      "fees_rebased": 392220,
+      "conflicts": 8357,
+      "retries": 0,
+      "backoff": 0
+    },
+    "confirmation": {
+      "user_transactions": 402977,
+      "execution_failures": 0,
+      "last_busy_block": 55,
+      "send_start_to_last_canonical_seconds": 17.509037,
+      "confirmed_tps_including_backlog": 23015
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "batch_size": 512,
+    "recipients": "new",
+    "source_directory": "/tmp/tempo-node-window-new-512/workers-16-target-50000",
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ccc70f56"
+    },
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "new",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ccc70f568af16fcb00a70b12000bdda348148a05",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": -6,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 7715168256,
+      "disk_free_bytes_end": 6948610048
+    },
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 47,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 221767
+    },
+    "shutdown_anomaly": "After all accepted transactions confirmed and SIGTERM was received, node aborted with pthread lock: Invalid argument. Database retained for investigation; throughput precedes shutdown.",
+    "canonical_replay": {
+      "from": 8,
+      "to": 10,
+      "output": "benchmarks/parallel-execution/window-canonical-new-512.tsv",
+      "timing": "diagnostic; overlaps correctness build"
+    }
+  },
+  {
+    "trial": "workers-16-target-50000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1740.7,
+        "peak": 1885.0,
+        "mean_system": 789.1
+      },
+      "client": {
+        "mean": 296.2,
+        "peak": 361.0,
+        "mean_system": 48.9
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 81.2,
+      "client:|__tokio-rt-worker": 214.1,
+      "node:|__engine": 19.0,
+      "node:|__mdbx-rs-txn-mgr": 8.4,
+      "node:|__persistence": 11.2,
+      "node:|__proof-strg-07": 14.0,
+      "node:|__rayon-00": 7.8,
+      "node:|__rayon-01": 6.8,
+      "node:|__rayon-02": 5.8,
+      "node:|__rayon-03": 5.1,
+      "node:|__rayon-04": 4.8,
+      "node:|__rayon-05": 3.9,
+      "node:|__rayon-06": 3.4,
+      "node:|__rayon-07": 2.8,
+      "node:|__rayon-08": 2.6,
+      "node:|__rayon-09": 2.3,
+      "node:|__rayon-10": 2.2,
+      "node:|__rayon-11": 2.2,
+      "node:|__rayon-12": 2.0,
+      "node:|__sparse-trie": 17.9,
+      "node:|__storage-00": 2.9,
+      "node:|__tempo-execution": 66.1,
+      "node:|__tokio-rt": 1414.3,
+      "node:|__trie-hashing": 11.2
+    },
+    "sending": {
+      "accepted": 414593,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.009557356
+    },
+    "accepted_tps": 41420,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 3.505953,
+      "execution_loop": 10.538293,
+      "pool_snapshot": 2.263627,
+      "finalization": 2.406876,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.928274,
+      "hashed_post_state": 0.207364,
+      "payload_build": 15.434141
+    },
+    "speculative_execution_counts": {
+      "speculated": 444747,
+      "nonce_filtered": 250227,
+      "reused": 408692,
+      "bodies_reused": 0,
+      "fees_rebased": 408365,
+      "conflicts": 5377,
+      "retries": 0,
+      "backoff": 0
+    },
+    "confirmation": {
+      "user_transactions": 414593,
+      "execution_failures": 0,
+      "last_busy_block": 56,
+      "send_start_to_last_canonical_seconds": 18.803934,
+      "confirmed_tps_including_backlog": 22048
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "batch_size": 1024,
+    "recipients": "new",
+    "source_directory": "/tmp/tempo-node-window-new-1024/workers-16-target-50000",
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ccc70f56"
+    },
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "new",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ccc70f568af16fcb00a70b12000bdda348148a05",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 6948270080,
+      "disk_free_bytes_end": 6175399936
+    },
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 250198,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 48
+    },
+    "canonical_replay": {
+      "from": 8,
+      "to": 10,
+      "output": "benchmarks/parallel-execution/window-canonical-new-1024.tsv",
+      "timing": "diagnostic; overlaps correctness build"
+    },
+    "retention": {
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after three-block canonical replay; reports, logs, metrics and CPU samples retained."
+    }
+  },
+  {
+    "trial": "workers-16-target-75000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1937.4,
+        "peak": 2030.0,
+        "mean_system": 876.4
+      },
+      "client": {
+        "mean": 318.9,
+        "peak": 337.0,
+        "mean_system": 51.2
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 88.7,
+      "client:|__tokio-rt-worker": 229.8,
+      "node:|__engine": 17.3,
+      "node:|__mdbx-rs-txn-mgr": 4.8,
+      "node:|__persistence": 6.6,
+      "node:|__rayon-00": 22.1,
+      "node:|__rayon-01": 20.0,
+      "node:|__rayon-02": 18.8,
+      "node:|__rayon-03": 17.2,
+      "node:|__rayon-04": 16.1,
+      "node:|__rayon-05": 13.1,
+      "node:|__rayon-06": 12.1,
+      "node:|__rayon-07": 9.7,
+      "node:|__rayon-08": 8.1,
+      "node:|__rayon-09": 7.3,
+      "node:|__rayon-10": 6.6,
+      "node:|__rayon-11": 6.1,
+      "node:|__rayon-12": 5.7,
+      "node:|__rayon-13": 5.7,
+      "node:|__rayon-14": 5.6,
+      "node:|__rayon-15": 5.3,
+      "node:|__rayon-16": 5.2,
+      "node:|__rayon-17": 5.2,
+      "node:|__rayon-18": 5.1,
+      "node:|__rayon-19": 5.0,
+      "node:|__rayon-20": 5.0,
+      "node:|__rayon-21": 4.9,
+      "node:|__rayon-22": 4.7,
+      "node:|__rayon-23": 4.9,
+      "node:|__rayon-24": 4.7,
+      "node:|__rayon-25": 4.6,
+      "node:|__rayon-26": 4.6,
+      "node:|__rayon-27": 4.4,
+      "node:|__rayon-28": 4.4,
+      "node:|__rayon-29": 4.3,
+      "node:|__rayon-30": 4.4,
+      "node:|__rayon-31": 4.2,
+      "node:|__sparse-trie": 27.9,
+      "node:|__storage-00": 5.0,
+      "node:|__storage-02": 2.9,
+      "node:|__tempo-execution": 26.3,
+      "node:|__tokio-rt": 1505.8,
+      "node:|__trie-hashing": 16.8
+    },
+    "sending": {
+      "accepted": 416773,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.008127733
+    },
+    "accepted_tps": 41643,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 7.12967,
+      "execution_loop": 9.623314,
+      "pool_snapshot": 0.972772,
+      "finalization": 1.416769,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.063772,
+      "hashed_post_state": 0.113225,
+      "payload_build": 12.262175
+    },
+    "speculative_execution_counts": {
+      "speculated": 51458,
+      "nonce_filtered": 175597,
+      "reused": 1952,
+      "bodies_reused": 0,
+      "fees_rebased": 1904,
+      "conflicts": 49412,
+      "retries": 0,
+      "backoff": 372426
+    },
+    "confirmation": {
+      "user_transactions": 416773,
+      "execution_failures": 0,
+      "last_busy_block": 44,
+      "send_start_to_last_canonical_seconds": 14.674602,
+      "confirmed_tps_including_backlog": 28401
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "batch_size": 1024,
+    "recipients": "existing",
+    "source_directory": "/tmp/tempo-node-window-existing-1024/workers-16-target-75000",
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ccc70f56"
+    },
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "existing",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ccc70f568af16fcb00a70b12000bdda348148a05",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 6175064064,
+      "disk_free_bytes_end": 5638893568
+    },
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 182609,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 24
+    },
+    "canonical_replay": {
+      "from": 20,
+      "to": 22,
+      "output": "benchmarks/parallel-execution/window-canonical-existing-1024.tsv",
+      "timing": "diagnostic; overlaps correctness build"
+    },
+    "retention": {
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after three-block canonical replay; reports, logs, metrics and CPU samples retained."
+    }
+  },
+  {
+    "trial": "workers-16-target-75000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1889.2,
+        "peak": 2040.0,
+        "mean_system": 853.3
+      },
+      "client": {
+        "mean": 296.0,
+        "peak": 338.0,
+        "mean_system": 48.8
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 83.0,
+      "client:|__tokio-rt-worker": 213.3,
+      "node:|__engine": 16.0,
+      "node:|__mdbx-rs-txn-mgr": 5.7,
+      "node:|__persistence": 6.8,
+      "node:|__rayon-00": 22.2,
+      "node:|__rayon-01": 20.1,
+      "node:|__rayon-02": 19.0,
+      "node:|__rayon-03": 17.6,
+      "node:|__rayon-04": 16.6,
+      "node:|__rayon-05": 14.2,
+      "node:|__rayon-06": 13.2,
+      "node:|__rayon-07": 10.0,
+      "node:|__rayon-08": 8.0,
+      "node:|__rayon-09": 7.1,
+      "node:|__rayon-10": 6.6,
+      "node:|__rayon-11": 6.1,
+      "node:|__rayon-12": 5.7,
+      "node:|__rayon-13": 5.6,
+      "node:|__rayon-14": 5.2,
+      "node:|__rayon-15": 5.2,
+      "node:|__rayon-16": 5.1,
+      "node:|__rayon-17": 5.1,
+      "node:|__rayon-18": 5.0,
+      "node:|__rayon-19": 4.9,
+      "node:|__rayon-20": 4.8,
+      "node:|__rayon-21": 4.8,
+      "node:|__rayon-22": 4.7,
+      "node:|__rayon-23": 4.6,
+      "node:|__rayon-24": 4.6,
+      "node:|__rayon-25": 4.6,
+      "node:|__rayon-26": 4.4,
+      "node:|__rayon-27": 4.3,
+      "node:|__rayon-28": 4.2,
+      "node:|__rayon-29": 4.3,
+      "node:|__rayon-30": 4.3,
+      "node:|__rayon-31": 4.0,
+      "node:|__sparse-trie": 27.8,
+      "node:|__storage-00": 5.7,
+      "node:|__storage-04": 2.6,
+      "node:|__tempo-execution": 26.9,
+      "node:|__tokio-rt": 1454.7,
+      "node:|__trie-hashing": 16.7
+    },
+    "sending": {
+      "accepted": 420261,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.00881753
+    },
+    "accepted_tps": 41989,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 7.108079,
+      "execution_loop": 9.635398,
+      "pool_snapshot": 1.036766,
+      "finalization": 1.442284,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.072557,
+      "hashed_post_state": 0.116521,
+      "payload_build": 12.360299
+    },
+    "speculative_execution_counts": {
+      "speculated": 51677,
+      "nonce_filtered": 182713,
+      "reused": 3781,
+      "bodies_reused": 0,
+      "fees_rebased": 3702,
+      "conflicts": 47599,
+      "retries": 0,
+      "backoff": 375641
+    },
+    "confirmation": {
+      "user_transactions": 420261,
+      "execution_failures": 0,
+      "last_busy_block": 34,
+      "send_start_to_last_canonical_seconds": 14.874326,
+      "confirmed_tps_including_backlog": 28254
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "batch_size": 512,
+    "recipients": "existing",
+    "source_directory": "/tmp/tempo-node-window-existing-512/workers-16-target-75000",
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ccc70f56"
+    },
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "existing",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ccc70f568af16fcb00a70b12000bdda348148a05",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 5638553600,
+      "disk_free_bytes_end": 5105344512
+    },
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 25,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 189671
+    },
+    "canonical_replay": {
+      "from": 23,
+      "to": 25,
+      "output": "benchmarks/parallel-execution/window-canonical-existing-512.tsv",
+      "timing": "diagnostic; overlaps correctness build"
+    },
+    "retention": {
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after three-block canonical replay; reports, logs, metrics and CPU samples retained."
+    }
+  },
+  {
+    "trial": "workers-16-target-75000",
+    "active_samples": 9,
+    "process_cpu_percent": {
+      "node": {
+        "mean": 1885.9,
+        "peak": 2055.0,
+        "mean_system": 844.4
+      },
+      "client": {
+        "mean": 301.3,
+        "peak": 340.0,
+        "mean_system": 49.6
+      }
+    },
+    "thread_groups_cpu_percent": {
+      "client:|__tempo-bench": 83.7,
+      "client:|__tokio-rt-worker": 217.7,
+      "node:|__engine": 16.7,
+      "node:|__mdbx-rs-txn-mgr": 5.4,
+      "node:|__persistence": 6.7,
+      "node:|__rayon-00": 22.8,
+      "node:|__rayon-01": 20.4,
+      "node:|__rayon-02": 19.1,
+      "node:|__rayon-03": 17.8,
+      "node:|__rayon-04": 16.3,
+      "node:|__rayon-05": 11.8,
+      "node:|__rayon-06": 10.6,
+      "node:|__rayon-07": 8.6,
+      "node:|__rayon-08": 7.4,
+      "node:|__rayon-09": 6.7,
+      "node:|__rayon-10": 6.0,
+      "node:|__rayon-11": 5.4,
+      "node:|__rayon-12": 5.3,
+      "node:|__rayon-13": 5.1,
+      "node:|__rayon-14": 5.0,
+      "node:|__rayon-15": 4.9,
+      "node:|__rayon-16": 4.8,
+      "node:|__rayon-17": 4.7,
+      "node:|__rayon-18": 4.6,
+      "node:|__rayon-19": 4.6,
+      "node:|__rayon-20": 4.6,
+      "node:|__rayon-21": 4.6,
+      "node:|__rayon-22": 4.3,
+      "node:|__rayon-23": 4.3,
+      "node:|__rayon-24": 4.2,
+      "node:|__rayon-25": 4.2,
+      "node:|__rayon-26": 4.2,
+      "node:|__rayon-27": 4.0,
+      "node:|__rayon-28": 4.1,
+      "node:|__rayon-29": 4.0,
+      "node:|__rayon-30": 4.0,
+      "node:|__rayon-31": 3.9,
+      "node:|__sparse-trie": 28.6,
+      "node:|__storage-00": 5.7,
+      "node:|__storage-03": 2.4,
+      "node:|__tempo-execution": 28.9,
+      "node:|__tokio-rt": 1460.0,
+      "node:|__trie-hashing": 16.8
+    },
+    "sending": {
+      "accepted": 424235,
+      "rejected": 0,
+      "timed_out": 0,
+      "generation_failed": 0,
+      "unconfirmed": 0,
+      "send_duration_secs": 10.052341704
+    },
+    "accepted_tps": 42203,
+    "payload_timing_seconds": {
+      "successful_transaction_execution": 7.132048,
+      "execution_loop": 9.746804,
+      "pool_snapshot": 1.043216,
+      "finalization": 1.459084,
+      "state_root": 0.0,
+      "background_state_root_wait": 0.077901,
+      "hashed_post_state": 0.117348,
+      "payload_build": 12.499826
+    },
+    "speculative_execution_counts": {
+      "speculated": 48352,
+      "nonce_filtered": 193835,
+      "reused": 12110,
+      "bodies_reused": 0,
+      "fees_rebased": 11866,
+      "conflicts": 35150,
+      "retries": 0,
+      "backoff": 376848
+    },
+    "confirmation": {
+      "user_transactions": 424235,
+      "execution_failures": 0,
+      "last_busy_block": 35,
+      "send_start_to_last_canonical_seconds": 15.136442,
+      "confirmed_tps_including_backlog": 28027
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
+    },
+    "batch_size": 128,
+    "recipients": "existing",
+    "source_directory": "/tmp/tempo-node-window-existing-128/workers-16-target-75000",
+    "binary": {
+      "path": "/tmp/tempo-nonce-filter-early",
+      "sha256": "af6f0c89990a540b358a51a72aa72004c679eca8ae32ec3af8f2f40bb5960457",
+      "source": "ccc70f56"
+    },
+    "host": {
+      "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+      "processor": "x86_64",
+      "block_gas_limit": 5000000000,
+      "share_sparse_trie": true,
+      "recipients": "existing",
+      "builder_max_tasks": 1,
+      "tokio_worker_threads": null,
+      "node_tokio_worker_threads": null,
+      "source": "ccc70f568af16fcb00a70b12000bdda348148a05",
+      "dirty": true
+    },
+    "exit_status": {
+      "node_returncode_before_cleanup": null,
+      "node_returncode_after_cleanup": 0,
+      "bench_returncode_before_cleanup": 0,
+      "bench_returncode_after_cleanup": 0,
+      "disk_free_bytes_start": 5105004544,
+      "disk_free_bytes_end": 4571619328
+    },
+    "selection_skips": {
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 194705,
+      "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 26
+    },
+    "canonical_replay": {
+      "from": 11,
+      "to": 13,
+      "output": "benchmarks/parallel-execution/window-canonical-existing-128.tsv",
+      "timing": "diagnostic; overlaps correctness build"
+    },
+    "retention": {
+      "removed": [
+        "data"
+      ],
+      "reason": "Disposable completed dev-chain database removed after previously recorded canonical replay to make room for further executor benchmarks. Reports, logs, metrics and CPU samples retained."
+    }
+  }
+]

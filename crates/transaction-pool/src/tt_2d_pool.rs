@@ -1,5 +1,7 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
+use alloy_consensus::Transaction;
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, HashMap, HashSet, U256Map},
@@ -52,6 +54,8 @@ pub struct AA2dPool {
     independent_transactions: HashMap<AASequenceId, PendingTransaction<TxOrdering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
     by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
+    /// Pending transactions in `by_id`, updated with every status change and removal.
+    pending_2d: usize,
     /// _All_ transactions by hash.
     by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
@@ -111,6 +115,7 @@ impl AA2dPool {
             submission_id: 0,
             independent_transactions: Default::default(),
             by_id: Default::default(),
+            pending_2d: 0,
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
             slot_to_expiring_nonce_hash: Default::default(),
@@ -244,6 +249,7 @@ impl AA2dPool {
 
         // clean up replaced
         if let Some(replaced) = &replaced {
+            self.pending_2d -= usize::from(replaced.is_pending());
             // we only need to remove it from the hash list, because we already replaced it in the by id set,
             // and if this is the independent transaction, it will be replaced by the new transaction below
             self.by_hash.remove(replaced.inner.transaction.hash());
@@ -292,6 +298,8 @@ impl AA2dPool {
                 break;
             }
         }
+
+        self.pending_2d += usize::from(inserted_as_pending) + promoted.len();
 
         // Record metrics
         self.metrics.inc_inserted();
@@ -401,17 +409,11 @@ impl AA2dPool {
 
     /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
-        let (pending_2d, queued_2d) = self.by_id.values().fold((0, 0), |mut acc, tx| {
-            if tx.is_pending() {
-                acc.0 += 1;
-            } else {
-                acc.1 += 1;
-            }
-            acc
-        });
         // Expiring nonce txs are always pending
-        let expiring_pending = self.expiring_nonce_txs.len();
-        (pending_2d + expiring_pending, queued_2d)
+        (
+            self.pending_2d + self.expiring_nonce_txs.len(),
+            self.by_id.len() - self.pending_2d,
+        )
     }
 
     /// Returns all transactions that where submitted with the given [`TransactionOrigin`]
@@ -502,26 +504,76 @@ impl AA2dPool {
     }
 
     /// Returns the best, executable transactions for this sub-pool
-    #[allow(clippy::mutable_key_type)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
-        // Collect independent transactions from both 2D nonce pool and expiring nonce pool
-        let mut independent: BTreeSet<_> =
-            self.independent_transactions.values().cloned().collect();
-        // Expiring nonce txs are always independent (no nonce dependencies)
-        independent.extend(self.expiring_nonce_txs.values().cloned());
+        self.best_transactions_inner(false, false)
+    }
 
-        BestAA2dTransactions {
-            independent,
-            by_id: self
-                .by_id
+    /// Return payload candidates with conservative gas and encoded-size bounds.
+    pub(crate) fn best_transactions_for_payload(&self) -> BestAA2dTransactions {
+        self.best_transactions_inner(true, false)
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    fn best_transactions_inner(&self, payload_limits: bool, shared: bool) -> BestAA2dTransactions {
+        let mut limits = payload_limits.then(SelectionLimits::default);
+        // Collect independent transactions from both 2D nonce pool and expiring nonce pool
+        // Expiring nonce txs are also independent (no nonce dependencies).
+        let independent = IndependentTransactions::new(
+            self.independent_transactions
+                .values()
+                .chain(self.expiring_nonce_txs.values())
+                .inspect(|tx| {
+                    if let Some(limits) = &mut limits {
+                        limits.observe(&tx.transaction.transaction);
+                    }
+                })
+                .cloned(),
+            shared,
+        );
+
+        let by_id = CandidateIndex::new(
+            self.pending_2d,
+            self.by_id
                 .iter()
                 .filter(|(_, tx)| tx.is_pending())
-                .map(|(id, tx)| (*id, tx.inner.clone()))
-                .collect(),
+                .map(|(id, tx)| {
+                    // Include nonce descendants while collecting the index. This
+                    // avoids another traversal after building the snapshot.
+                    if let Some(limits) = &mut limits {
+                        limits.observe(&tx.inner.transaction.transaction);
+                    }
+                    (*id, tx.inner.clone())
+                }),
+            shared,
+        );
+        BestAA2dTransactions {
+            independent,
+            by_id,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
+            limits,
         }
+    }
+
+    /// Build the authoritative and speculative iterators from the same snapshot.
+    /// The caller holds the pool read lock across construction, so both live feeds
+    /// subscribe before any admission can change the snapshot. Iteration, updates
+    /// and invalidation remain private to each consumer.
+    pub(crate) fn best_transactions_pair(
+        &self,
+        payload_limits: bool,
+    ) -> (BestAA2dTransactions, BestAA2dTransactions) {
+        let best = self.best_transactions_inner(payload_limits, true);
+        let preview = BestAA2dTransactions {
+            independent: best.independent.clone(),
+            by_id: best.by_id.clone(),
+            invalid: Default::default(),
+            new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
+            last_priority: None,
+            limits: None,
+        };
+        (best, preview)
     }
 
     /// Returns the transaction by hash.
@@ -627,6 +679,7 @@ impl AA2dPool {
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
+        self.pending_2d -= usize::from(tx.is_pending());
 
         // Remove from eviction set
         let eviction_key = EvictionKey::new(Arc::clone(&tx), *id);
@@ -774,14 +827,14 @@ impl AA2dPool {
     ///
     /// This is used both for single-tx removal (demote_descendants) and batch removal
     /// where we want to demote once per seq_id starting from the minimum removed nonce.
-    fn demote_from_nonce(&self, seq_id: &AASequenceId, min_nonce: u64) {
+    fn demote_from_nonce(&mut self, seq_id: &AASequenceId, min_nonce: u64) {
         let start_id = AA2dTransactionId::new(*seq_id, min_nonce);
         for (_, tx) in self
             .by_id
             .range((Excluded(&start_id), Unbounded))
             .take_while(|(other, _)| *seq_id == other.seq_id)
         {
-            tx.set_pending(false);
+            self.pending_2d -= usize::from(tx.set_pending(false));
         }
     }
 
@@ -906,6 +959,7 @@ impl AA2dPool {
                     // Promote if transaction was previously queued (not pending)
                     let was_pending = existing_tx.set_pending(true);
                     if !was_pending {
+                        self.pending_2d += 1;
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -918,7 +972,7 @@ impl AA2dPool {
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
-                    existing_tx.set_pending(false);
+                    self.pending_2d -= usize::from(existing_tx.set_pending(false));
                 }
             }
 
@@ -948,14 +1002,13 @@ impl AA2dPool {
     /// to avoid eviction.
     ///
     /// Evicts queued transactions first (up to queued_limit), then pending if needed.
-    /// Counts are computed lazily by scanning the eviction set.
+    /// Counts are maintained incrementally so admission does not scan the pool.
     ///
     /// Note: Only `max_txs` is enforced here; `max_size` is intentionally not checked for 2D pools
     /// since the protocol pool already enforces size-based limits as a primary defense.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
-        // Compute counts lazily by scanning the pool
         let (pending_count, queued_count) = self.pending_and_queued_txn_count();
 
         // Evict queued transactions if over queued limit (lowest priority first)
@@ -1324,6 +1377,11 @@ impl AA2dPool {
         }
 
         // Verify pending/queued consistency
+        assert_eq!(
+            self.pending_2d,
+            self.by_id.values().filter(|tx| tx.is_pending()).count(),
+            "Cached pending count differs from transaction status"
+        );
         // pending_and_queued_txn_count includes expiring nonce txs in pending count
         let (pending_count, queued_count) = self.pending_and_queued_txn_count();
         assert_eq!(
@@ -1501,13 +1559,204 @@ enum IncomingAA2dTransaction {
     Stash(PendingTransaction<TxOrdering>),
 }
 
+/// Priority-ordered candidates from a fixed snapshot and subsequent live updates.
+///
+/// Most candidates are present when the iterator is created. Sorting them once
+/// allows constant-time removal without allocating or rebalancing tree nodes for
+/// the snapshot. Arrivals and unlocked descendants retain ordered-set semantics.
+#[derive(Clone, Debug)]
+struct IndependentTransactions {
+    snapshot: CandidateSnapshot,
+    max_snapshot_submission_id: u64,
+    updates: BTreeSet<PendingTransaction<TxOrdering>>,
+}
+
+impl IndependentTransactions {
+    fn new(
+        transactions: impl Iterator<Item = PendingTransaction<TxOrdering>>,
+        shared: bool,
+    ) -> Self {
+        let mut snapshot: Vec<_> = transactions.collect();
+        snapshot.sort_unstable();
+        snapshot.dedup();
+        let max_snapshot_submission_id = snapshot
+            .iter()
+            .map(|tx| tx.submission_id)
+            .max()
+            .unwrap_or_default();
+        Self {
+            snapshot: if shared {
+                CandidateSnapshot::Shared {
+                    remaining: snapshot.len(),
+                    entries: Arc::new(snapshot),
+                }
+            } else {
+                CandidateSnapshot::Owned(snapshot)
+            },
+            max_snapshot_submission_id,
+            updates: Default::default(),
+        }
+    }
+
+    fn insert(&mut self, tx: PendingTransaction<TxOrdering>) {
+        // An entry can arrive again through promotion or unlocking. Match the
+        // former single BTreeSet: keep the existing entry while it is pending,
+        // but allow an already-popped entry to be inserted again.
+        // New admissions normally have newer IDs. They cannot duplicate a
+        // snapshot entry, regardless of priority, so avoid searching for them.
+        if tx.submission_id > self.max_snapshot_submission_id
+            || self.snapshot.remaining().binary_search(&tx).is_err()
+        {
+            self.updates.insert(tx);
+        }
+    }
+
+    fn pop_last(&mut self) -> Option<PendingTransaction<TxOrdering>> {
+        if self.updates.last().is_some_and(|update| {
+            self.snapshot
+                .remaining()
+                .last()
+                .is_none_or(|tx| update > tx)
+        }) {
+            self.updates.pop_last()
+        } else {
+            self.snapshot.pop_last()
+        }
+    }
+}
+
+/// Keep moves out of an owned Vec for single iterators. Paired iterators share
+/// the backing allocation and clone only candidates they actually consume.
+#[derive(Clone, Debug)]
+enum CandidateSnapshot {
+    Owned(Vec<PendingTransaction<TxOrdering>>),
+    Shared {
+        entries: Arc<Vec<PendingTransaction<TxOrdering>>>,
+        remaining: usize,
+    },
+}
+
+impl CandidateSnapshot {
+    fn remaining(&self) -> &[PendingTransaction<TxOrdering>] {
+        match self {
+            Self::Owned(entries) => entries,
+            Self::Shared { entries, remaining } => &entries[..*remaining],
+        }
+    }
+
+    fn pop_last(&mut self) -> Option<PendingTransaction<TxOrdering>> {
+        match self {
+            Self::Owned(entries) => entries.pop(),
+            Self::Shared { entries, remaining } => {
+                *remaining = remaining.checked_sub(1)?;
+                Some(entries[*remaining].clone())
+            }
+        }
+    }
+}
+
+/// Immutable nonce lookups shared by paired iterators. A private bitmap records
+/// removals from the snapshot; arrivals and replacements live in a private map.
+/// Consuming or updating one iterator therefore cannot change another's view.
+#[derive(Clone, Debug)]
+enum CandidateIndex {
+    Owned(HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>),
+    Shared {
+        snapshot: Arc<HashMap<AA2dTransactionId, (usize, PendingTransaction<TxOrdering>)>>,
+        removed: Vec<u64>,
+        updates: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
+    },
+}
+
+impl CandidateIndex {
+    fn new(
+        capacity: usize,
+        transactions: impl Iterator<Item = (AA2dTransactionId, PendingTransaction<TxOrdering>)>,
+        shared: bool,
+    ) -> Self {
+        if !shared {
+            let mut entries = HashMap::with_capacity_and_hasher(capacity, Default::default());
+            entries.extend(transactions);
+            return Self::Owned(entries);
+        }
+        let mut snapshot = HashMap::with_capacity_and_hasher(capacity, Default::default());
+        for (id, tx) in transactions {
+            let position = snapshot.len();
+            // Preserve dense positions even if a caller supplies a replacement.
+            match snapshot.entry(id) {
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert((position, tx));
+                }
+                hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().1 = tx;
+                }
+            }
+        }
+        Self::Shared {
+            removed: vec![0; snapshot.len().div_ceil(64)],
+            snapshot: Arc::new(snapshot),
+            updates: Default::default(),
+        }
+    }
+
+    fn get(&self, id: &AA2dTransactionId) -> Option<&PendingTransaction<TxOrdering>> {
+        match self {
+            Self::Owned(entries) => entries.get(id),
+            Self::Shared {
+                snapshot,
+                removed,
+                updates,
+            } => {
+                if let Some(tx) = updates.get(id) {
+                    return Some(tx);
+                }
+                let (position, tx) = snapshot.get(id)?;
+                (removed[position / 64] & (1 << (position % 64)) == 0).then_some(tx)
+            }
+        }
+    }
+
+    fn contains_key(&self, id: &AA2dTransactionId) -> bool {
+        self.get(id).is_some()
+    }
+
+    fn insert(&mut self, id: AA2dTransactionId, tx: PendingTransaction<TxOrdering>) {
+        match self {
+            Self::Owned(entries) => {
+                entries.insert(id, tx);
+            }
+            Self::Shared { updates, .. } => {
+                updates.insert(id, tx);
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &AA2dTransactionId) {
+        match self {
+            Self::Owned(entries) => {
+                entries.remove(id);
+            }
+            Self::Shared {
+                snapshot,
+                removed,
+                updates,
+            } => {
+                updates.remove(id);
+                if let Some((position, _)) = snapshot.get(id) {
+                    removed[position / 64] |= 1 << (position % 64);
+                }
+            }
+        }
+    }
+}
+
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
-    independent: BTreeSet<PendingTransaction<TxOrdering>>,
-    /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
-    by_id: BTreeMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
+    independent: IndependentTransactions,
+    /// Pending transactions indexed for nonce-chain lookups; `independent` determines ordering.
+    by_id: CandidateIndex,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
@@ -1515,6 +1764,42 @@ pub(crate) struct BestAA2dTransactions {
     new_transaction_receiver: Option<broadcast::Receiver<PendingTransaction<TxOrdering>>>,
     /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
     last_priority: Option<Priority<u128>>,
+    /// Payload-only budget tracking; ordinary pool iterators keep their original
+    /// invalidation behavior. Minima are conservative lower bounds and are never
+    /// raised when a transaction is removed.
+    limits: Option<SelectionLimits>,
+}
+
+#[derive(Debug)]
+struct SelectionLimits {
+    remaining_gas: u64,
+    minimum_gas: u64,
+    remaining_size: usize,
+    minimum_size: usize,
+}
+
+impl Default for SelectionLimits {
+    fn default() -> Self {
+        Self {
+            remaining_gas: u64::MAX,
+            minimum_gas: u64::MAX,
+            remaining_size: usize::MAX,
+            minimum_size: usize::MAX,
+        }
+    }
+}
+
+impl SelectionLimits {
+    fn observe(&mut self, tx: &TempoPooledTransaction) {
+        self.minimum_gas = self.minimum_gas.min(tx.gas_limit());
+        // The cached EIP-2718 length excludes the outer RLP header, so it is a
+        // conservative lower bound on the size charged by the payload builder.
+        self.minimum_size = self.minimum_size.min(tx.encoded_length());
+    }
+
+    fn exhausted(&self) -> bool {
+        self.minimum_gas > self.remaining_gas || self.minimum_size > self.remaining_size
+    }
 }
 
 impl BestAA2dTransactions {
@@ -1560,6 +1845,9 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Process(tx) => (tx, true),
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
+                if let Some(limits) = &mut self.limits {
+                    limits.observe(&tx.transaction.transaction);
+                }
                 if tx.transaction.transaction.is_expiring_nonce() {
                     if process {
                         // Expiring nonce transactions are always independent
@@ -1593,6 +1881,18 @@ impl BestAA2dTransactions {
     )> {
         loop {
             self.add_new_transactions();
+            if self.limits.as_ref().is_some_and(SelectionLimits::exhausted)
+                && self
+                    .new_transaction_receiver
+                    .as_ref()
+                    .is_none_or(|receiver| receiver.is_empty())
+            {
+                // A queued live update might have a smaller gas limit or size. Preserve
+                // bounded update draining and keep yielding until that queue is
+                // empty before relying on the bound. Retain candidates so a later
+                // next() can resume if a cheaper transaction arrives.
+                return None;
+            }
             let (id, best) = self.pop_best()?;
             if self.invalid.contains(&id.seq_id) {
                 continue;
@@ -1621,7 +1921,22 @@ impl Iterator for BestAA2dTransactions {
 }
 
 impl BestTransactions for BestAA2dTransactions {
-    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
+        if let Some(limits) = &mut self.limits {
+            match kind {
+                InvalidPoolTransactionError::ExceedsGasLimit(_, remaining) => {
+                    limits.remaining_gas = limits.remaining_gas.min(*remaining);
+                }
+                InvalidPoolTransactionError::OversizedData { size, limit } => {
+                    // The payload reports its estimated total with this candidate.
+                    // Subtract the candidate's full RLP length to recover bytes
+                    // already used. The remaining budget only decreases.
+                    let used = size.saturating_sub(transaction.transaction.inner().network_len());
+                    limits.remaining_size = limits.remaining_size.min(limit.saturating_sub(used));
+                }
+                _ => {}
+            }
+        }
         // Skip invalidation for expiring nonce transactions - they are independent
         // and should not block other expiring nonce txs from the same sender
         if transaction.transaction.is_expiring_nonce() {
@@ -1710,6 +2025,88 @@ mod tests {
             tt_signed::AASigned,
         },
     };
+
+    #[test]
+    fn pending_counts_follow_mixed_pool_updates() {
+        for seed in 1..=8u64 {
+            let mut pool = AA2dPool::new(AA2dPoolConfig {
+                pending_limit: SubPoolLimit {
+                    max_txs: 16,
+                    max_size: usize::MAX,
+                },
+                queued_limit: SubPoolLimit {
+                    max_txs: 16,
+                    max_size: usize::MAX,
+                },
+                ..Default::default()
+            });
+            let mut random = seed;
+            let mut nonces = [[0u64; 2]; 8];
+            for step in 0..1_000u64 {
+                // Repeatable mixed insertions, replacements, removals and nonce reorgs.
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                let sender_id = ((random >> 8) % 8) as usize;
+                let key_id = ((random >> 16) % 2) as usize;
+                let sender = Address::with_last_byte(sender_id as u8);
+                let nonce_key = U256::from(key_id);
+                let nonce = (random >> 24) % 8;
+                match random % 10 {
+                    0..=5 => {
+                        let expiring = random % 10 == 5;
+                        let tx = TxBuilder::aa(sender)
+                            .nonce_key(if expiring { U256::MAX } else { nonce_key })
+                            .nonce(if expiring { 0 } else { nonce })
+                            .max_fee(30_000_000_000 + u128::from(step) * 1_000_000_000)
+                            .max_priority_fee(1_000_000_000 + u128::from(step) * 1_000_000_000)
+                            .calls(vec![Call {
+                                to: TxKind::Call(Address::ZERO),
+                                value: U256::ZERO,
+                                input: Bytes::copy_from_slice(&step.to_be_bytes()),
+                            }])
+                            .build();
+                        let _ = pool.add_transaction(
+                            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                            nonces[sender_id][key_id],
+                            TempoHardfork::T1,
+                        );
+                    }
+                    6 => {
+                        nonces[sender_id][key_id] = nonce;
+                        pool.on_nonce_changes(
+                            [(AASequenceId::new(sender, nonce_key), nonce)]
+                                .into_iter()
+                                .collect(),
+                        );
+                    }
+                    7 | 8 => {
+                        if let Some(hash) = pool.by_hash.keys().min().copied() {
+                            if random % 10 == 7 {
+                                pool.remove_transactions(std::iter::once(&hash));
+                            } else {
+                                pool.remove_transactions_and_descendants(std::iter::once(&hash));
+                            }
+                        }
+                    }
+                    _ => {
+                        pool.remove_transactions_by_sender(sender);
+                    }
+                }
+                // Compare against actual transaction status after every mutation, including
+                // evictions and demotions triggered indirectly by the operation.
+                let pending = pool.by_id.values().filter(|tx| tx.is_pending()).count();
+                assert_eq!(
+                    pool.pending_and_queued_txn_count(),
+                    (
+                        pending + pool.expiring_nonce_txs.len(),
+                        pool.by_id.len() - pending
+                    ),
+                    "seed={seed} step={step}"
+                );
+            }
+        }
+    }
 
     #[test_case::test_case(U256::ZERO)]
     #[test_case::test_case(U256::random())]
@@ -3553,6 +3950,677 @@ mod tests {
     // ============================================
     // BestAA2dTransactions tests
     // ============================================
+
+    #[test]
+    fn shared_nonce_indexes_match_independent_maps() {
+        let transactions = (0..514u64)
+            .map(|i| {
+                let tx = TxBuilder::aa(Address::repeat_byte(1))
+                    .nonce_key(U256::from(i % 257 + 1))
+                    .calls(vec![Call {
+                        to: TxKind::Call(Address::ZERO),
+                        value: U256::ZERO,
+                        input: Bytes::copy_from_slice(&i.to_be_bytes()),
+                    }])
+                    .build();
+                (
+                    tx.aa_transaction_id().unwrap(),
+                    PendingTransaction {
+                        submission_id: i,
+                        transaction: Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                        priority: Priority::Value(u128::from(i % 19)),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let value = |tx: Option<&PendingTransaction<TxOrdering>>| {
+            tx.map(|tx| {
+                (
+                    tx.submission_id,
+                    tx.priority.clone(),
+                    *tx.transaction.hash(),
+                )
+            })
+        };
+        // Include bitmap boundaries, an empty snapshot, and duplicate IDs in the
+        // initial input. Later operations also replace already-removed entries.
+        for count in [0, 1, 63, 64, 65, 127, 128, 129, 257, 514] {
+            let expected: HashMap<_, _> = transactions[..count].iter().cloned().collect();
+            let actual = CandidateIndex::new(count, transactions[..count].iter().cloned(), true);
+            let mut expected = [expected.clone(), expected];
+            let mut actual = [actual.clone(), actual];
+            let mut seed = 0x1234_5678u64;
+            for step in 0..4096 {
+                if step == 2048 {
+                    expected[1] = expected[0].clone();
+                    actual[1] = actual[0].clone();
+                }
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let view = (seed >> 16) as usize % 2;
+                let (id, tx) = &transactions[seed as usize % transactions.len()];
+                if seed.is_multiple_of(3) {
+                    expected[view].remove(id);
+                    actual[view].remove(id);
+                } else {
+                    expected[view].insert(*id, tx.clone());
+                    actual[view].insert(*id, tx.clone());
+                }
+                for view in 0..2 {
+                    assert_eq!(value(actual[view].get(id)), value(expected[view].get(id)));
+                    assert_eq!(
+                        actual[view].contains_key(id),
+                        expected[view].contains_key(id)
+                    );
+                }
+            }
+            for (id, _) in &transactions {
+                for view in 0..2 {
+                    assert_eq!(value(actual[view].get(id)), value(expected[view].get(id)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::mutable_key_type)]
+    fn independent_candidates_match_ordered_set_with_live_updates() {
+        let transactions = (0..257)
+            .map(|i| {
+                let tx = TxBuilder::aa(Address::from_word(B256::from(U256::from(i + 1))))
+                    .nonce_key(U256::from(i + 1))
+                    .build();
+                PendingTransaction {
+                    submission_id: i,
+                    transaction: Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                    priority: if i % 17 == 0 {
+                        Priority::None
+                    } else {
+                        Priority::Value(u128::from(i % 19))
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        for initial_count in [0, 1, 127, 257] {
+            let initial = transactions[..initial_count]
+                .iter()
+                .chain(&transactions[..initial_count])
+                .cloned();
+            let expected: BTreeSet<_> = initial.clone().collect();
+            let actual = IndependentTransactions::new(initial, true);
+            let mut expected = [expected.clone(), expected];
+            let mut actual = [actual.clone(), actual];
+            let mut seed = 0x1234_5678u64;
+            for step in 0..4096 {
+                if step == 2048 {
+                    expected[1] = expected[0].clone();
+                    actual[1] = actual[0].clone();
+                }
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let view = (seed >> 16) as usize % 2;
+                if !seed.is_multiple_of(3) {
+                    let tx = &transactions[seed as usize % transactions.len()];
+                    expected[view].insert(tx.clone());
+                    actual[view].insert(tx.clone());
+                } else {
+                    assert_eq!(
+                        actual[view].pop_last().map(|tx| *tx.transaction.hash()),
+                        expected[view].pop_last().map(|tx| *tx.transaction.hash()),
+                    );
+                }
+            }
+            for (mut actual, mut expected) in actual.into_iter().zip(expected) {
+                while let Some(tx) = expected.pop_last() {
+                    assert_eq!(
+                        actual.pop_last().unwrap().transaction.hash(),
+                        tx.transaction.hash()
+                    );
+                }
+                assert!(actual.pop_last().is_none());
+                actual.insert(transactions[0].clone());
+                assert_eq!(
+                    actual.pop_last().unwrap().transaction.hash(),
+                    transactions[0].transaction.hash()
+                );
+                assert!(actual.pop_last().is_none());
+            }
+        }
+    }
+
+    /// Snapshot and selection costs, excluding pool admission and transaction construction.
+    #[test]
+    #[ignore = "release-mode throughput benchmark"]
+    fn best_transactions_throughput() {
+        use std::time::Instant;
+        let scattered = std::env::var_os("TEMPO_POOL_BENCH_SCATTERED").is_some();
+        // Compare two independent constructions (0) with a paired snapshot (1).
+        // Unset retains the original single-iterator benchmark.
+        let pair = std::env::var("TEMPO_POOL_BENCH_PAIR").ok();
+        let payload_limits = std::env::var_os("TEMPO_POOL_BENCH_LIMITS").is_some();
+        let counts = std::env::var("TEMPO_POOL_BENCH_COUNTS")
+            .unwrap_or_else(|_| "10000,25000,50000,100000".into());
+        println!("transactions\trepeat\tsnapshot_seconds\tdrain_seconds\tselected_per_second");
+        for count in counts
+            .split(',')
+            .map(|value| value.parse::<usize>().unwrap())
+        {
+            let mut pool = AA2dPool::new(AA2dPoolConfig {
+                pending_limit: SubPoolLimit {
+                    max_txs: count,
+                    max_size: usize::MAX,
+                },
+                max_txs_per_sender: count,
+                ..Default::default()
+            });
+            let mut expected = Vec::with_capacity(count);
+            for i in 0..count {
+                let (sender, nonce_key) = if scattered {
+                    (
+                        Address::from_word(B256::from(U256::from(i % 100 + 1))),
+                        U256::from_be_bytes(alloy_primitives::keccak256((i + 1).to_be_bytes()).0),
+                    )
+                } else {
+                    (
+                        Address::from_word(B256::from(U256::from(i + 1))),
+                        U256::from(i + 1),
+                    )
+                };
+                let tx = TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .calls(vec![Call {
+                        to: TxKind::Call(Address::ZERO),
+                        value: U256::ZERO,
+                        input: Bytes::new(),
+                    }])
+                    .build();
+                expected.push(*tx.hash());
+                pool.add_transaction(
+                    Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                    0,
+                    TempoHardfork::T1,
+                )
+                .unwrap();
+            }
+            // Equal fees retain submission order. Keep output allocation outside timing.
+            let mut selected = Vec::with_capacity(count);
+            for repeat in 0..5 {
+                selected.clear();
+                let start = Instant::now();
+                let (best, preview) = match pair.as_deref() {
+                    Some("1") => {
+                        let (best, preview) = pool.best_transactions_pair(payload_limits);
+                        (best, Some(preview))
+                    }
+                    Some("0") => (
+                        pool.best_transactions_inner(payload_limits, false),
+                        Some(pool.best_transactions()),
+                    ),
+                    None => (pool.best_transactions_inner(payload_limits, false), None),
+                    Some(value) => panic!("unsupported TEMPO_POOL_BENCH_PAIR={value}"),
+                };
+                let snapshot = start.elapsed().as_secs_f64();
+                let start = Instant::now();
+                selected.extend(best.map(|tx| *tx.hash()));
+                if let Some(preview) = preview {
+                    assert_eq!(selected, expected);
+                    selected.clear();
+                    selected.extend(preview.map(|tx| *tx.hash()));
+                }
+                let drain = start.elapsed().as_secs_f64();
+                assert_eq!(selected, expected);
+                println!(
+                    "{count}\t{repeat}\t{snapshot:.6}\t{drain:.6}\t{:.0}",
+                    (count * if pair.is_some() { 2 } else { 1 }) as f64 / (snapshot + drain)
+                );
+            }
+        }
+    }
+
+    #[test_case::test_case(false, false ; "both live")]
+    #[test_case::test_case(true, false ; "frozen preview")]
+    #[test_case::test_case(false, true ; "payload both live")]
+    #[test_case::test_case(true, true ; "payload frozen preview")]
+    fn paired_best_transactions_keep_independent_selection_state(
+        freeze_preview: bool,
+        payload_limits: bool,
+    ) {
+        use reth_primitives_traits::transaction::error::InvalidTransactionError;
+        let mut pool = AA2dPool::default();
+        let sender = Address::repeat_byte(1);
+        for nonce in 0..3 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(1))
+                .nonce(nonce)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let (mut best, mut preview) = pool.best_transactions_pair(payload_limits);
+        let mut expected = pool.best_transactions();
+        let mut expected_preview = pool.best_transactions();
+        if freeze_preview {
+            preview.no_updates();
+            expected_preview.no_updates();
+        }
+        let first = best.next().unwrap();
+        assert_eq!(first.hash(), expected.next().unwrap().hash());
+        let error =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        best.mark_invalid(&first, &error);
+        expected.mark_invalid(&first, &error);
+
+        // Admission after snapshot creation must reach each live subscription.
+        // Invalidating the authoritative sequence must not invalidate lookahead.
+        let incoming = TxBuilder::aa(Address::repeat_byte(2))
+            .nonce_key(U256::from(2))
+            .build();
+        let incoming_hash = *incoming.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(incoming, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        let preview_hashes = preview.map(|tx| *tx.hash()).collect::<Vec<_>>();
+        assert_eq!(
+            preview_hashes,
+            expected_preview.map(|tx| *tx.hash()).collect::<Vec<_>>()
+        );
+        assert_eq!(preview_hashes.len(), if freeze_preview { 3 } else { 4 });
+        assert_eq!(preview_hashes.contains(&incoming_hash), !freeze_preview);
+        let selected = best.map(|tx| *tx.hash()).collect::<Vec<_>>();
+        assert_eq!(selected, expected.map(|tx| *tx.hash()).collect::<Vec<_>>());
+        assert_eq!(selected, vec![incoming_hash]);
+    }
+
+    fn select_with_gas_budget(best: BestAA2dTransactions, remaining: u64) -> (Vec<TxHash>, usize) {
+        select_with_payload_limits(best, remaining, usize::MAX)
+    }
+
+    fn select_with_payload_limits(
+        mut best: BestAA2dTransactions,
+        mut remaining: u64,
+        size_limit: usize,
+    ) -> (Vec<TxHash>, usize) {
+        let mut selected = Vec::new();
+        let mut visited = 0;
+        let mut used_size = 0;
+        while let Some(tx) = best.next() {
+            visited += 1;
+            if tx.gas_limit() > remaining {
+                best.mark_invalid(
+                    &tx,
+                    &InvalidPoolTransactionError::ExceedsGasLimit(tx.gas_limit(), remaining),
+                );
+                continue;
+            }
+            let size = used_size + tx.transaction.inner().network_len();
+            if size > size_limit {
+                best.mark_invalid(
+                    &tx,
+                    &InvalidPoolTransactionError::OversizedData {
+                        size,
+                        limit: size_limit,
+                    },
+                );
+                continue;
+            }
+            selected.push(*tx.hash());
+            // Actual use can be lower than the declared limit.
+            remaining -= tx.gas_limit() / 2;
+            used_size = size;
+        }
+        (selected, visited)
+    }
+
+    fn gas_candidate(index: u64, gas: u64, expiring: bool) -> TempoPooledTransaction {
+        TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(if expiring {
+                U256::MAX
+            } else {
+                U256::from(index + 1)
+            })
+            .gas_limit(gas)
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::copy_from_slice(&index.to_be_bytes()),
+            }])
+            .build()
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn gas_budget_stops_oversized_tail(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..64 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    gas_candidate(i, 1_000_000, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let (expected, old_visits) = select_with_gas_budget(pool.best_transactions(), 500_000);
+        let (actual, visits) =
+            select_with_gas_budget(pool.best_transactions_for_payload(), 500_000);
+        assert_eq!(actual, expected);
+        assert!(actual.is_empty());
+        assert_eq!(old_visits, 64);
+        assert_eq!(visits, 1);
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn gas_budget_resumes_and_checks_queued_cheaper_arrivals(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..8 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    gas_candidate(i, 1_000_000, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let mut best = pool.best_transactions_for_payload();
+        let first = best.next().unwrap();
+        best.mark_invalid(
+            &first,
+            &InvalidPoolTransactionError::ExceedsGasLimit(first.gas_limit(), 500_000),
+        );
+        assert!(best.next().is_none());
+
+        // Put the cheap arrival beyond one bounded channel drain. Returning None
+        // before checking that queue would hide a transaction that fits now.
+        for i in 8..8 + MAX_NEW_TRANSACTIONS_PER_BATCH as u64 + 1 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    gas_candidate(i, 1_000_000, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let cheap = gas_candidate(100, 200_000, expiring);
+        let hash = *cheap.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(cheap, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        assert_eq!(select_with_gas_budget(best, 500_000).0, vec![hash]);
+    }
+
+    #[test]
+    fn gas_budget_accounts_for_cheaper_nonce_descendants() {
+        let mut pool = AA2dPool::default();
+        let parent = TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(U256::from(1))
+            .gas_limit(800_000)
+            .max_fee(20_000_000_000)
+            .max_priority_fee(3_000_000_000)
+            .build();
+        let child = TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(U256::from(1))
+            .nonce(1)
+            .gas_limit(200_000)
+            .max_fee(20_000_000_000)
+            .max_priority_fee(1_000_000_000)
+            .build();
+        let other = TxBuilder::aa(Address::repeat_byte(2))
+            .nonce_key(U256::from(1))
+            .gas_limit(1_000_000)
+            .max_fee(20_000_000_000)
+            .max_priority_fee(2_000_000_000)
+            .build();
+        let hashes = vec![*parent.hash(), *child.hash()];
+        for tx in [parent, child, other] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_gas_budget(pool.best_transactions(), 1_000_000);
+        let actual = select_with_gas_budget(pool.best_transactions_for_payload(), 1_000_000);
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.0, hashes);
+    }
+
+    #[test]
+    fn payload_limits_selection_matches_complete_scan() {
+        for seed in 0..32u64 {
+            let mut pool = AA2dPool::default();
+            for nonce in 0..4 {
+                for sender in 0..8 {
+                    let mixed = (seed + 1)
+                        .wrapping_mul(0x9e37_79b9)
+                        .wrapping_add(sender * 17 + nonce * 11);
+                    let tx = TxBuilder::aa(Address::from_word(B256::from(U256::from(sender + 1))))
+                        .nonce_key(U256::from(1))
+                        .nonce(nonce)
+                        .gas_limit([200_000, 500_000, 1_000_000, 2_000_000][mixed as usize % 4])
+                        .calls(vec![Call {
+                            to: TxKind::Call(Address::ZERO),
+                            value: U256::ZERO,
+                            input: Bytes::from(vec![0; [0, 8, 128, 512, 4096][mixed as usize % 5]]),
+                        }])
+                        .max_fee(20_000_000_000)
+                        .max_priority_fee(1_000_000_000 * u128::from(1 + mixed % 7))
+                        .build();
+                    pool.add_transaction(
+                        Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                        0,
+                        TempoHardfork::T1,
+                    )
+                    .unwrap();
+                }
+            }
+            for budget in [0, 200_000, 500_000, 1_000_000, 3_000_000, 10_000_000] {
+                for size in [0, 128, 1024, 4096, usize::MAX] {
+                    let expected =
+                        select_with_payload_limits(pool.best_transactions(), budget, size);
+                    let actual = select_with_payload_limits(
+                        pool.best_transactions_for_payload(),
+                        budget,
+                        size,
+                    );
+                    assert_eq!(
+                        actual.0, expected.0,
+                        "seed={seed}, gas={budget}, size={size}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn size_candidate(index: u64, size: usize, expiring: bool) -> TempoPooledTransaction {
+        let mut input = index.to_be_bytes().to_vec();
+        input.resize(input.len() + size, 0);
+        TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(if expiring {
+                U256::MAX
+            } else {
+                U256::from(index + 1)
+            })
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::from(input),
+            }])
+            .build()
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn size_budget_stops_oversized_tail(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..64 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    size_candidate(i, 1024, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_payload_limits(pool.best_transactions(), u64::MAX, 100);
+        let actual =
+            select_with_payload_limits(pool.best_transactions_for_payload(), u64::MAX, 100);
+        assert_eq!(actual.0, expected.0);
+        assert!(actual.0.is_empty());
+        assert_eq!(expected.1, 64);
+        assert_eq!(actual.1, 1);
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn size_budget_resumes_for_queued_smaller_arrivals(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..8 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    size_candidate(i, 1024, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let mut best = pool.best_transactions_for_payload();
+        let first = best.next().unwrap();
+        best.mark_invalid(
+            &first,
+            &InvalidPoolTransactionError::OversizedData {
+                size: first.transaction.inner().network_len(),
+                limit: 500,
+            },
+        );
+        assert!(best.next().is_none());
+        for i in 8..8 + MAX_NEW_TRANSACTIONS_PER_BATCH as u64 + 1 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    size_candidate(i, 1024, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let small = size_candidate(100, 0, expiring);
+        let hash = *small.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(small, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        assert_eq!(
+            select_with_payload_limits(best, u64::MAX, 500).0,
+            vec![hash]
+        );
+    }
+
+    #[test]
+    fn size_budget_recovers_remaining_bytes_with_the_full_rlp_header() {
+        let mut pool = AA2dPool::default();
+        let large = size_candidate(0, 65_536, false);
+        let small = size_candidate(1, 0, false);
+        let limit = small.inner().network_len();
+        assert!(
+            large.inner().network_len() - large.encoded_length() > limit - small.encoded_length()
+        );
+        let hash = *small.hash();
+        for tx in [large, small] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_payload_limits(pool.best_transactions(), u64::MAX, limit);
+        let actual =
+            select_with_payload_limits(pool.best_transactions_for_payload(), u64::MAX, limit);
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.0, vec![hash]);
+    }
+
+    #[test]
+    fn size_budget_accounts_for_smaller_nonce_descendants() {
+        let mut pool = AA2dPool::default();
+        let parent_builder = TxBuilder::aa(Address::repeat_byte(1)).nonce_key(U256::from(1));
+        let parent = parent_builder
+            .clone()
+            .max_priority_fee(3_000_000_000)
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0; 1024]),
+            }])
+            .build();
+        let child = parent_builder
+            .nonce(1)
+            .max_priority_fee(1_000_000_000)
+            .build();
+        let other = TxBuilder::aa(Address::repeat_byte(2))
+            .nonce_key(U256::from(1))
+            .max_priority_fee(2_000_000_000)
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0; 2048]),
+            }])
+            .build();
+        let limit = parent.inner().network_len() + child.inner().network_len();
+        let hashes = vec![*parent.hash(), *child.hash()];
+        for tx in [parent, child, other] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_payload_limits(pool.best_transactions(), u64::MAX, limit);
+        let actual =
+            select_with_payload_limits(pool.best_transactions_for_payload(), u64::MAX, limit);
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.0, hashes);
+    }
 
     #[test]
     fn test_best_transactions_iterator() {

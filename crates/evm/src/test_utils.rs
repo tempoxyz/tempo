@@ -124,6 +124,15 @@ impl TestExecutorBuilder {
         db: DB,
         chainspec: &'a Arc<TempoChainSpec>,
     ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
+        self.build_with_transactions(db, chainspec, &[])
+    }
+
+    pub(crate) fn build_with_transactions<'a, DB: StateDB>(
+        self,
+        db: DB,
+        chainspec: &'a Arc<TempoChainSpec>,
+        transactions: &'a [TempoTxEnvelope],
+    ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
         let evm = TempoEvm::new(
             db,
             EvmEnv {
@@ -141,6 +150,7 @@ impl TestExecutorBuilder {
         );
 
         let ctx = TempoBlockExecutionCtx {
+            transactions,
             inner: EthBlockExecutionCtx {
                 parent_hash: self.parent_hash,
                 parent_beacon_block_root: self.parent_beacon_block_root,

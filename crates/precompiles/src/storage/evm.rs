@@ -99,6 +99,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        super::fee_updates::unsupported();
         self.deduct_gas(self.gas_params.code_deposit_cost(code.len()))?;
 
         self.internals
@@ -144,6 +145,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        super::access::storage(address, key);
         let result = self
             .internals
             .load_account_mut(address)?
@@ -195,6 +197,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        super::access::storage(address, key);
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
         let value;

@@ -1,0 +1,701 @@
+{
+  "raw_directory": "/tmp/tempo-shared-snapshot-profile-run",
+  "host": {
+    "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "block_gas_limit": 5000000000,
+    "share_sparse_trie": true,
+    "recipients": "existing",
+    "builder_max_tasks": 1,
+    "tokio_worker_threads": null,
+    "node_tokio_worker_threads": null,
+    "source": "ae5c08d936e475a7503ed827e8b96a8e1bc684ac",
+    "dirty": false
+  },
+  "limitations": "Summarize complete CPU profiles inside a profile_node.py submission window.\n\nReads the built-in profiler's pprof protobufs without external Python packages.\nPercentages describe sampled user-space CPU, not kernel CPU or blocked time.\nProfiling changes throughput; these records are diagnostic evidence only.\n",
+  "sending": {
+    "accepted": 786242,
+    "rejected": 0,
+    "timed_out": 0,
+    "generation_failed": 0,
+    "unconfirmed": 0,
+    "send_duration_secs": 20.007316168
+  },
+  "send_window": [
+    1790935357.593477,
+    1790935377.602362
+  ],
+  "profiles": [
+    {
+      "path": "/tmp/tempo-shared-snapshot-profile-run/profiles/1790935370775215279.pb",
+      "sha256": "f45be72874678bcd0e91597d0b59ea31830b39b8a1d7a11a02702b3fe6771824",
+      "start": 1790935360.0,
+      "duration": 10.0,
+      "samples": 5882
+    }
+  ],
+  "sample_weight_ns": 47673360875,
+  "builder_sample_weight_ns": 4321607500,
+  "whole_trial_skip_counters": {
+    "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"nonce_too_low\"}": 319794,
+    "reth_tempo_payload_builder_pool_transactions_skipped_total{reason=\"exceeds_non_shared_gas_limit\"}": 48
+  },
+  "node_flat": [
+    {
+      "function": "crossbeam_epoch::internal::Global::try_advance",
+      "sample_weight_ns": 5628140000,
+      "percent": 11.806
+    },
+    {
+      "function": "miniz_oxide::deflate::core::compress_inner",
+      "sample_weight_ns": 2336683125,
+      "percent": 4.901
+    },
+    {
+      "function": "__memcpy_avx512_unaligned_erms",
+      "sample_weight_ns": 2040200750,
+      "percent": 4.28
+    },
+    {
+      "function": "rustsecp256k1_v0_10_0_fe_mul_inner",
+      "sample_weight_ns": 1834170625,
+      "percent": 3.847
+    },
+    {
+      "function": "syscall",
+      "sample_weight_ns": 1763818875,
+      "percent": 3.7
+    },
+    {
+      "function": "__GI_sched_yield",
+      "sample_weight_ns": 1427135500,
+      "percent": 2.994
+    },
+    {
+      "function": "__KeccakF1600",
+      "sample_weight_ns": 1321607875,
+      "percent": 2.772
+    },
+    {
+      "function": "rustsecp256k1_v0_10_0_ecmult_strauss_wnaf.constprop.0",
+      "sample_weight_ns": 1211055125,
+      "percent": 2.54
+    },
+    {
+      "function": "crossbeam_epoch::default::with_handle",
+      "sample_weight_ns": 1170854125,
+      "percent": 2.456
+    },
+    {
+      "function": "alloy_primitives::utils::keccak_cache::compute",
+      "sample_weight_ns": 703517500,
+      "percent": 1.476
+    },
+    {
+      "function": "__memcmp_evex_movbe",
+      "sample_weight_ns": 623115500,
+      "percent": 1.307
+    },
+    {
+      "function": "cursor_seek",
+      "sample_weight_ns": 457286375,
+      "percent": 0.959
+    },
+    {
+      "function": "rustsecp256k1_v0_10_0_fe_sqrt",
+      "sample_weight_ns": 442211000,
+      "percent": 0.928
+    },
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::AA2dPool::best_transactions_inner",
+      "sample_weight_ns": 417085375,
+      "percent": 0.875
+    },
+    {
+      "function": "__GI_madvise",
+      "sample_weight_ns": 376884375,
+      "percent": 0.791
+    },
+    {
+      "function": "crossbeam_channel::flavors::list::Channel<T>::recv",
+      "sample_weight_ns": 376884375,
+      "percent": 0.791
+    },
+    {
+      "function": "rustsecp256k1_v0_10_0_fe_sqr_inner",
+      "sample_weight_ns": 346733625,
+      "percent": 0.727
+    },
+    {
+      "function": "hashbrown::rustc_entry::<impl hashbrown::map::HashMap<K,V,S,A>>::rustc_entry",
+      "sample_weight_ns": 341708500,
+      "percent": 0.717
+    },
+    {
+      "function": "hashbrown::map::HashMap<K,V,S,A>::insert",
+      "sample_weight_ns": 326633125,
+      "percent": 0.685
+    },
+    {
+      "function": "__memset_avx512_unaligned_erms",
+      "sample_weight_ns": 316582875,
+      "percent": 0.664
+    },
+    {
+      "function": "cache_bin_alloc_impl",
+      "sample_weight_ns": 301507500,
+      "percent": 0.632
+    },
+    {
+      "function": "crossbeam_deque::deque::Stealer<T>::steal",
+      "sample_weight_ns": 301507500,
+      "percent": 0.632
+    },
+    {
+      "function": "miniz_oxide::deflate::core::HuffmanOxide::optimize_table",
+      "sample_weight_ns": 296482375,
+      "percent": 0.622
+    },
+    {
+      "function": "<metrics_util::registry::recency::Generational<T> as metrics::handles::CounterFn>::increment",
+      "sample_weight_ns": 296482375,
+      "percent": 0.622
+    },
+    {
+      "function": "tree_search_finalize",
+      "sample_weight_ns": 256281375,
+      "percent": 0.538
+    },
+    {
+      "function": "tokio::runtime::scheduler::multi_thread::queue::Steal<T>::steal_into",
+      "sample_weight_ns": 246231125,
+      "percent": 0.516
+    },
+    {
+      "function": "__GI___clock_gettime",
+      "sample_weight_ns": 236180875,
+      "percent": 0.495
+    },
+    {
+      "function": "ZSTD_compressBlock_doubleFast_dictMatchState_5",
+      "sample_weight_ns": 231155750,
+      "percent": 0.485
+    },
+    {
+      "function": "<hyper_util::server::conn::auto::UpgradeableConnection<I,S,E> as core::future::future::Future>::poll",
+      "sample_weight_ns": 221105500,
+      "percent": 0.464
+    },
+    {
+      "function": "___pthread_mutex_trylock",
+      "sample_weight_ns": 216080375,
+      "percent": 0.453
+    },
+    {
+      "function": "atomic_load_p",
+      "sample_weight_ns": 216080375,
+      "percent": 0.453
+    },
+    {
+      "function": "tempo_transaction_pool::transaction::TempoPooledTransaction::fee_token_cost",
+      "sample_weight_ns": 206030125,
+      "percent": 0.432
+    },
+    {
+      "function": "alloc::sync::Arc<T,A>::drop_slow",
+      "sample_weight_ns": 201005000,
+      "percent": 0.422
+    },
+    {
+      "function": "miniz_oxide::deflate::core::flush_block",
+      "sample_weight_ns": 201005000,
+      "percent": 0.422
+    },
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::AA2dPool::add_transaction",
+      "sample_weight_ns": 190954750,
+      "percent": 0.401
+    },
+    {
+      "function": "hashbrown::raw::RawTable<T,A>::reserve_rehash",
+      "sample_weight_ns": 185929625,
+      "percent": 0.39
+    },
+    {
+      "function": "<alloc::vec::Vec<T,A> as core::clone::Clone>::clone",
+      "sample_weight_ns": 185929625,
+      "percent": 0.39
+    },
+    {
+      "function": "reth_trie_sparse::arena::cursor::ArenaCursor::next",
+      "sample_weight_ns": 185929625,
+      "percent": 0.39
+    },
+    {
+      "function": "tokio::runtime::scheduler::multi_thread::worker::Context::run",
+      "sample_weight_ns": 180904500,
+      "percent": 0.379
+    },
+    {
+      "function": "reth_trie_sparse::arena::ArenaParallelSparseTrie::update_cached_rlp",
+      "sample_weight_ns": 175879375,
+      "percent": 0.369
+    }
+  ],
+  "builder_flat": [
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::AA2dPool::best_transactions_inner",
+      "sample_weight_ns": 417085375,
+      "percent": 9.651
+    },
+    {
+      "function": "hashbrown::rustc_entry::<impl hashbrown::map::HashMap<K,V,S,A>>::rustc_entry",
+      "sample_weight_ns": 236180875,
+      "percent": 5.465
+    },
+    {
+      "function": "__memcpy_avx512_unaligned_erms",
+      "sample_weight_ns": 231155750,
+      "percent": 5.349
+    },
+    {
+      "function": "alloc::sync::Arc<T,A>::drop_slow",
+      "sample_weight_ns": 175879375,
+      "percent": 4.07
+    },
+    {
+      "function": "alloy_primitives::utils::keccak_cache::compute",
+      "sample_weight_ns": 165829125,
+      "percent": 3.837
+    },
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::BestAA2dTransactions::next_tx_and_priority",
+      "sample_weight_ns": 155778875,
+      "percent": 3.605
+    },
+    {
+      "function": "cursor_seek",
+      "sample_weight_ns": 90452250,
+      "percent": 2.093
+    },
+    {
+      "function": "<alloc::vec::Vec<T,A> as core::clone::Clone>::clone",
+      "sample_weight_ns": 85427125,
+      "percent": 1.977
+    },
+    {
+      "function": "tokio::sync::broadcast::Receiver<T>::recv_ref",
+      "sample_weight_ns": 80402000,
+      "percent": 1.86
+    },
+    {
+      "function": "<hashbrown::map::HashMap<K,V,S,A> as core::clone::Clone>::clone",
+      "sample_weight_ns": 80402000,
+      "percent": 1.86
+    },
+    {
+      "function": "hashbrown::raw::RawTable<T,A>::reserve_rehash",
+      "sample_weight_ns": 75376875,
+      "percent": 1.744
+    },
+    {
+      "function": "revm_context_interface::journaled_state::account::JournaledAccount<DB,ENTRY>::sload_concrete_error",
+      "sample_weight_ns": 70351750,
+      "percent": 1.628
+    },
+    {
+      "function": "<core::iter::adapters::cloned::Cloned<I> as core::iter::traits::iterator::Iterator>::next",
+      "sample_weight_ns": 65326625,
+      "percent": 1.512
+    },
+    {
+      "function": "core::slice::sort::unstable::quicksort::quicksort",
+      "sample_weight_ns": 60301500,
+      "percent": 1.395
+    },
+    {
+      "function": "__KeccakF1600",
+      "sample_weight_ns": 55276375,
+      "percent": 1.279
+    },
+    {
+      "function": "alloy_evm::traits::EvmInternalsTr::load_account_mut",
+      "sample_weight_ns": 55276375,
+      "percent": 1.279
+    },
+    {
+      "function": "foldhash::hash_bytes_long",
+      "sample_weight_ns": 55276375,
+      "percent": 1.279
+    },
+    {
+      "function": "cache_bin_alloc_impl",
+      "sample_weight_ns": 50251250,
+      "percent": 1.163
+    },
+    {
+      "function": "<tempo_precompiles::storage::types::mapping::Mapping<K,V> as core::ops::index::Index<K>>::index",
+      "sample_weight_ns": 50251250,
+      "percent": 1.163
+    },
+    {
+      "function": "rapidhash::v3::rapid_const::rapidhash_micro_core",
+      "sample_weight_ns": 50251250,
+      "percent": 1.163
+    },
+    {
+      "function": "tempo_precompiles::tip20::TIP20Token::from_address",
+      "sample_weight_ns": 45226125,
+      "percent": 1.047
+    },
+    {
+      "function": "tree_search_finalize",
+      "sample_weight_ns": 45226125,
+      "percent": 1.047
+    },
+    {
+      "function": "hashbrown::raw::RawTableInner::fallible_with_capacity",
+      "sample_weight_ns": 45226125,
+      "percent": 1.047
+    },
+    {
+      "function": "tempo_primitives::transaction::calc_gas_balance_spending",
+      "sample_weight_ns": 40201000,
+      "percent": 0.93
+    },
+    {
+      "function": "core::ptr::drop_in_place<core::option::Option<alloc::boxed::Box<tempo_revm::tx::TempoBatchCallEnv>>>",
+      "sample_weight_ns": 40201000,
+      "percent": 0.93
+    },
+    {
+      "function": "<tempo_transaction_pool::transaction::TempoPooledTransaction as core::clone::Clone>::clone",
+      "sample_weight_ns": 35175875,
+      "percent": 0.814
+    },
+    {
+      "function": "syscall",
+      "sample_weight_ns": 35175875,
+      "percent": 0.814
+    },
+    {
+      "function": "hashbrown::map::HashMap<K,V,S,A>::insert",
+      "sample_weight_ns": 35175875,
+      "percent": 0.814
+    },
+    {
+      "function": "revm_database::states::bundle_account::BundleAccount::storage_slot",
+      "sample_weight_ns": 35175875,
+      "percent": 0.814
+    },
+    {
+      "function": "<std::hash::random::DefaultHasher as core::hash::Hasher>::write",
+      "sample_weight_ns": 35175875,
+      "percent": 0.814
+    },
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::CandidateIndex::get",
+      "sample_weight_ns": 30150750,
+      "percent": 0.698
+    },
+    {
+      "function": "core::hash::BuildHasher::hash_one",
+      "sample_weight_ns": 30150750,
+      "percent": 0.698
+    },
+    {
+      "function": "tempo_primitives::transaction::tempo_transaction::TempoTransaction::rlp_encoded_fields_length_default",
+      "sample_weight_ns": 30150750,
+      "percent": 0.698
+    },
+    {
+      "function": "revm_context_interface::journaled_state::account::JournaledAccount<DB,ENTRY>::sstore_concrete_error",
+      "sample_weight_ns": 30150750,
+      "percent": 0.698
+    },
+    {
+      "function": "tempo_revm::handler::calculate_aa_batch_intrinsic_gas",
+      "sample_weight_ns": 30150750,
+      "percent": 0.698
+    },
+    {
+      "function": "tempo_precompiles::tip_fee_manager::TipFeeManager::new",
+      "sample_weight_ns": 30150750,
+      "percent": 0.698
+    },
+    {
+      "function": "<core::iter::adapters::map::Map<I,F> as core::iter::traits::iterator::Iterator>::fold",
+      "sample_weight_ns": 25125625,
+      "percent": 0.581
+    },
+    {
+      "function": "<alloy_evm::traits::EvmInternalsImpl<T> as alloy_evm::traits::EvmInternalsTr>::load_account_mut_skip_cold_load",
+      "sample_weight_ns": 25125625,
+      "percent": 0.581
+    },
+    {
+      "function": "<tempo_evm::block::TempoBlockExecutor<DB,I> as alloy_evm::block::BlockExecutor>::execute_transaction_without_commit",
+      "sample_weight_ns": 25125625,
+      "percent": 0.581
+    },
+    {
+      "function": "<tempo_primitives::transaction::tt_signature::TempoSignature as core::clone::Clone>::clone",
+      "sample_weight_ns": 25125625,
+      "percent": 0.581
+    }
+  ],
+  "builder_inclusive": [
+    {
+      "function": "start_thread",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "tokio::runtime::park::CachedParkThread::block_on",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "clone3",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "<tracing_futures::Instrumented<T> as core::future::future::Future>::poll",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "std::sys::backtrace::__rust_begin_short_backtrace",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "tokio::runtime::blocking::pool::Inner::run",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "tokio::runtime::task::harness::Harness<T,S>::poll",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "<futures_util::future::select::Select<A,B> as core::future::future::Future>::poll",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "tokio::runtime::context::runtime::enter_runtime",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "tokio::runtime::task::core::Core<T,S>::poll",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "core::ops::function::FnOnce::call_once{{vtable.shim}}",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "<std::sys::thread::unix::Thread>::new::thread_start",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "tempo_payload_builder::TempoPayloadBuilder<Provider>::build_payload",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "<tokio::runtime::blocking::task::BlockingTask<T> as core::future::future::Future>::poll",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "futures_util::future::future::FutureExt::poll_unpin",
+      "sample_weight_ns": 4321607500,
+      "percent": 100.0
+    },
+    {
+      "function": "<reth_evm::execute::BasicBlockBuilder<F,Executor,Builder,N> as reth_evm::execute::BlockBuilder>::execute_transaction_with_commit_condition",
+      "sample_weight_ns": 2452261000,
+      "percent": 56.744
+    },
+    {
+      "function": "<tempo_evm::block::TempoBlockExecutor<DB,I> as alloy_evm::block::BlockExecutor>::execute_transaction_without_commit",
+      "sample_weight_ns": 2040200750,
+      "percent": 47.209
+    },
+    {
+      "function": "alloy_evm::evm::Evm::transact",
+      "sample_weight_ns": 1999999750,
+      "percent": 46.279
+    },
+    {
+      "function": "revm_handler::handler::Handler::pre_execution",
+      "sample_weight_ns": 1045226000,
+      "percent": 24.186
+    },
+    {
+      "function": "tempo_precompiles::storage::thread_local::StorageCtx::enter_evm",
+      "sample_weight_ns": 874371750,
+      "percent": 20.233
+    },
+    {
+      "function": "<tempo_precompiles::storage::evm::EvmPrecompileStorageProvider as tempo_precompiles::storage::PrecompileStorageProvider>::sload",
+      "sample_weight_ns": 648241125,
+      "percent": 15.0
+    },
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::AA2dPool::best_transactions_inner",
+      "sample_weight_ns": 613065250,
+      "percent": 14.186
+    },
+    {
+      "function": "tempo_transaction_pool::tempo_pool::TempoTransactionPool<Client>::best_transactions_with_preview",
+      "sample_weight_ns": 613065250,
+      "percent": 14.186
+    },
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::AA2dPool::best_transactions_pair",
+      "sample_weight_ns": 613065250,
+      "percent": 14.186
+    },
+    {
+      "function": "tempo_precompiles::storage::thread_local::StorageCtx::sload",
+      "sample_weight_ns": 597989875,
+      "percent": 13.837
+    },
+    {
+      "function": "<tempo_revm::handler::TempoEvmHandler<DB,I> as revm_handler::handler::Handler>::execution",
+      "sample_weight_ns": 527638125,
+      "percent": 12.209
+    },
+    {
+      "function": "<tempo_revm::handler::TempoEvmHandler<DB,I> as revm_handler::handler::Handler>::execution::{{closure}}",
+      "sample_weight_ns": 522613000,
+      "percent": 12.093
+    },
+    {
+      "function": "<T as tempo_precompiles::storage::types::Storable>::load",
+      "sample_weight_ns": 492462250,
+      "percent": 11.395
+    },
+    {
+      "function": "revm_context_interface::journaled_state::account::JournaledAccount<DB,ENTRY>::sload_concrete_error",
+      "sample_weight_ns": 492462250,
+      "percent": 11.395
+    },
+    {
+      "function": "tempo_revm::handler::TempoEvmHandler<DB,I>::execute_single_call_with",
+      "sample_weight_ns": 472361750,
+      "percent": 10.93
+    },
+    {
+      "function": "<tempo_revm::evm::TempoEvm<DB,I> as revm_handler::evm::EvmTr>::frame_init",
+      "sample_weight_ns": 462311500,
+      "percent": 10.698
+    },
+    {
+      "function": "<revm_context_interface::journaled_state::account::JournaledAccount<DB,ENTRY> as revm_context_interface::journaled_state::account::JournaledAccountTr>::sload",
+      "sample_weight_ns": 462311500,
+      "percent": 10.698
+    },
+    {
+      "function": "<alloy_evm::precompiles::PrecompilesMap as revm_handler::precompile_provider::PrecompileProvider<revm_context::context::Context<BlockEnv,TxEnv,CfgEnv,DB,revm_context::journal::Journal<DB>,Chain>>>::run",
+      "sample_weight_ns": 457286375,
+      "percent": 10.581
+    },
+    {
+      "function": "<tempo_precompiles::storage::types::mapping::Mapping<K,V> as core::ops::index::Index<K>>::index",
+      "sample_weight_ns": 417085375,
+      "percent": 9.651
+    },
+    {
+      "function": "<(revm_precompile::id::PrecompileId,F) as alloy_evm::precompiles::Precompile>::call",
+      "sample_weight_ns": 356783875,
+      "percent": 8.256
+    },
+    {
+      "function": "<tempo_evm::block::TempoBlockExecutor<DB,I> as alloy_evm::block::BlockExecutor>::commit_transaction",
+      "sample_weight_ns": 351758750,
+      "percent": 8.14
+    },
+    {
+      "function": "<tempo_transaction_pool::best::MergeBestTransactions<L,R,T> as core::iter::traits::iterator::Iterator>::next",
+      "sample_weight_ns": 351758750,
+      "percent": 8.14
+    },
+    {
+      "function": "tempo_precompiles::storage::thread_local::StorageCtx::enter",
+      "sample_weight_ns": 346733625,
+      "percent": 8.023
+    },
+    {
+      "function": "tempo_transaction_pool::tt_2d_pool::BestAA2dTransactions::next_tx_and_priority",
+      "sample_weight_ns": 331658250,
+      "percent": 7.674
+    }
+  ],
+  "binary": {
+    "path": "/tmp/tempo-shared-snapshot-profile",
+    "sha256": "966fc091a3ad1bc65a894857c58df7d562cc0873e343778b295ad49fd090aa66",
+    "source": "ae5c08d9",
+    "build": "cargo rustc --release --locked -p tempo --bin tempo --features pyroscope -- -C strip=none"
+  },
+  "exit_status": {
+    "node_returncode_before_cleanup": null,
+    "node_returncode_after_cleanup": 0,
+    "bench_returncode_before_cleanup": 0,
+    "bench_returncode_after_cleanup": 0,
+    "disk_free_bytes_start": 6947201024,
+    "disk_free_bytes_end": 5957353472
+  },
+  "retention": {
+    "removed": [
+      "/tmp/tempo-shared-snapshot-profile-run/trial/workers-16-target-75000/data"
+    ],
+    "reason": "Profiling trial completed and all transactions confirmed; reclaim disposable chain database. Raw profiles, logs, reports, CPU samples and metrics retained."
+  },
+  "confirmation": {
+    "user_transactions": 786242,
+    "execution_failures": 0,
+    "last_busy_block": 58,
+    "send_start_to_last_canonical_seconds": 29.026573,
+    "confirmed_tps_including_backlog": 27087
+  },
+  "rejected_dev_payloads": {
+    "timestamp_through_last_busy_block": 0,
+    "timestamp_after_last_busy_block": 0,
+    "other": []
+  },
+  "payload_timing_seconds": {
+    "successful_transaction_execution": 13.371264,
+    "execution_loop": 18.244676,
+    "pool_snapshot": 3.130686,
+    "finalization": 2.714415,
+    "state_root": 0.0,
+    "background_state_root_wait": 0.170781,
+    "hashed_post_state": 0.227879,
+    "payload_build": 24.572396
+  },
+  "speculative_execution_counts": {
+    "speculated": 125924,
+    "nonce_filtered": 0,
+    "reused": 22689,
+    "bodies_reused": 0,
+    "fees_rebased": 22286,
+    "conflicts": 65369,
+    "retries": 36336,
+    "backoff": 980212
+  }
+}

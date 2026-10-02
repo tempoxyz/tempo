@@ -12559,9 +12559,12 @@ name = "tempo-evm"
 version = "1.6.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips 2.0.0",
  "alloy-evm",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-sol-types",
+ "alloy-trie",
  "commonware-codec",
  "commonware-cryptography",
  "derive_more",
@@ -12579,6 +12582,7 @@ dependencies = [
  "tempo-consensus",
  "tempo-contracts",
  "tempo-payload-types",
+ "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.18",
@@ -12638,6 +12642,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "alloy-serde 2.0.0",
+ "alloy-trie",
  "async-trait",
  "base64 0.22.1",
  "clap",

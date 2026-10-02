@@ -284,6 +284,9 @@ pub(crate) struct HttpOnlySetup {
 
 /// Builder for creating test nodes
 pub(crate) struct TestNodeBuilder {
+    execution_threads: usize,
+    share_sparse_trie: bool,
+    proof_window: Option<u64>,
     genesis_content: String,
     custom_gas_limit: Option<String>,
     node_count: usize,
@@ -298,6 +301,9 @@ impl TestNodeBuilder {
     /// Create a new builder with default test genesis
     pub(crate) fn new() -> Self {
         Self {
+            execution_threads: 0,
+            share_sparse_trie: false,
+            proof_window: None,
             genesis_content: include_str!("../assets/test-genesis.json").to_string(),
             custom_gas_limit: None,
             node_count: 1,
@@ -307,6 +313,22 @@ impl TestNodeBuilder {
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
         }
+    }
+
+    /// Configure speculative execution for an HTTP test node.
+    pub(crate) fn with_execution_threads(mut self, threads: usize) -> Self {
+        self.execution_threads = threads;
+        self
+    }
+
+    pub(crate) fn with_shared_sparse_trie(mut self, enabled: bool) -> Self {
+        self.share_sparse_trie = enabled;
+        self
+    }
+
+    pub(crate) fn with_proof_window(mut self, blocks: u64) -> Self {
+        self.proof_window = Some(blocks);
+        self
     }
 
     /// Set the fork schedule (Devnet, Testnet, or Mainnet)
@@ -440,10 +462,17 @@ impl TestNodeBuilder {
             );
         node_config.txpool.max_account_slots = usize::MAX;
         node_config.dev.block_time = Some(Duration::from_millis(100));
+        if let Some(window) = self.proof_window {
+            node_config.rpc.rpc_eth_proof_window = window;
+        }
+        if self.share_sparse_trie {
+            node_config.engine.share_sparse_trie_with_payload_builder = true;
+            node_config.builder.max_payload_tasks = 1;
+        }
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(runtime.clone())
-            .node(TempoNode::default())
+            .node(TempoNode::default().with_execution_threads(self.execution_threads, 32))
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
                 let validator = dynamic_validator

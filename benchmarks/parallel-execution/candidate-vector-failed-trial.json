@@ -1,0 +1,25 @@
+{
+  "variant": "candidate vector, first reverse-order attempt",
+  "workers": 16,
+  "offered_tps": 50000,
+  "duration_seconds": 5,
+  "source": "df1725b0303dcc7b17a0e298fa848a54a001b5cc with uncommitted candidate-vector changes",
+  "node_pid": 362583,
+  "node_signal": 7,
+  "node_signal_name": "SIGBUS",
+  "signal_evidence": "apport: 2026-10-02 05:22:43,664: called for global pid 362583, signal 7, core limit 0, dump mode 1",
+  "core_dump_available": false,
+  "root_cause": "Unresolved. Disk space was very low; a mapped-file allocation failure is plausible but unconfirmed.",
+  "sending": {
+    "success": "66176",
+    "failed": "124656",
+    "timed_out": "383",
+    "generation_failed": "0",
+    "send_duration_secs": "5.005464354"
+  },
+  "last_committed_block": 9,
+  "bench_returncode": 1,
+  "benchmark_included": false,
+  "report_completed": false,
+  "follow_up": "After freeing obsolete task artifacts, both reverse-order comparisons completed. Runner now records process exit codes before cleanup and disk space at start/end."
+}
