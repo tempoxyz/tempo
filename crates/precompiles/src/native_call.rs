@@ -598,8 +598,10 @@ mod tests {
         .unwrap();
         let output = result.into_bytes();
         let words = output
-            .chunks_exact(32)
-            .map(U256::from_be_slice)
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|word| U256::from_be_slice(word))
             .collect::<Vec<_>>();
         assert_eq!(
             words,
@@ -644,8 +646,10 @@ mod tests {
             panic!("expected successful delegate call")
         };
         let words = output
-            .chunks_exact(32)
-            .map(U256::from_be_slice)
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|word| U256::from_be_slice(word))
             .collect::<Vec<_>>();
         assert_eq!(
             words,
@@ -1000,8 +1004,10 @@ mod tests {
         assert!(result.stop.is_success());
         let words = result
             .output
-            .chunks_exact(32)
-            .map(U256::from_be_slice)
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|word| U256::from_be_slice(word))
             .collect::<Vec<_>>();
         assert_eq!(
             words,

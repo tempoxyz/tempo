@@ -201,12 +201,53 @@ excluded from the successful workload; a share approval corrected the setup.
 python3 scripts/native-payments/check-t16-earn-sustained.py --rpc-url http://127.0.0.1:55545 --tempo-binary target/release/tempo
 ```
 
-This measures registered Earn payments in one node. The earlier 30-minute
-run exercised Earn and Zone together at a lower serial rate; a sustained
-same-chain mixed-capacity run remains open.
+This measures registered Earn payments in one node. The mixed-capacity runs
+below exercised Earn and Zone on the same T16 L1.
+
+## Same-chain Earn and private Zone capacity
+
+The [40-second mixed run](evm2-t16-native-combined-capacity-summary.json)
+submitted 2,000 registered Earn payments and 1,000 private Zone transfers.
+The Zone was newly provisioned on this T16 L1, credited by a 1,000,000-asset
+encrypted portal deposit, and activated at T15 after its pre-fork balance was
+checked. All workload receipts succeeded. Eleven Zone batches settled on L1
+through the NoProof devnet path. The checker verifies per-block receipts,
+private balances through authenticated RPC, portal custody, Earn accounting,
+settlement calldata and events, and captured payment-lane samples:
+
+```sh
+python3 scripts/native-payments/check-t16-combined-capacity.py --l1-rpc-url http://127.0.0.1:55545 --zone-rpc-url http://127.0.0.1:57545 --zone-private-rpc-url http://127.0.0.1:57544 --tempo-binary target/release/tempo --zones-binary /path/to/tempo-zone
+```
+
+The [240-second continuation](evm2-t16-native-combined-sustained-summary.json)
+ran 60 cycles of 100 Earn deposits, 100 private Zone transfers, and 100 Earn
+redemptions: 18,000 successful workload transactions across 180 workload
+blocks, or 74.97 transactions per elapsed second. The 12,000 Earn receipts
+used 2,897,952,200 gas and the 6,000 Zone transfer receipts used 729,432,000
+gas. Twenty-four Earn blocks also included a Zone settlement, so the checker
+accounts for Earn receipt gas separately from full L1 block gas. All 120 Earn
+blocks had captured payment-lane samples with zero general-lane gas; 1,708
+samples matched the full L1 block gas. Twenty-six NoProof Zone settlements
+succeeded during the window, with two matching zero-general-lane samples.
+The final settled Zone block follows the last transfer. The private sender
+lost exactly 6,000 units, the recipient gained 6,000, and Zone supply equals
+portal custody at 1,000,000. EarnShare supply equals vault assets at 1,000,000.
+The [raw receipts](evm2-t16-native-combined-sustained-raw.json.gz),
+[metric samples](evm2-t16-native-combined-sustained-metrics.json.gz), and
+[settlement receipts](evm2-t16-native-combined-sustained-settlements.json.gz)
+are saved with the checker:
+
+```sh
+python3 scripts/native-payments/check-t16-combined-sustained.py --l1-rpc-url http://127.0.0.1:55545 --zone-rpc-url http://127.0.0.1:57545 --zone-private-rpc-url http://127.0.0.1:57544 --tempo-binary target/release/tempo --zones-binary /path/to/tempo-zone
+```
+
+Authenticated private balance checks additionally require
+`EVM2_ZONE_SENDER_KEY` and `EVM2_ZONE_RECIPIENT_KEY` for the two local dev
+accounts. The run used a single client, a one-second L1 block schedule, and
+local NoProof settlement. It does not measure saturation throughput or
+Nitro-attested batch proving.
 
 This run exercises new-stack registration and synchronous accounting on a
 fresh fork. The earlier [combined fork run](EVM2_T16_EARN_ZONE_FORK.md) covers
 legacy Earn and Zone migration and the mixed serial workload. Vendor Veda
-settlement, real Nitro-attested Zone settlement, and sustained combined
-Earn/Zone capacity remain open.
+settlement and real Nitro-attested Zone settlement remain open.

@@ -30,16 +30,18 @@ use tempo_chainspec::{
     hardfork::TempoHardforks,
     spec::{NativeEarnFactoryConfig, NativeEarnStack},
 };
-use tempo_contracts::earn::{
-    EARN_IMPLEMENTATION_SLOT, EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
-    NATIVE_EARN_REGISTRY_ADDRESS, earn_engine_approval_slot, earn_fees_clone_runtime,
-    earn_registration_slot, earn_share_issuer_role_slot, factory_slots,
-};
-use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+use tempo_contracts::{
+    earn::{
+        EARN_IMPLEMENTATION_SLOT, EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
+        NATIVE_EARN_REGISTRY_ADDRESS, earn_engine_approval_slot, earn_fees_clone_runtime,
+        earn_registration_slot, earn_share_issuer_role_slot, factory_slots,
+    },
+    precompiles::{
+        ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
+        INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS,
+        SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+        VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state, t13_zone_factory_state,
+    },
 };
 use tempo_precompiles::tip20::TIP20Token;
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
@@ -1134,11 +1136,11 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
-    use tempo_contracts::earn::{
-        EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_REGISTRY_ADDRESS,
-        earn_fees_clone_runtime, earn_registration_slot, earn_share_issuer_role_slot,
-    };
     use tempo_contracts::{
+        earn::{
+            EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_REGISTRY_ADDRESS,
+            earn_fees_clone_runtime, earn_registration_slot, earn_share_issuer_role_slot,
+        },
         precompiles::{
             CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
             ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,

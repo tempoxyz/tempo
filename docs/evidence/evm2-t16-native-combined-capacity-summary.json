@@ -1,0 +1,56 @@
+{
+  "kind": "same-chain T16 native Earn and Zone mixed load",
+  "tempoSourceRevision": "d6700be7e05e6ce0fd324f065a533dd272ed0cdd",
+  "tempoBinarySha256": "ad7d6e360aba8347f54feb74fc08342dbf2f8c3b44b4f77665b9ab2ff9058f78",
+  "zonesSourceRevision": "536e805271464b42ff9a84bad96b42c25091e114",
+  "zonesBinarySha256": "0d03f89822b860d8e635235aa6136f9bff3db61214c426bd811b72a094a1a9b9",
+  "l1GenesisHash": "0x03df7ae1df1c861973b6fdced2e5d05e73b9c6d58bf09c26349e4d2193e9f993",
+  "zoneGenesisHash": "0x0b856b005c1d79e17f31bffa4497b962af83fecb365be5a6ed615f34208ca554",
+  "zoneId": 1,
+  "zoneChainId": 5742371274753,
+  "zoneT15Time": 1790943905,
+  "preActivationBlock": {
+    "number": "0x124",
+    "hash": "0x5a06850318a65d2ac6a6a8bd6dca8b184490ac5c7215a6916983ced6e15b2b22",
+    "senderBalance": 1000000
+  },
+  "activationBlock": {
+    "number": "0x125",
+    "hash": "0x31c02927ec651984095332d4db9847db338676401e032b3101647c816cf4d686",
+    "senderBalance": 1000000
+  },
+  "portal": "0x5ad0000000000000000000000000000000000001",
+  "asset": "0x20c0000000000000000000000000000000000000",
+  "vault": "0xdc17c27ae8be831af07cc38c02930007060020f4",
+  "earnShare": "0x20c0000000000000000000008add4f9444dc5350",
+  "startedAt": 1790944069.704055,
+  "finishedAt": 1790944109.6767132,
+  "elapsedSeconds": 39.97265815734863,
+  "cycles": 10,
+  "earnPayments": 2000,
+  "privateTransfers": 1000,
+  "earnPaymentBlocks": 20,
+  "zoneTransferBlocks": 10,
+  "earnPaymentGas": 482992200,
+  "zoneTransferGas": 121572000,
+  "earnMatchingMetricSamples": 292,
+  "settlementCount": 11,
+  "settlementLaneSampledCount": 8,
+  "privateBalances": {
+    "0x18b": {
+      "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": 999989,
+      "0x70997970c51812dc3a010c7d01b50e0d17dc79c8": 11
+    },
+    "0x1b0": {
+      "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": 998989,
+      "0x70997970c51812dc3a010c7d01b50e0d17dc79c8": 1011
+    }
+  },
+  "zoneSupply": 1000000,
+  "portalBacking": 1000000,
+  "finalEarnSupply": 1000000,
+  "finalVaultAssets": 1000000,
+  "lastTransferZoneBlock": "0x1b0",
+  "settledZoneBlock": "0x3a2",
+  "settledZoneBlockHash": "0x1a00bae1d7e208250f7e27622ec12d397bf9af865f09f56b5eca0761544e0124"
+}
