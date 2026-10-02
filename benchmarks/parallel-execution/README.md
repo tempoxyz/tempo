@@ -6,9 +6,12 @@ execution is no longer the bottleneck in a live Tempo node.
 The scheduler has been ported from Tempo 1.6 onto current main (Tempo 1.14,
 Reth 2.7, revm 43). Earlier measurements below describe the old base. Current-main
 performance must be measured again with the GitHub workflows. See
-`main-port-validation.json` for port checks. Fee arithmetic rebasing and call-body
-reuse currently fall back to full ordered replay under T7+ gas-credit rules;
-complete speculative results can still be reused after read validation.
+`main-port-validation.json` for port checks. Call-body reuse currently falls back to full ordered replay under T7+ gas-credit
+rules. Protocol fee rebasing is enabled through T14 after checking that upstream
+protocol hooks disable storage-credit accounting; state-gas splitting and custom
+gas tables retain the conservative fallback. See `t14-fee-rebase.json` for local
+comparisons and their compute-workload regression. Complete speculative results
+still require ordered read validation.
 
 Enable node validation and payload building with:
 
@@ -30,6 +33,9 @@ CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
 `workers=0` is the existing sequential EVM. Counts are **transactions per run**,
 not offered TPS. The `tps` column is completed transactions divided by measured
 execution time. This benchmark does not model an offered-load queue.
+
+`TEMPO_BENCH_HARDFORK=T14` selects the current fork and its gas schedule; omitted
+means the historical T0 environment.
 
 `TEMPO_BENCH_WORKLOADS` selects a comma-separated subset of the workloads below.
 `TEMPO_BENCH_BATCH_SIZE` changes the window (default 128; the declared-gas bound

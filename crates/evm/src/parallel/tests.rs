@@ -770,7 +770,7 @@ fn fee_rebasing_reuses_native_payments() {
             tx
         })
         .collect::<Vec<_>>();
-    for spec in FEE_SPECS {
+    for spec in FEE_SPECS.into_iter().chain(CURRENT_SPECS) {
         let stats = differential_mode(db.clone(), &txs, 4, 16, spec, false, (false, true));
         assert_eq!(stats.reused, 16, "{spec:?}");
         assert_eq!(stats.fees_rebased, 15, "{spec:?}");
@@ -801,7 +801,7 @@ fn fee_rebasing_preserves_observed_and_reverted_fee_reads() {
             .abi_encode(),
         ),
     ];
-    for spec in FEE_SPECS {
+    for spec in FEE_SPECS.into_iter().chain(CURRENT_SPECS) {
         for (target, input) in &inputs {
             for revert in [false, true] {
                 let mut db = funded_tip20_db(2);
@@ -837,7 +837,7 @@ fn fee_rebasing_preserves_observed_and_reverted_fee_reads() {
 #[test]
 fn custom_gas_parameters_disable_fee_rebasing() {
     use revm::context_interface::cfg::GasId;
-    for spec in FEE_SPECS {
+    for spec in FEE_SPECS.into_iter().chain(CURRENT_SPECS) {
         let mut db = funded_tip20_db(2);
         contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
         let mut env = EvmEnv::<_, TempoBlockEnv> {
@@ -905,7 +905,7 @@ fn fee_rebasing_preserves_contract_writes_to_fee_slots() {
             .abi_encode(),
         ),
     ];
-    for spec in FEE_SPECS {
+    for spec in FEE_SPECS.into_iter().chain(CURRENT_SPECS) {
         for (target, input) in &inputs {
             let mut db = funded_tip20_db(2);
             contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
@@ -929,7 +929,7 @@ fn fee_rebasing_replays_intermediate_and_accumulator_overflow() {
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
         tip20::TIP20Token,
     };
-    for spec in FEE_SPECS {
+    for spec in FEE_SPECS.into_iter().chain(CURRENT_SPECS) {
         for maximum_fee_overflow in [false, true] {
             let mut db = funded_tip20_db(2);
             contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
@@ -2117,6 +2117,12 @@ fn execution_throughput() {
         .map_or(128, |value| value.parse::<usize>().unwrap());
     let block_gas_limit = std::env::var("TEMPO_BENCH_BLOCK_GAS_LIMIT")
         .map_or(500_000_000, |value| value.parse::<u64>().unwrap());
+    let hardfork = std::env::var("TEMPO_BENCH_HARDFORK")
+        .ok()
+        .map(|value| value.parse::<TempoHardfork>().unwrap());
+    if let Some(hardfork) = hardfork {
+        println!("# hardfork={hardfork}");
+    }
     let profile = std::env::var_os("TEMPO_BENCH_PHASES").is_some();
     let streaming = std::env::var("TEMPO_BENCH_STREAMING").map_or(true, |value| value != "0");
     let fee_rebasing = std::env::var("TEMPO_BENCH_FEE_REBASING").map_or(true, |value| value != "0");
@@ -2224,8 +2230,15 @@ fn execution_throughput() {
                 .collect::<Vec<_>>();
             let mut baseline = None;
             for threads in workers.split(',').map(|s| s.parse::<usize>().unwrap()) {
-                let mut evm = test_evm_with_basefee(db.clone(), 0);
-                evm.ctx_mut().block.gas_limit = block_gas_limit;
+                let mut env = test_evm_with_basefee(TestDB::default(), 0).finish().1;
+                env.block_env.inner.gas_limit = block_gas_limit;
+                if let Some(spec) = hardfork {
+                    env.cfg_env = revm::context::CfgEnv::new_with_spec_and_gas_params(
+                        spec,
+                        tempo_revm::gas_params::tempo_gas_params(spec),
+                    );
+                }
+                let mut evm = TempoEvm::new(db.clone(), env);
                 if threads > 0 {
                     evm.set_speculative_executor(Some(
                         SpeculativeExecutor::new(threads, batch_size)

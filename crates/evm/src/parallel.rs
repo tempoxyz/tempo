@@ -142,7 +142,7 @@ impl SpeculativeExecutor {
 
     /// Starts a bounded batch without committing any writes to `db`.
     ///
-    /// Each input has its own block context, including the subblock fee recipient.
+    /// Each input has its own block context and fee recipient.
     /// The owner retrieves results in input order and serves worker reads while waiting.
     pub(crate) fn speculate<DB: Database>(
         &self,
@@ -330,10 +330,11 @@ fn run_worker<E: DBErrorMarker>(
         } else {
             evm.ctx_mut().block = env.block_env.clone();
         }
-        // Fee storage contexts use maximum gas and discard their gas/refund
-        // accounting. Restrict rebasing to the standard, bounded gas schedules.
+        // Standard protocol fee hooks use maximum gas, discard gas/refunds,
+        // and explicitly disable T7 storage-credit accounting. Their annotated
+        // arithmetic can be rebased when the body never observes those slots.
+        // Keep state-gas splitting on ordinary replay until separately proven.
         let record_fees = standard_fee_gas
-            && !env.cfg_env.spec.is_t7()
             && !env.cfg_env.enable_amsterdam_eip8037
             && tx.calls().all(|(kind, _)| kind.is_call());
         let (result, fee_updates) = if record_fees {
