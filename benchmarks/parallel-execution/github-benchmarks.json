@@ -200,7 +200,15 @@
         "no-slack": "true",
         "run-pairs": "3"
       },
-      "purpose": "Measure expiring nonce cursor prediction and prefetch with normal builder prewarming; profiling disabled, three pairs."
+      "purpose": "Measure expiring nonce cursor prediction and prefetch with normal builder prewarming; profiling disabled, three pairs.",
+      "runner": "ghr-euw-05"
     }
-  ]
+  ],
+  "replay_retry": {
+    "state": "scheduled_after_run_37017467322",
+    "workflow_ref": "onbjerg/parallel-execution",
+    "toolchain_fix_commit": "d99f396a0",
+    "inputs_file": "/tmp/tempo-main-historical-replay-inputs.json",
+    "reason": "Both builds crashed in LLVM under unpinned Rust stable 1.99; retry pins 1.98.1 like e2e."
+  }
 }

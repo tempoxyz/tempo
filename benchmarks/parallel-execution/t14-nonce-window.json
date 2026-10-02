@@ -1,0 +1,152 @@
+{
+  "status": "local_diagnostic_not_acceptance",
+  "transactions": 100000,
+  "hardfork": "T14",
+  "order": [
+    128,
+    256,
+    512,
+    1024,
+    1024,
+    512,
+    256,
+    128
+  ],
+  "workers": [
+    0,
+    8
+  ],
+  "workload": "tip20_paid_aa_expiring",
+  "normal_state_root_and_receipt_comparison": true,
+  "conclusion": "No monotonic scaling with lookahead; worker rates vary across repeated runs. Retain default 128 for the pending GitHub comparison.",
+  "rows": [
+    {
+      "file": "tempo-t14-nonce-window-1024-repeat.log",
+      "window": 1024,
+      "workers": 0,
+      "tps": 133371,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-1024-repeat.log",
+      "window": 1024,
+      "workers": 8,
+      "tps": 156965,
+      "reused": 99993,
+      "conflicts": 7
+    },
+    {
+      "file": "tempo-t14-nonce-window-1024.log",
+      "window": 1024,
+      "workers": 0,
+      "tps": 133380,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-1024.log",
+      "window": 1024,
+      "workers": 8,
+      "tps": 159743,
+      "reused": 99993,
+      "conflicts": 7
+    },
+    {
+      "file": "tempo-t14-nonce-window-128-repeat.log",
+      "window": 128,
+      "workers": 0,
+      "tps": 134829,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-128-repeat.log",
+      "window": 128,
+      "workers": 8,
+      "tps": 147801,
+      "reused": 99993,
+      "conflicts": 7
+    },
+    {
+      "file": "tempo-t14-nonce-window-128.log",
+      "window": 128,
+      "workers": 0,
+      "tps": 135219,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-128.log",
+      "window": 128,
+      "workers": 8,
+      "tps": 156508,
+      "reused": 99993,
+      "conflicts": 7
+    },
+    {
+      "file": "tempo-t14-nonce-window-256-repeat.log",
+      "window": 256,
+      "workers": 0,
+      "tps": 133143,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-256-repeat.log",
+      "window": 256,
+      "workers": 8,
+      "tps": 162565,
+      "reused": 99993,
+      "conflicts": 7
+    },
+    {
+      "file": "tempo-t14-nonce-window-256.log",
+      "window": 256,
+      "workers": 0,
+      "tps": 134961,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-256.log",
+      "window": 256,
+      "workers": 8,
+      "tps": 153089,
+      "reused": 99993,
+      "conflicts": 7
+    },
+    {
+      "file": "tempo-t14-nonce-window-512-repeat.log",
+      "window": 512,
+      "workers": 0,
+      "tps": 134701,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-512-repeat.log",
+      "window": 512,
+      "workers": 8,
+      "tps": 141008,
+      "reused": 99993,
+      "conflicts": 7
+    },
+    {
+      "file": "tempo-t14-nonce-window-512.log",
+      "window": 512,
+      "workers": 0,
+      "tps": 134365,
+      "reused": 0,
+      "conflicts": 0
+    },
+    {
+      "file": "tempo-t14-nonce-window-512.log",
+      "window": 512,
+      "workers": 8,
+      "tps": 152075,
+      "reused": 99993,
+      "conflicts": 7
+    }
+  ]
+}
