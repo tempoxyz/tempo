@@ -1526,7 +1526,7 @@ fn expiring_nonce_predictions_preserve_order_and_rejections() {
         tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14),
     );
     let mut canonical = TempoEvm::new(db.clone(), env.clone());
-    let mut parallel = TempoEvm::new(db, env);
+    let mut parallel = TempoEvm::new(db.clone(), env);
     parallel.set_speculative_executor(Some(SpeculativeExecutor::new(4, 16).unwrap()));
     parallel.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
     for index in [2, 1, 4, 3, 8, 15] {
@@ -1538,6 +1538,41 @@ fn expiring_nonce_predictions_preserve_order_and_rejections() {
     }
     assert_eq!(root(parallel.db()), root(canonical.db()));
     assert!(parallel.execution_stats().conflicts > 0);
+
+    // The Engine API records a block access list from committed transaction
+    // state. Speculative prefetch and omitted preview candidates must not add
+    // accesses, and fee rebasing must retain the actual per-transaction values.
+    let env = canonical.finish().1;
+    let mut expected = None;
+    for workers in [0, 4] {
+        let state = revm::database::State::builder()
+            .with_database(db.clone())
+            .with_bal_builder()
+            .build();
+        let mut evm = TempoEvm::new(state, env.clone());
+        evm.db_mut().bump_bal_index();
+        if workers > 0 {
+            evm.set_speculative_executor(Some(SpeculativeExecutor::new(workers, 16).unwrap()));
+            evm.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+        }
+        let mut results = Vec::new();
+        for index in [0, 2, 1, 4, 3, 8, 15] {
+            let result = evm.transact_raw(txs[index].clone()).unwrap();
+            results.push(result.result);
+            evm.db_mut().commit(result.state);
+            evm.db_mut().bump_bal_index();
+        }
+        if workers > 0 {
+            assert!(evm.execution_stats().reused > 0);
+            assert!(evm.execution_stats().conflicts > 0);
+        }
+        let output = (results, evm.db_mut().take_built_bal().unwrap());
+        if let Some(expected) = &expected {
+            assert_eq!(&output, expected);
+        } else {
+            expected = Some(output);
+        }
+    }
 }
 
 #[test]

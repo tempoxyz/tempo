@@ -280,6 +280,11 @@ on:
         type: string
         required: false
         default: "true"
+      slack:
+        description: Slack policy (always or on-win); no-slack still overrides.
+        type: string
+        required: false
+        default: always
       metrics:
         type: string
         required: false
@@ -398,9 +403,9 @@ jobs:
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
-      # Manual runs use the notifier's existing win-only policy, including no DMs
-      # for regressions. Reusable workflow callers retain their existing policy.
-      BENCH_SLACK: ${{ github.event_name == 'workflow_dispatch' && 'on-win' || 'always' }}
+      # The reusable input defaults to always. Direct manual dispatch has no slack
+      # input and uses win-only notifications, without adding a 26th UI input.
+      BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
