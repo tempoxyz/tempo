@@ -764,14 +764,14 @@ pub(super) fn header(height: Height) -> TempoHeader {
 pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Arc<Block> {
     let mut header = header(height);
     header.inner.mix_hash = B256::repeat_byte(tag);
-    header.consensus_context = Some(TempoConsensusContext {
+    header.consensus_context = TempoConsensusContext {
         epoch: round.epoch().get(),
         view: round.view().get(),
         parent_view: round.view().get().saturating_sub(1),
         proposer: crate::utils::public_key_to_tempo_primitive(
             &PrivateKey::from_seed(0).public_key(),
         ),
-    });
+    };
     Arc::new(block(header))
 }
 

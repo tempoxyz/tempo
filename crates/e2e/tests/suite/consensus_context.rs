@@ -29,7 +29,7 @@ fn verification_across_epochs() {
                 .block_by_number(15)
                 .unwrap()
                 .unwrap();
-            assert_eq!(block.header.consensus_context.unwrap().epoch, 1);
+            assert_eq!(block.header.consensus_context.epoch, 1);
         }
     });
 }
@@ -55,18 +55,18 @@ fn blocks_have_consensus_context() {
 
         wait_for_height(&context, &nodes[0], 5).await;
 
-        // Genesis block should not have a consensus context.
+        // Genesis carries the required all-zero consensus context.
         let genesis = provider.block_by_number(0).ok().flatten().unwrap();
-        assert_eq!(genesis.header.consensus_context, None);
+        assert_eq!(genesis.header.consensus_context, Default::default());
 
         for height in 1..=5 {
             let block = provider.block_by_number(height).ok().flatten().unwrap();
-            let ctx = block.header.consensus_context.unwrap();
+            let ctx = block.header.consensus_context;
             assert!(ctx.epoch > 0 || ctx.view > 0);
 
             if height > 1 {
                 let parent = provider.block_by_number(height - 1).ok().flatten().unwrap();
-                let parent_ctx = parent.header.consensus_context.unwrap();
+                let parent_ctx = parent.header.consensus_context;
 
                 assert_eq!(ctx.parent_view, parent_ctx.view);
             }

@@ -1777,12 +1777,12 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         let mut anchor = None;
         for height in 0..=5 {
             let mut header = header(Height::new(height));
-            header.consensus_context = Some(TempoConsensusContext {
+            header.consensus_context = TempoConsensusContext {
                 epoch: 0,
                 view: height * 10,
                 parent_view: height.saturating_sub(1) * 10,
                 proposer,
-            });
+            };
             harness.execution.add_header(header.clone());
             if height == 5 {
                 anchor = Some(block(header));
@@ -1803,7 +1803,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
             let mut header = header(Height::new(height));
             header.inner.parent_hash = first_parent.0;
             header.inner.timestamp = 1;
-            header.consensus_context = Some(TempoConsensusContext {
+            header.consensus_context = TempoConsensusContext {
                 epoch: 0,
                 view: height * 10 + 1,
                 parent_view: if height == 6 {
@@ -1812,7 +1812,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
                     (height - 1) * 10 + 1
                 },
                 proposer,
-            });
+            };
             let block = block(header);
             first_parent = block.digest();
             first_chain.push(first_parent);
@@ -1835,7 +1835,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
             let mut header = header(Height::new(height));
             header.inner.parent_hash = second_parent.0;
             header.inner.timestamp = 2;
-            header.consensus_context = Some(TempoConsensusContext {
+            header.consensus_context = TempoConsensusContext {
                 epoch: 0,
                 view: height * 10 + 5,
                 parent_view: if height == 6 {
@@ -1844,7 +1844,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
                     (height - 1) * 10 + 5
                 },
                 proposer,
-            });
+            };
             let block = block(header);
             second_parent = block.digest();
             second_chain.push(second_parent);

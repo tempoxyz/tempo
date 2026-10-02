@@ -216,7 +216,7 @@ impl TempoChainSpec {
             general_gas_limit: 0,
             timestamp_millis_part: inner.timestamp % 1000,
             shared_gas_limit: 0,
-            consensus_context: None,
+            consensus_context: Default::default(),
             inner,
         });
 
@@ -264,7 +264,7 @@ impl From<ChainSpec> for TempoChainSpec {
             general_gas_limit: 0,
             timestamp_millis_part: inner.timestamp % 1000,
             shared_gas_limit: 0,
-            consensus_context: None,
+            consensus_context: Default::default(),
             inner,
         });
 

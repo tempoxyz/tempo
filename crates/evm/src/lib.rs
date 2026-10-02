@@ -203,7 +203,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+                proposer_public_key: Some(header.consensus_context.proposer),
             },
         })
     }
@@ -258,7 +258,9 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
+                proposer_public_key: Some(
+                    attributes.consensus_context.unwrap_or_default().proposer,
+                ),
             },
         })
     }
@@ -284,7 +286,7 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
-            consensus_context: block.header().consensus_context,
+            consensus_context: Some(block.header().consensus_context),
         })
     }
 
@@ -371,17 +373,20 @@ mod tests {
 
         // Verify Tempo-specific field
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
-        assert_eq!(evm_env.block_env.proposer_public_key, None);
+        assert_eq!(
+            evm_env.block_env.proposer_public_key,
+            Some(TempoConsensusContext::default().proposer)
+        );
 
         let proposer = PublicKey::from_seed(0xab);
         let evm_env = evm_config
             .evm_env(&TempoHeader {
-                consensus_context: Some(TempoConsensusContext {
+                consensus_context: TempoConsensusContext {
                     epoch: 1,
                     view: 2,
                     parent_view: 1,
                     proposer,
-                }),
+                },
                 ..header
             })
             .unwrap();
@@ -478,7 +483,10 @@ mod tests {
 
         // Verify Tempo-specific field
         assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
-        assert_eq!(evm_env.block_env.proposer_public_key, None);
+        assert_eq!(
+            evm_env.block_env.proposer_public_key,
+            Some(TempoConsensusContext::default().proposer)
+        );
 
         let proposer = PublicKey::from_seed(0xcd);
         let evm_env = evm_config

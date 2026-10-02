@@ -82,12 +82,12 @@ pub(super) fn make_block_with_proposer(
                     parent_hash: parent.0,
                     ..Default::default()
                 },
-                consensus_context: Some(TempoConsensusContext {
+                consensus_context: TempoConsensusContext {
                     epoch: 0,
                     view,
                     parent_view: view.saturating_sub(1),
                     proposer,
-                }),
+                },
                 ..Default::default()
             },
             body: Default::default(),

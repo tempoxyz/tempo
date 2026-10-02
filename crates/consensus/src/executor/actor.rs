@@ -1041,10 +1041,7 @@ where
         } = request;
         let _entered = cause.enter();
         if let Some(public_key) = self.public_key.as_ref()
-            && block
-                .header()
-                .consensus_context
-                .is_some_and(|context| context.proposer.to_inner() == *public_key)
+            && block.header().consensus_context.proposer.to_inner() == *public_key
         {
             self.metrics.finalized_blocks_proposed_by_self.inc();
         }

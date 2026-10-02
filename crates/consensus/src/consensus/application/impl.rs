@@ -330,10 +330,7 @@ impl Inner {
 
         // Commonware's Deferred wrapper already checks the embedded consensus
         // context, but Inline (immediate mode) does not, so we must check it here.
-        let ctx = block
-            .header()
-            .consensus_context
-            .ok_or_eyre("missing consensus context")?;
+        let ctx = block.header().consensus_context;
 
         let expected_ctx = TempoConsensusContext {
             epoch: round.epoch().get(),

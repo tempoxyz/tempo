@@ -24,12 +24,11 @@ pub struct TempoConsensusContext {
 /// Tempo block header.
 ///
 /// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
-/// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
+/// consensus_context]`. Consensus context is required, including for genesis.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[rlp(trailing(no_gaps))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(
@@ -50,12 +49,8 @@ pub struct TempoHeader {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
 
-    /// Consensus metadata for the block. `None` for pre-fork blocks.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub consensus_context: Option<TempoConsensusContext>,
+    /// Required consensus metadata for the block, all zero by default.
+    pub consensus_context: TempoConsensusContext,
 }
 
 impl TempoHeader {
@@ -174,6 +169,20 @@ impl Sealable for TempoHeader {
     }
 }
 
+/// An all-zero placeholder. Proposals must populate the actual consensus values.
+impl Default for TempoConsensusContext {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            view: 0,
+            parent_view: 0,
+            proposer: B256::ZERO
+                .try_into()
+                .expect("all-zero bytes encode an Ed25519 public key"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,29 +292,28 @@ mod tests {
                 timestamp: 100,
                 ..Default::default()
             },
-            consensus_context: Some(TempoConsensusContext {
+            consensus_context: TempoConsensusContext {
                 epoch: 1,
                 view: 2,
                 parent_view: 1,
                 proposer: PublicKey::from_seed(1),
-            }),
+            },
         };
 
         let encoded = alloy_rlp::encode(&header);
         let decoded = TempoHeader::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(header, decoded);
 
-        // without consensus_context
-        let header_no_ctx = TempoHeader {
+        let header_zero_ctx = TempoHeader {
             general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 0,
             inner: Header::default(),
-            consensus_context: None,
+            consensus_context: Default::default(),
         };
-        let encoded = alloy_rlp::encode(&header_no_ctx);
+        let encoded = alloy_rlp::encode(&header_zero_ctx);
         let decoded = TempoHeader::decode(&mut encoded.as_slice()).unwrap();
-        assert_eq!(header_no_ctx, decoded);
+        assert_eq!(header_zero_ctx, decoded);
     }
 
     #[test]
@@ -315,10 +323,11 @@ mod tests {
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 0,
             inner: Header::default(),
-            consensus_context: None,
+            consensus_context: Default::default(),
         };
 
-        let encoded = alloy_rlp::encode(&header);
+        let encoded = alloy_rlp::encode(LegacyHeader::from_header(&header, None));
+        assert!(TempoHeader::decode(&mut encoded.as_slice()).is_err());
         let malformed = append_explicit_none_to_rlp_list(&encoded);
         assert!(TempoHeader::decode(&mut malformed.as_slice()).is_err());
     }
@@ -350,5 +359,81 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(header.hash_slow(), header2.hash_slow());
+    }
+
+    #[test]
+    fn default_consensus_context_is_zero_and_roundtrips() {
+        let context = TempoConsensusContext::default();
+        assert_eq!(context.epoch, 0);
+        assert_eq!(context.view, 0);
+        assert_eq!(context.parent_view, 0);
+        assert_eq!(B256::from(context.proposer), B256::ZERO);
+
+        // Check both the network codec and the consensus library's key validation.
+        let _ = context.proposer.to_inner();
+        let encoded = alloy_rlp::encode(context);
+        assert_eq!(
+            TempoConsensusContext::decode(&mut encoded.as_slice()).unwrap(),
+            context
+        );
+    }
+
+    #[derive(RlpEncodable)]
+    #[rlp(trailing(no_gaps))]
+    struct LegacyHeader<'a> {
+        general_gas_limit: u64,
+        shared_gas_limit: u64,
+        timestamp_millis_part: u64,
+        inner: &'a Header,
+        consensus_context: Option<TempoConsensusContext>,
+    }
+
+    impl<'a> LegacyHeader<'a> {
+        fn from_header(header: &'a TempoHeader, context: Option<TempoConsensusContext>) -> Self {
+            Self {
+                general_gas_limit: header.general_gas_limit,
+                shared_gas_limit: header.shared_gas_limit,
+                timestamp_millis_part: header.timestamp_millis_part,
+                inner: &header.inner,
+                consensus_context: context,
+            }
+        }
+    }
+
+    #[test]
+    fn context_bearing_header_encoding_is_unchanged() {
+        for consensus_context in [
+            TempoConsensusContext::default(),
+            TempoConsensusContext {
+                epoch: 1,
+                view: 5,
+                parent_view: 4,
+                proposer: PublicKey::from_seed(42),
+            },
+        ] {
+            let header = TempoHeader {
+                consensus_context,
+                ..Default::default()
+            };
+            let legacy = LegacyHeader::from_header(&header, Some(consensus_context));
+            let encoded = alloy_rlp::encode(legacy);
+            assert_eq!(alloy_rlp::encode(&header), encoded);
+            assert_eq!(header.hash_slow(), keccak256(encoded));
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn json_requires_consensus_context() {
+        let header = TempoHeader::default();
+        let mut value = serde_json::to_value(&header).unwrap();
+        assert_eq!(
+            serde_json::from_value::<TempoHeader>(value.clone()).unwrap(),
+            header
+        );
+        value.as_object_mut().unwrap().remove("consensusContext");
+        assert!(serde_json::from_value::<TempoHeader>(value.clone()).is_err());
+        value["consensusContext"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<TempoHeader>(value).is_err());
     }
 }

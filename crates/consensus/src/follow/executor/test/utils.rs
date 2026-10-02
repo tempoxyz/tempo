@@ -39,12 +39,12 @@ pub(super) fn make_block_at_round(height: u64, parent_hash: B256, round: Round) 
             number: height,
             ..Default::default()
         },
-        consensus_context: Some(TempoConsensusContext {
+        consensus_context: TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
             parent_view: 0,
             proposer: PublicKey::from_seed(0),
-        }),
+        },
         ..Default::default()
     };
     let inner = TempoBlock {
@@ -79,9 +79,8 @@ impl StubExecutionProvider {
         *self.inner.finalized_round.lock() = Some(round);
     }
 
-    /// Models a finalized execution header from before TIP-1031, when headers
-    /// had no consensus context and therefore no round.
-    pub(super) fn set_prefork_finalized(&self, number: u64, hash: B256) {
+    /// Models a finalized execution header with the default zero context.
+    pub(super) fn set_zero_context_finalized(&self, number: u64, hash: B256) {
         *self.inner.finalized.lock() = BlockNumHash::new(number, hash);
         *self.inner.finalized_round.lock() = None;
     }
@@ -120,16 +119,17 @@ impl StubExecutionProvider {
 impl FinalizedBlockProvider for StubExecutionProvider {
     fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>> {
         let tip = *self.inner.finalized.lock();
-        let consensus_context =
-            self.inner
-                .finalized_round
-                .lock()
-                .map(|round| TempoConsensusContext {
-                    epoch: round.epoch().get(),
-                    view: round.view().get(),
-                    parent_view: 0,
-                    proposer: PublicKey::from_seed(0),
-                });
+        let consensus_context = self
+            .inner
+            .finalized_round
+            .lock()
+            .map(|round| TempoConsensusContext {
+                epoch: round.epoch().get(),
+                view: round.view().get(),
+                parent_view: 0,
+                proposer: PublicKey::from_seed(0),
+            })
+            .unwrap_or_default();
         Ok(SealedHeader::new(
             TempoHeader {
                 inner: Header {

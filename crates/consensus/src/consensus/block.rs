@@ -14,16 +14,12 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
-use commonware_cryptography::{
-    Committable, Digestible, Signer as _,
-    ed25519::{PrivateKey, PublicKey},
-};
+use commonware_cryptography::{Committable, Digestible, ed25519::PublicKey};
 use reth_consensus::ConsensusError;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
 use tempo_primitives::TempoConsensusContext;
-use tracing::warn;
 
 use crate::consensus::Digest;
 use tempo_evm::consensus::validate_body_against_header;
@@ -386,31 +382,11 @@ impl commonware_consensus::CertifiableBlock for Block {
     type Context = Context<Digest, PublicKey>;
 
     fn context(&self) -> Self::Context {
-        match self.consensus_context {
-            Some(ctx) => Context {
-                leader: ctx.proposer.to_inner(),
-                round: round_from_context(ctx),
-                parent: (View::new(ctx.parent_view), self.parent_digest()),
-            },
-            None => {
-                // Returns a deterministic sentinel `Context`.
-                //
-                // All consensus-produced blocks must carry a `consensus_context`, so
-                // reaching this branch indicates a malformed block. The sentinel
-                // intentionally does not match any real consensus values, so it will
-                // fail verification rather than panic.
-                warn!(
-                    "context request for block `{}` with no consensus context",
-                    self.digest()
-                );
-
-                let leader = PublicKey::from(PrivateKey::from_seed(0));
-                Context {
-                    leader,
-                    round: Round::new(Epoch::new(0), View::new(0)),
-                    parent: (View::new(0), Digest(B256::ZERO)),
-                }
-            }
+        let ctx = self.consensus_context;
+        Context {
+            leader: ctx.proposer.to_inner(),
+            round: round_from_context(ctx),
+            parent: (View::new(ctx.parent_view), self.parent_digest()),
         }
     }
 }
@@ -440,19 +416,17 @@ fn validate_block_access_list_hash(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "bal")]
-    use alloy_consensus::BlockHeader as _;
+    use super::*;
+
     use alloy_consensus::{BlockBody, EMPTY_ROOT_HASH};
     use alloy_primitives::{B256, bytes, keccak256};
-    #[cfg(not(feature = "bal"))]
-    use commonware_codec::Write as _;
-    use commonware_codec::{Encode, Read as _};
+    use alloy_rlp::Encodable as _;
+    use commonware_codec::Encode;
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
     #[cfg(feature = "bal")]
-    use super::BlockAccessListError;
-    use super::{Block, Error};
+    use alloy_consensus::BlockHeader as _;
 
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
@@ -710,5 +684,46 @@ mod tests {
             err,
             commonware_codec::Error::Invalid("block access list", "hash does not match header")
         ));
+    }
+
+    #[test]
+    fn read_rejects_headers_without_consensus_context() {
+        for number in [0, 42] {
+            let legacy = LegacyHeader {
+                general_gas_limit: 0,
+                shared_gas_limit: 0,
+                timestamp_millis_part: 0,
+                inner: alloy_consensus::Header {
+                    number,
+                    ..Default::default()
+                },
+            };
+            let header = alloy_rlp::encode(legacy);
+            let mut encoded = Vec::new();
+            alloy_rlp::Header {
+                list: true,
+                payload_length: header.len() + 2,
+            }
+            .encode(&mut encoded);
+            encoded.extend_from_slice(&header);
+            // Empty transaction and ommer lists.
+            encoded.extend_from_slice(&[alloy_rlp::EMPTY_LIST_CODE; 2]);
+
+            assert!(matches!(
+                Block::read_cfg(&mut encoded.as_slice(), &()),
+                Err(commonware_codec::Error::Wrapped(
+                    "reading RLP encoded block",
+                    _
+                ))
+            ));
+        }
+    }
+
+    #[derive(alloy_rlp::RlpEncodable)]
+    struct LegacyHeader {
+        general_gas_limit: u64,
+        shared_gas_limit: u64,
+        timestamp_millis_part: u64,
+        inner: alloy_consensus::Header,
     }
 }
