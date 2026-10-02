@@ -133,10 +133,57 @@ python3 scripts/native-payments/check-t16-settlement-forwarder-mock.py --rpc-url
 
 This mock exercises registration, persisted-code copying, and paid native
 delegatecall. It does **not** execute the Veda solver, engine payout, or vault
-finalization, so real async settlement remains an open gate.
+finalization; the run below exercises those stages with local Veda periphery.
+
+## Veda queued settlement on T16
+
+The [local Veda settlement run](evm2-t16-native-veda-settlement.json) closes
+that execution gap for the repository's local Veda periphery. On the same T16
+chain, Earn revision `a86e91a` deployed `LocalVedaVault`, Accountant, Teller,
+tracking Queue, and stock-solver fixture, plus the production `VedaEngine` and
+`VedaForwardingSolver`. The governor approved the engine's deployed code hash.
+The existing native factory created a second Earn stack bound to that engine,
+and the registrar snapshotted and registered the deployed production forwarder.
+The saved [20 receipts](evm2-t16-native-veda-settlement-receipts.json.gz)
+cover the deployment and binding sequence, asset and EarnShare approvals,
+deposit, queued request, and solve.
+
+A 1,000,000-asset deposit minted 999,999 EarnShare under the local Teller's
+conservative quote. The vault then requested redemption of 100,000 EarnShare;
+both the tracking Queue and vault emitted request ID
+`0x4c89102dc9ad0c2cdad9ff6a047660377e4290e7878df6235990d8dfb324db7f`.
+The registered forwarder submitted a canonical one-request
+`solveAndForward` transaction in block `0xec7`. Its 593,576 gas was observed
+in the payment lane with zero general gas in 15 [captured
+samples](evm2-t16-native-veda-settlement-lanes.json.gz). The local stock solver
+paid 100,000 assets to the engine; `VedaEngine.forwardSolved` finalized the
+vault claim in the same transaction. The recipient gained exactly 100,000
+assets; vault and engine open-claim counts moved from one to zero, the Queue
+request became inactive, `settled(asset)` remained zero, and EarnShare supply
+and vault assets both remained 899,999. Replaying the same request reverted
+without changing those balances or claim counters.
+
+At block `0xf57`, [nine account and nine storage
+proofs](evm2-t16-native-veda-settlement-proofs.json.gz) verify against state
+root `0x24701fbc3e13d9875fb0385433c8297aec4fdf0702ec9a7562e57a7491a7a6d9`.
+They cover the native registry, vault, fees, EarnShare, engine, Queue,
+forwarder, snapshot, and asset, including dispatcher code hashes and the
+vault/fee/forwarder binding slots. The saved run can be checked offline and
+against the running devnet:
+
+```sh
+python3 scripts/native-payments/check-t16-veda-settlement.py --rpc-url http://127.0.0.1:55545 --tempo-binary target/release/tempo
+gzip -dc docs/evidence/evm2-t16-native-veda-settlement-proofs.json.gz | cargo run --quiet -p tempo-evm --example verify_native_earn_veda_proofs -- - docs/evidence/evm2-t16-native-veda-settlement.json
+```
+
+The stock solver, Queue, Teller, Vault, and Accountant in this run are local
+test fixtures; `VedaEngine`, `VedaForwardingSolver`, Earn vault/fees, and Tempo
+native execution are the production code. This establishes a real on-chain
+queued payout and finalization using the local Veda interfaces. Vendor Veda
+contracts and hosted solver authorities remain a separate integration gate.
 
 This run exercises new-stack registration and synchronous accounting on a
 fresh fork. The earlier [combined fork run](EVM2_T16_EARN_ZONE_FORK.md) covers
-legacy Earn and Zone migration and the mixed serial workload. Async engine
+legacy Earn and Zone migration and the mixed serial workload. Vendor Veda
 settlement, real Nitro-attested Zone settlement, and a sustained capacity
 benchmark remain open.
