@@ -479,8 +479,10 @@ where
                 .map(|gasprice| gasprice as u64),
         );
         let batch_size = executor.evm().speculative_batch_size();
-        let mut speculative_txs =
-            (batch_size > 0).then(|| self.pool.best_transactions_with_attributes(pool_attributes));
+        let speculative_prewarming =
+            batch_size > 0 && self.config.enable_prewarming && !self.config.enable_parallel;
+        let mut speculative_txs = (batch_size > 0 && !speculative_prewarming)
+            .then(|| self.pool.best_transactions_with_attributes(pool_attributes));
         let mut preview_position = 0;
         let raw_best_txs = best_txs(pool_attributes);
         let prewarm_ctx = PrewarmingExecutionContext::new(
@@ -490,7 +492,8 @@ where
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
-        );
+        )
+        .with_speculative(speculative_prewarming);
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
@@ -667,6 +670,11 @@ where
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
+
+            if let Some(candidate) = pool_tx.take_preexecuted() {
+                executor.evm_mut().set_preexecuted_transaction(candidate);
+                check_cancel!();
+            }
 
             let result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();

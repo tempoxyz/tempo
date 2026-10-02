@@ -13,11 +13,17 @@ use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
-use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
+use tempo_evm::{
+    ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig,
+    evm::TempoEvm,
+    parallel::{PreexecutedTransaction, PrewarmingExecutor},
+};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
+type SpeculativePrewarmState =
+    Option<PrewarmingExecutor<StateProviderDatabase<EvmStateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -82,7 +88,11 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                if prewarm.speculative {
+                    pool.init::<SpeculativePrewarmState>(|_| prewarm.speculative_evm_for_ctx());
+                } else {
+                    pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                }
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -102,6 +112,34 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
+
+                if prewarm.speculative {
+                    // Publish handles in source order, before workers finish. The
+                    // authoritative iterator can still skip or invalidate them.
+                    let (result_tx, result_rx) = mpsc::channel();
+                    let _ = transactions_tx.send(Some(PrewarmedTransaction {
+                        tx: tx.clone(),
+                        replay: None,
+                        preexecuted: Some(PreexecutedHandle {
+                            result_rx,
+                            commands_tx,
+                        }),
+                    }));
+                    scope.spawn(move |_| {
+                        let result = WorkerPool::with_worker_mut(|worker| {
+                            if prewarm.is_stopped() {
+                                return None;
+                            }
+                            let evm = worker
+                                .get_or_init(|| prewarm.speculative_evm_for_ctx())
+                                .as_mut()?;
+                            evm.execute(tx.transaction.clone_tx_env(), expiring_nonce_offset)
+                                .ok()
+                        });
+                        let _ = result_tx.send(result);
+                    });
+                    return;
+                }
 
                 if !parallel {
                     let _ = ctx
@@ -245,7 +283,11 @@ impl BestTransactionsPrewarming {
             }))
         });
 
-        PrewarmedTransaction { tx, replay }
+        PrewarmedTransaction {
+            tx,
+            replay,
+            preexecuted: None,
+        }
     }
 }
 
@@ -332,11 +374,36 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    preexecuted: Option<PreexecutedHandle>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self {
+            tx,
+            replay: None,
+            preexecuted: None,
+        }
+    }
+
+    /// Wait only for the selected transaction; discarded candidates never block
+    /// selection. Each producer is bounded by the existing prewarming pool.
+    pub(crate) fn take_preexecuted(&mut self) -> Option<PreexecutedTransaction> {
+        self.preexecuted.take()?.result_rx.recv().ok().flatten()
+    }
+}
+
+#[derive(Debug)]
+struct PreexecutedHandle {
+    result_rx: Receiver<Option<PreexecutedTransaction>>,
+    commands_tx: Sender<BestTransactionsCommand>,
+}
+
+impl Drop for PreexecutedHandle {
+    fn drop(&mut self) {
+        // Refill when a candidate is consumed or discarded, rather than when a
+        // worker finishes. This bounds completed results as well as running work.
+        let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
     }
 }
 
@@ -356,6 +423,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    speculative: bool,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -378,10 +446,25 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            speculative: false,
         }
     }
 
-    pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
+    /// Reuses exact speculative results instead of duplicating prewarming and
+    /// scheduling a second execution. Native storage-action replay stays separate.
+    pub(crate) fn with_speculative(mut self, enabled: bool) -> Self {
+        self.speculative = enabled && !self.parallel;
+        self
+    }
+
+    fn speculative_evm_for_ctx(&self) -> SpeculativePrewarmState {
+        Some(PrewarmingExecutor::new(
+            self.database_for_ctx()?,
+            self.evm_env.clone(),
+        ))
+    }
+
+    fn database_for_ctx(&self) -> Option<StateProviderDatabase<EvmStateProviderBox>> {
         let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
@@ -404,7 +487,11 @@ where
             ));
         }
 
-        let state_provider = StateProviderDatabase::new(state_provider);
+        Some(StateProviderDatabase::new(state_provider))
+    }
+
+    pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
+        let state_provider = self.database_for_ctx()?;
 
         let mut evm_env = self.evm_env.clone();
 
@@ -746,6 +833,7 @@ mod tests {
             evm_env,
             stop: Arc::default(),
             parallel,
+            speculative: false,
         }
     }
 
@@ -1020,6 +1108,43 @@ mod tests {
         });
 
         pool.clear();
+    }
+
+    #[test]
+    fn speculative_prewarming_preserves_order_and_bounds_completed_results() {
+        let executor = TaskExecutor::test();
+        let window = executor.prewarming_pool().current_num_threads() * 2;
+        let transactions = (0..window * 3)
+            .map(|_| test_payment_tx(Address::random(), 500_000))
+            .collect::<Vec<_>>();
+        let hashes = transactions.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let context = prewarming_context(executor.clone(), false).with_speculative(true);
+        let mut prewarming = TestPrewarming {
+            prewarming: Some(BestTransactionsPrewarming::new(
+                context,
+                TestBestTransactions::new(transactions, log.clone()),
+            )),
+            executor,
+        };
+        wait_until(|| log.lock().unwrap().yielded == window);
+        // Waiting for the first result must not let worker completion drain the
+        // whole source. Consumption (or invalidation) releases exactly one slot.
+        let mut first = prewarming.next().expect("first source candidate");
+        assert_eq!(*first.tx.hash(), hashes[0]);
+        assert!(first.preexecuted.is_some());
+        let _ = first.take_preexecuted();
+        wait_until(|| log.lock().unwrap().yielded == window + 1);
+        for hash in &hashes[1..window] {
+            let candidate = prewarming.next().expect("source candidate");
+            assert_eq!(candidate.tx.hash(), hash);
+            assert!(candidate.preexecuted.is_some());
+            // Discarded candidates release capacity without waiting for their result.
+            drop(candidate);
+        }
+        wait_until(|| log.lock().unwrap().yielded == window * 2);
+        // Dropping the builder with a full window must stop without deadlock.
+        drop(prewarming);
     }
 
     #[test]

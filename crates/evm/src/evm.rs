@@ -32,7 +32,7 @@ use tempo_revm::{
 
 use crate::{
     TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult,
-    parallel::{ExecutionStats, SpeculativeBatch, SpeculativeExecutor},
+    parallel::{ExecutionStats, PreexecutedTransaction, SpeculativeBatch, SpeculativeExecutor},
 };
 
 /// Factory for creating Tempo EVM instances.
@@ -79,6 +79,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inspect: bool,
     speculative: Option<SpeculativeExecutor>,
     prepared: Option<SpeculativeBatch<DB::Error>>,
+    preexecuted: Option<PreexecutedTransaction>,
     execution_stats: ExecutionStats,
     last_sample: ExecutionStats,
     backoff_remaining: usize,
@@ -104,6 +105,7 @@ impl<DB: Database> TempoEvm<DB> {
             inspect: false,
             speculative: None,
             prepared: None,
+            preexecuted: None,
             execution_stats: ExecutionStats::default(),
             last_sample: ExecutionStats::default(),
             backoff_remaining: 0,
@@ -117,9 +119,19 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Enables bounded speculative execution using the standard Tempo EVM configuration.
     pub fn set_speculative_executor(&mut self, executor: Option<SpeculativeExecutor>) {
         self.prepared = None;
+        self.preexecuted = None;
         self.speculative = executor;
         self.last_sample = self.execution_stats;
         self.backoff_remaining = 0;
+    }
+
+    /// Supplies a worker-owned prewarming result for the next transaction. This
+    /// does not bypass environment, transaction, configuration or read checks.
+    pub fn set_preexecuted_transaction(&mut self, candidate: PreexecutedTransaction) {
+        if self.speculative_batch_size() > 0 {
+            self.execution_stats.speculated += 1;
+            self.preexecuted = Some(candidate);
+        }
     }
 
     /// Maximum lookahead, or zero when speculative execution is disabled.
@@ -309,6 +321,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inspect: true,
             speculative: self.speculative,
             prepared: None,
+            preexecuted: None,
             execution_stats: self.execution_stats,
             last_sample: self.last_sample,
             backoff_remaining: self.backoff_remaining,
@@ -462,10 +475,19 @@ where
             && self.inner.ctx.journaled_state.state.is_empty()
             && self.inner.ctx.journaled_state.transient_storage.is_empty()
             && self.inner.ctx.journaled_state.logs.is_empty()
-            && let Some(mut candidate) = self
-                .prepared
-                .as_mut()
-                .and_then(|batch| batch.take(&tx, &mut self.inner.ctx.journaled_state.database))
+            && let Some((mut candidate, prewarmed)) = self
+                .preexecuted
+                .take()
+                .and_then(|candidate| candidate.into_candidate(&tx))
+                .map(|candidate| (candidate, true))
+                .or_else(|| {
+                    self.prepared
+                        .as_mut()
+                        .and_then(|batch| {
+                            batch.take(&tx, &mut self.inner.ctx.journaled_state.database)
+                        })
+                        .map(|candidate| (candidate, false))
+                })
             && candidate.env.cfg_env == self.inner.ctx.cfg
             && candidate.env.block_env == self.inner.ctx.block
         {
@@ -476,6 +498,9 @@ where
                 .unwrap_or(false)
             {
                 self.execution_stats.reused += 1;
+                if prewarmed && let Some(executor) = &self.speculative {
+                    executor.record_prewarmed_reuse();
+                }
                 self.execution_stats.fees_rebased += u64::from(candidate.fees_rebased);
                 self.inner.ctx.tx = tx;
                 self.inner.validator_fee = candidate.validator_fee;

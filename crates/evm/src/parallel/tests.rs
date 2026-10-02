@@ -91,6 +91,7 @@ fn differential_with_backoff(
     spec: TempoHardfork,
     adaptive: bool,
 ) -> ExecutionStats {
+    differential_preexecuted(db.clone(), transactions, spec, None);
     for streaming in [true, false] {
         differential_mode(
             db.clone(),
@@ -293,6 +294,120 @@ fn differential_config_mode(
     }
     assert_eq!(root(sequential.db()), root(parallel.db()));
     parallel.execution_stats()
+}
+
+/// Provider-owned prewarming executes the whole preview at parent state. Validate
+/// full outcomes and roots after arbitrary authoritative selection, including
+/// candidates whose speculative execution failed or was based on stale values.
+fn differential_preexecuted(
+    db: TestDB,
+    transactions: &[TempoTxEnv],
+    spec: TempoHardfork,
+    order: Option<&[usize]>,
+) -> ExecutionStats {
+    let env = EvmEnv {
+        cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
+            spec,
+            tempo_revm::gas_params::tempo_gas_params(spec),
+        ),
+        block_env: TempoBlockEnv {
+            inner: revm::context::BlockEnv {
+                gas_limit: 500_000_000,
+                basefee: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    };
+    let mut recorder = PrewarmingExecutor::new(db.clone(), env.clone());
+    let mut offset = 0;
+    let mut candidates = transactions
+        .iter()
+        .map(|tx| {
+            let prediction = tx
+                .tempo_tx_env
+                .as_ref()
+                .filter(|aa| aa.nonce_key == U256::MAX)
+                .map(|_| {
+                    let current = offset;
+                    offset += 1;
+                    current
+                });
+            recorder.execute(tx.clone(), prediction).ok()
+        })
+        .collect::<Vec<_>>();
+    let mut sequential = TempoEvm::new(db.clone(), env.clone());
+    let mut parallel = TempoEvm::new(db, env);
+    parallel.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
+    let default_order = (0..transactions.len()).collect::<Vec<_>>();
+    let mut expected_receipts = Vec::new();
+    let mut actual_receipts = Vec::new();
+    let (mut expected_gas, mut actual_gas) = (0, 0);
+    for &index in order.unwrap_or(&default_order) {
+        let tx = &transactions[index];
+        if let Some(candidate) = candidates[index].take() {
+            parallel.set_preexecuted_transaction(candidate);
+        }
+        match (
+            sequential.transact_raw(tx.clone()),
+            parallel.transact_raw(tx.clone()),
+        ) {
+            (Ok(expected), Ok(actual)) => {
+                assert_eq!(actual, expected, "prewarming {spec:?}: {tx:?}");
+                assert_eq!(parallel.validator_fee(), sequential.validator_fee());
+                expected_gas += expected.result.tx_gas_used();
+                actual_gas += actual.result.tx_gas_used();
+                let receipt = |result: &ResultAndState<TempoHaltReason>, gas| {
+                    tempo_primitives::TempoReceipt {
+                        tx_type: tempo_primitives::TempoTxType::Legacy,
+                        success: result.result.is_success(),
+                        cumulative_gas_used: gas,
+                        logs: result.result.logs().to_vec(),
+                    }
+                };
+                expected_receipts.push(receipt(&expected, expected_gas));
+                actual_receipts.push(receipt(&actual, actual_gas));
+                sequential.db_mut().commit(expected.state);
+                parallel.db_mut().commit(actual.state);
+            }
+            (Err(expected), Err(actual)) => assert_eq!(actual.to_string(), expected.to_string()),
+            (expected, actual) => panic!("prewarming validity: {expected:?} vs {actual:?}"),
+        }
+    }
+    assert_eq!(actual_receipts, expected_receipts);
+    assert_eq!(root(parallel.db()), root(sequential.db()));
+    parallel.execution_stats()
+}
+
+#[test]
+fn prewarmed_results_recheck_transaction_environment_and_configuration() {
+    let target = address(987);
+    let mut db = TestDB::default();
+    contract(&mut db, target, &[0x60, 0, 0x35, 0x60, 0, 0x55, 0]);
+    let tx = transaction(0, target, 0, &U256::from(1).to_be_bytes::<32>());
+    let env = test_evm_with_basefee(db.clone(), 0).finish().1;
+    for mismatch in 0..4 {
+        let mut prewarming = PrewarmingExecutor::new(db.clone(), env.clone());
+        let candidate = prewarming.execute(tx.clone(), None).unwrap();
+        let mut actual_tx = tx.clone();
+        let mut actual_env = env.clone();
+        match mismatch {
+            0 => {}
+            1 => actual_tx.inner.data = Bytes::copy_from_slice(&U256::from(2).to_be_bytes::<32>()),
+            2 => actual_env.block_env.timestamp += U256::from(1),
+            _ => actual_env.cfg_env.disable_nonce_check = true,
+        }
+        let mut canonical = TempoEvm::new(db.clone(), actual_env.clone());
+        let mut parallel = TempoEvm::new(db.clone(), actual_env);
+        let pool = SpeculativeExecutor::new(1, 1).unwrap();
+        parallel.set_speculative_executor(Some(pool.clone()));
+        parallel.set_preexecuted_transaction(candidate);
+        assert_eq!(
+            parallel.transact_raw(actual_tx.clone()).unwrap(),
+            canonical.transact_raw(actual_tx).unwrap()
+        );
+        assert_eq!(pool.prewarmed_reuses(), u64::from(mismatch == 0));
+    }
 }
 
 #[test]
@@ -1501,6 +1616,7 @@ fn expiring_nonce_predictions_preserve_order_and_rejections() {
                 chain_id: 1,
                 gas_limit: 1_000_000,
                 max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 1,
                 nonce_key: U256::MAX,
                 valid_before: std::num::NonZeroU64::new(25),
                 calls: vec![Call {
@@ -1534,6 +1650,18 @@ fn expiring_nonce_predictions_preserve_order_and_rejections() {
         differential_at_spec(db.clone(), &rejected, 4, 32, spec);
     }
 
+    let prewarmed = differential_preexecuted(db.clone(), &txs, TempoHardfork::T14, None);
+    assert_eq!(prewarmed.reused, txs.len() as u64);
+    assert!(prewarmed.fees_rebased > 0);
+    let reordered = differential_preexecuted(
+        db.clone(),
+        &txs,
+        TempoHardfork::T14,
+        Some(&[0, 2, 1, 4, 3, 8, 15]),
+    );
+    assert!(reordered.reused > 0);
+    assert!(reordered.conflicts > 0);
+
     // A builder may omit or reorder preview candidates after validation. Those
     // predictions must not change which transactions succeed or their state.
     let (_, mut env) = test_evm_with_basefee(TestDB::default(), 0).finish();
@@ -1560,19 +1688,32 @@ fn expiring_nonce_predictions_preserve_order_and_rejections() {
     // accesses, and fee rebasing must retain the actual per-transaction values.
     let env = canonical.finish().1;
     let mut expected = None;
-    for workers in [0, 4] {
+    for workers in [0, 4, 1] {
         let state = revm::database::State::builder()
             .with_database(db.clone())
             .with_bal_builder()
             .build();
         let mut evm = TempoEvm::new(state, env.clone());
         evm.db_mut().bump_bal_index();
+        let mut prewarming = PrewarmingExecutor::new(db.clone(), env.clone());
+        let mut candidates = txs
+            .iter()
+            .enumerate()
+            .map(|(offset, tx)| prewarming.execute(tx.clone(), Some(offset)).ok())
+            .collect::<Vec<_>>();
         if workers > 0 {
             evm.set_speculative_executor(Some(SpeculativeExecutor::new(workers, 16).unwrap()));
-            evm.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+            if workers != 1 {
+                evm.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+            }
         }
         let mut results = Vec::new();
         for index in [0, 2, 1, 4, 3, 8, 15] {
+            if workers == 1
+                && let Some(candidate) = candidates[index].take()
+            {
+                evm.set_preexecuted_transaction(candidate);
+            }
             let result = evm.transact_raw(txs[index].clone()).unwrap();
             results.push(result.result);
             evm.db_mut().commit(result.state);

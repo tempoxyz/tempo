@@ -1939,6 +1939,21 @@ async fn test_expiring_nonce_transfer_batch(execution_threads: usize) -> eyre::R
         actual_ptr,
         (initial_ptr + U256::from(64)) % U256::from(3_000_000)
     );
+    if execution_threads > 0 {
+        let pool = setup
+            .local_node
+            .as_ref()
+            .unwrap()
+            .inner
+            .evm_config
+            .speculative_executor
+            .as_ref()
+            .unwrap();
+        assert!(
+            pool.prewarmed_reuses() > 0,
+            "builder must reuse a fully validated prewarming result"
+        );
+    }
     Ok(())
 }
 

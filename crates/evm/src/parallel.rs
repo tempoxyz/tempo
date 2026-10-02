@@ -47,6 +47,8 @@ use tempo_revm::{
 use reth_revm::context::result::HaltReason as TempoHaltReason;
 
 mod forwarding;
+mod prewarming;
+pub use prewarming::{PreexecutedTransaction, PrewarmingExecutor};
 
 type Env = EvmEnv<TempoHardfork, TempoBlockEnv>;
 type Outcome<E> = Result<ResultAndState<TempoHaltReason>, EVMError<E, TempoInvalidTransaction>>;
@@ -64,6 +66,7 @@ pub struct SpeculativeExecutor {
     state_forwarding: bool,
     nonce_prediction: bool,
     scheduled_transactions: Arc<AtomicU64>,
+    prewarmed_reuses: Arc<AtomicU64>,
 }
 
 impl SpeculativeExecutor {
@@ -93,6 +96,7 @@ impl SpeculativeExecutor {
             state_forwarding: false,
             nonce_prediction: true,
             scheduled_transactions: Arc::default(),
+            prewarmed_reuses: Arc::default(),
         })
     }
 
@@ -163,6 +167,15 @@ impl SpeculativeExecutor {
     /// actually exercising workers rather than falling back to sequential EVMs.
     pub fn scheduled_transactions(&self) -> u64 {
         self.scheduled_transactions.load(Ordering::Relaxed)
+    }
+
+    /// Successful ordered reuses of results produced by builder prewarming.
+    pub fn prewarmed_reuses(&self) -> u64 {
+        self.prewarmed_reuses.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn record_prewarmed_reuse(&self) {
+        self.prewarmed_reuses.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Starts a bounded batch without committing any writes to `db`.
@@ -484,6 +497,20 @@ fn run_worker<E: DBErrorMarker>(
     }
 }
 
+fn transactions_match(candidate: &TempoTxEnv, tx: &TempoTxEnv) -> bool {
+    candidate == tx
+        && candidate
+            .tempo_tx_env
+            .as_ref()
+            .zip(tx.tempo_tx_env.as_ref())
+            .is_none_or(|(a, b)| {
+                a.tempo_authorization_list
+                    .iter()
+                    .zip(&b.tempo_authorization_list)
+                    .all(|(a, b)| a.authority_status() == b.authority_status())
+            })
+}
+
 /// Bounded in-flight work. Only this owner accesses the database. Reads served
 /// after a commit may see a newer prefix than prefetched values; every recorded
 /// value must still match the actual transaction's prefix before reuse.
@@ -562,19 +589,7 @@ impl<E: DBErrorMarker> SpeculativeBatch<E> {
     ) -> Option<SpeculativeResult<E>> {
         let index = self.shared.inputs[self.cursor..]
             .iter()
-            .position(|(candidate, _)| {
-                candidate == tx
-                    && candidate
-                        .tempo_tx_env
-                        .as_ref()
-                        .zip(tx.tempo_tx_env.as_ref())
-                        .is_none_or(|(a, b)| {
-                            a.tempo_authorization_list
-                                .iter()
-                                .zip(&b.tempo_authorization_list)
-                                .all(|(a, b)| a.authority_status() == b.authority_status())
-                        })
-            })?
+            .position(|(candidate, _)| transactions_match(candidate, tx))?
             + self.cursor;
         for skipped in self.cursor..index {
             self.outputs[skipped] = None;
