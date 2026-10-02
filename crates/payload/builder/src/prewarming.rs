@@ -169,6 +169,9 @@ impl BestTransactionsPrewarming {
                         drop(drain_rx);
                         return;
                     }
+                    BestTransactionsCommand::InvalidExpiringNonce(invalid) => {
+                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
+                    }
                 }
             }
         });
@@ -299,13 +302,22 @@ impl Iterator for BestTransactionsPrewarming {
 
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        let invalid = InvalidTransaction {
+            tx: transaction.tx.clone(),
+            kind,
+        };
+        // Expiring nonces have no dependent transactions to remove from the buffer.
+        if transaction.tx.transaction.is_expiring_nonce() {
+            let _ = self
+                .commands_tx
+                .send(BestTransactionsCommand::InvalidExpiringNonce(invalid));
+            return;
+        }
+
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
-            invalid: InvalidTransaction {
-                tx: transaction.tx.clone(),
-                kind,
-            },
+            invalid,
             old_rx,
             new_tx,
         });
@@ -480,6 +492,7 @@ enum BestTransactionsCommand {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<PrewarmedTransaction>>,
     },
+    InvalidExpiringNonce(InvalidTransaction),
 }
 
 /// Invalid transaction encountered during execution.
@@ -538,6 +551,7 @@ mod tests {
     };
     use std::{
         collections::VecDeque,
+        num::NonZeroU64,
         sync::{Arc, Mutex},
         thread,
         time::{Duration, Instant},
@@ -637,6 +651,14 @@ mod tests {
     }
 
     fn test_payment_tx(sender: Address, gas_limit: u64) -> BestTransaction {
+        test_payment_tx_with_nonce_key(sender, gas_limit, U256::ONE)
+    }
+
+    fn test_payment_tx_with_nonce_key(
+        sender: Address,
+        gas_limit: u64,
+        nonce_key: U256,
+    ) -> BestTransaction {
         let mut token = [0u8; 20];
         token[..2].copy_from_slice(&[0x20, 0xc0]);
         let token = Address::from(token);
@@ -653,7 +675,8 @@ mod tests {
                 value: U256::ZERO,
                 input: input.into(),
             }],
-            nonce_key: U256::ONE,
+            nonce_key,
+            valid_before: (nonce_key == U256::MAX).then_some(NonZeroU64::new(100).unwrap()),
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
@@ -1072,5 +1095,88 @@ mod tests {
         });
 
         pool.clear();
+    }
+
+    #[test]
+    fn expiring_nonce_invalidation_keeps_the_existing_buffer() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let sender = Address::random();
+        let rejected = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
+        let buffered = [
+            test_payment_tx_with_nonce_key(sender, 600_000, U256::MAX),
+            test_payment_tx(sender, 500_000),
+            test_tx(sender, 0),
+        ];
+        for tx in &buffered {
+            transactions_tx
+                .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
+                .unwrap();
+        }
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+        };
+
+        // Leave the coordinator commands unprocessed: the original buffer must
+        // remain readable even across repeated rejections.
+        for _ in 0..3 {
+            prewarming.mark_invalid(
+                &PrewarmedTransaction::without_replay(rejected.clone()),
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+            );
+        }
+        for expected in &buffered {
+            let tx = prewarming.transactions_rx.try_recv().unwrap().unwrap();
+            assert_eq!(tx.tx.hash(), expected.hash());
+        }
+        // Existing worker senders must still deliver to the same receiver.
+        transactions_tx
+            .send(Some(PrewarmedTransaction::without_replay(
+                buffered[0].clone(),
+            )))
+            .unwrap();
+        let delivered = prewarming.transactions_rx.try_recv().unwrap().unwrap();
+        assert_eq!(delivered.tx.hash(), buffered[0].hash());
+        for _ in 0..3 {
+            let BestTransactionsCommand::InvalidExpiringNonce(invalid) =
+                commands_rx.try_recv().unwrap()
+            else {
+                panic!("expiring nonce invalidation must not replace the buffer");
+            };
+            assert_eq!(invalid.tx.hash(), rejected.hash());
+            assert!(matches!(
+                invalid.kind,
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported)
+            ));
+        }
+    }
+
+    #[test]
+    fn expiring_nonce_invalidation_is_forwarded_without_filtering_other_transactions() {
+        let sender = Address::random();
+        let rejected = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
+        let remaining = [
+            test_payment_tx_with_nonce_key(sender, 600_000, U256::MAX),
+            test_payment_tx(sender, 500_000),
+            test_tx(sender, 0),
+        ];
+        let txs = std::iter::once(rejected.clone())
+            .chain(remaining.iter().cloned())
+            .collect();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming(txs, log.clone());
+        assert_eq!(prewarming.next().unwrap().tx.hash(), rejected.hash());
+        wait_until(|| log.lock().unwrap().yielded == 4);
+
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(rejected),
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        wait_until(|| log.lock().unwrap().invalid == 1);
+        for expected in remaining {
+            assert_eq!(prewarming.next().unwrap().tx.hash(), expected.hash());
+        }
     }
 }
