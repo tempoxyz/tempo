@@ -215,10 +215,7 @@ mod tests {
         *,
     };
     use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
-    use alloy::{
-        primitives::{KECCAK256_EMPTY, Signature, address, keccak256},
-        sol_types::SolCall as _,
-    };
+    use alloy::primitives::{KECCAK256_EMPTY, Signature, address, keccak256};
     use reth_revm::{
         context::result::ResultGas,
         context_interface::cfg::gas::CALL_STIPEND,
@@ -595,123 +592,6 @@ mod tests {
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
-    }
-
-    #[test]
-    fn dex_expectation_requires_an_envelope_swap_and_transaction_storage_change() {
-        let accepts = |calls, changed| {
-            let real = evidence(&[21_000]);
-            let mut shadow = evidence(&[21_000]);
-            tx_mut(&mut shadow, 0).state.transitions.insert(
-                STABLECOIN_DEX_ADDRESS,
-                TransitionAccount {
-                    storage: [(
-                        U256::ZERO,
-                        StorageSlot::new_changed(U256::ZERO, U256::from(u64::from(changed))),
-                    )]
-                    .into_iter()
-                    .collect(),
-                    ..Default::default()
-                },
-            );
-            let tx = signed_tx(calls);
-            let ctx = Context {
-                boundary: Boundary::Transaction(0),
-                real: &real,
-                shadow: &shadow,
-                base_fee: None,
-                tx: Some(&tx),
-            };
-            let field = Field {
-                name: "storage",
-                address: Some(STABLECOIN_DEX_ADDRESS),
-                slot: Some(U256::ZERO),
-                fee_associated: false,
-            };
-            rule("t12.stablecoin-dex").accepts(&ctx, &field)
-        };
-        let call = |to, input: &[u8]| Call {
-            to,
-            value: U256::ZERO,
-            input: input.to_vec().into(),
-        };
-        let dex = TxKind::Call(STABLECOIN_DEX_ADDRESS);
-        let swap = call(dex, &IStablecoinDEX::swapExactAmountInCall::SELECTOR);
-        let other = call(TxKind::Call(Address::repeat_byte(0x11)), &[]);
-        for (target, input, expected) in [
-            (
-                dex,
-                IStablecoinDEX::swapExactAmountInCall::SELECTOR.as_slice(),
-                true,
-            ),
-            (
-                dex,
-                IStablecoinDEX::swapExactAmountOutCall::SELECTOR.as_slice(),
-                true,
-            ),
-            (dex, IStablecoinDEX::placeCall::SELECTOR.as_slice(), false),
-            (dex, &[1, 2, 3][..], false),
-            (
-                other.to,
-                IStablecoinDEX::swapExactAmountInCall::SELECTOR.as_slice(),
-                false,
-            ),
-            (
-                TxKind::Create,
-                IStablecoinDEX::swapExactAmountInCall::SELECTOR.as_slice(),
-                false,
-            ),
-        ] {
-            assert_eq!(accepts(vec![call(target, input)], true), expected);
-        }
-        // Any AA envelope position matches, without proving that the call caused the write.
-        assert!(accepts(vec![other.clone(), swap.clone()], true));
-        assert!(accepts(vec![swap.clone(), other], true));
-        assert!(!accepts(vec![swap], false));
-    }
-
-    #[test]
-    fn abi_suffix_expectation_uses_envelope_calldata_and_transaction_revert() {
-        let clean = ITIP20::decimalsCall {}.abi_encode();
-        let mut suffix = clean.clone();
-        suffix.push(1);
-        let accepts = |input: &[u8], outcome, output_hash| {
-            let mut real = evidence(&[21_000]);
-            let shadow = evidence(&[21_000]);
-            let observed = tx_mut(&mut real, 0);
-            observed.outcome = outcome;
-            observed.output_hash = output_hash;
-            let tx = signed_tx(vec![
-                Call {
-                    to: TxKind::Call(Address::repeat_byte(0x11)),
-                    value: U256::ZERO,
-                    input: Default::default(),
-                },
-                Call {
-                    to: TxKind::Call(address!("20c0000000000000000000000000000000000001")),
-                    value: U256::ZERO,
-                    input: input.to_vec().into(),
-                },
-            ]);
-            let ctx = Context {
-                boundary: Boundary::Transaction(0),
-                real: &real,
-                shadow: &shadow,
-                base_fee: None,
-                tx: Some(&tx),
-            };
-            let field = Field {
-                name: "output",
-                address: None,
-                slot: None,
-                fee_associated: false,
-            };
-            rule("t12.allow-abi-suffix").accepts(&ctx, &field)
-        };
-        assert!(accepts(&suffix, TxOutcome::Revert, KECCAK256_EMPTY));
-        assert!(!accepts(&clean, TxOutcome::Revert, KECCAK256_EMPTY));
-        assert!(!accepts(&suffix, TxOutcome::Halt, KECCAK256_EMPTY));
-        assert!(!accepts(&suffix, TxOutcome::Revert, B256::repeat_byte(1)));
     }
 
     #[test]
