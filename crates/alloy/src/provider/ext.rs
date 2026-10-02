@@ -269,7 +269,9 @@ impl TransportConnect for ConfiguredBuiltInConnection {
             .connect_boxed_with(self.config.clone())
             .await?;
         Ok(match self.config.auth.clone() {
-            Some(auth) => BoxTransport::new(AuthHeaderTransport::new(transport, auth)?),
+            Some(auth) => {
+                alloy_transport::Transport::boxed(AuthHeaderTransport::new(transport, auth)?)
+            }
             None => transport,
         })
     }

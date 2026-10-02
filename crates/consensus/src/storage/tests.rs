@@ -36,7 +36,7 @@ fn finalizations_archive_tip_epoch_must_match_its_height() {
 
             // Keep a valid floor so rejection depends on checking the tip.
             for (height, epoch) in [(1, 0), (height, cert_epoch)] {
-                let digest = Digest(alloy_primitives::B256::with_last_byte(height as u8));
+                let digest = Digest::new(alloy_primitives::B256::with_last_byte(height as u8));
                 let certificate =
                     make_certificate(digest, Epoch::new(epoch), 1, &fixture.schemes);
                 archive = archive.put(height, digest, certificate).await.unwrap();

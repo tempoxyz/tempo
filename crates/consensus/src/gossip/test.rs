@@ -219,7 +219,7 @@ impl Rig {
 
     fn certificate(&self, view: u64) -> Certificate {
         make_certificate(
-            Digest(B256::with_last_byte(view as u8)),
+            Digest::new(B256::with_last_byte(view as u8)),
             Epoch::zero(),
             view,
             &self.fixture.schemes,
@@ -236,7 +236,7 @@ impl Rig {
         let _ = self.mailbox.report(Update::Tip(
             round(view),
             height,
-            Digest(B256::with_last_byte(view as u8)),
+            Digest::new(B256::with_last_byte(view as u8)),
         ));
     }
 

@@ -83,7 +83,7 @@ mod tests {
             let _ = mailbox.report(Update::Tip(
                 round,
                 Height::new(7),
-                Digest(B256::with_last_byte(7)),
+                Digest::new(B256::with_last_byte(7)),
             ));
             assert!(matches!(
                 receiver.recv().await,

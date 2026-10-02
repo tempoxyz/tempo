@@ -567,11 +567,7 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 valid_before: Some(NonZeroU64::new(100).unwrap()),
-                calls: vec![Call {
-                    to: TxKind::Call(Address::repeat_byte(0x42)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![create_call(TxKind::Call(Address::repeat_byte(0x42)))],
                 ..Default::default()
             };
             let sig = TempoSignature::from(Signature::test_signature());

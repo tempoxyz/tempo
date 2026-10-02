@@ -1063,7 +1063,7 @@ mod tests {
             ..Default::default()
         };
         let block = Block::new(header, body);
-        RecoveredBlock::new_unhashed(block, senders)
+        reth_primitives_traits::Block::into_recovered_with_signers(block, senders)
     }
 
     /// Helper to extract a TempoTxEnvelope from a TempoPooledTransaction.

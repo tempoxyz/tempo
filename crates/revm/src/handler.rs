@@ -264,12 +264,12 @@ fn translate_allowed_calls_for_precompile(
     scopes
         .iter()
         .map(|scope| PrecompileCallScope {
-            target: scope.target,
+            target: scope.target(),
             selectorRules: scope
                 .selector_rules
                 .iter()
                 .map(|rule| PrecompileSelectorRule {
-                    selector: rule.selector.into(),
+                    selector: rule.selector().into(),
                     recipients: rule.recipients.clone(),
                 })
                 .collect(),
@@ -1062,7 +1062,7 @@ where
 
             // Validate that regular gas does not exceed the cap.
             if cfg.is_amsterdam_eip8037_enabled()
-                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
+                && init_gas.initial_regular_gas().max(init_gas.floor_gas()) > cfg.tx_gas_limit_cap()
             {
                 return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                     gas_floor: init_gas.initial_regular_gas(),
@@ -1092,7 +1092,7 @@ where
             }
 
             let replay_hash = if spec.is_t1b() {
-                tx.unique_tx_identifier()
+                tx.channel_open_context_hash()
                     .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
             } else {
                 tempo_tx_env.tx_hash
@@ -1887,7 +1887,7 @@ where
                     }
                 }
 
-                if (key_auth.is_admin || key_auth.account.is_some()) && !cfg.spec.is_t6() {
+                if (key_auth.is_admin() || key_auth.account.is_some()) && !cfg.spec.is_t6() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "T6 key authorization fields are not active before T6".to_string(),
                     }
@@ -2154,17 +2154,17 @@ where
         }
 
         // Validate floor gas (Prague+)
-        if gas_limit < init_gas.floor_gas {
+        if gas_limit < init_gas.floor_gas() {
             return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                 gas_limit,
-                gas_floor: init_gas.floor_gas,
+                gas_floor: init_gas.floor_gas(),
             }
             .into());
         }
 
         // Validate that regular gas does not exceed the cap.
         if evm.ctx.cfg.is_amsterdam_eip8037_enabled()
-            && init_gas.initial_regular_gas().max(init_gas.floor_gas)
+            && init_gas.initial_regular_gas().max(init_gas.floor_gas())
                 > evm.ctx.cfg.tx_gas_limit_cap()
         {
             return Err(InvalidTransaction::GasFloorMoreThanGasLimit {

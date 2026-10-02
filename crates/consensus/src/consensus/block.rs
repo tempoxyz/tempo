@@ -221,12 +221,12 @@ impl Block {
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn digest(&self) -> Digest {
-        Digest(self.execution_block.hash())
+        Digest::new(self.execution_block.hash())
     }
 
     /// Returns the parent hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn parent_digest(&self) -> Digest {
-        Digest(self.execution_block.parent_hash())
+        Digest::new(self.execution_block.parent_hash())
     }
 
     /// Returns the wrapped block.
@@ -408,7 +408,7 @@ impl commonware_consensus::CertifiableBlock for Block {
                 Context {
                     leader,
                     round: Round::new(Epoch::new(0), View::new(0)),
-                    parent: (View::zero(), Digest(B256::ZERO)),
+                    parent: (View::zero(), Digest::new(B256::ZERO)),
                 }
             }
         }

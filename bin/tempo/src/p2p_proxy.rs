@@ -215,7 +215,7 @@ impl BlockCache {
         header: TempoHeader,
         body: Option<tempo_primitives::BlockBody>,
     ) {
-        if let Some(old_hash) = self.by_number.get(&number).map(|block| block.hash)
+        if let Some(old_hash) = self.get_by_number(number).map(|block| block.hash)
             && old_hash != hash
         {
             self.by_hash.remove(&old_hash);

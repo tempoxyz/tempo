@@ -232,7 +232,9 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
                     return Err(UnbuiltTransactionError {
                         request: self,
                         error: TransactionBuilderError::Custom(Box::new(
-                            UnsupportedTransactionType::new(TxType::Eip4844),
+                            UnsupportedTransactionType::new(
+                                alloy_consensus::TxEip4844Variant::<()>::tx_type(),
+                            ),
                         )),
                     });
                 }

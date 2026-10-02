@@ -16,7 +16,6 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, compute_amount_out},
-    tip20::ISSUER_ROLE,
 };
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use test_case::test_case;
@@ -48,7 +47,7 @@ where
     let token = ITIP20::new(event.token, provider.clone());
 
     IRolesAuth::new(*token.address(), provider)
-        .grantRole(ISSUER_ROLE, caller)
+        .grantRole(tempo_precompiles::tip20::TIP20Token::issuer_role(), caller)
         .gas(1_000_000)
         .send()
         .await?

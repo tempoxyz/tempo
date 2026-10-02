@@ -768,7 +768,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let height = Height::new(header.number());
-        let parent_digest = Digest(header.parent_hash());
+        let parent_digest = Digest::new(header.parent_hash());
         let epoch_info = self
             .config
             .epoch_strategy

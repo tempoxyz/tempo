@@ -427,7 +427,7 @@ async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option
     let block = client
         .request::<Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>, _>(
             "eth_getBlockByHash",
-            rpc_params![digest.0, true],
+            rpc_params![digest.get(), true],
         )
         .await
         .wrap_err("failed getting block by hash")?
@@ -442,7 +442,7 @@ async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option
 
     let block = block
         .map(|block| {
-            ensure!(block.hash() == digest.0, "mismatched block hash");
+            ensure!(block.hash() == digest.get(), "mismatched block hash");
             Block::try_from_execution_block(block, None)
                 .wrap_err("upstream block or consensus sidecar is invalid")
         })

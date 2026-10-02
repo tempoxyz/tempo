@@ -108,7 +108,7 @@ impl TempoParentState {
     ) -> eyre::Result<T> {
         let state = self
             .executed_state
-            .state_by_block_hash(self.node.provider.clone(), parent.digest().0)?;
+            .state_by_block_hash(self.node.provider.clone(), parent.digest().get())?;
         read_validator_config_with_state(
             self.node.as_ref(),
             Box::new(state.into_evm_state_provider()),

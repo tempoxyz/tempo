@@ -171,7 +171,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
         Verification::new(
             round(view),
             tracing::Span::none(),
-            make_block(view, height, Digest(B256::ZERO)).into(),
+            make_block(view, height, Digest::new(B256::ZERO)).into(),
             response,
         )
     }

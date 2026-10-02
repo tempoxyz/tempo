@@ -138,7 +138,7 @@ fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre
 
 /// Runs the Tempo node CLI.
 pub fn tempo_main() -> eyre::Result<()> {
-    tempo_main_with(TempoOverrides::default())
+    tempo_main_with(TempoOverrides::new())
 }
 
 /// Runs the Tempo node CLI with programmatic startup overrides.
@@ -223,10 +223,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             };
 
             if let Some(chain_spec) = cli.command.chain_spec() {
-                cli.logs.log_file_directory = cli
-                    .logs
-                    .log_file_directory
-                    .join(chain_spec.chain().to_string());
+                cli.logs.log_file_directory = cli.logs.log_file_directory.join(
+                    reth_ethereum::node::core::dirs::config_path_prefix(chain_spec.chain()),
+                );
             }
 
             let mut tracing_app = cli.configure();

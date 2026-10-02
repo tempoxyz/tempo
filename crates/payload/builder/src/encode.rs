@@ -246,7 +246,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Signature, U256};
     use alloy_rlp::Encodable;
     use proptest::prelude::*;
-    use reth_primitives_traits::{Block as _, RecoveredBlock, SealedBlock};
+    use reth_primitives_traits::{Block as _, SealedBlock};
     use std::sync::Arc;
     use tempo_primitives::{Block, Header, TempoHeader, TempoTransaction, transaction::Call};
 
@@ -748,7 +748,7 @@ mod tests {
             let expected_block = block.clone().seal_slow();
             let expected = full_block_encoding(&expected_block);
             let senders = vec![Address::ZERO; block.body.transactions.len()];
-            let recovered_block = Arc::new(RecoveredBlock::new_unhashed(block, senders));
+            let recovered_block = Arc::new(reth_primitives_traits::Block::into_recovered_with_signers(block, senders));
             let encoder = ExecutionBlockEncoder::new(
                 recovered_block,
                 expected.len(),

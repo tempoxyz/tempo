@@ -119,17 +119,17 @@ impl V1Order {
     /// Converts the logical order into the compact V1 physical layout.
     fn new(order: Order) -> Self {
         Self {
-            maker: order.maker,
-            tick: order.tick,
-            metadata: OrderFlags::pack(order.is_bid, order.is_flip),
-            flip_tick: order.flip_tick,
+            maker: order.maker(),
+            tick: order.tick(),
+            metadata: OrderFlags::pack(order.is_bid(), order.is_flip()),
+            flip_tick: order.flip_tick(),
             _unused: FixedBytes::<6>::ZERO,
             version: OrderVersion::V1,
-            book_key: order.book_key,
-            amount: order.amount,
-            remaining: order.remaining,
-            prev: order.prev,
-            next: order.next,
+            book_key: order.book_key(),
+            amount: order.amount(),
+            remaining: order.remaining(),
+            prev: order.prev(),
+            next: order.next(),
         }
     }
 
@@ -184,17 +184,17 @@ impl V2Order {
     /// Converts the logical order into the compact V2 physical layout.
     fn new(order: Order, book_index: u32) -> Self {
         Self {
-            maker: order.maker,
-            metadata: OrderFlags::pack(order.is_bid, order.is_flip),
-            tick: order.tick,
-            flip_tick: order.flip_tick,
+            maker: order.maker(),
+            metadata: OrderFlags::pack(order.is_bid(), order.is_flip()),
+            tick: order.tick(),
+            flip_tick: order.flip_tick(),
             book_index,
             _unused: FixedBytes::<2>::ZERO,
             version: OrderVersion::V2,
-            amount: order.amount,
-            remaining: order.remaining,
-            prev: order.prev,
-            next: order.next,
+            amount: order.amount(),
+            remaining: order.remaining(),
+            prev: order.prev(),
+            next: order.next(),
         }
     }
 
@@ -341,7 +341,7 @@ impl OrderHandler {
 
     /// Writes this order, skipping V2 index resolution when a book ID is provided.
     fn write_with_book_id(&mut self, value: Order, known_id: Option<BookId>) -> StorageResult<()> {
-        debug_assert_eq!(value.order_id, self.order_id);
+        debug_assert_eq!(value.order_id(), self.order_id);
 
         if !StorageCtx.spec().is_t8() {
             return value.store(self, self.base_slot, LayoutCtx::FULL);
@@ -356,7 +356,7 @@ impl OrderHandler {
 
         // If known, use the book ID. Otherwise resolve it from storage.
         let book_index = match known_id {
-            None => StablecoinDEX::new().book_key_index(value.book_key)?,
+            None => StablecoinDEX::new().book_key_index(value.book_key())?,
             Some(id) => id.index(),
         };
 
@@ -993,7 +993,7 @@ mod tests {
                 V1Order::new(order).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
             }
             OrderVersion::V2 => {
-                let book_index = ensure_test_book_index(exchange, order.book_key)?;
+                let book_index = ensure_test_book_index(exchange, order.book_key())?;
                 let handler = &exchange.orders[order.order_id()];
                 let mut storage = handler.clone();
                 V2Order::new(order, book_index).store(
@@ -1761,7 +1761,7 @@ mod tests {
             let ask_level = exchange.books[book_key]
                 .tick_level_handler(flip_tick, false)
                 .read()?;
-            let book = exchange.books[book_key].read()?;
+            let book = exchange.books(book_key)?;
             let base_tip20 = TIP20Token::from_address(base_token)?;
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
 

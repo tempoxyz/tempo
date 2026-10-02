@@ -60,7 +60,7 @@ use tempo_precompiles::{
     stablecoin_dex::StablecoinDEX,
     storage::ContractStorage,
     tip_fee_manager::{IFeeManager, TipFeeManager},
-    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config_v2::ValidatorConfigV2,
@@ -456,7 +456,7 @@ impl GenesisArgs {
                 let storage = account
                     .storage
                     .iter()
-                    .map(|(key, val)| (*key, val.present_value));
+                    .map(|(key, val)| (*key, val.present_value()));
                 (*address, genesis_account(&account.info, storage))
             })
             .collect();
@@ -572,7 +572,7 @@ fn create_path_usd_token(
         // Initialize pathUSD directly (not via factory) since it's at a reserved address.
         let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("Could not create pathUSD token instance");
-        token.grant_role_internal(admin, ISSUER_ROLE)?;
+        token.grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role())?;
 
         // Mint to all recipients
         for recipient in recipients.iter().progress() {
@@ -639,7 +639,7 @@ fn create_and_mint_token(
 
         let mut token =
             TIP20Token::from_address(token_address).expect("Could not create token instance");
-        token.grant_role_internal(admin, ISSUER_ROLE)?;
+        token.grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role())?;
 
         let result = token.set_supply_cap(
             admin,

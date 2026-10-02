@@ -152,7 +152,7 @@ mod tests {
             is_next_full_dkg: false,
         };
         // Preserve Commonware Epoch's wire encoding, including varint boundaries.
-        let payload = on_chain.encode()[Epoch::new(on_chain.epoch).encode_size()..].to_vec();
+        let payload = on_chain.encode()[on_chain.epoch().encode_size()..].to_vec();
         for epoch in [0, 127, 128, 16383, 16384, u64::MAX] {
             let prefix = Epoch::new(epoch).encode();
             on_chain.epoch = epoch;

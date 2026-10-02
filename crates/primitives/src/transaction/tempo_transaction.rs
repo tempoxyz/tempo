@@ -753,7 +753,7 @@ impl Transaction for TempoTransaction {
 
 impl Typed2718 for TempoTransaction {
     fn ty(&self) -> u8 {
-        TEMPO_TX_TYPE_ID
+        crate::transaction::tempo_transaction::TempoTransaction::tx_type()
     }
 }
 
@@ -1253,7 +1253,10 @@ mod tests {
     #[test]
     fn test_tx_type() {
         assert_eq!(TempoTransaction::tx_type(), 0x76);
-        assert_eq!(TEMPO_TX_TYPE_ID, 0x76);
+        assert_eq!(
+            crate::transaction::tempo_transaction::TempoTransaction::tx_type(),
+            0x76
+        );
     }
 
     #[test]
@@ -1356,7 +1359,10 @@ mod tests {
         let mut service_encoded = Vec::new();
         tx.encode_for_fee_payer_service(&mut service_encoded);
 
-        assert_eq!(service_encoded[0], TEMPO_TX_TYPE_ID);
+        assert_eq!(
+            service_encoded[0],
+            crate::transaction::tempo_transaction::TempoTransaction::tx_type()
+        );
 
         let mut signing_tx = tx.clone();
         signing_tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
@@ -1913,7 +1919,7 @@ mod tests {
             limit: U256::from(10000),
             period: 0,
         }])
-        .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        .into_signed(PrimitiveSignature::default());
 
         let tx_with = TempoTransaction {
             key_authorization: Some(key_auth.clone()),

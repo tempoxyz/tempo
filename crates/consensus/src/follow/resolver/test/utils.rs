@@ -64,7 +64,7 @@ pub(super) fn make_certified_block(height: Height) -> (CertifiedBlock, Bytes) {
     let certified = CertifiedBlock {
         epoch: 0,
         view: height.get(),
-        digest: digest.0,
+        digest: digest.get(),
         certificate: alloy_primitives::hex::encode(finalization.encode()),
         block: block.into_execution_block(),
     };

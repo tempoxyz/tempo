@@ -349,7 +349,7 @@ where
                 Ok(self.execution_block_provider.header_by_height(height)?)
             }
             Identifier::Key(digest) => {
-                Ok(self.execution_block_provider.header_by_hash(digest.0)?)
+                Ok(self.execution_block_provider.header_by_hash(digest.get())?)
             }
         }
     }
@@ -429,7 +429,7 @@ where
                 {
                     return Ok(Some(block));
                 }
-                Ok(self.execution_block_provider.block_by_hash(digest.0)?)
+                Ok(self.execution_block_provider.block_by_hash(digest.get())?)
             }
         }
     }

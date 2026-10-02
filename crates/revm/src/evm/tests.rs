@@ -1540,9 +1540,9 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
         let gas = result.unwrap();
         // Verify floor_gas > initial_total_gas for this calldata (EIP-7623 scenario)
         assert!(
-            gas.floor_gas > gas.initial_total_gas(),
+            gas.floor_gas() > gas.initial_total_gas(),
             "Expected floor_gas ({}) > initial_total_gas ({}) for large calldata",
-            gas.floor_gas,
+            gas.floor_gas(),
             gas.initial_total_gas()
         );
     }

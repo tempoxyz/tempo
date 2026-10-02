@@ -440,7 +440,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FeeTokenResolver, TempoFeeManager};
+    use crate::FeeTokenResolver;
     use alloy_primitives::{address, uint};
     use alloy_sol_types::SolCall;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
@@ -469,7 +469,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = TempoFeeManager.resolve_fee_token(
+        let token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut EmptyDB::default(),
             &tx,
             caller,
@@ -497,7 +497,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result_token = TempoFeeManager.resolve_fee_token(
+        let result_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut EmptyDB::default(),
             &tx,
             caller,
@@ -519,7 +519,7 @@ mod tests {
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
-        let result_token = TempoFeeManager.resolve_fee_token(
+        let result_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut db,
             &TempoTxEnv::default(),
             caller,
@@ -546,7 +546,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result_token = TempoFeeManager.resolve_fee_token(
+        let result_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut EmptyDB::default(),
             &tx,
             caller,
@@ -569,7 +569,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result_token = TempoFeeManager.resolve_fee_token(
+        let result_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut EmptyDB::default(),
             &tx,
             caller,
@@ -608,7 +608,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = TempoFeeManager.resolve_fee_token(
+        let token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut db,
             &tx,
             caller,
@@ -637,7 +637,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = TempoFeeManager.resolve_fee_token(
+        let token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut db,
             &tx,
             caller,

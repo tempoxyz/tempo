@@ -48,7 +48,7 @@ pub(crate) fn make_child_block(
     height: u64,
     outcome: Option<&OnchainDkgOutcome>,
 ) -> Block {
-    make_block_with_parent(height, parent.digest().0, outcome)
+    make_block_with_parent(height, parent.digest().get(), outcome)
 }
 
 fn make_block_with_parent(
@@ -89,7 +89,7 @@ pub(crate) fn make_certified_block(
     CertifiedBlock {
         epoch: finalization.proposal.round.epoch().get(),
         view: finalization.proposal.round.view().get(),
-        digest: block.digest().0,
+        digest: block.digest().get(),
         certificate: alloy_primitives::hex::encode(finalization.encode()),
         block: block.into_execution_block(),
     }

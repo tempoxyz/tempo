@@ -273,8 +273,8 @@ where
     /// Appends the height, digest, and parent of the finalized header to the journal.
     pub(super) async fn append_finalized_header(&mut self, epoch: Epoch, header: TempoHeader) {
         let height = Height::new(header.number());
-        let digest = Digest(header.hash_slow());
-        let parent = Digest(header.parent_hash());
+        let digest = Digest::new(header.hash_slow());
+        let parent = Digest::new(header.parent_hash());
         if self
             .cache
             .get(&epoch)
@@ -1506,8 +1506,8 @@ mod tests {
                 .append_event(
                     Epoch::zero(),
                     Event::Finalized {
-                        digest: Digest(alloy_primitives::B256::with_last_byte(1)),
-                        parent: Digest(alloy_primitives::B256::ZERO),
+                        digest: Digest::new(alloy_primitives::B256::with_last_byte(1)),
+                        parent: Digest::new(alloy_primitives::B256::ZERO),
                         height: Height::zero(),
                     },
                 )

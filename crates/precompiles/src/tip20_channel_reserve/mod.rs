@@ -687,7 +687,7 @@ impl TIP20ChannelReserve {
             return Ok(());
         }
 
-        let current = self.channel_storage_credits[payer].read()?;
+        let current = self.storage_credits(payer)?;
         let updated = current.saturating_add(slots);
 
         if current == 0 {
@@ -719,7 +719,7 @@ impl TIP20ChannelReserve {
             return self.channel_states[channel_id].write(state);
         }
 
-        let current = self.channel_storage_credits[payer].read()?;
+        let current = self.storage_credits(payer)?;
         if current == 0 {
             return self.channel_states[channel_id].write(state);
         }
@@ -2661,14 +2661,14 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut reserve = TIP20ChannelReserve::new();
             let result = reserve.call(
-                &ITIP20ChannelReserve::openCall {
-                    payee: Address::random(),
-                    operator: Address::ZERO,
-                    token: TIP20_CHANNEL_RESERVE_ADDRESS,
-                    deposit: U96::from(1),
-                    salt: B256::ZERO,
-                    authorizedSigner: Address::ZERO,
-                }
+                &open_call(
+                    Address::random(),
+                    Address::ZERO,
+                    TIP20_CHANNEL_RESERVE_ADDRESS,
+                    1,
+                    B256::ZERO,
+                    Address::ZERO,
+                )
                 .abi_encode(),
                 Address::ZERO,
             );

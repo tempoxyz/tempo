@@ -205,7 +205,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.precompiles = tempo_precompiles::tempo_precompiles(
             &self.inner.ctx.cfg,
             actions.clone(),
-            self.non_creditable_slots.clone(),
+            self.non_creditable_slots(),
         );
         self.actions = actions;
         self

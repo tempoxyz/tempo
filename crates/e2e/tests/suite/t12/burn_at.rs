@@ -28,7 +28,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     account_keychain::IAccountKeychain,
-    tip20::{BURN_AT_ROLE, BURN_BLOCKED_ROLE, IRolesAuth, ITIP20, PAUSE_ROLE, UNPAUSE_ROLE},
+    tip20::{IRolesAuth, ITIP20},
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
 use tempo_primitives::{
@@ -52,7 +52,7 @@ fn burn_at_is_unavailable_before_t12() {
         let token = ITIP20::new(address, &provider);
         let roles = IRolesAuth::new(address, &provider);
         let receipt = roles
-            .grantRole(BURN_AT_ROLE, admin)
+            .grantRole(tempo_precompiles::tip20::TIP20Token::burn_at_role(), admin)
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()
@@ -123,7 +123,10 @@ fn burn_at_permissions_policy_and_protected_balances() {
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
         let receipt = roles
-            .grantRole(BURN_BLOCKED_ROLE, admin)
+            .grantRole(
+                tempo_precompiles::tip20::TIP20Token::burn_blocked_role(),
+                admin,
+            )
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()
@@ -141,7 +144,11 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .await?;
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
-        for role in [BURN_AT_ROLE, PAUSE_ROLE, UNPAUSE_ROLE] {
+        for role in [
+            tempo_precompiles::tip20::TIP20Token::burn_at_role(),
+            tempo_precompiles::tip20::TIP20Token::pause_role(),
+            tempo_precompiles::tip20::TIP20Token::unpause_role(),
+        ] {
             let receipt = roles
                 .grantRole(role, admin)
                 .gas(GAS)
@@ -260,7 +267,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
             assert_no_burn_events(receipt.logs(), address);
         }
         let receipt = roles
-            .revokeRole(BURN_AT_ROLE, admin)
+            .revokeRole(tempo_precompiles::tip20::TIP20Token::burn_at_role(), admin)
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()
@@ -309,7 +316,10 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
         // Multicall3 is deployed in the test genesis and acts as the bridge calling burnAt.
         assert!(!provider.get_code_at(MULTICALL3_ADDRESS).await?.is_empty());
         let receipt = roles
-            .grantRole(BURN_AT_ROLE, MULTICALL3_ADDRESS)
+            .grantRole(
+                tempo_precompiles::tip20::TIP20Token::burn_at_role(),
+                MULTICALL3_ADDRESS,
+            )
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()

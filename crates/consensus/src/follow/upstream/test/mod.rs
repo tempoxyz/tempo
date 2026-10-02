@@ -69,7 +69,9 @@ fn queues_requests_until_subscription_is_ready() {
 
         let (response, received) = tokio::sync::oneshot::channel();
         context.child("request").spawn(move |_| async move {
-            let block = mailbox.get_block(Digest(B256::with_last_byte(1))).await;
+            let block = mailbox
+                .get_block(Digest::new(B256::with_last_byte(1)))
+                .await;
             let _ = response.send(block);
         });
 

@@ -218,7 +218,7 @@ impl Order {
 
     /// Returns true if this is an ask order (selling base token).
     pub fn is_ask(&self) -> bool {
-        !self.is_bid
+        !self.is_bid()
     }
 
     /// Returns true if this is a flip order.
@@ -256,7 +256,7 @@ impl Order {
 
     /// Returns true if the order is completely filled (no remaining amount).
     pub fn is_fully_filled(&self) -> bool {
-        self.remaining == 0
+        self.remaining() == 0
     }
 
     /// Fills the order by the specified amount, reducing `remaining` accordingly.
@@ -264,13 +264,13 @@ impl Order {
     /// # Errors
     /// - `FillAmountExceedsRemaining` — `fill_amount` is greater than `remaining`
     pub fn fill(&mut self, fill_amount: u128) -> Result<(), OrderError> {
-        if fill_amount > self.remaining {
+        if fill_amount > self.remaining() {
             return Err(OrderError::FillAmountExceedsRemaining {
                 requested: fill_amount,
-                available: self.remaining,
+                available: self.remaining(),
             });
         }
-        *self.remaining_mut() = self.remaining.saturating_sub(fill_amount);
+        *self.remaining_mut() = self.remaining().saturating_sub(fill_amount);
         Ok(())
     }
 
@@ -286,36 +286,34 @@ impl Order {
         debug_assert!(self.is_flip());
 
         // Create flipped order
-        Self {
-            order_id: new_order_id,
-            maker: self.maker,
-            book_key: self.book_key,
-            is_bid: !self.is_bid,   // Flip the side
-            tick: self.flip_tick,   // Old flip_tick becomes new tick
-            amount: self.amount,    // Same as original
-            remaining: self.amount, // Reset remaining to original amount
-            prev: 0,                // Reset linked list pointers
-            next: 0,
-            is_flip: true,        // Keep as flip order
-            flip_tick: self.tick, // Old tick becomes new flip_tick
-        }
+        Self::new(
+            new_order_id,
+            self.maker,
+            self.book_key,
+            self.amount,    // Same as original; reset remaining to original amount
+            self.flip_tick, // Old flip_tick becomes new tick
+            !self.is_bid,   // Flip the side
+            true,           // Keep as flip order
+            self.tick,      // Old tick becomes new flip_tick
+                            // Reset linked list pointers
+        )
     }
 }
 
 impl From<Order> for IStablecoinDEX::Order {
     fn from(value: Order) -> Self {
         Self {
-            orderId: value.order_id,
-            maker: value.maker,
-            bookKey: value.book_key,
-            isBid: value.is_bid,
-            tick: value.tick,
-            amount: value.amount,
-            remaining: value.remaining,
-            prev: value.prev,
-            next: value.next,
-            isFlip: value.is_flip,
-            flipTick: value.flip_tick,
+            orderId: value.order_id(),
+            maker: value.maker(),
+            bookKey: value.book_key(),
+            isBid: value.is_bid(),
+            tick: value.tick(),
+            amount: value.amount(),
+            remaining: value.remaining(),
+            prev: value.prev(),
+            next: value.next(),
+            isFlip: value.is_flip(),
+            flipTick: value.flip_tick(),
         }
     }
 }

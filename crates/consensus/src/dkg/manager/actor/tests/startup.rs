@@ -49,7 +49,7 @@ fn tip_for_header(fixture: &DkgFixture, header: &TempoHeader) -> (Height, Certif
     (
         Height::new(header.number()),
         make_certificate(
-            Digest(header.hash_slow()),
+            Digest::new(header.hash_slow()),
             Epoch::new(header.number() / 10),
             1,
             &fixture.schemes,
@@ -224,7 +224,7 @@ fn startup_rejects_malformed_or_invalid_tip_certificates() {
         let mut altered_header = header(valid.0);
         altered_header.inner.extra_data = vec![1].into();
         let mut invalid_certificate = valid.1.clone();
-        invalid_certificate.proposal.payload = Digest(altered_header.hash_slow());
+        invalid_certificate.proposal.payload = Digest::new(altered_header.hash_slow());
         // The signature still covers the original payload.
         let invalid = (valid.0, invalid_certificate);
         let genesis_certificate = tip_for_header(&fixture, &header(Height::zero()));
@@ -315,7 +315,7 @@ fn startup_rejects_epoch_tampering_at_or_after_identity_epoch() {
         let fixture = dkg_fixture(&mut context, Epoch::new(2));
         let configured_identity = identity(&fixture);
         let (height, mut certificate) = tip(&fixture, 2);
-        certificate.proposal.round = Round::new(Epoch::new(3), certificate.proposal.round.view());
+        certificate.proposal.round = Round::new(Epoch::new(3), certificate.round().view());
         let error = verify_finalized_tip(
             &mut context,
             &configured_identity,

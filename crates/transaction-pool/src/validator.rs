@@ -807,7 +807,7 @@ where
         Ok(self.db.basic_ref(*address)?.map(|account| Account {
             nonce: account.nonce,
             balance: account.balance,
-            bytecode_hash: (!account.is_empty_code_hash()).then_some(account.code_hash),
+            bytecode_hash: (!account.is_empty_code_hash()).then_some(account.code_hash()),
         }))
     }
 }
@@ -886,9 +886,7 @@ mod tests {
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_revm::cached::CachedReads;
     use reth_storage_api::{AccountReader, BlockNumReader, BytecodeReader};
-    use reth_transaction_pool::{
-        PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
-    };
+    use reth_transaction_pool::{PoolTransaction, blobstore::InMemoryBlobStore};
     use revm::{DatabaseRef, context::result::InvalidTransaction};
     use std::sync::{
         Arc,
@@ -1085,11 +1083,13 @@ mod tests {
             ]),
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::moderato())
-                .with_custom_tx_type(TempoTxType::AA as u8)
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
+            provider.clone(),
+            TempoEvmConfig::moderato(),
+        )
+        .with_custom_tx_type(TempoTxType::AA as u8)
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -1305,7 +1305,7 @@ mod tests {
         };
         let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let transaction = TempoPooledTransaction::new(
-            reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
+            reth_primitives_traits::SignedTransaction::with_signer(envelope, Address::ZERO),
         );
         let validator = setup_validator(&transaction, 0);
 
@@ -1406,7 +1406,7 @@ mod tests {
 
         let envelope: TempoTxEnvelope = signed.into();
         let transaction = TempoPooledTransaction::new(
-            reth_primitives_traits::Recovered::new_unchecked(envelope, sender),
+            reth_primitives_traits::SignedTransaction::with_signer(envelope, sender),
         );
         let validator = setup_validator(&transaction, u64::MAX);
 

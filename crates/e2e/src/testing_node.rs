@@ -203,7 +203,7 @@ where
     }
 
     pub fn egress(&self) -> IpAddr {
-        self.network_address.ip()
+        self.ingress().ip()
     }
 
     /// A verifier is a node that has a share.

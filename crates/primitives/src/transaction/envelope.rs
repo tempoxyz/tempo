@@ -73,7 +73,11 @@ impl TryFrom<TxType> for TempoTxType {
             TxType::Legacy => Self::Legacy,
             TxType::Eip2930 => Self::Eip2930,
             TxType::Eip1559 => Self::Eip1559,
-            TxType::Eip4844 => return Err(UnsupportedTransactionType::new(TxType::Eip4844)),
+            TxType::Eip4844 => {
+                return Err(UnsupportedTransactionType::new(
+                    alloy_consensus::TxEip4844Variant::<()>::tx_type(),
+                ));
+            }
             TxType::Eip7702 => Self::Eip7702,
         })
     }
@@ -85,9 +89,9 @@ impl TryFrom<TempoTxType> for TxType {
     fn try_from(value: TempoTxType) -> Result<Self, Self::Error> {
         Ok(match value {
             TempoTxType::Legacy => Self::Legacy,
-            TempoTxType::Eip2930 => Self::Eip2930,
-            TempoTxType::Eip1559 => Self::Eip1559,
-            TempoTxType::Eip7702 => Self::Eip7702,
+            TempoTxType::Eip2930 => alloy_consensus::TxEip2930::tx_type(),
+            TempoTxType::Eip1559 => alloy_consensus::TxEip1559::tx_type(),
+            TempoTxType::Eip7702 => alloy_consensus::TxEip7702::tx_type(),
             TempoTxType::AA => {
                 return Err(UnsupportedTransactionType::new(TempoTxType::AA));
             }
@@ -538,7 +542,9 @@ impl TryFrom<TypedTransaction> for TempoTypedTransaction {
             TypedTransaction::Eip2930(tx) => Self::Eip2930(tx),
             TypedTransaction::Eip1559(tx) => Self::Eip1559(tx),
             TypedTransaction::Eip4844(..) => {
-                return Err(UnsupportedTransactionType::new(TxType::Eip4844));
+                return Err(UnsupportedTransactionType::new(
+                    alloy_consensus::TxEip4844Variant::<()>::tx_type(),
+                ));
             }
             TypedTransaction::Eip7702(tx) => Self::Eip7702(tx),
         })
@@ -998,7 +1004,7 @@ mod tests {
         let descriptor = channel_descriptor();
         let keychain_signature = TempoSignature::Keychain(KeychainSignature::new_v1(
             Address::random(),
-            PrimitiveSignature::Secp256k1(Signature::test_signature()),
+            PrimitiveSignature::default(),
         ))
         .to_bytes();
         assert!(TempoSignature::from_bytes(&keychain_signature).is_ok());
@@ -1165,7 +1171,7 @@ mod tests {
                     is_admin: false,
                     account: None,
                 }
-                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+                .into_signed(PrimitiveSignature::default()),
             ),
             ..Default::default()
         };
@@ -1382,10 +1388,10 @@ mod tests {
     fn test_tx_type_conversions() {
         // TxType -> TempoTxType: EIP-4844 rejected
         assert!(TempoTxType::try_from(TxType::Legacy).is_ok());
-        assert!(TempoTxType::try_from(TxType::Eip2930).is_ok());
-        assert!(TempoTxType::try_from(TxType::Eip1559).is_ok());
-        assert!(TempoTxType::try_from(TxType::Eip7702).is_ok());
-        assert!(TempoTxType::try_from(TxType::Eip4844).is_err());
+        assert!(TempoTxType::try_from(alloy_consensus::TxEip2930::tx_type()).is_ok());
+        assert!(TempoTxType::try_from(alloy_consensus::TxEip1559::tx_type()).is_ok());
+        assert!(TempoTxType::try_from(alloy_consensus::TxEip7702::tx_type()).is_ok());
+        assert!(TempoTxType::try_from(alloy_consensus::TxEip4844Variant::<()>::tx_type()).is_err());
 
         // TempoTxType -> TxType: AA rejected
         assert!(TxType::try_from(TempoTxType::Legacy).is_ok());

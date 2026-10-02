@@ -168,7 +168,7 @@ async fn get_block(
 ) -> eyre::Result<()> {
     let block = execution_node
         .provider
-        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
+        .find_sealed_or_recovered_block(digest.get(), BlockSource::Any)
         .map_err(eyre::Report::new)?
         .map(|block| Block::from_execution_block_unchecked(block, None));
     response

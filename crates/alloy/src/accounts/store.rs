@@ -873,7 +873,7 @@ impl TempoStoredAccessKey {
     pub fn authorization_witness(&self) -> Option<B256> {
         self.key_authorization
             .as_ref()
-            .and_then(|authorization| authorization.witness)
+            .and_then(|authorization| authorization.witness())
     }
 
     /// Whether the store contains usable local signing material for this key.
@@ -1847,7 +1847,7 @@ impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
             is_admin: false,
             account: None,
         };
-        Ok(Self::new(authorization, value.signature.try_into()?))
+        Ok(authorization.into_signed(value.signature.try_into()?))
     }
 }
 
@@ -1988,7 +1988,7 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(Self::new(authorization, signature.try_into()?))
+        Ok(authorization.into_signed(signature.try_into()?))
     }
 }
 
@@ -2553,7 +2553,7 @@ fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<Writabl
             .flat_map(|scope| {
                 if scope.selector_rules.is_empty() {
                     return vec![WritableScope {
-                        address: scope.target,
+                        address: scope.target(),
                         selector: None,
                         recipients: Vec::new(),
                     }];
@@ -2562,8 +2562,8 @@ fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<Writabl
                     .selector_rules
                     .iter()
                     .map(|rule| WritableScope {
-                        address: scope.target,
-                        selector: Some(alloy_primitives::hex::encode_prefixed(rule.selector)),
+                        address: scope.target(),
+                        selector: Some(alloy_primitives::hex::encode_prefixed(rule.selector())),
                         recipients: rule.recipients.clone(),
                     })
                     .collect()
@@ -2602,8 +2602,8 @@ fn writable_access_key(
             expiry: authorization.expiry.map(NonZeroU64::get),
             limits,
             scopes: writable_scopes(authorization),
-            witness: authorization.witness,
-            is_admin: authorization.is_admin,
+            witness: authorization.witness(),
+            is_admin: authorization.is_admin(),
             account: authorization.account,
             key_type: "secp256k1",
             signature: writable_signature(&authorization.signature)?,
@@ -3117,7 +3117,7 @@ fn persisted_scopes_to_call_scopes(
 
         let index = match grouped
             .iter()
-            .position(|candidate| candidate.target == scope.address)
+            .position(|candidate| candidate.target() == scope.address)
         {
             Some(index) => index,
             None => {
@@ -3135,7 +3135,7 @@ fn persisted_scopes_to_call_scopes(
         if entry
             .selector_rules
             .iter()
-            .any(|rule| rule.selector == selector.0)
+            .any(|rule| rule.selector() == selector.0)
         {
             return Err(PersistedKeyError::InvalidCallScope);
         }
@@ -3323,7 +3323,7 @@ mod tests {
                         SignatureType::Secp256k1,
                         signer.address(),
                     )
-                    .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+                    .into_signed(PrimitiveSignature::default());
                     started_tx.send(()).unwrap();
                     let result = TempoAccountsStore::at(path)
                         .upsert_secp256k1_access_key(account, &signer, &authorization)
@@ -3519,7 +3519,7 @@ mod tests {
         let signer = PrivateKeySigner::random();
         let authorization =
             KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
-                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+                .into_signed(PrimitiveSignature::default());
         let initial = serde_json::json!({
             "tempo-cli.store": {
                 "state": {
@@ -3808,7 +3808,7 @@ mod tests {
         let access_key = PrivateKeySigner::random();
         let authorization =
             KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, access_key.address())
-                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+                .into_signed(PrimitiveSignature::default());
         let mut encoded = Vec::new();
         alloy_rlp::Encodable::encode(&authorization, &mut encoded);
         let path = write_store(serde_json::json!([{
@@ -4809,7 +4809,7 @@ mod tests {
 
     fn test_process_authorization(signer: &PrivateKeySigner) -> SignedKeyAuthorization {
         KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
-            .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+            .into_signed(PrimitiveSignature::default())
     }
 
     fn spawn_store_mutation_process(

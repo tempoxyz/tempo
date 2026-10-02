@@ -97,7 +97,7 @@ fn payload_resolution_does_not_occupy_the_execution_task_slot() {
         assert!(verdict.is_some());
         let payload = build.await.expect("build should complete");
         let (block, _) = payload.into_execution_payload();
-        assert_eq!(block.hash(), proposal_digest.0);
+        assert_eq!(block.hash(), proposal_digest.get());
     });
 }
 
@@ -158,7 +158,7 @@ fn multiple_payload_jobs_can_complete_out_of_order() {
         };
         let second = second.expect("second build should complete");
         let (block, _) = second.into_execution_payload();
-        assert_eq!(block.hash(), second_digest.0);
+        assert_eq!(block.hash(), second_digest.get());
         assert!(
             first
                 .try_recv()
@@ -178,7 +178,7 @@ fn multiple_payload_jobs_can_complete_out_of_order() {
         };
         let first = first.expect("first build should complete");
         let (block, _) = first.into_execution_payload();
-        assert_eq!(block.hash(), first_digest.0);
+        assert_eq!(block.hash(), first_digest.get());
         assert!(h.execution.canceled_payload_jobs().is_empty());
     });
 }

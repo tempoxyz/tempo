@@ -654,7 +654,7 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::setNetworkIdentityRotationEpochCall,
     ) -> Result<()> {
         self.config.read()?.require_init()?.require_owner(sender)?;
-        let previous_epoch = self.next_network_identity_rotation_epoch.read()?;
+        let previous_epoch = self.get_next_network_identity_rotation_epoch()?;
         self.next_network_identity_rotation_epoch
             .write(call.epoch)?;
         self.emit_event(ValidatorConfigV2Event::network_identity_rotation_epoch_set(
@@ -872,7 +872,7 @@ impl ValidatorConfigV2 {
             config.owner = v1.owner()?;
             let v1_count = v1.validator_count()?;
             if v1_count == 0 {
-                Err(ValidatorConfigV2Error::empty_v_1_validator_set())?
+                Err(ValidatorConfigV2Error::empty_v1_validator_set())?
             }
             config.v1_validator_count = v1_count as u8;
             self.config.write(Config {

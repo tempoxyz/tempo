@@ -1088,7 +1088,10 @@ mod tests {
             .timestamp(current_timestamp_millis())
             .build();
         let block = create_valid_block(header, vec![user_tx, system_tx]);
-        let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO, Address::ZERO]);
+        let recovered = reth_primitives_traits::Block::into_recovered_with_signers(
+            block,
+            vec![Address::ZERO, Address::ZERO],
+        );
 
         let receipt = TempoReceipt {
             tx_type: tempo_primitives::TempoTxType::Legacy,

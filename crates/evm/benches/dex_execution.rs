@@ -32,7 +32,7 @@ use tempo_precompiles::{
     stablecoin_dex::StablecoinDEX,
     storage::{StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ISSUER_ROLE, TIP20Token},
+    tip20::TIP20Token,
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
 };
@@ -88,7 +88,8 @@ fn seed_dex_cache_db(
             )?;
 
             let mut quote = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            quote.grant_role_internal(admin, ISSUER_ROLE)?;
+            quote
+                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role())?;
 
             let base_token = TIP20Factory::new().create_token(
                 admin,
@@ -102,7 +103,7 @@ fn seed_dex_cache_db(
                 },
             )?;
             let mut base = TIP20Token::from_address(base_token)?;
-            base.grant_role_internal(admin, ISSUER_ROLE)?;
+            base.grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role())?;
 
             for participant in participants {
                 let mint = ITIP20::mintCall {

@@ -111,7 +111,7 @@ pub(crate) fn call_scopes_allow(
         let Some(scopes) = scopes else {
             return Some(true);
         };
-        let scope = scopes.iter().find(|scope| scope.target == *target)?;
+        let scope = scopes.iter().find(|scope| scope.target() == *target)?;
         if scope.selector_rules.is_empty() {
             return Some(true);
         }
@@ -120,7 +120,7 @@ pub(crate) fn call_scopes_allow(
         let rule = scope
             .selector_rules
             .iter()
-            .find(|rule| rule.selector == selector)?;
+            .find(|rule| rule.selector() == selector)?;
         if rule.recipients.is_empty() {
             return Some(true);
         }
@@ -528,16 +528,16 @@ mod tests {
             .approve(vec![])
             .build();
 
-        assert_eq!(scope.target, token);
+        assert_eq!(scope.target(), token);
         assert_eq!(scope.selector_rules.len(), 2);
         assert_eq!(
-            scope.selector_rules[0].selector,
+            scope.selector_rules[0].selector(),
             ITIP20::transferCall::SELECTOR
         );
         assert_eq!(scope.selector_rules[0].recipients, vec![recipient]);
 
         assert_eq!(
-            scope.selector_rules[1].selector,
+            scope.selector_rules[1].selector(),
             ITIP20::approveCall::SELECTOR
         );
         assert!(scope.selector_rules[1].recipients.is_empty());

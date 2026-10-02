@@ -309,7 +309,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         .request::<_, AnyReceiptEnvelope>("eth_getTransactionReceipt", (tx_hash,))
         .await?;
 
-    assert!(receipt.status());
+    assert!(receipt.is_success());
 
     Ok(())
 }

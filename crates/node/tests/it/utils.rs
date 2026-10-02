@@ -300,7 +300,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_node::node::TempoNode;
 use tempo_payload_types::TempoPayloadAttributes;
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
 pub(crate) async fn setup_test_token<P>(
@@ -334,7 +334,7 @@ where
     let roles = IRolesAuth::new(*token.address(), provider);
 
     roles
-        .grantRole(ISSUER_ROLE, caller)
+        .grantRole(tempo_precompiles::tip20::TIP20Token::issuer_role(), caller)
         .from(caller)
         .gas(1_000_000)
         .send()
@@ -403,9 +403,7 @@ impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
         let provider = RootProvider::<TempoNetwork>::new(client);
         // get_receipt also polls independently of the heartbeat for one confirmation,
         // so it can recover when the heartbeat misses the block containing the transaction.
-        Ok(PendingTransactionBuilder::from_config(provider, config)
-            .get_receipt()
-            .await?)
+        Ok(config.with_provider(provider).get_receipt().await?)
     }
 }
 

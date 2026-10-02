@@ -74,7 +74,7 @@ where
         .wrap_err("failed to read finalized execution block num hash")?
         .ok_or_eyre("no finalized execution state")?;
     let execution_finalized_height = execution_finalized.number;
-    let execution_finalized_digest = Digest(execution_finalized.hash);
+    let execution_finalized_digest = Digest::new(execution_finalized.hash);
 
     let finalizations = init_finalizations_archive(
         context,
@@ -533,7 +533,7 @@ mod tests {
 
     /// A digest for heights that have a certificate but no backing test block.
     fn synthetic_digest(height: u64) -> Digest {
-        Digest(B256::with_last_byte(height as u8))
+        Digest::new(B256::with_last_byte(height as u8))
     }
 
     #[test_traced]

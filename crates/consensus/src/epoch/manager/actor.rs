@@ -353,7 +353,7 @@ where
             None => {
                 let chain_spec = self.config.execution_node.chain_spec();
                 (
-                    Floor::Genesis(Digest(chain_spec.genesis_hash())),
+                    Floor::Genesis(Digest::new(chain_spec.genesis_hash())),
                     chain_spec.genesis_header().timestamp(),
                 )
             }

@@ -359,11 +359,11 @@ where
                     the execution layer's finalized height `{}`",
                     execution_finalized_num_hash.number,
                 ))?;
-            (finalized_floor, Digest(digest))
+            (finalized_floor, Digest::new(digest))
         } else {
             (
                 Height::new(execution_finalized_num_hash.number),
-                Digest(execution_finalized_num_hash.hash),
+                Digest::new(execution_finalized_num_hash.hash),
             )
         };
 
@@ -987,7 +987,7 @@ where
                     )
                 })?;
             ensure!(
-                canonical == Some(block.digest().0),
+                canonical == Some(block.digest().get()),
                 "re-delivered finalized block `{}` at height `{}` conflicts with the \
                 execution layer's canonical block `{canonical:?}` at the same height, which \
                 the execution layer already considers final",
@@ -2515,7 +2515,7 @@ fn is_stale_forkchoice(
             )
         })?;
     ensure!(
-        canonical_digest == target.finalized.1.0,
+        canonical_digest == target.finalized.1.get(),
         "tracked finalized block `{}` at height `{}` conflicts with the execution \
         layer's canonical block `{canonical_digest}` at the same height, which the \
         execution layer already considers final; two different blocks must never be \
@@ -2666,9 +2666,9 @@ impl LocalState {
     /// execution layer.
     fn to_forkchoice_state(self) -> ForkchoiceState {
         ForkchoiceState {
-            head_block_hash: self.head.1.0,
-            safe_block_hash: self.finalized.1.0,
-            finalized_block_hash: self.finalized.1.0,
+            head_block_hash: self.head.1.get(),
+            safe_block_hash: self.finalized.1.get(),
+            finalized_block_hash: self.finalized.1.get(),
         }
     }
 

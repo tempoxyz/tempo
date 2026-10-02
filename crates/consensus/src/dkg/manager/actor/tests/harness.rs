@@ -187,8 +187,12 @@ impl HarnessBuilder {
             let fixture = dkg_fixture(&mut self.context, identity_epoch);
             let tip = (!self.last_finalized_height.is_zero()).then(|| {
                 let header = header(self.last_finalized_height);
-                let certificate =
-                    make_certificate(Digest(header.hash_slow()), tip_epoch, 1, &fixture.schemes);
+                let certificate = make_certificate(
+                    Digest::new(header.hash_slow()),
+                    tip_epoch,
+                    1,
+                    &fixture.schemes,
+                );
                 (self.last_finalized_height, certificate)
             });
             (

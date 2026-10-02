@@ -119,7 +119,6 @@ mod tests {
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
-        tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
@@ -334,8 +333,8 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_role(pauser, PAUSE_ROLE)
-                .with_role(unpauser, UNPAUSE_ROLE)
+                .with_role(pauser, crate::tip20::TIP20Token::pause_role())
+                .with_role(unpauser, crate::tip20::TIP20Token::unpause_role())
                 .apply()?;
             assert!(!token.paused()?);
 
@@ -367,7 +366,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(burner, ISSUER_ROLE)
+                .with_role(burner, crate::tip20::TIP20Token::issuer_role())
                 .with_mint(burner, initial_balance)
                 .apply()?;
 
@@ -493,11 +492,11 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(user1, ISSUER_ROLE)
+                .with_role(user1, crate::tip20::TIP20Token::issuer_role())
                 .apply()?;
 
             let has_role_call = IRolesAuth::hasRoleCall {
-                role: ISSUER_ROLE,
+                role: crate::tip20::TIP20Token::issuer_role(),
                 account: user1,
             };
             let calldata = has_role_call.abi_encode();
@@ -507,7 +506,7 @@ mod tests {
             assert!(has_role);
 
             let has_role_call = IRolesAuth::hasRoleCall {
-                role: ISSUER_ROLE,
+                role: crate::tip20::TIP20Token::issuer_role(),
                 account: user2,
             };
             let calldata = has_role_call.abi_encode();

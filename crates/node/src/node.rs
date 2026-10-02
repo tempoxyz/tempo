@@ -310,7 +310,7 @@ impl TempoNode {
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
-        ProviderFactoryBuilder::default()
+        reth_provider::ProviderFactory::builder()
     }
 
     /// Sets the transaction pool builder.

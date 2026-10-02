@@ -80,7 +80,7 @@ where
 
         let result = TempoTxResult::new_precomputed(
             recovered.tx(),
-            tx_env.execution_context,
+            tx_env.execution_context(),
             result,
             state,
             next_section,

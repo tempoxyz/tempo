@@ -8,7 +8,6 @@ use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
 use core::num::NonZeroU64;
-use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
@@ -219,7 +218,8 @@ impl TxBuilder {
         let aa_signed = tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
 
-        let recovered = Recovered::new_unchecked(envelope, self.sender);
+        let recovered =
+            reth_primitives_traits::SignedTransaction::with_signer(envelope, self.sender);
         TempoPooledTransaction::new(recovered)
     }
 
@@ -334,7 +334,8 @@ impl TxBuilder {
             B256::ZERO,
         ));
 
-        let recovered = Recovered::new_unchecked(envelope, self.sender);
+        let recovered =
+            reth_primitives_traits::SignedTransaction::with_signer(envelope, self.sender);
         TempoPooledTransaction::new(recovered)
     }
 }
@@ -346,7 +347,8 @@ pub(crate) fn wrap_valid_tx(
     tx: TempoPooledTransaction,
     origin: TransactionOrigin,
 ) -> ValidPoolTransaction<TempoPooledTransaction> {
-    let tx_id = reth_transaction_pool::identifier::TransactionId::new(0u64.into(), tx.nonce());
+    let tx_id =
+        reth_transaction_pool::identifier::SenderId::into_transaction_id(0u64.into(), tx.nonce());
     ValidPoolTransaction {
         transaction: tx,
         transaction_id: tx_id,

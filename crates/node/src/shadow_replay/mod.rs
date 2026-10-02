@@ -761,7 +761,7 @@ mod tests {
         block.header.inner.timestamp = timestamp;
         block.header.inner.parent_beacon_block_root = Some(B256::ZERO);
         block.header.inner.base_fee_per_gas = Some(0);
-        let block = RecoveredBlock::new_unhashed(block, vec![]);
+        let block = reth_primitives_traits::Block::into_recovered_with_signers(block, vec![]);
         let config = TempoEvmConfig::new(candidate);
         let mut db = State::builder().with_bundle_update().build();
         let evm = config.evm_for_block(&mut db, block.header()).unwrap();

@@ -267,7 +267,7 @@ where
         };
 
         let finalization_digest = finalization.proposal.payload;
-        let block_digest = Digest(block.header.hash_slow());
+        let block_digest = Digest::new(block.header.hash_slow());
         ensure!(
             finalization_digest == block_digest,
             "digest mismatch at height `{height}`. finalization: {finalization_digest}, execution: {block_digest}",

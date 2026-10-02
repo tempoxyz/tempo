@@ -22,7 +22,7 @@ impl Target {
         let tip = header.num_hash();
         Self {
             round: header.consensus_context.map(round_from_context),
-            digest: Digest(tip.hash),
+            digest: Digest::new(tip.hash),
         }
     }
 
@@ -66,7 +66,7 @@ mod tests {
     }
 
     fn digest(byte: u8) -> Digest {
-        Digest(alloy_primitives::B256::with_last_byte(byte))
+        Digest::new(alloy_primitives::B256::with_last_byte(byte))
     }
 
     fn execution_header(
@@ -89,7 +89,7 @@ mod tests {
                 consensus_context,
                 ..Default::default()
             },
-            digest.0,
+            digest.get(),
         )
     }
 

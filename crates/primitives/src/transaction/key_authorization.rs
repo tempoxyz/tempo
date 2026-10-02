@@ -144,7 +144,7 @@ impl From<AbiCallScope> for CallScope {
 impl From<CallScope> for AbiCallScope {
     fn from(scope: CallScope) -> Self {
         Self {
-            target: scope.target,
+            target: scope.target(),
             selectorRules: scope.selector_rules.into_iter().map(Into::into).collect(),
         }
     }
@@ -162,7 +162,7 @@ impl From<AbiSelectorRule> for SelectorRule {
 impl From<SelectorRule> for AbiSelectorRule {
     fn from(rule: SelectorRule) -> Self {
         Self {
-            selector: rule.selector.into(),
+            selector: rule.selector().into(),
             recipients: rule.recipients,
         }
     }
@@ -333,7 +333,7 @@ impl KeyAuthorization {
 
     /// Returns whether this authorization carries a TIP-1053 witness field.
     pub fn has_witness(&self) -> bool {
-        self.witness.is_some()
+        self.witness().is_some()
     }
 
     /// Returns whether this key has unlimited spending (limits is None)
@@ -351,7 +351,7 @@ impl KeyAuthorization {
         !(self.has_periodic_limits()
             || self.has_call_scopes()
             || self.has_witness()
-            || self.is_admin
+            || self.is_admin()
             || self.account.is_some())
     }
 
@@ -640,8 +640,8 @@ mod rlp {
                     expiry: authorization.expiry,
                     limits: authorization.limits.clone(),
                     allowed_calls: authorization.allowed_calls.clone(),
-                    witness: authorization.witness,
-                    is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
+                    witness: authorization.witness(),
+                    is_admin: authorization.is_admin().then_some(NonZeroU64::MIN),
                     account: authorization.account,
                 };
                 let encoded = alloy_rlp::encode(&authorization);
@@ -846,11 +846,11 @@ mod tests {
 
         assert!(!normal.is_admin());
         assert!(admin.is_admin());
-        assert!(admin.is_admin);
+        assert!(admin.is_admin());
         assert_eq!(admin.account, Some(account));
         assert!(!admin.is_legacy_compatible());
         assert!(!account_bound.is_admin());
-        assert!(!account_bound.is_admin);
+        assert!(!account_bound.is_admin());
         assert_eq!(account_bound.account, Some(account));
         assert!(!account_bound.is_legacy_compatible());
 
@@ -860,7 +860,7 @@ mod tests {
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
         assert_eq!(decoded, admin);
         assert_eq!(decoded.witness(), Some(witness));
-        assert!(decoded.is_admin);
+        assert!(decoded.is_admin());
         assert_eq!(decoded.account, Some(account));
 
         assert_ne!(admin.signature_hash(), normal.signature_hash());
@@ -1183,7 +1183,7 @@ mod tests {
         assert!(header.list);
         assert_eq!(
             header.payload_length,
-            scope.target.length() + Vec::<SelectorRule>::new().length()
+            scope.target().length() + Vec::<SelectorRule>::new().length()
         );
 
         let decoded =
@@ -1206,7 +1206,7 @@ mod tests {
 
         let decoded =
             <CallScope as Decodable>::decode(&mut encoded.as_slice()).expect("decode scope");
-        assert_eq!(decoded.target, target);
+        assert_eq!(decoded.target(), target);
         assert!(decoded.selector_rules.is_empty());
 
         let mut reencoded = Vec::new();
@@ -1245,7 +1245,7 @@ mod tests {
         assert!(header.list);
         assert_eq!(
             header.payload_length,
-            rule.selector.length() + Vec::<Address>::new().length()
+            rule.selector().length() + Vec::<Address>::new().length()
         );
 
         let decoded =
@@ -1268,7 +1268,7 @@ mod tests {
 
         let decoded =
             <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
-        assert_eq!(decoded.selector, selector);
+        assert_eq!(decoded.selector(), selector);
         assert!(decoded.recipients.is_empty());
 
         let mut reencoded = Vec::new();
@@ -1331,7 +1331,7 @@ mod tests {
         }))
         .expect("deserialize selector rule with hex selector");
 
-        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(decoded.selector(), [0xaa, 0xbb, 0xcc, 0xdd]);
         assert_eq!(decoded.recipients, vec![recipient]);
     }
 
@@ -1344,7 +1344,7 @@ mod tests {
         }))
         .expect("deserialize selector rule with legacy selector array");
 
-        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(decoded.selector(), [0xaa, 0xbb, 0xcc, 0xdd]);
         assert!(decoded.recipients.is_empty());
     }
 

@@ -131,11 +131,7 @@ impl LayoutCtx {
     /// Get the packed offset, returns `None` for `FULL` and `INIT`
     #[inline]
     pub const fn packed_offset(&self) -> Option<usize> {
-        if self.0 >= usize::MAX - 1 {
-            None
-        } else {
-            Some(self.0)
-        }
+        if self.is_full() { None } else { Some(self.0) }
     }
 
     /// Returns `true` if this context signals the tail doesn't need to be cleared.

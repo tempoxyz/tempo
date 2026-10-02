@@ -299,7 +299,7 @@ impl<D, R> RelayTransport<D, R> {
                                     .map_err(TransportErrorKind::non_retryable)?
                             }
                             ResponsePayload::Failure(err) => {
-                                return Err(RpcError::ErrorResp(err));
+                                return Err(RpcError::err_resp(err));
                             }
                         },
                         ResponsePacket::Batch(_) => {
@@ -559,7 +559,7 @@ mod tests {
             true
         }
         async fn get_transport(&self) -> Result<BoxTransport, TransportError> {
-            Ok(BoxTransport::new(self.0.clone()))
+            Ok(alloy_transport::Transport::boxed(self.0.clone()))
         }
     }
 
@@ -821,7 +821,7 @@ mod tests {
         let inner = RecordingTransport::default();
         inner.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc = AuthHeaderTransport::new(
-            BoxTransport::new(inner.clone()),
+            alloy_transport::Transport::boxed(inner.clone()),
             Authorization::bearer("sponsor-token"),
         )
         .unwrap();

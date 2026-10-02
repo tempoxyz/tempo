@@ -126,7 +126,7 @@ mod tests {
             marshal_reporter.report(Update::Tip(
                 Round::new(Epoch::zero(), View::zero()),
                 Height::zero(),
-                Digest(B256::ZERO),
+                Digest::new(B256::ZERO),
             )),
             Feedback::Closed
         );

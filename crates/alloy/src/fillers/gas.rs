@@ -364,7 +364,7 @@ mod tests {
             SignatureType::Secp256k1,
             Address::repeat_byte(0x22),
         )
-        .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        .into_signed(PrimitiveSignature::default());
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(account),
@@ -392,7 +392,7 @@ mod tests {
             SignatureType::Secp256k1,
             Address::repeat_byte(0x22),
         )
-        .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        .into_signed(PrimitiveSignature::default());
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(account),
@@ -416,7 +416,7 @@ mod tests {
         let account = Address::repeat_byte(0x11);
         let key_id = Address::repeat_byte(0x22);
         let authorization = KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, key_id)
-            .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            .into_signed(PrimitiveSignature::default());
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(account),

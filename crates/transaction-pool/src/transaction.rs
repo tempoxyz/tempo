@@ -140,7 +140,7 @@ impl TempoPooledTransaction {
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
-        &self.inner.transaction
+        self.inner.transaction()
     }
 
     /// Resolves the transaction fee payer.
@@ -279,14 +279,8 @@ impl TempoPooledTransaction {
     /// Returns the unique identifier for this AA transaction.
     pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
-        let sender = AASequenceId {
-            address: self.sender(),
-            nonce_key,
-        };
-        Some(AA2dTransactionId {
-            seq_id: sender,
-            nonce: self.nonce(),
-        })
+        let sender = AASequenceId::new(self.sender(), nonce_key);
+        Some(AA2dTransactionId::new(sender, self.nonce()))
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
@@ -322,7 +316,7 @@ impl TempoPooledTransaction {
 
     /// Returns a tuple that can be passed to block executor.
     pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
-        (self.tx_env().clone(), &self.inner.transaction)
+        (self.clone_tx_env(), self.inner.transaction())
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -837,7 +831,7 @@ impl PoolTransaction for TempoPooledTransaction {
         };
 
         Ok(Self::new_with(
-            Recovered::new_unchecked(transaction, signer),
+            reth_primitives_traits::SignedTransaction::with_signer(transaction, signer),
             expiring_nonce_hash,
             encoded_length,
         ))
@@ -1411,7 +1405,7 @@ mod tests {
         let signature = TempoSignature::from(Signature::test_signature());
         let aa_signed = aa_tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
-        let recovered = Recovered::new_unchecked(envelope, sender);
+        let recovered = reth_primitives_traits::SignedTransaction::with_signer(envelope, sender);
 
         let pooled = TempoPooledTransaction::from_pooled(recovered);
         assert_eq!(pooled.sender(), sender);
@@ -1426,7 +1420,7 @@ mod tests {
             tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
             let (pooled, envelope, sender, encoded_length) = raw_pooled_transaction(tx);
             let expected = envelope.as_aa().unwrap().expiring_nonce_hash(sender);
-            let via_new = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+            let via_new = TempoPooledTransaction::new(reth_primitives_traits::SignedTransaction::with_signer(envelope, sender));
 
             prop_assert!(pooled.is_expiring_nonce());
             prop_assert_eq!(pooled.encoded_length(), encoded_length);
@@ -1442,7 +1436,7 @@ mod tests {
         ) {
             tx.nonce_key = U256::ZERO;
             let (pooled, envelope, sender, encoded_length) = raw_pooled_transaction(tx);
-            let via_new = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+            let via_new = TempoPooledTransaction::new(reth_primitives_traits::SignedTransaction::with_signer(envelope, sender));
 
             prop_assert!(!pooled.is_expiring_nonce());
             prop_assert_eq!(pooled.encoded_length(), encoded_length);

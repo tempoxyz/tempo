@@ -136,7 +136,7 @@ mod codec {
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
                 Self::AA => {
-                    buf.put_u8(crate::transaction::TEMPO_TX_TYPE_ID);
+                    buf.put_u8(crate::transaction::tempo_transaction::TempoTransaction::tx_type());
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
             }

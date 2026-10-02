@@ -36,7 +36,7 @@ impl From<TempoEthApiError> for jsonrpsee::types::error::ErrorObject<'static> {
         }
 
         match error {
-            TempoEthApiError::EthApiError(err) => err.into(),
+            TempoEthApiError::EthApiError(err) => err.into_rpc_err(),
         }
     }
 }
@@ -76,7 +76,7 @@ where
             return Self::EthApiError(EthApiError::Other(Box::new(rpc_error)));
         }
 
-        EthApiError::from(error).into()
+        TempoEthApiError::from(error)
     }
 }
 

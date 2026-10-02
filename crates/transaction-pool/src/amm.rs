@@ -212,7 +212,7 @@ impl AmmLiquidityCache {
                 if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
                     // Update AMM pools
                     let validator_reserve = U256::from(
-                        Pool::decode_from_slot(value.present_value).reserve_validator_token,
+                        Pool::decode_from_slot(value.present_value()).reserve_validator_token,
                     );
                     inner.pool_cache.insert(pool, validator_reserve);
                 } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {

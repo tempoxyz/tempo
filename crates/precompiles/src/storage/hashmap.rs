@@ -133,10 +133,13 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
-        let Some(account) = self.accounts.get(&address) else {
+        let Some(account) = self.get_account_info(address) else {
             return Ok((B256::ZERO, Bytecode::default()));
         };
-        Ok((account.code_hash, account.code.clone().unwrap_or_default()))
+        Ok((
+            account.code_hash(),
+            account.code.clone().unwrap_or_default(),
+        ))
     }
 
     fn sstore(

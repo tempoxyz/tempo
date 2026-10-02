@@ -97,7 +97,7 @@ impl FinalizationVerifier {
         let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&*bytes)
             .map_err(|error| Error::MalformedCertificate(error.into()))?;
 
-        if finalization.proposal.payload.0 != certified.block.hash() {
+        if finalization.proposal.payload.get() != certified.block.hash() {
             return Err(Error::BlockDigestMismatch);
         }
 

@@ -61,7 +61,7 @@ impl FixedSize for Digest {
 
 impl std::fmt::Display for Digest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        self.get().fmt(f)
     }
 }
 
@@ -81,6 +81,6 @@ impl Span for Digest {}
 
 impl Write for Digest {
     fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.0.write(buf)
+        self.get().write(buf)
     }
 }

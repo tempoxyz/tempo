@@ -264,12 +264,12 @@ impl TIP20Token {
 
     /// Returns the token balance of `account`.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances[call.account].read()
+        self.get_balance(call.account)
     }
 
     /// Returns the remaining allowance that `spender` can transfer on behalf of `owner`.
     pub fn allowance(&self, call: ITIP20::allowanceCall) -> Result<U256> {
-        self.allowances[call.owner][call.spender].read()
+        self.get_allowance(call.owner, call.spender)
     }
 
     /// Updates the [`TIP403Registry`] transfer policy governing this token's transfers.
@@ -2526,7 +2526,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(admin, PAUSE_ROLE)
+                .with_role(admin, crate::tip20::TIP20Token::pause_role())
                 .with_mint(user, amount)
                 .apply()?;
 
@@ -3498,7 +3498,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Token", "TKN", admin)
                     .with_issuer(admin)
-                    .with_role(admin, BURN_AT_ROLE)
+                    .with_role(admin, crate::tip20::TIP20Token::burn_at_role())
                     .with_mint(admin, U256::from(10))
                     .clear_events()
                     .apply()?;
@@ -3542,9 +3542,9 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, BURN_BLOCKED_ROLE)
-                .with_role(admin, PAUSE_ROLE)
-                .with_role(admin, UNPAUSE_ROLE)
+                .with_role(burner, crate::tip20::TIP20Token::burn_blocked_role())
+                .with_role(admin, crate::tip20::TIP20Token::pause_role())
+                .with_role(admin, crate::tip20::TIP20Token::unpause_role())
                 .with_mint(admin, U256::from(10))
                 .apply()?;
             let call = ITIP20::burnAtCall {
@@ -3559,13 +3559,15 @@ pub(crate) mod tests {
                 );
             }
             assert_eq!(
-                token.get_role_admin(IRolesAuth::getRoleAdminCall { role: BURN_AT_ROLE })?,
+                token.get_role_admin(IRolesAuth::getRoleAdminCall {
+                    role: crate::tip20::TIP20Token::burn_at_role()
+                })?,
                 DEFAULT_ADMIN_ROLE
             );
             token.grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
-                    role: BURN_AT_ROLE,
+                    role: crate::tip20::TIP20Token::burn_at_role(),
                     account: burner,
                 },
             )?;
@@ -3579,7 +3581,7 @@ pub(crate) mod tests {
             token.revoke_role(
                 admin,
                 IRolesAuth::revokeRoleCall {
-                    role: BURN_AT_ROLE,
+                    role: crate::tip20::TIP20Token::burn_at_role(),
                     account: burner,
                 },
             )?;
@@ -3603,7 +3605,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Token", "TKN", admin)
                     .with_issuer(admin)
-                    .with_role(burner, BURN_AT_ROLE)
+                    .with_role(burner, crate::tip20::TIP20Token::burn_at_role())
                     .with_mint(holder, U256::from(100))
                     .apply()?;
                 token.change_transfer_policy_id(
@@ -3653,8 +3655,8 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_role(admin, BURN_AT_ROLE)
-                .with_role(admin, BURN_BLOCKED_ROLE)
+                .with_role(admin, crate::tip20::TIP20Token::burn_at_role())
+                .with_role(admin, crate::tip20::TIP20Token::burn_blocked_role())
                 .apply()?;
             token.change_transfer_policy_id(
                 admin,
@@ -3705,7 +3707,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Token", "TKN", admin)
                     .with_issuer(admin)
-                    .with_role(admin, BURN_BLOCKED_ROLE)
+                    .with_role(admin, crate::tip20::TIP20Token::burn_blocked_role())
                     .with_mint(portal, U256::from(10))
                     .apply()?;
                 token.change_transfer_policy_id(
@@ -3736,14 +3738,14 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(admin, BURN_AT_ROLE)
+                .with_role(admin, crate::tip20::TIP20Token::burn_at_role())
                 .with_mint(holder, U256::from(100))
                 .apply()?;
             // Seed reward state settled before T8, including the balance backing the claim.
             token.set_balance(token.address, U256::from(20))?;
             token.set_total_supply(U256::from(120))?;
             token.global_reward_per_token.write(U256::from(3))?;
-            token.opted_in_supply.write(100)?;
+            token.set_opted_in_supply(100)?;
             token.user_reward_info[holder].write(UserRewardInfo {
                 reward_recipient: holder,
                 reward_per_token: U256::from(2),
@@ -3810,7 +3812,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(bridge, BURN_AT_ROLE)
+                .with_role(bridge, crate::tip20::TIP20Token::burn_at_role())
                 .with_mint(holder, U256::from(300))
                 .with_mint(bridge, U256::from(200))
                 .apply()?;
@@ -3879,7 +3881,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || -> Result<()> {
                 let mut token = TIP20Setup::create("Token", "TKN", admin)
                     .with_issuer(admin)
-                    .with_role(admin, BURN_AT_ROLE)
+                    .with_role(admin, crate::tip20::TIP20Token::burn_at_role())
                     .apply()?;
                 token.set_balance(holder, balance)?;
                 token.set_total_supply(balance)?;
@@ -3919,7 +3921,7 @@ pub(crate) mod tests {
                     TIP20Setup::path_usd(holder).with_issuer(holder).apply()?;
                     let token = TIP20Setup::create("Token", "TKN", holder)
                         .with_issuer(holder)
-                        .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
+                        .with_role(MULTICALL3_ADDRESS, crate::tip20::TIP20Token::burn_at_role())
                         .with_mint(holder, U256::from(balance))
                         .apply()?;
                     authorize_burn_key(holder, key.address(), token.address, 0)?;
@@ -4189,7 +4191,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, BURN_BLOCKED_ROLE)
+                .with_role(burner, crate::tip20::TIP20Token::burn_blocked_role())
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
                 .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
@@ -4220,7 +4222,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, BURN_BLOCKED_ROLE)
+                .with_role(burner, crate::tip20::TIP20Token::burn_blocked_role())
                 .apply()?;
 
             for protected in [
@@ -4258,7 +4260,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, BURN_BLOCKED_ROLE)
+                .with_role(burner, crate::tip20::TIP20Token::burn_blocked_role())
                 .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
                 .apply()?;
 
@@ -5310,7 +5312,7 @@ pub(crate) mod tests {
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_role(admin, PAUSE_ROLE)
+                    .with_role(admin, crate::tip20::TIP20Token::pause_role())
                     .apply()?;
 
                 // Pause the token
@@ -5531,7 +5533,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(admin, PAUSE_ROLE)
+                .with_role(admin, crate::tip20::TIP20Token::pause_role())
                 .apply()?;
             token.pause(admin, ITIP20::pauseCall {})?;
 
@@ -5564,7 +5566,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, PAUSE_ROLE)
+                    .with_role(admin, crate::tip20::TIP20Token::pause_role())
                     .apply()?;
 
                 token.pause(admin, ITIP20::pauseCall {})?;
@@ -5600,7 +5602,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, PAUSE_ROLE)
+                    .with_role(admin, crate::tip20::TIP20Token::pause_role())
                     .with_mint(admin, amount * U256::from(2))
                     .apply()?;
 
@@ -5656,8 +5658,8 @@ pub(crate) mod tests {
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, PAUSE_ROLE)
-                    .with_role(admin, BURN_BLOCKED_ROLE)
+                    .with_role(admin, crate::tip20::TIP20Token::pause_role())
+                    .with_role(admin, crate::tip20::TIP20Token::burn_blocked_role())
                     .with_mint(blocked, amount)
                     .apply()?;
 

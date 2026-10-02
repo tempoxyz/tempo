@@ -325,7 +325,7 @@ pub(crate) mod marshal {
             header.number(),
         );
         ensure!(
-            Digest(header.hash_slow()) == digest,
+            Digest::new(header.hash_slow()) == digest,
             "finalized tip header hash does not match certificate payload at height `{height}`",
         );
         Ok(())
@@ -424,7 +424,7 @@ pub(crate) mod marshal {
             .provider
             .canonical_in_memory_state()
             .get_finalized_num_hash()
-            .map(|nh| (Height::new(nh.number), Digest(nh.hash)))
+            .map(|nh| (Height::new(nh.number), Digest::new(nh.hash)))
             .unwrap_or_else(|| {
                 (
                     Height::zero(),
@@ -442,7 +442,7 @@ pub(crate) mod marshal {
             let height = Height::new(12);
             let mut header = TempoHeader::default();
             header.inner.number = height.get();
-            let digest = Digest(header.hash_slow());
+            let digest = Digest::new(header.hash_slow());
             verify_tip_header(height, digest, &header).unwrap();
 
             let error = verify_tip_header(height.next(), digest, &header).unwrap_err();

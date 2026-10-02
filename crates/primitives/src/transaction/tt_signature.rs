@@ -2089,7 +2089,7 @@ mod tests {
 
     #[test]
     fn test_keychain_signature_eq_same() {
-        let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let sig = PrimitiveSignature::default();
         let addr = Address::repeat_byte(0x01);
         let a = KeychainSignature::new(addr, sig.clone());
         let b = KeychainSignature::new(addr, sig);
@@ -2098,7 +2098,7 @@ mod tests {
 
     #[test]
     fn test_keychain_signature_eq_different_address() {
-        let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let sig = PrimitiveSignature::default();
         let a = KeychainSignature::new(Address::repeat_byte(0x01), sig.clone());
         let b = KeychainSignature::new(Address::repeat_byte(0x02), sig);
         assert_ne!(a, b);
@@ -2107,7 +2107,7 @@ mod tests {
     #[test]
     fn test_keychain_signature_eq_different_signature() {
         let addr = Address::repeat_byte(0x01);
-        let sig_a = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let sig_a = PrimitiveSignature::default();
         let sig_b = PrimitiveSignature::P256(P256SignatureWithPreHash {
             r: B256::from([1u8; 32]),
             s: B256::from([2u8; 32]),
@@ -2127,7 +2127,7 @@ mod tests {
             hash::{Hash, Hasher},
         };
 
-        let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let sig = PrimitiveSignature::default();
         let a = KeychainSignature::new(Address::repeat_byte(0x01), sig.clone());
         let b = KeychainSignature::new(Address::repeat_byte(0x02), sig.clone());
         let c = KeychainSignature::new(Address::repeat_byte(0x01), sig);
@@ -2180,14 +2180,14 @@ mod tests {
 
     #[test]
     fn test_is_keychain_returns_true_for_keychain() {
-        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let inner = PrimitiveSignature::default();
         let sig = TempoSignature::Keychain(KeychainSignature::new(Address::ZERO, inner));
         assert!(sig.is_keychain());
     }
 
     #[test]
     fn test_keychain_v1_v2_bytes_roundtrip_and_wire_format() {
-        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let inner = PrimitiveSignature::default();
         let user = Address::repeat_byte(0xAA);
 
         // V1 round-trips and uses 0x03 wire byte
@@ -2213,7 +2213,7 @@ mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn test_keychain_serde_roundtrip_and_backward_compat() {
-        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let inner = PrimitiveSignature::default();
         let user = Address::repeat_byte(0xBB);
 
         // V2 serde roundtrip preserves version
@@ -2244,7 +2244,7 @@ mod tests {
     fn test_keychain_rlp_roundtrip_preserves_version() {
         use alloy_rlp::Decodable;
 
-        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let inner = PrimitiveSignature::default();
         let user = Address::repeat_byte(0xCC);
 
         for (sig, expect_legacy) in [

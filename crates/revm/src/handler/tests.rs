@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
-    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
-    tx::TempoBatchCallEnv,
+    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoTxEnv, evm::TempoEvm,
+    gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS, tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use proptest::prelude::*;
@@ -266,7 +265,7 @@ fn test_paused_fee_token_rejected() {
         StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
                 .with_issuer(admin)
-                .with_role(admin, tempo_precompiles::tip20::PAUSE_ROLE)
+                .with_role(admin, tempo_precompiles::tip20::TIP20Token::pause_role())
                 .with_mint(fee_payer, fee)
                 .apply()?;
             token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
@@ -518,7 +517,7 @@ fn test_get_fee_token() -> eyre::Result<()> {
         .unwrap();
 
     {
-        let fee_token = TempoFeeManager.resolve_fee_token(
+        let fee_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut ctx.journaled_state,
             &ctx.tx,
             user,
@@ -539,7 +538,7 @@ fn test_get_fee_token() -> eyre::Result<()> {
         .unwrap();
 
     {
-        let fee_token = TempoFeeManager.resolve_fee_token(
+        let fee_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
             &mut ctx.journaled_state,
             &ctx.tx,
             user,
@@ -551,7 +550,7 @@ fn test_get_fee_token() -> eyre::Result<()> {
 
     // Set tx fee token
     ctx.tx.fee_token = Some(tx_fee_token);
-    let fee_token = TempoFeeManager.resolve_fee_token(
+    let fee_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
         &mut ctx.journaled_state,
         &ctx.tx,
         user,
@@ -568,7 +567,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
     let gas_params = GasParams::default();
 
     // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
@@ -583,7 +582,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
+        signature: secp256k1_sig(), // dummy secp256k1 sig
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -623,7 +622,7 @@ fn test_aa_gas_multiple_calls_overhead() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
@@ -646,7 +645,7 @@ fn test_aa_gas_multiple_calls_overhead() {
     ];
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: calls,
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -727,7 +726,7 @@ fn test_aa_gas_create_call() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let spec = SpecId::CANCUN; // Post-Shanghai
     let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
@@ -739,7 +738,7 @@ fn test_aa_gas_create_call() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -768,7 +767,7 @@ fn test_aa_gas_create_call() {
 fn test_aa_gas_value_transfer() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let calldata = Bytes::from(vec![1]);
 
@@ -779,7 +778,7 @@ fn test_aa_gas_value_transfer() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -804,7 +803,7 @@ fn test_aa_gas_access_list() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![]);
@@ -816,7 +815,7 @@ fn test_aa_gas_access_list() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -894,7 +893,7 @@ fn test_aa_gas_floor_gas_prague() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let spec = SpecId::PRAGUE;
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
@@ -906,7 +905,7 @@ fn test_aa_gas_floor_gas_prague() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -926,7 +925,8 @@ fn test_aa_gas_floor_gas_prague() {
 
     // Floor gas should match revm's calculation for same calldata
     assert_eq!(
-        gas.floor_gas, base_gas.floor_gas,
+        gas.floor_gas(),
+        base_gas.floor_gas(),
         "Should calculate floor gas for Prague matching revm"
     );
 }
@@ -1363,7 +1363,7 @@ fn test_key_authorization_gas_in_batch() {
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
     use tempo_primitives::transaction::{
-        Call, KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoSignature, TokenLimit,
+        Call, KeyAuthorization, SignatureType, SignedKeyAuthorization, TokenLimit,
     };
 
     let calldata = Bytes::from(vec![1, 2, 3]);
@@ -1394,7 +1394,7 @@ fn test_key_authorization_gas_in_batch() {
             ));
 
     let aa_env_with_key_auth = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call.clone()],
         key_authorization: Some(key_auth),
         signature_hash: B256::ZERO,
@@ -1402,7 +1402,7 @@ fn test_key_authorization_gas_in_batch() {
     };
 
     let aa_env_without_key_auth = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -1722,7 +1722,7 @@ fn test_t3_scope_validation_moves_to_execution() {
 
     let init_gas = test.validate_initial_tx_gas();
     assert!(
-        init_gas.floor_gas <= init_gas.initial_total_gas(),
+        init_gas.floor_gas() <= init_gas.initial_total_gas(),
         "test requires floor gas to not exceed intrinsic gas"
     );
 
@@ -2187,7 +2187,7 @@ proptest! {
     /// Property: signature gas ordering is consistent: secp256k1 <= p256 <= webauthn
     #[test]
     fn proptest_signature_gas_ordering(webauthn_data_len in 0usize..1000) {
-        let secp_sig = PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature());
+        let secp_sig = PrimitiveSignature::default();
         let p256_sig = PrimitiveSignature::P256(P256SignatureWithPreHash {
             r: B256::ZERO, s: B256::ZERO, pub_key_x: B256::ZERO, pub_key_y: B256::ZERO, pre_hash: false,
         });
@@ -2454,7 +2454,7 @@ proptest! {
         };
 
         let signature = match sig_type {
-            0 => PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            0 => PrimitiveSignature::default(),
             1 => PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r: B256::ZERO, s: B256::ZERO, pub_key_x: B256::ZERO, pub_key_y: B256::ZERO, pre_hash: false,
             }),
@@ -2706,7 +2706,7 @@ mod keychain {
     }
 
     fn test_sig() -> PrimitiveSignature {
-        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature())
+        PrimitiveSignature::default()
     }
 
     /// Build EVM + handler with a keychain-signature AA tx.
@@ -3717,7 +3717,8 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
         "State gas constants should be non-zero"
     );
     assert_eq!(
-        init_gas.initial_state_gas, expected_state_gas,
+        init_gas.initial_state_gas_final(),
+        expected_state_gas,
         "CREATE tx should have initial_state_gas = create_state_gas ({expected_state_gas})",
     );
 }
@@ -3734,7 +3735,8 @@ fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
     );
 
     assert_eq!(
-        init_gas.initial_state_gas, 0,
+        init_gas.initial_state_gas_final(),
+        0,
         "CALL tx should have zero initial_state_gas"
     );
 }
@@ -3752,7 +3754,7 @@ fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -3770,7 +3772,8 @@ fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
     let expected_state_gas = gas_params.create_state_gas();
 
     assert_eq!(
-        gas.initial_state_gas, expected_state_gas,
+        gas.initial_state_gas_final(),
+        expected_state_gas,
         "AA CREATE tx should have initial_state_gas = create_state_gas"
     );
 }
@@ -3788,7 +3791,7 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -3804,7 +3807,8 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
     .unwrap();
 
     assert_eq!(
-        gas.initial_state_gas, 0,
+        gas.initial_state_gas_final(),
+        0,
         "AA CALL tx should have zero initial_state_gas"
     );
 }
@@ -3827,7 +3831,8 @@ fn test_state_gas_validate_initial_tx_gas_create_t4() {
         test.gas_params().create_state_gas() + test.gas_params().new_account_state_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas, expected_state_gas,
+        init_gas.initial_state_gas_final(),
+        expected_state_gas,
         "T4 CREATE tx with nonce==0 should have create_state_gas + new_account_state_gas"
     );
 }
@@ -3870,15 +3875,12 @@ fn test_state_gas_tx_gas_limit_above_cap_allowed() {
 fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t4() {
     let calldata = Bytes::from(vec![1, 2, 3]);
 
-    let tx_env = TempoTxEnv {
-        inner: revm::context::TxEnv {
-            gas_limit: 60_000_000, // Double the cap
-            kind: TxKind::Call(Address::random()),
-            data: calldata,
-            ..Default::default()
-        },
+    let tx_env = TempoTxEnv::from(revm::context::TxEnv {
+        gas_limit: 60_000_000, // Double the cap
+        kind: TxKind::Call(Address::random()),
+        data: calldata,
         ..Default::default()
-    };
+    });
 
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T1, tx_env, |cfg| {
         cfg.tx_gas_limit_cap = Some(30_000_000);
@@ -3931,7 +3933,7 @@ fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
     let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
 
     // CALL tx - no state gas in either case
-    assert_eq!(init_gas.initial_state_gas, 0);
+    assert_eq!(init_gas.initial_state_gas_final(), 0);
 }
 
 /// TIP-1016: AA batch with multiple calls including CREATE should track
@@ -3956,7 +3958,7 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
     ];
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: calls,
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -3975,7 +3977,8 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
     let expected_state_gas = gas_params.create_state_gas();
 
     assert_eq!(
-        gas.initial_state_gas, expected_state_gas,
+        gas.initial_state_gas_final(),
+        expected_state_gas,
         "Mixed batch should have state gas only from CREATE call"
     );
 }
@@ -4000,7 +4003,7 @@ fn test_state_gas_aa_multiple_create_calls() {
     ];
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: calls,
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -4019,7 +4022,7 @@ fn test_state_gas_aa_multiple_create_calls() {
     let per_create_state_gas = gas_params.create_state_gas();
 
     assert_eq!(
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
         per_create_state_gas * 2,
         "Multiple CREATE calls should accumulate initial_state_gas"
     );
@@ -4032,7 +4035,8 @@ fn test_state_gas_aa_multiple_create_calls() {
 fn test_state_gas_multi_call_per_call_init_has_zero_state_gas() {
     let zero_init_gas = InitialAndFloorGas::new(0, 0);
     assert_eq!(
-        zero_init_gas.initial_state_gas, 0,
+        zero_init_gas.initial_state_gas_final(),
+        0,
         "Per-call init gas in multi-call must have zero initial_state_gas; \
              state gas is deducted once upfront, not per call"
     );
@@ -4083,7 +4087,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4096,7 +4100,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
                     address: Address::random(),
                     nonce: 0,
                 },
-                TempoSignature::from(alloy_primitives::Signature::test_signature()),
+                secp256k1_sig(),
             ),
         )],
         ..Default::default()
@@ -4113,7 +4117,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
     // State gas = per-auth state gas (225k) + nonce==0 account creation state gas (225k)
     // Use hard-coded expected values to catch missing gas_params overrides.
     assert_eq!(
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
         225_000 + 225_000,
         "Auth list entry should track per-auth state gas (225k) + nonce==0 account creation state gas (225k)"
     );
@@ -4123,7 +4127,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
 #[test]
 fn test_state_gas_aa_nonce_zero_new_account() {
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4140,7 +4144,7 @@ fn test_state_gas_aa_nonce_zero_new_account() {
     let init_gas = test.validate_initial_tx_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas,
+        init_gas.initial_state_gas_final(),
         test.gas_params().new_account_state_gas(),
         "AA tx with nonce==0 should track new_account_state_gas in T4"
     );
@@ -4157,7 +4161,7 @@ fn test_state_gas_auth_list_zero_on_t1() {
     );
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4170,7 +4174,7 @@ fn test_state_gas_auth_list_zero_on_t1() {
                     address: Address::random(),
                     nonce: 0,
                 },
-                TempoSignature::from(alloy_primitives::Signature::test_signature()),
+                secp256k1_sig(),
             ),
         )],
         ..Default::default()
@@ -4185,7 +4189,8 @@ fn test_state_gas_auth_list_zero_on_t1() {
     .unwrap();
 
     assert_eq!(
-        gas.initial_state_gas, 0,
+        gas.initial_state_gas_final(),
+        0,
         "T1 auth list nonce==0 should have zero initial_state_gas"
     );
 }
@@ -4203,7 +4208,7 @@ fn test_state_gas_standard_tx_nonce_zero_t4() {
     let init_gas = test.validate_initial_tx_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas,
+        init_gas.initial_state_gas_final(),
         test.gas_params().new_account_state_gas(),
         "T4 standard tx with nonce==0 should track new_account_state_gas"
     );
@@ -4223,7 +4228,8 @@ fn test_state_gas_standard_tx_nonce_zero_t1_no_state_gas() {
     let init_gas = test.validate_initial_tx_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas, 0,
+        init_gas.initial_state_gas_final(),
+        0,
         "T1 standard tx with nonce==0 must NOT track state gas"
     );
 }
@@ -4244,7 +4250,7 @@ fn test_state_gas_aa_create_total_gas_includes_state_gas() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -4260,10 +4266,10 @@ fn test_state_gas_aa_create_total_gas_includes_state_gas() {
     .unwrap();
 
     assert!(
-        gas.initial_total_gas() >= gas.initial_state_gas,
+        gas.initial_total_gas() >= gas.initial_state_gas_final(),
         "invariant violated: initial_total_gas ({}) < initial_state_gas ({})",
         gas.initial_total_gas(),
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
     );
 }
 
@@ -4274,7 +4280,7 @@ fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
     let gas_params = tempo_gas_params(TempoHardfork::T4);
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::from(alloy_primitives::Signature::test_signature()),
+        signature: secp256k1_sig(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4287,7 +4293,7 @@ fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
                     address: Address::random(),
                     nonce: 0,
                 },
-                TempoSignature::from(alloy_primitives::Signature::test_signature()),
+                secp256k1_sig(),
             ),
         )],
         ..Default::default()
@@ -4302,10 +4308,10 @@ fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
     .unwrap();
 
     assert!(
-        gas.initial_total_gas() >= gas.initial_state_gas,
+        gas.initial_total_gas() >= gas.initial_state_gas_final(),
         "invariant violated: initial_total_gas ({}) < initial_state_gas ({})",
         gas.initial_total_gas(),
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
     );
 }
 
@@ -4342,7 +4348,7 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
 
     let init_gas = test.validate_initial_tx_gas();
     assert_eq!(
-        init_gas.initial_state_gas,
+        init_gas.initial_state_gas_final(),
         test.gas_params().create_state_gas(),
         "first-call CREATE should contribute create_state_gas to AA intrinsic gas"
     );

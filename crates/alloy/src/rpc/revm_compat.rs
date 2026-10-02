@@ -227,7 +227,7 @@ mod tests {
         assert!(matches!(aa.signature, TempoSignature::Keychain(_)));
         assert_eq!(env.execution_context(), ExecutionContext::Simulation);
         assert_eq!(
-            env.unique_tx_identifier,
+            env.unique_tx_identifier(),
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
         );
     }

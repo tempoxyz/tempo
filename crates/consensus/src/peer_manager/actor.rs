@@ -398,7 +398,7 @@ impl PeersBuilder {
                     historic peers that are still in the peer set but no \
                     longer marked active",
                 );
-                let primary = ordered::Map::from_iter_dedup(primary.into_iter().map(|peer| {
+                let primary = ordered::Map::from_iter_dedup(primary.iter().map(|peer| {
                     active_validators.remove_entry(&peer).unwrap_or_else(|| {
                         let decoded = config
                             .validator_by_public_key(public_key_to_b256(&peer))
@@ -773,7 +773,7 @@ mod tests {
                         epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                         finalized_tip: (
                             Height::new(consensus_tip),
-                            Digest(B256::repeat_byte(0xFF)),
+                            Digest::new(B256::repeat_byte(0xFF)),
                         ),
                     },
                 )
@@ -808,7 +808,7 @@ mod tests {
                     execution_node: Arc::new(execution),
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
-                    finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    finalized_tip: (Height::new(100), Digest::new(B256::ZERO)),
                 },
             );
             let error = result
@@ -830,12 +830,12 @@ mod tests {
                     execution_node: execution.clone(),
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
-                    finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    finalized_tip: (Height::new(100), Digest::new(B256::ZERO)),
                 },
             )
             .unwrap();
             let initial_reads = execution.header_reads.lock().unwrap().clone();
-            actor.observe_finalized_tip((Height::new(110), Digest(B256::repeat_byte(1))));
+            actor.observe_finalized_tip((Height::new(110), Digest::new(B256::repeat_byte(1))));
             actor.refresh_peers().unwrap();
             assert_eq!(*execution.header_reads.lock().unwrap(), initial_reads);
             assert_eq!(oracle.tracked.lock().unwrap().len(), 1);

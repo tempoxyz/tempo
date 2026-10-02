@@ -271,7 +271,7 @@ impl AA2dPool {
 
         let lane_count = self
             .txs_by_lane
-            .get(&tx_id.seq_id)
+            .get(tx_id.seq_id())
             .copied()
             .unwrap_or_default();
         if lane_count >= self.config.max_txs_per_lane && tx_id.nonce > on_chain_nonce {
@@ -1026,7 +1026,7 @@ impl AA2dPool {
     /// This should be called after removing a transaction to ensure descendants don't remain
     /// marked as pending when they're no longer executable due to the nonce gap.
     fn demote_descendants(&mut self, id: &AA2dTransactionId) {
-        self.demote_from_nonce(&id.seq_id, id.nonce);
+        self.demote_from_nonce(id.seq_id(), id.nonce);
     }
 
     /// Demotes all transactions for a seq_id with nonce > min_nonce to queued status.
@@ -1523,12 +1523,12 @@ impl AA2dPool {
         for (slot, value) in nonce_state.storage.iter() {
             match self.slot_to_nonce_entry.get(slot) {
                 Some(NonceSlotEntry::Sequence(seq_id)) => {
-                    changes.insert(*seq_id, value.present_value.saturating_to());
+                    changes.insert(*seq_id, value.present_value().saturating_to());
                 }
                 // Detect included expiring nonce transactions via their
                 // `expiring_nonce_seen` slot being set to a non-zero value.
                 Some(NonceSlotEntry::ExpiringNonce(expiring_nonce_hash))
-                    if !value.present_value.is_zero() =>
+                    if !value.present_value().is_zero() =>
                 {
                     included_expiring_nonce_hashes.push(*expiring_nonce_hash);
                 }
@@ -1641,7 +1641,8 @@ impl AA2dPool {
                 "Independent transaction {tx_id:?} not in by_id"
             );
             assert_eq!(
-                seq_id, &tx_id.seq_id,
+                seq_id,
+                tx_id.seq_id(),
                 "Independent transactions sequence ID {seq_id:?} does not match transaction sequence ID {tx_id:?}"
             );
 
@@ -1663,7 +1664,7 @@ impl AA2dPool {
         // Every entry in the independent eviction order must resolve to its tx with a
         // non-stale eviction key.
         for (key, id) in &self.independent_transactions.order {
-            let Some(tx) = self.independent_transactions.transactions.get(&id.seq_id) else {
+            let Some(tx) = self.independent_transactions.transactions.get(id.seq_id()) else {
                 panic!("Independent order key {id:?} not in independent transactions");
             };
             let tx_id = tx
@@ -1753,7 +1754,7 @@ impl AA2dPool {
             );
 
             // If THIS transaction is the independent transaction for its sequence, it must be pending
-            if let Some(independent_tx) = self.independent_transactions.get(&id.seq_id)
+            if let Some(independent_tx) = self.independent_transactions.get(id.seq_id())
                 && independent_tx.transaction.hash() == tx.inner.transaction.hash()
             {
                 assert!(
@@ -2463,7 +2464,7 @@ impl BestAA2dTransactions {
             self.add_new_transactions();
             let best = match self.pop_best()? {
                 PoppedAA2dTransaction::Regular(id, best) => {
-                    if self.invalid.contains(&id.seq_id) {
+                    if self.invalid.contains(id.seq_id()) {
                         continue;
                     }
                     if !can_pay_base_fee(&best, self.base_fee) {
@@ -2595,7 +2596,7 @@ mod tests {
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
-    use reth_primitives_traits::Recovered;
+
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
@@ -2676,7 +2677,7 @@ mod tests {
         let seq_id = AASequenceId::new(sender, nonce_key);
         let tx1_id = AA2dTransactionId::new(seq_id, 1);
         assert!(
-            !pool.independent_transactions.contains_key(&tx1_id.seq_id),
+            !pool.independent_transactions.contains_key(tx1_id.seq_id()),
             "Transaction 1 should not be in independent set yet"
         );
 
@@ -2732,7 +2733,7 @@ mod tests {
 
         // Verify tx0 (at on-chain nonce) is in independent set
         assert!(
-            pool.independent_transactions.contains_key(&tx0_id.seq_id),
+            pool.independent_transactions.contains_key(tx0_id.seq_id()),
             "Transaction 0 should be in independent set (at on-chain nonce)"
         );
 
@@ -2786,12 +2787,12 @@ mod tests {
         let seq_id = AASequenceId::new(sender, nonce_key);
         let tx_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.independent_transactions.contains_key(&tx_id.seq_id),
+            pool.independent_transactions.contains_key(tx_id.seq_id()),
             "Initial transaction should be in independent set"
         );
 
         // Verify the transaction in independent set is tx_low
-        let independent_tx = pool.independent_transactions.get(&tx_id.seq_id).unwrap();
+        let independent_tx = pool.independent_transactions.get(tx_id.seq_id()).unwrap();
         assert_eq!(
             independent_tx.transaction.hash(),
             &tx_low_hash,
@@ -2862,11 +2863,11 @@ mod tests {
 
         // Verify independent set is updated with new transaction
         assert!(
-            pool.independent_transactions.contains_key(&tx_id.seq_id),
+            pool.independent_transactions.contains_key(tx_id.seq_id()),
             "Transaction ID should still be in independent set"
         );
 
-        let independent_tx_after = pool.independent_transactions.get(&tx_id.seq_id).unwrap();
+        let independent_tx_after = pool.independent_transactions.get(tx_id.seq_id()).unwrap();
         assert_eq!(
             independent_tx_after.transaction.hash(),
             &tx_high_hash,
@@ -2942,7 +2943,7 @@ mod tests {
         let seq_id = AASequenceId::new(sender, nonce_key);
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.independent_transactions.contains_key(&tx0_id.seq_id),
+            pool.independent_transactions.contains_key(tx0_id.seq_id()),
             "Transaction 0 should be in independent set"
         );
 
@@ -3072,7 +3073,7 @@ mod tests {
 
         // Verify transaction 3 is the independent transaction (at on-chain nonce)
         assert!(
-            pool.independent_transactions.contains_key(&tx3_id.seq_id),
+            pool.independent_transactions.contains_key(tx3_id.seq_id()),
             "Transaction 3 should be in independent set (at on-chain nonce 3)"
         );
 
@@ -3236,7 +3237,7 @@ mod tests {
         let seq_id = AASequenceId::new(sender, nonce_key);
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.independent_transactions.contains_key(&tx0_id.seq_id),
+            pool.independent_transactions.contains_key(tx0_id.seq_id()),
             "tx0 should be in independent set"
         );
 
@@ -3361,11 +3362,13 @@ mod tests {
             "Should have 2 independent transactions"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_a0_id.seq_id),
+            pool.independent_transactions
+                .contains_key(tx_a0_id.seq_id()),
             "Sender A's tx0 should be independent"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_b0_id.seq_id),
+            pool.independent_transactions
+                .contains_key(tx_b0_id.seq_id()),
             "Sender B's tx0 should be independent"
         );
 
@@ -3399,11 +3402,13 @@ mod tests {
             "Should still have 2 independent transactions"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_a1_id.seq_id),
+            pool.independent_transactions
+                .contains_key(tx_a1_id.seq_id()),
             "Sender A's tx1 should now be independent"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_b0_id.seq_id),
+            pool.independent_transactions
+                .contains_key(tx_b0_id.seq_id()),
             "Sender B's tx0 should still be independent"
         );
 
@@ -3415,10 +3420,7 @@ mod tests {
     fn concurrent_replacements_same_nonce(nonce_key: U256) {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let seq_id = AASequenceId {
-            address: sender,
-            nonce_key,
-        };
+        let seq_id = AASequenceId::new(sender, nonce_key);
 
         // Insert initial transaction at nonce 0 with gas prices 1_000_000_000, 2_000_000_000
         let tx0 = TxBuilder::aa(sender)
@@ -3490,7 +3492,7 @@ mod tests {
 
         // Verify independent set has the final replacement
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
-        assert!(pool.independent_transactions.contains_key(&tx0_id.seq_id));
+        assert!(pool.independent_transactions.contains_key(tx0_id.seq_id()));
 
         pool.assert_invariants();
     }
@@ -3500,10 +3502,7 @@ mod tests {
     fn long_gap_chain(nonce_key: U256) {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let seq_id = AASequenceId {
-            address: sender,
-            nonce_key,
-        };
+        let seq_id = AASequenceId::new(sender, nonce_key);
 
         // Insert transactions with large gaps: [0, 5, 10, 15]
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
@@ -3674,10 +3673,7 @@ mod tests {
     fn remove_from_middle_of_chain(nonce_key: U256) {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let seq_id = AASequenceId {
-            address: sender,
-            nonce_key,
-        };
+        let seq_id = AASequenceId::new(sender, nonce_key);
 
         // Insert continuous sequence [0,1,2,3,4]
         for nonce in 0..=4 {
@@ -3730,10 +3726,7 @@ mod tests {
     fn independent_set_after_multiple_promotions(nonce_key: U256) {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let seq_id = AASequenceId {
-            address: sender,
-            nonce_key,
-        };
+        let seq_id = AASequenceId::new(sender, nonce_key);
 
         // Start with gaps: insert [0, 2, 4]
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
@@ -3857,10 +3850,7 @@ mod tests {
 
         // Each sender should have all transactions pending
         for (sender, nonce_key) in &senders {
-            let seq_id = AASequenceId {
-                address: *sender,
-                nonce_key: *nonce_key,
-            };
+            let seq_id = AASequenceId::new(*sender, *nonce_key);
             for nonce in 0..TXS_PER_SENDER {
                 let id = AA2dTransactionId::new(seq_id, nonce);
                 assert!(pool.by_id.get(&id).unwrap().is_pending());
@@ -3870,13 +3860,10 @@ mod tests {
         // Independent set should have exactly NUM_SENDERS transactions (one per sender at nonce 0)
         assert_eq!(pool.independent_transactions.len(), NUM_SENDERS);
         for (sender, nonce_key) in &senders {
-            let seq_id = AASequenceId {
-                address: *sender,
-                nonce_key: *nonce_key,
-            };
+            let seq_id = AASequenceId::new(*sender, *nonce_key);
             let tx0_id = AA2dTransactionId::new(seq_id, 0);
             assert!(
-                pool.independent_transactions.contains_key(&tx0_id.seq_id),
+                pool.independent_transactions.contains_key(tx0_id.seq_id()),
                 "Sender {sender:?} should have tx0 in independent set"
             );
         }
@@ -3884,10 +3871,7 @@ mod tests {
         // Simulate mining first transaction for each sender
         let mut on_chain_ids = HashMap::default();
         for (sender, nonce_key) in &senders {
-            let seq_id = AASequenceId {
-                address: *sender,
-                nonce_key: *nonce_key,
-            };
+            let seq_id = AASequenceId::new(*sender, *nonce_key);
             on_chain_ids.insert(seq_id, 1u64);
         }
 
@@ -3908,13 +3892,10 @@ mod tests {
         // Independent set should still have NUM_SENDERS transactions (now at nonce 1)
         assert_eq!(pool.independent_transactions.len(), NUM_SENDERS);
         for (sender, nonce_key) in &senders {
-            let seq_id = AASequenceId {
-                address: *sender,
-                nonce_key: *nonce_key,
-            };
+            let seq_id = AASequenceId::new(*sender, *nonce_key);
             let tx1_id = AA2dTransactionId::new(seq_id, 1);
             assert!(
-                pool.independent_transactions.contains_key(&tx1_id.seq_id),
+                pool.independent_transactions.contains_key(tx1_id.seq_id()),
                 "Sender {sender:?} should have tx1 in independent set"
             );
         }
@@ -3927,10 +3908,7 @@ mod tests {
     fn on_chain_nonce_update_to_queued_tx_with_gaps(nonce_key: U256) {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let seq_id = AASequenceId {
-            address: sender,
-            nonce_key,
-        };
+        let seq_id = AASequenceId::new(sender, nonce_key);
 
         // Start with gaps: insert [0, 3, 5]
         // This creates: tx0 (pending), tx3 (queued), tx5 (queued)
@@ -4008,7 +3986,7 @@ mod tests {
         );
         let key = AA2dTransactionId::new(seq_id, 3);
         assert!(
-            pool.independent_transactions.contains_key(&key.seq_id),
+            pool.independent_transactions.contains_key(key.seq_id()),
             "tx3 should be in independent set"
         );
 
@@ -7116,7 +7094,8 @@ mod tests {
             let signature = TempoSignature::from(Signature::test_signature());
             let aa_signed = tx.into_signed(signature);
             let envelope: TempoTxEnvelope = aa_signed.into();
-            let recovered = Recovered::new_unchecked(envelope, sender);
+            let recovered =
+                reth_primitives_traits::SignedTransaction::with_signer(envelope, sender);
             TempoPooledTransaction::new(recovered)
         };
 
@@ -7200,7 +7179,7 @@ mod tests {
         let signature = TempoSignature::from(Signature::test_signature());
         let aa_signed = tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
-        let recovered = Recovered::new_unchecked(envelope, sender);
+        let recovered = reth_primitives_traits::SignedTransaction::with_signer(envelope, sender);
         let pooled = TempoPooledTransaction::new(recovered);
 
         let tx_hash = *pooled.hash();

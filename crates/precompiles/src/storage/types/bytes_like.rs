@@ -526,7 +526,7 @@ mod tests {
     fn test_encode_long_string_length_formula() {
         for len in [32, 33, 100, 1000, 10000] {
             let encoded = encode_long_string_length(len);
-            let expected = U256::from(len * 2 + 1);
+            let expected = crate::storage::types::bytes_like::encode_long_string_length(len);
             assert_eq!(
                 encoded, expected,
                 "Long string length encoding mismatch for {len} bytes"

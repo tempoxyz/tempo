@@ -560,7 +560,7 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
-        let execution_context = tx_env.execution_context;
+        let execution_context = tx_env.execution_context();
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
@@ -698,7 +698,7 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
-    use alloy_consensus::{SignableTransaction as _, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction as _, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
@@ -1077,7 +1077,8 @@ mod tests {
                 executor.validate_tx(&tx, 21_000).unwrap_err().to_string(),
                 "subblock transactions are not supported"
             );
-            let recovered = Recovered::new_unchecked(tx, Address::ZERO);
+            let recovered =
+                reth_primitives_traits::SignedTransaction::with_signer(tx, Address::ZERO);
             let err = executor.execute_transaction(&recovered).unwrap_err();
             assert!(
                 matches!(&err, BlockExecutionError::Validation(_)),
@@ -1273,7 +1274,10 @@ mod tests {
                         execution_context: context,
                         ..Default::default()
                     };
-                    let recovered = Recovered::new_unchecked(tx.clone(), Address::ZERO);
+                    let recovered = reth_primitives_traits::SignedTransaction::with_signer(
+                        tx.clone(),
+                        Address::ZERO,
+                    );
                     executor
                         .execute_transaction_with_actions(
                             (env, &recovered),

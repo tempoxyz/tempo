@@ -427,7 +427,7 @@ mod tests {
         block.header.inner.base_fee_per_gas = Some(0);
         block.body.transactions = txs;
         let senders = vec![Address::ZERO; block.body.transactions.len()];
-        RecoveredBlock::new_unhashed(block, senders)
+        reth_primitives_traits::Block::into_recovered_with_signers(block, senders)
     }
 
     fn evidence(gas: &[u64]) -> Evidence {

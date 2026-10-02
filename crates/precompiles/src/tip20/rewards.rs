@@ -87,7 +87,7 @@ impl TIP20Token {
             return Ok(Address::ZERO);
         }
 
-        let mut info = self.user_reward_info[holder].read()?;
+        let mut info = self.get_user_reward_info(holder)?;
 
         let cached_delegate = info.reward_recipient;
 
@@ -111,7 +111,7 @@ impl TIP20Token {
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                 } else {
-                    let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
+                    let mut delegate_info = self.get_user_reward_info(cached_delegate)?;
                     delegate_info.reward_balance = delegate_info
                         .reward_balance
                         .checked_add(reward)
@@ -181,7 +181,7 @@ impl TIP20Token {
             )?;
         }
 
-        let mut info = self.user_reward_info[msg_sender].read()?;
+        let mut info = self.get_user_reward_info(msg_sender)?;
         info.reward_recipient = call.recipient;
         self.user_reward_info[msg_sender].write(info)?;
 
@@ -206,7 +206,7 @@ impl TIP20Token {
         // T8+: pay only settled rewards; pending lazy accruals are forfeited.
         let reward_recipient = self.update_rewards(msg_sender)?;
 
-        let mut info = self.user_reward_info[msg_sender].read()?;
+        let mut info = self.get_user_reward_info(msg_sender)?;
         let amount = info.reward_balance;
         let contract_address = self.address;
         let contract_balance = self.get_balance(contract_address)?;
@@ -337,7 +337,7 @@ impl TIP20Token {
     /// For accounts that have delegated their rewards to another recipient, only the stored
     /// reward balance is returned (new accrual is skipped since it goes to the delegate).
     pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
-        let info = self.user_reward_info[account].read()?;
+        let info = self.get_user_reward_info(account)?;
 
         // Start with the stored reward balance
         let mut pending = info.reward_balance;
@@ -427,7 +427,7 @@ mod tests {
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
-            let info = token.user_reward_info[alice].read()?;
+            let info = token.get_user_reward_info(alice)?;
             assert_eq!(info.reward_recipient, alice);
             assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
             assert_eq!(info.reward_per_token, U256::ZERO);
@@ -439,7 +439,7 @@ mod tests {
                 },
             )?;
 
-            let info = token.user_reward_info[alice].read()?;
+            let info = token.get_user_reward_info(alice)?;
             assert_eq!(info.reward_recipient, Address::ZERO);
             assert_eq!(token.get_opted_in_supply()?, 0u128);
             assert_eq!(info.reward_per_token, U256::ZERO);
@@ -619,10 +619,7 @@ mod tests {
 
             // T7+: setRewardRecipient is a no-op, even while paused.
             token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
-            assert_eq!(
-                token.user_reward_info[alice].read()?.reward_recipient,
-                alice
-            );
+            assert_eq!(token.get_user_reward_info(alice)?.reward_recipient, alice);
 
             // T7+: distributeReward is a no-op, even for an otherwise invalid zero amount.
             let rpt = token.get_global_reward_per_token()?;

@@ -252,7 +252,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
-        tip20::{BURN_BLOCKED_ROLE, ITIP20},
+        tip20::ITIP20,
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
     };
     use alloy::sol_types::SolValue;
@@ -460,7 +460,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("T", "T", admin)
                 .with_issuer(admin)
-                .with_role(burner, BURN_BLOCKED_ROLE)
+                .with_role(burner, crate::tip20::TIP20Token::burn_blocked_role())
                 .with_mint(originator, amount)
                 .apply()?;
             block_all_senders(receiver, receiver)?;

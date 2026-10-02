@@ -783,7 +783,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIPFeeAMM};
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 
     reth_tracing::init_test_tracing();
 
@@ -848,7 +848,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 
     // Grant PAUSE_ROLE to admin and user
     roles
-        .grantRole(PAUSE_ROLE, admin)
+        .grantRole(tempo_precompiles::tip20::TIP20Token::pause_role(), admin)
         .gas(gas)
         .gas_price(gas_price)
         .send()
@@ -856,7 +856,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .get_receipt()
         .await?;
     roles
-        .grantRole(PAUSE_ROLE, user)
+        .grantRole(tempo_precompiles::tip20::TIP20Token::pause_role(), user)
         .gas(gas)
         .gas_price(gas_price)
         .send()

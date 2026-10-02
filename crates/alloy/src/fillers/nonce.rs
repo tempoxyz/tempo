@@ -375,7 +375,7 @@ mod tests {
     async fn test_random_2d_nonce_filler() -> eyre::Result<()> {
         let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
             .filler(Random2DNonceFiller)
-            .connect_mocked_client(Asserter::default());
+            .connect_mocked_client(Asserter::new());
 
         // No nonce key, no nonce => nonce key and nonce are filled
         let filled_request = provider

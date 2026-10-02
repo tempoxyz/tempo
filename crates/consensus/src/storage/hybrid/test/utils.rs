@@ -79,7 +79,7 @@ pub(in crate::storage) fn make_chain(start: u64, count: usize) -> Vec<Block> {
     let mut parent = B256::ZERO;
     for offset in 0..count {
         let block = make_block(start + offset as u64, parent);
-        parent = block.digest().0;
+        parent = block.digest().get();
         chain.push(block);
     }
     chain
@@ -119,7 +119,7 @@ impl StubProvider {
     /// [`FinalizedBlocksProvider::block_by_hash`] calls return `block`.
     pub(in crate::storage::hybrid) fn add_block(&self, block: &Block) {
         let height = block.height().get();
-        let hash = block.digest().0;
+        let hash = block.digest().get();
         self.by_number.lock().insert(height, block.clone());
         self.by_hash.lock().insert(hash, block.clone());
         self.add_header(block.block().header().clone());

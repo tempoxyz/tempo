@@ -49,7 +49,7 @@ fn queued_verification_runs_after_a_newer_build() {
         assert!(active.await.unwrap().is_some());
         let payload = build.await.expect("the build should complete");
         let (block, _) = payload.into_execution_payload();
-        assert_eq!(Digest(block.hash()), proposal_digest);
+        assert_eq!(Digest::new(block.hash()), proposal_digest);
         assert!(queued.await.unwrap().is_some());
         assert_eq!(
             h.execution.new_payloads(),
@@ -97,7 +97,7 @@ fn a_newer_verification_leaves_a_queued_build_alone() {
             .expect("the finalized parent should be acknowledged");
         let payload = build.await.expect("the queued build should complete");
         let (block, _) = payload.into_execution_payload();
-        assert_eq!(Digest(block.hash()), proposal.digest());
+        assert_eq!(Digest::new(block.hash()), proposal.digest());
         assert!(verify.await.unwrap().is_some());
         assert_eq!(
             h.execution.new_payloads(),
@@ -192,7 +192,7 @@ fn same_round_verification_waits_for_an_active_build() {
             .await
             .expect("the deferred parent should be acknowledged");
         let (block, _) = payload.into_execution_payload();
-        assert_eq!(Digest(block.hash()), proposal.digest());
+        assert_eq!(Digest::new(block.hash()), proposal.digest());
         assert!(
             h.execution
                 .fcus()

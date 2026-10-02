@@ -375,7 +375,7 @@ fn insert_account(
     account: &DbAccount,
 ) {
     let info = account.info.clone();
-    let bytecode_hash = info.code_hash;
+    let bytecode_hash = info.code_hash();
     let account = RethAccount {
         nonce: info.nonce,
         balance: info.balance,

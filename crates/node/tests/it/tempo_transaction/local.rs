@@ -2382,7 +2382,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     .await?;
     nonce_alice += 1;
 
-    let secp_mock = || TempoSignature::from(alloy_primitives::Signature::test_signature());
+    let secp_mock = || test_secp256k1_access_key_signature();
     let p256_mock = || create_mock_p256_sig(pub_x, pub_y);
 
     // Authorize both keys on Alice and Bob

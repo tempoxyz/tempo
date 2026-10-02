@@ -22,7 +22,7 @@ use tempo_precompiles::{
         IReceivePolicyGuard::{self, IReceivePolicyGuardErrors as ReceivePolicyGuardError},
         InboundKind,
     },
-    tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
+    tip20::{IRolesAuth, ITIP20},
     tip20_factory::ITIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID},
 };
@@ -321,7 +321,7 @@ where
 
     let roles = IRolesAuth::new(token, provider);
     let grant = roles
-        .grantRole(ISSUER_ROLE, admin)
+        .grantRole(tempo_precompiles::tip20::TIP20Token::issuer_role(), admin)
         .gas(GAS)
         .gas_price(GAS_PRICE)
         .send()
