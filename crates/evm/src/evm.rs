@@ -7,7 +7,7 @@ use alloy_evm::{
         inspector::NoOpInspector,
     },
 };
-use alloy_primitives::{Address, Bytes, TxKind};
+use alloy_primitives::{Address, Bytes, TxKind, map::HashMap};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -130,15 +130,17 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &mut self,
         transactions: impl IntoIterator<Item = (TempoTxEnv, Address)>,
     ) {
-        self.prepare_transactions_with(transactions, std::convert::identity);
+        self.prepare_transactions_with(transactions, |tx| &tx.0, std::convert::identity);
     }
 
-    /// Converts candidates only when workers will use them. Backoff still advances
-    /// the source iterator, but avoids cloning transaction data and signatures.
+    /// Borrows candidate environments to check nonce hints before converting them
+    /// into owned worker inputs. Backoff advances the source without borrowing or
+    /// converting its transactions. Neither path changes authoritative execution.
     pub fn prepare_transactions_with<T>(
         &mut self,
         transactions: impl IntoIterator<Item = T>,
-        convert: impl FnMut(T) -> (TempoTxEnv, Address),
+        mut view: impl FnMut(&T) -> &TempoTxEnv,
+        mut convert: impl FnMut(T) -> (TempoTxEnv, Address),
     ) {
         self.prepared = None;
         if self.inspect
@@ -182,14 +184,31 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         // or a pool of high-limit transactions must not multiply a whole block's
         // maximum execution work by the lookahead window.
         let mut remaining_gas = self.inner.ctx.block.gas_limit;
+        let spec = self.inner.ctx.cfg.spec;
+        let timestamp = self.inner.ctx.block.timestamp.saturating_to();
+        let disable_nonce_check = self.inner.ctx.cfg.disable_nonce_check;
+        let mut prefetched = HashMap::default();
         let inputs = transactions
             .into_iter()
             .take(executor.batch_size())
-            .map(convert)
-            .filter_map(|(mut tx, beneficiary)| {
+            .filter_map(|candidate| {
+                let borrowed = view(&candidate);
+                let hint = tempo_revm::replay::nonce_hint(borrowed, spec, timestamp);
+                if crate::parallel::nonce_is_stale(
+                    &mut self.inner.ctx.journaled_state.database,
+                    &mut prefetched,
+                    hint,
+                    disable_nonce_check,
+                ) {
+                    self.execution_stats.nonce_filtered += 1;
+                    return None;
+                }
+                let (mut tx, beneficiary) = convert(candidate);
                 if tx.is_system_tx {
                     return None;
                 }
+                // Bound actual worker inputs even if a caller's conversion
+                // changes fields from the borrowed view used for the hint.
                 remaining_gas = remaining_gas.checked_sub(tx.inner.gas_limit)?;
                 if let Some(aa) = tx.tempo_tx_env.as_mut() {
                     aa.expiring_nonce_idx = None;
@@ -206,8 +225,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             })
             .collect::<Vec<_>>();
         self.execution_stats.speculated += inputs.len() as u64;
-        self.prepared =
-            Some(executor.speculate(&mut self.inner.ctx.journaled_state.database, inputs));
+        self.prepared = Some(executor.speculate(
+            &mut self.inner.ctx.journaled_state.database,
+            inputs,
+            prefetched,
+        ));
     }
 
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].

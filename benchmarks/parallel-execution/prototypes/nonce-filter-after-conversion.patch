@@ -1,0 +1,335 @@
+diff --git a/benchmarks/parallel-execution/summarize_cpu.py b/benchmarks/parallel-execution/summarize_cpu.py
+index 7e2f855b..b2a84ffc 100644
+--- a/benchmarks/parallel-execution/summarize_cpu.py
++++ b/benchmarks/parallel-execution/summarize_cpu.py
+@@ -56,0 +57 @@ def execution_counts(directory):
++        "nonce_filtered": "nonce_filtered_candidates",
+diff --git a/crates/evm/src/evm.rs b/crates/evm/src/evm.rs
+index d25a79f9..37b6c873 100644
+--- a/crates/evm/src/evm.rs
++++ b/crates/evm/src/evm.rs
+@@ -208,3 +208,5 @@ impl<DB: Database, I> TempoEvm<DB, I> {
+-        self.execution_stats.speculated += inputs.len() as u64;
+-        self.prepared =
+-            Some(executor.speculate(&mut self.inner.ctx.journaled_state.database, inputs));
++        let count = inputs.len();
++        let batch = executor.speculate(&mut self.inner.ctx.journaled_state.database, inputs);
++        self.execution_stats.speculated += batch.len() as u64;
++        self.execution_stats.nonce_filtered += (count - batch.len()) as u64;
++        self.prepared = Some(batch);
+diff --git a/crates/evm/src/parallel.rs b/crates/evm/src/parallel.rs
+index 28b39a96..e96727b7 100644
+--- a/crates/evm/src/parallel.rs
++++ b/crates/evm/src/parallel.rs
+@@ -20,0 +21 @@ use reth_revm::{
++    context_interface::Cfg,
+@@ -133 +134 @@ impl SpeculativeExecutor {
+-        inputs: Vec<(TempoTxEnv, Env)>,
++        mut inputs: Vec<(TempoTxEnv, Env)>,
+@@ -136 +136,0 @@ impl SpeculativeExecutor {
+-        let count = inputs.len();
+@@ -141 +141,21 @@ impl SpeculativeExecutor {
+-        for (tx, env) in &inputs {
++        inputs.retain(|(tx, env)| {
++            if let Some((key, bound)) = tempo_revm::replay::nonce_hint(
++                tx,
++                env.cfg_env.spec,
++                env.block_env.timestamp.saturating_to(),
++            ) {
++                if let ReadKey::Storage(address, _) = key {
++                    prefetch(db, &mut prefetched, ReadKey::Account(address));
++                }
++                if let Some(ReadValue::Storage(value)) = prefetch(db, &mut prefetched, key)
++                    && !env.cfg_env.is_nonce_check_disabled()
++                    // Malformed uint64 storage stays on the usual worker path;
++                    // the hint must not truncate a word or panic while decoding.
++                    && u64::try_from(*value).is_ok_and(|value| value > bound)
++                {
++                    // Do not synthesize an error or change authoritative selection.
++                    // The ordinary EVM will validate this candidate in order, even
++                    // if its nonce or configuration changes after this hint.
++                    return false;
++                }
++            }
+@@ -151,5 +171 @@ impl SpeculativeExecutor {
+-                if let std::collections::hash_map::Entry::Vacant(entry) = prefetched.entry(key)
+-                    && let Ok(value) = read(db, key)
+-                {
+-                    entry.insert(value);
+-                }
++                prefetch(db, &mut prefetched, key);
+@@ -157 +173,3 @@ impl SpeculativeExecutor {
+-        }
++            true
++        });
++        let count = inputs.len();
+@@ -218,0 +237,12 @@ impl SpeculativeExecutor {
++fn prefetch<'a, DB: Database>(
++    db: &mut DB,
++    cache: &'a mut HashMap<ReadKey, ReadValue>,
++    key: ReadKey,
++) -> Option<&'a ReadValue> {
++    use std::collections::hash_map::Entry;
++    match cache.entry(key) {
++        Entry::Occupied(entry) => Some(entry.into_mut()),
++        Entry::Vacant(entry) => read(db, key).ok().map(|value| &*entry.insert(value)),
++    }
++}
++
+@@ -343,0 +374,4 @@ impl<E: DBErrorMarker> SpeculativeBatch<E> {
++    pub(crate) fn len(&self) -> usize {
++        self.shared.inputs.len()
++    }
++
+@@ -445,0 +480,2 @@ pub struct ExecutionStats {
++    /// Candidates left for ordinary execution because the nonce hint was stale.
++    pub nonce_filtered: u64,
+diff --git a/crates/evm/src/parallel/tests.rs b/crates/evm/src/parallel/tests.rs
+index 4d0103ab..06233ede 100644
+--- a/crates/evm/src/parallel/tests.rs
++++ b/crates/evm/src/parallel/tests.rs
+@@ -841,0 +842,178 @@ fn tip20_transfers_track_balances_and_fee_counters() {
++#[test]
++fn stale_aa_nonce_hints_preserve_selection_and_nonce_descendants() {
++    use alloy_evm::FromRecoveredTx;
++    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
++    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
++
++    for spec in FEE_SPECS {
++        // Before T1 the reserved expiring key still uses the 2D counter mapping.
++        let key = if spec.is_t1() {
++            U256::from(13)
++        } else {
++            U256::MAX
++        };
++        let mut db = funded_tip20_db(1);
++        contract(&mut db, address(900), &[0]);
++        db.insert_account_storage(
++            NONCE_PRECOMPILE_ADDRESS,
++            key.mapping_slot(address(0).mapping_slot(slots::NONCES)),
++            U256::from(1),
++        )
++        .unwrap();
++        let txs = [0, 1, 2, 0, 3, 0]
++            .into_iter()
++            .map(|nonce| {
++                let signed = TempoTransaction {
++                    chain_id: 1,
++                    gas_limit: 1_000_000,
++                    nonce_key: key,
++                    nonce,
++                    calls: vec![Call {
++                        to: address(900).into(),
++                        value: U256::ZERO,
++                        input: Bytes::new(),
++                    }],
++                    ..Default::default()
++                }
++                .into_signed(TempoSignature::default());
++                TempoTxEnv::from_recovered_tx(&signed, address(0))
++            })
++            .collect::<Vec<_>>();
++        for threads in [1, 4] {
++            for batch_size in [1, 2, 6] {
++                let stats = differential_at_spec(db.clone(), &txs, threads, batch_size, spec);
++                assert_eq!(stats.nonce_filtered, 3, "{spec:?}");
++                assert_eq!(stats.speculated, 3, "{spec:?}");
++            }
++        }
++    }
++}
++
++#[test]
++fn stale_nonce_hints_do_not_replace_authoritative_validation() {
++    use alloy_evm::FromRecoveredTx;
++    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
++    use tempo_primitives::{
++        TempoSignature, TempoTransaction,
++        transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
++    };
++
++    for spec in FEE_SPECS {
++        for expiring in [false, true] {
++            if expiring && !spec.is_t1() {
++                continue;
++            }
++            for (clear_after_prepare, malformed, disable_nonce_check, inactive) in [
++                (false, false, false, false),
++                (true, false, false, false),
++                (false, true, false, false),
++                (true, true, false, false),
++                (false, false, true, false),
++                (false, false, false, true),
++            ] {
++                let mut db = funded_tip20_db(1);
++                contract(&mut db, address(900), &[0]);
++                let key = if expiring {
++                    TEMPO_EXPIRING_NONCE_KEY
++                } else {
++                    U256::from(13)
++                };
++                let signed = TempoTransaction {
++                    chain_id: 1,
++                    gas_limit: 1_000_000,
++                    nonce_key: key,
++                    valid_before: std::num::NonZeroU64::new(25),
++                    calls: vec![Call {
++                        to: address(900).into(),
++                        value: U256::ZERO,
++                        input: Bytes::new(),
++                    }],
++                    ..Default::default()
++                }
++                .into_signed(TempoSignature::default());
++                let tx = TempoTxEnv::from_recovered_tx(&signed, address(0));
++                let aa = tx.tempo_tx_env.as_ref().unwrap();
++                let slot = if expiring {
++                    let hash = if spec.is_t1b() {
++                        aa.expiring_nonce_hash.unwrap()
++                    } else {
++                        aa.tx_hash
++                    };
++                    hash.mapping_slot(slots::EXPIRING_NONCE_SEEN)
++                } else {
++                    key.mapping_slot(address(0).mapping_slot(slots::NONCES))
++                };
++                let value = match (expiring, inactive) {
++                    (true, true) => 10, // Expiry exactly at the block timestamp.
++                    (true, false) => 25,
++                    (false, true) => 0,
++                    (false, false) => 1,
++                };
++                let upper = if malformed {
++                    U256::from(1) << 128
++                } else {
++                    U256::ZERO
++                };
++                db.insert_account_storage(
++                    NONCE_PRECOMPILE_ADDRESS,
++                    slot,
++                    upper | U256::from(value),
++                )
++                .unwrap();
++                let mut env = EvmEnv {
++                    cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
++                        spec,
++                        tempo_revm::gas_params::tempo_gas_params(spec),
++                    ),
++                    block_env: TempoBlockEnv {
++                        inner: revm::context::BlockEnv {
++                            timestamp: U256::from(10),
++                            gas_limit: 500_000_000,
++                            basefee: 0,
++                            ..Default::default()
++                        },
++                        ..Default::default()
++                    },
++                };
++                env.cfg_env.disable_nonce_check = disable_nonce_check;
++                let mut sequential = TempoEvm::new(db.clone(), env.clone());
++                let mut parallel = TempoEvm::new(db, env);
++                parallel.set_speculative_executor(Some(SpeculativeExecutor::new(4, 16).unwrap()));
++                parallel.prepare_transactions([(tx.clone(), Address::ZERO)]);
++                let filtered = u64::from(!malformed && !disable_nonce_check && !inactive);
++                assert_eq!(parallel.execution_stats().nonce_filtered, filtered);
++                assert_eq!(parallel.execution_stats().speculated, 1 - filtered);
++                if clear_after_prepare {
++                    // A hint must never become a cached rejection. An omitted
++                    // transaction can still succeed against a changed prefix.
++                    for evm in [&mut sequential, &mut parallel] {
++                        evm.db_mut()
++                            .insert_account_storage(NONCE_PRECOMPILE_ADDRESS, slot, U256::ZERO)
++                            .unwrap();
++                    }
++                }
++                let expected = sequential.transact_raw(tx.clone());
++                let actual = parallel.transact_raw(tx);
++                assert_eq!(
++                    expected.is_ok(),
++                    clear_after_prepare
++                        || (!malformed && (inactive || (disable_nonce_check && !expiring))),
++                    "{spec:?} expiring={expiring}: {expected:?}"
++                );
++                match (expected, actual) {
++                    (Ok(expected), Ok(actual)) => {
++                        assert_eq!(expected, actual);
++                        sequential.db_mut().commit(expected.state);
++                        parallel.db_mut().commit(actual.state);
++                    }
++                    (Err(expected), Err(actual)) => {
++                        assert_eq!(expected.to_string(), actual.to_string())
++                    }
++                    (expected, actual) => panic!("{expected:?} != {actual:?}"),
++                }
++                assert_eq!(root(sequential.db()), root(parallel.db()));
++            }
++        }
++    }
++}
++
+diff --git a/crates/payload/builder/src/metrics.rs b/crates/payload/builder/src/metrics.rs
+index 44ce90db..60040941 100644
+--- a/crates/payload/builder/src/metrics.rs
++++ b/crates/payload/builder/src/metrics.rs
+@@ -98,0 +99,2 @@ impl TempoPayloadBuilderMetrics {
++        metrics::counter!("tempo_payload_builder_nonce_filtered_candidates_total")
++            .increment(stats.nonce_filtered);
+diff --git a/crates/revm/src/replay.rs b/crates/revm/src/replay.rs
+index 1e7f6d93..d86af72c 100644
+--- a/crates/revm/src/replay.rs
++++ b/crates/revm/src/replay.rs
+@@ -57 +57,35 @@ pub fn read<DB: Database>(db: &mut DB, key: ReadKey) -> Result<ReadValue, DB::Er
+-/// Bounded hints for nonce and fee storage and the first native TIP-20 transfer.
++/// A native AA nonce read and an upper bound for useful speculation at the current
++/// prefix. A larger stored uint64 suggests leaving the candidate to the ordinary
++/// executor. This is only a scheduling hint: state and configuration may change,
++/// and validation must still run in order for candidates omitted from speculation.
++pub fn nonce_hint(
++    tx: &crate::TempoTxEnv,
++    spec: tempo_chainspec::hardfork::TempoHardfork,
++    timestamp: u64,
++) -> Option<(ReadKey, u64)> {
++    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
++    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
++
++    let aa = tx.tempo_tx_env.as_ref()?;
++    if aa.nonce_key.is_zero() {
++        return None;
++    }
++    let (slot, bound) = if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
++        let hash = if spec.is_t1b() {
++            aa.expiring_nonce_hash?
++        } else {
++            aa.tx_hash
++        };
++        (hash.mapping_slot(slots::EXPIRING_NONCE_SEEN), timestamp)
++    } else {
++        (
++            aa.nonce_key
++                .mapping_slot(tx.inner.caller.mapping_slot(slots::NONCES)),
++            tx.inner.nonce,
++        )
++    };
++    Some((ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, slot), bound))
++}
++
++/// Bounded hints for fee storage, the expiring nonce pointer and the first native
++/// TIP-20 transfer. The scheduler separately prefetches [`nonce_hint`].
+@@ -92,17 +125,0 @@ pub fn prefetch_keys(
+-            let hash = if spec.is_t1b() {
+-                aa.expiring_nonce_hash
+-            } else {
+-                Some(aa.tx_hash)
+-            };
+-            if let Some(hash) = hash {
+-                keys.push(ReadKey::Storage(
+-                    NONCE_PRECOMPILE_ADDRESS,
+-                    hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN),
+-                ));
+-            }
+-        } else {
+-            keys.push(ReadKey::Storage(
+-                NONCE_PRECOMPILE_ADDRESS,
+-                aa.nonce_key
+-                    .mapping_slot(tx.inner.caller.mapping_slot(nonce_slots::NONCES)),
+-            ));

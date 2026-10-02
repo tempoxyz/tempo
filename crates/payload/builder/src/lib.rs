@@ -545,12 +545,8 @@ where
                             && (tx.transaction.is_payment()
                                 || tx.gas_limit() <= remaining_general_gas)
                     }),
-                    |tx| {
-                        (
-                            tx.transaction.clone().into_with_tx_env().tx_env,
-                            beneficiary,
-                        )
-                    },
+                    |tx| tx.transaction.tx_env(),
+                    |tx| (tx.transaction.tx_env().clone(), beneficiary),
                 );
                 preview_position += batch_size;
                 check_cancel!();

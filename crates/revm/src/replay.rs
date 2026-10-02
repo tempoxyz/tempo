@@ -54,7 +54,41 @@ pub fn read<DB: Database>(db: &mut DB, key: ReadKey) -> Result<ReadValue, DB::Er
     }
 }
 
-/// Bounded hints for nonce and fee storage and the first native TIP-20 transfer.
+/// A native AA nonce read and an upper bound for useful speculation at the current
+/// prefix. A larger stored uint64 suggests leaving the candidate to the ordinary
+/// executor. This is only a scheduling hint: state and configuration may change,
+/// and validation must still run in order for candidates omitted from speculation.
+pub fn nonce_hint(
+    tx: &crate::TempoTxEnv,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    timestamp: u64,
+) -> Option<(ReadKey, u64)> {
+    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
+    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+    let aa = tx.tempo_tx_env.as_ref()?;
+    if aa.nonce_key.is_zero() {
+        return None;
+    }
+    let (slot, bound) = if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
+        let hash = if spec.is_t1b() {
+            aa.expiring_nonce_hash?
+        } else {
+            aa.tx_hash
+        };
+        (hash.mapping_slot(slots::EXPIRING_NONCE_SEEN), timestamp)
+    } else {
+        (
+            aa.nonce_key
+                .mapping_slot(tx.inner.caller.mapping_slot(slots::NONCES)),
+            tx.inner.nonce,
+        )
+    };
+    Some((ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, slot), bound))
+}
+
+/// Bounded hints for fee storage, the expiring nonce pointer and the first native
+/// TIP-20 transfer. The scheduler separately prefetches [`nonce_hint`].
 /// These do not resolve token preferences, virtual recipients or reward delegates:
 /// conditional accesses still use the database, and only actual reads become dependencies.
 pub fn prefetch_keys(
@@ -88,23 +122,6 @@ pub fn prefetch_keys(
             keys.push(ReadKey::Storage(
                 NONCE_PRECOMPILE_ADDRESS,
                 nonce_slots::EXPIRING_NONCE_RING_PTR,
-            ));
-            let hash = if spec.is_t1b() {
-                aa.expiring_nonce_hash
-            } else {
-                Some(aa.tx_hash)
-            };
-            if let Some(hash) = hash {
-                keys.push(ReadKey::Storage(
-                    NONCE_PRECOMPILE_ADDRESS,
-                    hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN),
-                ));
-            }
-        } else {
-            keys.push(ReadKey::Storage(
-                NONCE_PRECOMPILE_ADDRESS,
-                aa.nonce_key
-                    .mapping_slot(tx.inner.caller.mapping_slot(nonce_slots::NONCES)),
             ));
         }
     }

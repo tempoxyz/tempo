@@ -440,9 +440,11 @@ fn backoff_advances_candidates_without_converting_transactions() {
     assert_eq!(evm.execution_stats().conflicts, 31);
     let visited = std::cell::Cell::new(0);
     let mut candidates = (32..96).inspect(|_| visited.set(visited.get() + 1));
-    evm.prepare_transactions_with(&mut candidates, |_| {
-        panic!("backoff must not clone or convert candidate transaction data")
-    });
+    evm.prepare_transactions_with(
+        &mut candidates,
+        |_| panic!("backoff must not borrow candidate transaction data"),
+        |_| panic!("backoff must not clone or convert candidate transaction data"),
+    );
     assert_eq!(visited.get(), 32);
     assert_eq!(candidates.next(), Some(64));
 }
@@ -834,6 +836,193 @@ fn tip20_transfers_track_balances_and_fee_counters() {
                 );
             } else {
                 assert_eq!(stats.reused, 16);
+            }
+        }
+    }
+}
+
+#[test]
+fn stale_aa_nonce_hints_preserve_selection_and_nonce_descendants() {
+    use alloy_evm::FromRecoveredTx;
+    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
+    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+
+    for spec in FEE_SPECS {
+        // Before T1 the reserved expiring key still uses the 2D counter mapping.
+        let key = if spec.is_t1() {
+            U256::from(13)
+        } else {
+            U256::MAX
+        };
+        let mut db = funded_tip20_db(1);
+        contract(&mut db, address(900), &[0]);
+        db.insert_account_storage(
+            NONCE_PRECOMPILE_ADDRESS,
+            key.mapping_slot(address(0).mapping_slot(slots::NONCES)),
+            U256::from(1),
+        )
+        .unwrap();
+        let txs = [0, 1, 2, 0, 3, 0]
+            .into_iter()
+            .map(|nonce| {
+                let signed = TempoTransaction {
+                    chain_id: 1,
+                    gas_limit: 1_000_000,
+                    nonce_key: key,
+                    nonce,
+                    calls: vec![Call {
+                        to: address(900).into(),
+                        value: U256::ZERO,
+                        input: Bytes::new(),
+                    }],
+                    ..Default::default()
+                }
+                .into_signed(TempoSignature::default());
+                TempoTxEnv::from_recovered_tx(&signed, address(0))
+            })
+            .collect::<Vec<_>>();
+        for threads in [1, 4] {
+            for batch_size in [1, 2, 6] {
+                let stats = differential_at_spec(db.clone(), &txs, threads, batch_size, spec);
+                assert_eq!(stats.nonce_filtered, 3, "{spec:?}");
+                assert_eq!(stats.speculated, 3, "{spec:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn stale_nonce_hints_do_not_replace_authoritative_validation() {
+    use alloy_evm::FromRecoveredTx;
+    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
+    use tempo_primitives::{
+        TempoSignature, TempoTransaction,
+        transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
+    };
+
+    for spec in FEE_SPECS {
+        for expiring in [false, true] {
+            if expiring && !spec.is_t1() {
+                continue;
+            }
+            for (clear_after_prepare, malformed, disable_nonce_check, inactive) in [
+                (false, false, false, false),
+                (true, false, false, false),
+                (false, true, false, false),
+                (true, true, false, false),
+                (false, false, true, false),
+                (false, false, false, true),
+            ] {
+                let mut db = funded_tip20_db(1);
+                contract(&mut db, address(900), &[0]);
+                let key = if expiring {
+                    TEMPO_EXPIRING_NONCE_KEY
+                } else {
+                    U256::from(13)
+                };
+                let signed = TempoTransaction {
+                    chain_id: 1,
+                    gas_limit: 1_000_000,
+                    nonce_key: key,
+                    valid_before: std::num::NonZeroU64::new(25),
+                    calls: vec![Call {
+                        to: address(900).into(),
+                        value: U256::ZERO,
+                        input: Bytes::new(),
+                    }],
+                    ..Default::default()
+                }
+                .into_signed(TempoSignature::default());
+                let tx = TempoTxEnv::from_recovered_tx(&signed, address(0));
+                let aa = tx.tempo_tx_env.as_ref().unwrap();
+                let slot = if expiring {
+                    let hash = if spec.is_t1b() {
+                        aa.expiring_nonce_hash.unwrap()
+                    } else {
+                        aa.tx_hash
+                    };
+                    hash.mapping_slot(slots::EXPIRING_NONCE_SEEN)
+                } else {
+                    key.mapping_slot(address(0).mapping_slot(slots::NONCES))
+                };
+                let value = match (expiring, inactive) {
+                    (true, true) => 10, // Expiry exactly at the block timestamp.
+                    (true, false) => 25,
+                    (false, true) => 0,
+                    (false, false) => 1,
+                };
+                let upper = if malformed {
+                    U256::from(1) << 128
+                } else {
+                    U256::ZERO
+                };
+                db.insert_account_storage(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    slot,
+                    upper | U256::from(value),
+                )
+                .unwrap();
+                let mut env = EvmEnv {
+                    cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
+                        spec,
+                        tempo_revm::gas_params::tempo_gas_params(spec),
+                    ),
+                    block_env: TempoBlockEnv {
+                        inner: revm::context::BlockEnv {
+                            timestamp: U256::from(10),
+                            gas_limit: 500_000_000,
+                            basefee: 0,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                };
+                env.cfg_env.disable_nonce_check = disable_nonce_check;
+                let mut sequential = TempoEvm::new(db.clone(), env.clone());
+                let mut parallel = TempoEvm::new(db, env);
+                parallel.set_speculative_executor(Some(SpeculativeExecutor::new(4, 16).unwrap()));
+                let conversions = std::cell::Cell::new(0);
+                parallel.prepare_transactions_with(
+                    [tx.clone()],
+                    |tx| tx,
+                    |tx| {
+                        conversions.set(conversions.get() + 1);
+                        (tx, Address::ZERO)
+                    },
+                );
+                let filtered = u64::from(!malformed && !disable_nonce_check && !inactive);
+                assert_eq!(parallel.execution_stats().nonce_filtered, filtered);
+                assert_eq!(parallel.execution_stats().speculated, 1 - filtered);
+                assert_eq!(conversions.get(), 1 - filtered);
+                if clear_after_prepare {
+                    // A hint must never become a cached rejection. An omitted
+                    // transaction can still succeed against a changed prefix.
+                    for evm in [&mut sequential, &mut parallel] {
+                        evm.db_mut()
+                            .insert_account_storage(NONCE_PRECOMPILE_ADDRESS, slot, U256::ZERO)
+                            .unwrap();
+                    }
+                }
+                let expected = sequential.transact_raw(tx.clone());
+                let actual = parallel.transact_raw(tx);
+                assert_eq!(
+                    expected.is_ok(),
+                    clear_after_prepare
+                        || (!malformed && (inactive || (disable_nonce_check && !expiring))),
+                    "{spec:?} expiring={expiring}: {expected:?}"
+                );
+                match (expected, actual) {
+                    (Ok(expected), Ok(actual)) => {
+                        assert_eq!(expected, actual);
+                        sequential.db_mut().commit(expected.state);
+                        parallel.db_mut().commit(actual.state);
+                    }
+                    (Err(expected), Err(actual)) => {
+                        assert_eq!(expected.to_string(), actual.to_string())
+                    }
+                    (expected, actual) => panic!("{expected:?} != {actual:?}"),
+                }
+                assert_eq!(root(sequential.db()), root(parallel.db()));
             }
         }
     }
@@ -1905,7 +2094,19 @@ fn speculative_windows_are_bounded_by_declared_gas() {
             tx
         })
         .collect::<Vec<_>>();
-    parallel.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+    // The conversion can change the borrowed view. The worker gas bound must
+    // use the actual converted input, not the cheap view used for nonce hints.
+    parallel.prepare_transactions_with(
+        txs.iter().cloned().map(|mut tx| {
+            tx.inner.gas_limit = 1;
+            tx
+        }),
+        |tx| tx,
+        |mut tx| {
+            tx.inner.gas_limit = 600_000;
+            (tx, Address::ZERO)
+        },
+    );
     assert_eq!(parallel.execution_stats().speculated, 1);
     for tx in txs {
         let expected = sequential.transact_raw(tx.clone()).unwrap();
@@ -2085,6 +2286,7 @@ fn streaming_returns_before_later_reads_and_joins_cancelled_workers() {
             (tx.clone(), env.clone()),
             (transaction(1, later, 0, &[]), env),
         ],
+        HashMap::default(),
     );
     let shared = Arc::downgrade(&batch.shared);
     // The batch must also complete after the last executor handle is dropped.

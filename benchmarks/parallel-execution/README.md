@@ -1488,6 +1488,79 @@ roots. Replay timings are diagnostic: adaptive backoff and the minimum body-time
 threshold for reuse are disabled, and sequential execution runs first, warming
 provider caches.
 
+## Leave stale AA nonce candidates on the ordinary path
+
+`shared-snapshot-profile.json` profiles `ae5c08d9` with existing recipients and
+16 execution workers. All 786,242 accepted transactions confirm. The run records
+319,794 nonce-too-low skips; pre-execution accounts for 24.2% of sampled builder
+CPU, paired snapshot construction 14.2%, and AA iteration 7.7%. These are inclusive
+samples from complete profile windows; profiling changes throughput.
+
+The scheduler now checks a prefetched AA nonce before creating worker inputs.
+A 2D counter above the candidate's nonce, or an unexpired expiring-nonce entry,
+leaves the candidate for ordinary execution. The hint never supplies a validation
+error or changes authoritative selection. A candidate can still succeed if its
+state changes after preparation. Disabled nonce checks, malformed uint64 words
+and failed hint reads do not trigger the filter. The T1/T1B replay-hash rules and
+the pre-T1 counter behavior of the reserved expiring key are preserved.
+
+Payload preparation borrows the pool's cached transaction environment for this
+check and clones only environments selected for workers. It no longer clones the
+whole pooled transaction just to extract that environment. The actual converted
+input still supplies the speculative gas bound and system-transaction check.
+`nonce_filtered_candidates_total` records omitted candidates separately from
+scheduled work, so they do not masquerade as failed worker executions or trigger
+adaptive backoff of otherwise useful speculation.
+
+`nonce-filter-early-node.json` and `nonce-filter-early-repeated-node.json` compare
+this change against `ae5c08d9`, with the same 5B-gas, shared-trie configuration,
+16 execution workers and 100 signers:
+
+| Workload | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: |
+| 2D, new recipients, first pair | 50,000 | 10 | 22,462 | 22,762 |
+| 2D, new recipients, repeat 1 | 50,000 | 10 | 22,572 | 22,747 |
+| 2D, new recipients, repeat 2 | 50,000 | 10 | 22,457 | 22,962 |
+| 2D, existing recipients | 75,000 | 10 | 28,351 | 28,372 |
+| Expiring, existing recipients | 50,000 | 5 | 27,254 | 27,590 |
+
+All 3,689,397 accepted transactions confirm without execution failures or rejected
+dev payloads. Across the three new-recipient pairs, mean confirmed TPS rises from
+22,497 to 22,824 (1.45%). Execution-loop time totals fall from 31.54 s to 30.93 s,
+and successful-execution time from 10.51 s to 9.86 s, with nearly equal accepted
+counts (1,192,917 before; 1,193,721 after). Speculative retries fall from 81,379 to
+zero, 665,224 stale candidates avoid conversion and worker execution, and backoff
+falls from 649,876 to 1,024 attempts. Counters cover payload attempts, including
+cancelled work, and are not counts of distinct canonical transactions.
+
+The existing-recipient pair is effectively unchanged. The short expiring pair's
+confirmed rate rises 1.2%, but its execution-loop time does not improve; that
+single pair is compatibility evidence rather than a demonstrated execution gain.
+These local trials alternate before/after order, include backlog, and provide no
+claim of sustained 50k+ TPS or confidence intervals.
+
+An initial version filtered after cloning worker inputs. It also eliminated 2D
+nonce retries, but still converted stale candidates that backoff had previously
+skipped. `nonce-filter-late-node.json` retains its six trials (2,083,753 accepted,
+all confirmed); the existing-recipient run included 0.48 s more background-root
+waiting. `prototypes/nonce-filter-after-conversion.patch` reproduces this version
+on `ae5c08d9` using `git apply --unidiff-zero`. Its nine canonical replay blocks
+contain 183,039 user transactions and agree with sequential execution. The final
+implementation uses the earlier borrowed-view check described above.
+
+All 93 EVM tests pass, along with release Clippy for the EVM, revm and payload
+builder and all nine shared-trie/payment-lane node checks. New differential cases
+cover mixed stale/valid nonce descendants, empty worker batches, all forks from
+T0 through T4, nonce-check disabling, malformed storage, expiry exactly at the
+block timestamp, and hints invalidated after preparation. The tests also check
+that omitted candidates never call the conversion callback and that changing a
+borrowed view during conversion cannot evade the gas bound.
+`nonce-filter-early-canonical-*.tsv` verifies 15 generated blocks containing
+233,659 user transactions and 15 system transactions against complete sequential
+outcomes, state deltas, canonical receipts, gas, receipt roots and state roots.
+Replay timings are diagnostic: adaptive backoff and the minimum body-time
+threshold are disabled, and sequential execution warms the provider caches first.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed

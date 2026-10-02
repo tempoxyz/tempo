@@ -54,6 +54,7 @@ def execution_counts(directory):
     # describe scheduler activity, not distinct committed transactions.
     names = {
         "speculated": "speculated_transactions",
+        "nonce_filtered": "nonce_filtered_candidates",
         "reused": "reused_transactions",
         "bodies_reused": "reused_call_bodies",
         "fees_rebased": "rebased_fee_transactions",

@@ -131,13 +131,12 @@ impl SpeculativeExecutor {
         &self,
         db: &mut DB,
         inputs: Vec<(TempoTxEnv, Env)>,
+        mut prefetched: HashMap<ReadKey, ReadValue>,
     ) -> SpeculativeBatch<DB::Error> {
         assert!(inputs.len() <= self.batch_size);
-        let count = inputs.len();
         // Accounts named by the transaction can be loaded without waiting for a
         // worker round trip. This is only a cache hint: errors are observed by the
         // actual read, and accesses are recorded even when they hit this map.
-        let mut prefetched = HashMap::default();
         for (tx, env) in &inputs {
             for key in std::iter::once(tx.inner.caller)
                 .chain(tx.calls().filter_map(|(kind, _)| kind.to().copied()))
@@ -148,13 +147,10 @@ impl SpeculativeExecutor {
                     env.cfg_env.spec,
                 ))
             {
-                if let std::collections::hash_map::Entry::Vacant(entry) = prefetched.entry(key)
-                    && let Ok(value) = read(db, key)
-                {
-                    entry.insert(value);
-                }
+                prefetch(db, &mut prefetched, key);
             }
         }
+        let count = inputs.len();
         let shared = Arc::new(Work {
             inputs,
             prefetched,
@@ -213,6 +209,37 @@ impl SpeculativeExecutor {
             batch.complete(db);
         }
         batch
+    }
+}
+
+pub(crate) fn nonce_is_stale<DB: Database>(
+    db: &mut DB,
+    cache: &mut HashMap<ReadKey, ReadValue>,
+    hint: Option<(ReadKey, u64)>,
+    disable_nonce_check: bool,
+) -> bool {
+    let Some((key, bound)) = hint else {
+        return false;
+    };
+    if let ReadKey::Storage(address, _) = key {
+        prefetch(db, cache, ReadKey::Account(address));
+    }
+    // Do not synthesize an error or change authoritative selection. The ordinary
+    // EVM still validates omitted candidates, even if their nonce changes later.
+    // Malformed uint64 words and provider errors must not panic or be truncated.
+    matches!(prefetch(db, cache, key), Some(ReadValue::Storage(value))
+        if !disable_nonce_check && u64::try_from(*value).is_ok_and(|value| value > bound))
+}
+
+fn prefetch<'a, DB: Database>(
+    db: &mut DB,
+    cache: &'a mut HashMap<ReadKey, ReadValue>,
+    key: ReadKey,
+) -> Option<&'a ReadValue> {
+    use std::collections::hash_map::Entry;
+    match cache.entry(key) {
+        Entry::Occupied(entry) => Some(entry.into_mut()),
+        Entry::Vacant(entry) => read(db, key).ok().map(|value| &*entry.insert(value)),
     }
 }
 
@@ -443,6 +470,8 @@ impl<E> Drop for SpeculativeBatch<E> {
 pub struct ExecutionStats {
     /// Candidates scheduled on workers, including speculative failures and cancelled work.
     pub speculated: u64,
+    /// Candidates left for ordinary execution because the nonce hint was stale.
+    pub nonce_filtered: u64,
     /// Successful speculative results reused after validating their reads.
     pub reused: u64,
     /// Call bodies reused after rerunning validation and pre-execution in order.

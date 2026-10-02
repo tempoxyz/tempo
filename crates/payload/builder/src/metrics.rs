@@ -96,6 +96,8 @@ impl TempoPayloadBuilderMetrics {
     pub(crate) fn record_speculative_execution(&self, stats: tempo_evm::parallel::ExecutionStats) {
         metrics::counter!("tempo_payload_builder_speculated_transactions_total")
             .increment(stats.speculated);
+        metrics::counter!("tempo_payload_builder_nonce_filtered_candidates_total")
+            .increment(stats.nonce_filtered);
         metrics::counter!("tempo_payload_builder_reused_transactions_total")
             .increment(stats.reused);
         metrics::counter!("tempo_payload_builder_reused_call_bodies_total")
