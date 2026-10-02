@@ -83,7 +83,7 @@ use tempo_transaction_pool::{
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -1099,9 +1099,12 @@ where
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
+        let parent = Span::current();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
+            .spawn_blocking_named("builder-roots-task", move || {
+                let _span = debug_span!(target: "payload_builder", parent: parent, "builder_roots")
+                    .entered();
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 
@@ -1146,31 +1149,35 @@ where
     fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
         let (bal_tx, bal_rx) = oneshot::channel();
-        self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state =
-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
-            for msg in task_rx {
-                match msg {
-                    BalMessage::BumpIndex => {
-                        bal_state.bump_bal_index();
-                    }
-                    BalMessage::State(state) => {
-                        bal_state.commit(&state);
-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(state);
+        let parent = Span::current();
+        self.executor
+            .spawn_blocking_named("builder-bal-task", move || {
+                let _span =
+                    debug_span!(target: "payload_builder", parent: parent, "builder_bal").entered();
+                let mut bal_state =
+                    reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+                for msg in task_rx {
+                    match msg {
+                        BalMessage::BumpIndex => {
+                            bal_state.bump_bal_index();
+                        }
+                        BalMessage::State(state) => {
+                            bal_state.commit(&state);
+                            if let Some(state_root_task_hook) = &mut state_root_task_hook {
+                                state_root_task_hook.on_state(state);
+                            }
                         }
                     }
                 }
-            }
 
-            drop(state_root_task_hook);
-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-            let mut encoded = Vec::new();
-            bal.encode(&mut encoded);
-            let bal_hash = keccak256(&encoded);
+                drop(state_root_task_hook);
+                let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+                let mut encoded = Vec::new();
+                bal.encode(&mut encoded);
+                let bal_hash = keccak256(&encoded);
 
-            let _ = bal_tx.send((encoded.into(), bal_hash));
-        });
+                let _ = bal_tx.send((encoded.into(), bal_hash));
+            });
 
         BalTaskHandle {
             msg_tx: task_tx,

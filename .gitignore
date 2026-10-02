@@ -42,3 +42,6 @@ _
 *.profraw
 __pycache__/
 .bench-tmp/
+
+# Amp orb portals
+.amp/portals/*

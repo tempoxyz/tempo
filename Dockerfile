@@ -22,6 +22,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
         --bin tempo-sidecar \
         --bin tempo-xtask
 
+# Reuse the regular build artifacts, enabling custom PCRs only for the devnet binary.
+FROM builder AS devnet-builder
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
+    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    cargo build --profile ${RUST_PROFILE} \
+        --bin tempo --features "${RUST_FEATURES},localnet,custom-pcrs"
+
 FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,6 +43,12 @@ WORKDIR /data
 FROM base AS tempo
 ARG RUST_PROFILE=profiling
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
+ENTRYPOINT ["/usr/local/bin/tempo"]
+
+# tempo-devnet
+FROM base AS tempo-devnet
+ARG RUST_PROFILE=profiling
+COPY --from=devnet-builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
 ENTRYPOINT ["/usr/local/bin/tempo"]
 
 # tempo-localnet
