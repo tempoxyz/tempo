@@ -6,10 +6,7 @@ use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     rpc::client::RpcClient,
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
     transports::http::reqwest::Url,
 };
@@ -20,8 +17,6 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::Call};
-
-use crate::utils::TEST_MNEMONIC;
 
 pub(crate) const GAS_LIMIT: u64 = TEMPO_T1_TX_GAS_LIMIT_CAP;
 
@@ -66,12 +61,6 @@ impl Deref for GasSnapshot {
     fn deref(&self) -> &Self::Target {
         &self.values
     }
-}
-
-pub(crate) fn test_signer(index: u32) -> eyre::Result<PrivateKeySigner> {
-    Ok(MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(index)?
-        .build()?)
 }
 
 pub(crate) fn fixed_signer(last_byte: u8) -> PrivateKeySigner {

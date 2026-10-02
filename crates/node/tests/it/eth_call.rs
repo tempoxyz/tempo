@@ -6,7 +6,6 @@ use alloy::{
         Filter, TransactionRequest,
         trace::parity::{ChangedType, Delta},
     },
-    signers::local::MnemonicBuilder,
     sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
@@ -14,6 +13,7 @@ use alloy_rpc_types_eth::{
     TransactionInput,
     state::{AccountOverride, StateOverride},
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
@@ -71,7 +71,7 @@ async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
             .await?;
         let http_url = setup.http_url;
 
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let wallet = test_signer(0);
         let caller = wallet.address();
         let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -119,7 +119,7 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
             .await?;
         let http_url = setup.http_url;
 
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let wallet = test_signer(0);
         let caller = wallet.address();
         let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -222,7 +222,7 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
             .await?;
         let http_url = setup.http_url;
 
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let wallet = test_signer(0);
         let caller = wallet.address();
         let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -290,7 +290,7 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
             .await?;
         let http_url = setup.http_url;
 
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let wallet = test_signer(0);
         let caller = wallet.address();
         let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -338,7 +338,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let user_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -451,7 +451,7 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
 
     reth_tracing::init_test_tracing();
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let wallet_address = wallet.address();
 
     let dynamic_validator = Arc::new(Mutex::new(Address::ZERO));
@@ -574,7 +574,7 @@ async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre:
         test_storage.insert(k.clone(), v.clone());
     }
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let wallet_address = wallet.address();
 
     let setup = TestNodeBuilder::new()
@@ -661,7 +661,7 @@ async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Re
             .await?;
         let http_url = setup.http_url;
 
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let wallet = test_signer(0);
         let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
         // Call with an unknown function selector (0x12345678)

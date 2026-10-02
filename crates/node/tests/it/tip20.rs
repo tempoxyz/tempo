@@ -1,11 +1,11 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
 use futures::future::try_join_all;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::{
@@ -23,7 +23,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -34,11 +34,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     // NOTE: The tests-genesis.json pre allocates feeToken balances for gas fees
     let account_data: Vec<_> = (1..100)
         .map(|i| {
-            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i as u32)
-                .unwrap()
-                .build()
-                .unwrap();
+            let signer = test_signer(i as u32);
             let account = signer.address();
             let balance = U256::from(rand_09::random::<u32>());
             (account, signer, balance)
@@ -153,7 +149,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -233,7 +229,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let owner = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let owner = test_signer(0);
     let caller = owner.address();
     let provider = ProviderBuilder::new()
         .wallet(owner)
@@ -243,11 +239,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
     let account_data: Vec<_> = (1..20)
         .map(|i| {
-            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i as u32)
-                .unwrap()
-                .build()
-                .unwrap();
+            let signer = test_signer(i as u32);
             let balance = U256::from(rand_09::random::<u32>());
             (signer, balance)
         })
@@ -342,7 +334,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -397,7 +389,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let admin = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -434,15 +426,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let accounts: Vec<_> = (1..100)
-        .map(|i| {
-            MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i)
-                .unwrap()
-                .build()
-                .unwrap()
-        })
-        .collect();
+    let accounts: Vec<_> = (1..100).map(test_signer).collect();
 
     let (allowed_accounts, blacklisted_accounts) = accounts.split_at(accounts.len() / 2);
 
@@ -523,7 +507,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let admin = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -560,15 +544,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let accounts: Vec<_> = (1..100)
-        .map(|i| {
-            MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i)
-                .unwrap()
-                .build()
-                .unwrap()
-        })
-        .collect();
+    let accounts: Vec<_> = (1..100).map(test_signer).collect();
 
     let (whitelisted_senders, non_whitelisted_accounts) = accounts.split_at(accounts.len() / 2);
     let whitelisted_receivers: Vec<Address> = (0..whitelisted_senders.len())
@@ -668,7 +644,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin_wallet = test_signer(0);
     let admin = admin_wallet.address();
     let admin_provider = ProviderBuilder::new()
         .wallet(admin_wallet)
@@ -676,18 +652,14 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     let token = setup_test_token(admin_provider.clone(), admin).await?;
 
-    let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let alice_wallet = test_signer(1);
     let alice = alice_wallet.address();
     let alice_provider = ProviderBuilder::new()
         .wallet(alice_wallet)
         .connect_http(http_url.clone());
     let alice_token = ITIP20::new(*token.address(), alice_provider);
 
-    let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(2)?
-        .build()?;
+    let bob_wallet = test_signer(2);
     let bob = bob_wallet.address();
     let bob_provider = ProviderBuilder::new()
         .wallet(bob_wallet)
@@ -791,16 +763,14 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     let http_url = setup.http_url;
 
     // Admin creates and controls the token
-    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin_wallet = test_signer(0);
     let admin = admin_wallet.address();
     let admin_provider = ProviderBuilder::new()
         .wallet(admin_wallet)
         .connect_http(http_url.clone());
 
     // User who will have their fee token paused
-    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let user_wallet = test_signer(1);
     let user = user_wallet.address();
     let user_provider = ProviderBuilder::new()
         .wallet(user_wallet)
@@ -946,7 +916,7 @@ async fn setup_virtual_test() -> eyre::Result<(
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url.clone();
 
-    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin_wallet = test_signer(0);
     let admin = admin_wallet.address();
     assert_eq!(admin, VIRTUAL_MASTER);
 
@@ -1028,9 +998,7 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)
@@ -1094,9 +1062,7 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)
@@ -1168,9 +1134,7 @@ async fn test_tip20_virtual_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)
@@ -1252,9 +1216,7 @@ async fn test_tip20_virtual_transfer_from_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)

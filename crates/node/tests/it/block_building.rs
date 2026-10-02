@@ -1,16 +1,17 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::TestNodeBuilder;
 use alloy::{
     consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
     network::{EthereumWallet, NetworkTransactionBuilder},
     primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
+    signers::local::PrivateKeySigner,
     sol_types::SolEvent,
 };
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::{Ethereum, ReceiptResponse, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_node_api::BuiltPayload;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
@@ -134,9 +135,7 @@ async fn inject_non_payment_txs(
     start_index: u32,
 ) -> eyre::Result<()> {
     for i in 0..count {
-        let wallet_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(start_index + i as u32)?
-            .build()?;
+        let wallet_signer = test_signer(start_index + i as u32);
         let mut tx = TxEip1559 {
             chain_id,
             gas_limit: 2_000_000,
@@ -235,9 +234,7 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let payment_sender = test_signer(0);
     let payment_wallet = EthereumWallet::from(payment_sender.clone());
 
     let http_url = setup.node.rpc_url();
@@ -320,9 +317,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let payment_sender = test_signer(0);
     let payment_wallet = EthereumWallet::from(payment_sender.clone());
 
     let http_url = setup.node.rpc_url();
@@ -484,9 +479,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
     let mut payment_tokens = Vec::new();
 
     for sender_idx in 0..num_payment_senders {
-        let sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(sender_idx as u32)?
-            .build()?;
+        let sender = test_signer(sender_idx as u32);
 
         let sender_provider = ProviderBuilder::new()
             .wallet(EthereumWallet::from(sender.clone()))
@@ -604,9 +597,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let user_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let user_signer = test_signer(1);
     let user_address = user_signer.address();
     let user_provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(user_signer.clone()))
@@ -879,12 +870,8 @@ async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let payer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let funder = test_signer(0);
+    let payer = test_signer(1);
 
     let provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(payer.clone()))
@@ -919,15 +906,9 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let tip20_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let reserve_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(2)?
-        .build()?;
+    let funder = test_signer(0);
+    let tip20_sender = test_signer(1);
+    let reserve_sender = test_signer(2);
 
     let tip20_provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(tip20_sender.clone()))

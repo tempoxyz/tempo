@@ -4,19 +4,17 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
@@ -103,7 +101,7 @@ impl Localnet {
             .await?;
         let provider = alloy::providers::RootProvider::new_http(setup.node.rpc_url());
         let chain_id = provider.get_chain_id().await?;
-        let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+        let funder_signer = test_signer(0);
         let funder_addr = funder_signer.address();
         Ok(Self {
             setup,
@@ -947,7 +945,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         alloy::primitives::B256::from_slice(wrong_encoded_point.y().unwrap().as_ref());
 
     // Use TEST_MNEMONIC account for provider wallet
-    let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let funder_signer = test_signer(0);
 
     // Create provider with funder's wallet
     let funder_wallet = EthereumWallet::from(funder_signer.clone());
@@ -1294,9 +1292,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Create wallet from mnemonic
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let wallet = test_signer(0);
 
     let mut setup = crate::utils::TestNodeBuilder::new()
         .with_node_count(2)
@@ -1381,7 +1377,7 @@ async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse()
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())
@@ -1446,7 +1442,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())
@@ -1532,7 +1528,7 @@ async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())
@@ -1574,7 +1570,7 @@ async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())
@@ -1609,7 +1605,7 @@ async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> 
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())
@@ -1659,11 +1655,9 @@ async fn test_t6_admin_key_authorization_cross_account_replay_rejected_e2e() -> 
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let alice_signer = test_signer(0);
     let alice_addr = alice_signer.address();
-    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let bob_signer = test_signer(1);
     let bob_addr = bob_signer.address();
     let provider = ProviderBuilder::new()
         .wallet(alice_signer.clone())
@@ -1722,7 +1716,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
 
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -2078,7 +2072,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
 
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -2352,13 +2346,9 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let alice_signer = test_signer(0);
     let alice_addr = alice_signer.address();
-    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let bob_signer = test_signer(1);
     let bob_addr = bob_signer.address();
     let provider = ProviderBuilder::new()
         .wallet(alice_signer.clone())
@@ -2502,7 +2492,7 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())

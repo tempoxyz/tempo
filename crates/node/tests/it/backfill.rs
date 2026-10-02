@@ -2,13 +2,12 @@ use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
 };
 use alloy_eips::{BlockNumberOrTag, Encodable2718};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
-use reth_e2e_test_utils::wallet::Wallet;
+use reth_e2e_test_utils::wallet::{Wallet, test_signer};
 use reth_node_api::BuiltPayload;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
@@ -25,9 +24,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Create wallet from mnemonic
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let wallet = test_signer(0);
     let eth_wallet = EthereumWallet::from(wallet.clone());
 
     // Setup two connected nodes using e2e test utilities
@@ -58,15 +55,13 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     println!("Advancing first node...");
     let target_blocks = 50;
 
-    // Create multiple wallets for different transactions to avoid nonce issues
-    let wallets = Wallet::new(target_blocks as usize)
-        .with_chain_id(chain_id)
-        .wallet_gen();
+    // Use different accounts for different transactions to avoid nonce issues
+    let wallets = Wallet::default().with_chain_id(chain_id);
 
     // For simplicity, let's just send one transaction per block using the simple approach
     for i in 0..target_blocks {
         // Use a different wallet for each transaction to avoid nonce conflicts
-        let wallet_signer = wallets[i as usize].clone();
+        let wallet_signer = wallets.signer(i as u32);
 
         // Create a new transaction for this block
         let raw_tx = {

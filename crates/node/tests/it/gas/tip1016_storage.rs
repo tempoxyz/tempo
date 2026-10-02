@@ -15,6 +15,7 @@
 //! 7. Multiple storage-creating txs in a single block correctly accumulate exemptions
 //! 8. Reverted inner CALLs do NOT contribute state gas to the parent frame's exemption
 
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_node_api::BuiltPayload;
 
 use alloy::{
@@ -27,7 +28,7 @@ use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
 
-use super::helpers::{build_call_tx, test_signer};
+use super::helpers::build_call_tx;
 use crate::utils::TestNodeBuilder;
 
 /// Gets the deployed contract address from CreateX's ContractCreation event, polling until
@@ -79,7 +80,7 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -141,7 +142,7 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -222,7 +223,7 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -305,8 +306,8 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
-    let signer2 = test_signer(1)?;
+    let signer = test_signer(0);
+    let signer2 = test_signer(1);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -387,7 +388,7 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -471,7 +472,7 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -553,7 +554,7 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -652,7 +653,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -801,7 +802,7 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 

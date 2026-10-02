@@ -26,10 +26,7 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
     let chain_spec = producer.inner.chain_spec();
     let chain_id = chain_spec.chain().id();
 
-    let signer = Wallet::new(1)
-        .with_chain_id(chain_id)
-        .wallet_gen()
-        .remove(0);
+    let signer = Wallet::default().with_chain_id(chain_id).signer(0);
     let sender = signer.address();
     let mut tx = TxEip1559 {
         chain_id,
