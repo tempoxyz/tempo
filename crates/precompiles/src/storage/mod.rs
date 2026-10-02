@@ -32,6 +32,20 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::error::{Result, TempoPrecompileError};
 
+/// State and gas accounting saved for a native atomic operation.
+#[derive(Debug)]
+pub struct StorageCheckpoint {
+    state: StateCheckpoint,
+    gas: Option<GasCheckpoint>,
+}
+
+/// Gas counters restored on rollback while execution gas remains spent.
+#[derive(Debug)]
+struct GasCheckpoint {
+    state_gas_spent: i64,
+    refunded: i64,
+}
+
 /// Low-level storage provider for interacting with the EVM.
 ///
 /// # Implementations
@@ -154,23 +168,24 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
-    /// Creates a new journal checkpoint so that all subsequent state-changing
+    /// Creates a state and gas checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
     /// or reverted ([`checkpoint_revert`](Self::checkpoint_revert)).
     ///
     /// Prefer [`StorageCtx::checkpoint`] which returns a [`CheckpointGuard`] that
     /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
-    fn checkpoint(&mut self) -> StateCheckpoint;
+    fn checkpoint(&mut self) -> StorageCheckpoint;
 
     /// Commits all state changes since the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard::commit`].
-    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint);
+    fn checkpoint_commit(&mut self, checkpoint: StorageCheckpoint);
 
-    /// Reverts all state changes back to the given checkpoint.
+    /// Reverts state changes and, with TIP-1016, state gas and refunds to the checkpoint.
+    /// Execution gas already spent remains charged.
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
-    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint);
+    fn checkpoint_revert(&mut self, checkpoint: StorageCheckpoint);
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
     ///

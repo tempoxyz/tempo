@@ -12,7 +12,7 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, SstoreTransitionFlags},
+    storage::{PrecompileStorageProvider, SstoreTransitionFlags, StorageCheckpoint},
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
@@ -250,32 +250,39 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.is_static
     }
 
-    fn checkpoint(&mut self) -> StateCheckpoint {
+    fn checkpoint(&mut self) -> StorageCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
             internals: self.internals.clone(),
             transient: self.transient.clone(),
             events: self.events.clone(),
         });
-        StateCheckpoint::new(idx, 0)
+        StorageCheckpoint {
+            state: StateCheckpoint::new(idx, 0),
+            gas: None,
+        }
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint commit (expected top of stack)"
         );
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint revert (expected top of stack)"
         );
-        if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_len()..).next() {
+        if let Some(snapshot) = self
+            .snapshots
+            .drain(checkpoint.state.journal_len()..)
+            .next()
+        {
             self.internals = snapshot.internals;
             self.transient = snapshot.transient;
             self.events = snapshot.events;
