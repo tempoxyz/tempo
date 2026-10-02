@@ -840,6 +840,60 @@ fn tip20_transfers_track_balances_and_fee_counters() {
 }
 
 #[test]
+fn prefetched_aa_nonce_is_revalidated_after_prepare() {
+    use alloy_evm::FromRecoveredTx;
+    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::StorageKey};
+    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+
+    let mut db = funded_tip20_db(1);
+    let target = address(900);
+    contract(&mut db, target, &[0]);
+    db.insert_account_info(
+        NONCE_PRECOMPILE_ADDRESS,
+        AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        },
+    );
+    let nonce_key = U256::from(13);
+    let slot = nonce_key.mapping_slot(address(0).mapping_slot(slots::NONCES));
+    let signed = TempoTransaction {
+        chain_id: 1,
+        gas_limit: 1_000_000,
+        nonce_key,
+        calls: vec![Call {
+            to: target.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    }
+    .into_signed(TempoSignature::default());
+    let tx = TempoTxEnv::from_recovered_tx(&signed, address(0));
+    let mut sequential = test_evm_with_basefee(db.clone(), 0);
+    let mut parallel = test_evm_with_basefee(db, 0);
+    parallel.set_speculative_executor(Some(
+        SpeculativeExecutor::new(1, 1)
+            .unwrap()
+            .with_streaming(false),
+    ));
+    parallel.prepare_transactions([(tx.clone(), Address::ZERO)]);
+    // The prefetch/worker sees nonce zero, then an earlier canonical transaction
+    // consumes it. The hint must not turn this now-invalid transaction into a commit.
+    for evm in [&mut sequential, &mut parallel] {
+        evm.db_mut()
+            .insert_account_storage(NONCE_PRECOMPILE_ADDRESS, slot, U256::from(1))
+            .unwrap();
+    }
+    let expected = sequential.transact_raw(tx.clone()).unwrap_err();
+    let actual = parallel.transact_raw(tx).unwrap_err();
+    assert_eq!(expected.to_string(), actual.to_string());
+    assert_eq!(parallel.execution_stats().conflicts, 1);
+    assert_eq!(parallel.execution_stats().reused, 0);
+    assert_eq!(root(sequential.db()), root(parallel.db()));
+}
+
+#[test]
 fn aa_multi_call_transfers_and_two_dimensional_nonces() {
     use alloy_evm::FromRecoveredTx;
     use alloy_sol_types::SolCall;
@@ -1443,9 +1497,11 @@ fn body_replay_preserves_storage_gas_and_warmness() {
 #[test]
 #[ignore]
 fn execution_throughput() {
+    use alloy_evm::FromRecoveredTx;
     use alloy_sol_types::SolCall;
     use std::time::Instant;
     use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
     let counts =
         std::env::var("TEMPO_BENCH_COUNTS").unwrap_or_else(|_| "10000,25000,50000,100000".into());
     let workers = std::env::var("TEMPO_BENCH_WORKERS").unwrap_or_else(|_| "0,1,4,16,32".into());
@@ -1470,8 +1526,9 @@ fn execution_throughput() {
                     | "compute_paid_chains"
                     | "tip20"
                     | "tip20_paid"
+                    | "tip20_paid_aa"
             ));
-            let users = if workload == "compute_paid_chains" {
+            let users = if matches!(workload, "compute_paid_chains" | "tip20_paid_aa") {
                 100
             } else {
                 count
@@ -1498,7 +1555,28 @@ fn execution_throughput() {
             }
             let txs = (0..count)
                 .map(|i| {
-                    if workload.starts_with("compute") {
+                    if workload == "tip20_paid_aa" {
+                        let signed = TempoTransaction {
+                            chain_id: 1,
+                            gas_limit: 1_000_000,
+                            max_fee_per_gas: 1,
+                            max_priority_fee_per_gas: 1,
+                            nonce_key: U256::from(1 + i / users),
+                            calls: vec![Call {
+                                to: PATH_USD_ADDRESS.into(),
+                                value: U256::ZERO,
+                                input: ITIP20::transferCall {
+                                    to: address(count + 1000 + i),
+                                    amount: U256::from(17),
+                                }
+                                .abi_encode()
+                                .into(),
+                            }],
+                            ..Default::default()
+                        }
+                        .into_signed(TempoSignature::default());
+                        TempoTxEnv::from_recovered_tx(&signed, address(i % users))
+                    } else if workload.starts_with("compute") {
                         let mut tx = transaction(i % users, target, i / users, &[]);
                         tx.inner.gas_price = u128::from(workload.starts_with("compute_paid"));
                         tx
@@ -1558,7 +1636,7 @@ fn execution_throughput() {
                         assert!(result.result.is_success());
                         cumulative_gas += result.result.tx_gas_used();
                         receipts.push(tempo_primitives::TempoReceipt {
-                            tx_type: tempo_primitives::TempoTxType::Legacy,
+                            tx_type: tx.inner.tx_type.try_into().unwrap(),
                             success: true,
                             cumulative_gas_used: cumulative_gas,
                             logs: result.result.into_logs(),

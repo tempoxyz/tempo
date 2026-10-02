@@ -54,18 +54,23 @@ pub fn read<DB: Database>(db: &mut DB, key: ReadKey) -> Result<ReadValue, DB::Er
     }
 }
 
-/// Bounded hints for common fee storage and the first native TIP-20 transfer.
+/// Bounded hints for nonce and fee storage and the first native TIP-20 transfer.
 /// These do not resolve token preferences, virtual recipients or reward delegates:
 /// conditional accesses still use the database, and only actual reads become dependencies.
-pub fn prefetch_keys(tx: &crate::TempoTxEnv, beneficiary: Address) -> Vec<ReadKey> {
+pub fn prefetch_keys(
+    tx: &crate::TempoTxEnv,
+    beneficiary: Address,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> Vec<ReadKey> {
     use alloy_sol_types::SolCall;
     use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS,
+        NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        nonce::slots as nonce_slots,
         storage::{StorableType, StorageKey},
         tip_fee_manager::slots as fee_slots,
         tip20::{ITIP20, rewards::UserRewardInfo, slots as token_slots},
     };
-    use tempo_primitives::TempoAddressExt;
+    use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
 
     let payer = tx.fee_payer().unwrap_or(tx.inner.caller);
     let mut keys = vec![
@@ -75,6 +80,34 @@ pub fn prefetch_keys(tx: &crate::TempoTxEnv, beneficiary: Address) -> Vec<ReadKe
             payer.mapping_slot(fee_slots::USER_TOKENS),
         ),
     ];
+    if let Some(aa) = &tx.tempo_tx_env
+        && !aa.nonce_key.is_zero()
+    {
+        keys.push(ReadKey::Account(NONCE_PRECOMPILE_ADDRESS));
+        if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
+            keys.push(ReadKey::Storage(
+                NONCE_PRECOMPILE_ADDRESS,
+                nonce_slots::EXPIRING_NONCE_RING_PTR,
+            ));
+            let hash = if spec.is_t1b() {
+                aa.expiring_nonce_hash
+            } else {
+                Some(aa.tx_hash)
+            };
+            if let Some(hash) = hash {
+                keys.push(ReadKey::Storage(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN),
+                ));
+            }
+        } else {
+            keys.push(ReadKey::Storage(
+                NONCE_PRECOMPILE_ADDRESS,
+                aa.nonce_key
+                    .mapping_slot(tx.inner.caller.mapping_slot(nonce_slots::NONCES)),
+            ));
+        }
+    }
     let pays_fees = tx.inner.gas_price != 0;
     if pays_fees {
         keys.push(ReadKey::Storage(

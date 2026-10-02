@@ -145,6 +145,7 @@ impl SpeculativeExecutor {
                 .chain(tempo_revm::replay::prefetch_keys(
                     tx,
                     env.block_env.beneficiary,
+                    env.cfg_env.spec,
                 ))
             {
                 if let std::collections::hash_map::Entry::Vacant(entry) = prefetched.entry(key)
@@ -603,6 +604,7 @@ impl<E> RemoteDatabase<'_, E> {
         let value = if let Some(value) = cached {
             value
         } else {
+            tracing::trace!(target: "tempo::execution::reads", ?key, "Worker database cache miss");
             let (sender, receiver) = mpsc::sync_channel(1);
             self.sender
                 .send(Message::Read(key, sender))

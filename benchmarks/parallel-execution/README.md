@@ -1152,6 +1152,70 @@ also pass the four post-block Merkle-proof variants, TIP-20 transfers and mixed
 payment-lane workloads with sequential, synchronous parallel and background-root
 configurations. Release Clippy passes for all EVM targets.
 
+## AA nonce prefetching
+
+Workers now receive bounded hints for the nonce-manager account, each 2D nonce
+slot, and expiring-nonce replay hashes and ring pointers. Hash selection follows
+the T1/T1B fork boundary. The hints only populate the database cache: they neither
+warm the EVM journal nor replace execution reads, replay protection or conflict
+validation. Dynamic ring entries retain the ordinary database path.
+
+`aa-prefetch-read-requests.json` records trace profiles before and after this
+change. In a stored block with 8,443 new-recipient AA user transactions, worker
+cache-miss channel requests fall from 8,772 to eight: all nonce-account and nonce-
+storage requests disappear. In a 36,787-user-transaction expiring-nonce block,
+requests fall from 53,854 to 19,749. These count requests, including duplicates
+coalesced by the coordinator, rather than physical database reads. Both replays
+verify full results, state deltas, canonical receipts, gas and roots; trace-enabled
+timings are diagnostic only (`aa-prefetch-trace-*.tsv`).
+
+`aa-prefetch-micro.tsv` and `aa-prefetch-micro-phases.json` retain an alternating
+before/after/after/before comparison at 10k, 25k, 50k and 100k transactions with
+zero, 16 and 32 workers. The `tip20_paid_aa` workload uses 100 funded senders,
+distinct 2D nonce keys and new recipients, with both maximum and priority fees
+set to one. It verifies AA receipt types, complete receipts and final state roots.
+Like the existing microbenchmarks, it uses T0; the node trials activate T4.
+At 50k transactions, 16-worker throughput improves from 97,861–102,946 TPS to
+110,627–115,190 TPS. At 100k, the ranges are 108,561–113,825 and 113,110–113,280
+TPS, so the advantage is smaller. Sequential execution remains around 105k TPS.
+This removes avoidable coordination; it does not establish linear multicore scaling.
+
+`aa-prefetch-node.json` retains three paired 50k offered-load comparisons with
+16 workers, shared trie roots, 5B block gas and five seconds of submissions:
+
+| AA workload | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: |
+| 2D nonces, existing recipients | 27,310 | 27,622 |
+| 2D nonces, new recipients | 19,462 | 19,762 |
+| Expiring nonces, existing recipients | 25,992 | 27,260 |
+
+All 1,341,695 accepted transactions confirm without execution failures or rejected
+dev payloads. These are single paired trials, so the small throughput differences
+need more evidence. `aa-prefetch-canonical-*.tsv` verifies nine busy blocks built
+with the change: 182,993 user transactions plus nine system transactions match
+full results, state deltas, stored receipts, gas and both canonical roots. Replay
+timings overlap correctness builds and are diagnostic only. The release EVM suite
+passes 90 tests, including a regression that changes a prefetched AA nonce before
+commit and requires canonical rejection. Clippy passes for all EVM and REVM targets;
+the background-root TIP-20 and mixed-payment-lane node tests also pass.
+
+`aa-prefetch-node-matrix.json` adds ten-second submission windows for the existing-
+recipient 2D workload. All 1,543,160 accepted transactions confirm, again without
+execution failures or rejected dev payloads:
+
+| Offered TPS | Sequential, confirmed TPS | 16 workers, confirmed TPS |
+| --- | ---: | ---: |
+| 10,000 | 9,901 | 9,949 |
+| 25,000 | 24,831 | 24,758 |
+| 75,000 | 25,723 | 23,708 |
+
+These longer overload trials perform worse than the five-second trials, and
+speculation remains slower than the sequential control for this shared-account
+workload. Offered 75k also exceeds client/admission capacity: those trials accept
+429,962 and 413,198 transactions over approximately ten seconds. All confirmation
+rates include draining the backlog. The execution bottleneck and sustained 50k+
+node-throughput goal remain unresolved.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed
