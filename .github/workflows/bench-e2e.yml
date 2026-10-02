@@ -125,7 +125,7 @@ on:
         required: true
         default: false
       no-slack:
-        description: Skip Slack notification.
+        description: Skip Slack notification (manual runs otherwise notify on wins).
         type: boolean
         required: true
         default: true
@@ -398,6 +398,9 @@ jobs:
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
+      # Manual runs use the notifier's existing win-only policy, including no DMs
+      # for regressions. Reusable workflow callers retain their existing policy.
+      BENCH_SLACK: ${{ github.event_name == 'workflow_dispatch' && 'on-win' || 'always' }}
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
@@ -1254,7 +1257,7 @@ jobs:
             await notify.e2e.success({ core, context });
 
       - name: Send Slack notification (failure)
-        if: failure() && env.BENCH_NO_SLACK != 'true'
+        if: failure() && env.BENCH_NO_SLACK != 'true' && env.BENCH_SLACK != 'on-win'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
