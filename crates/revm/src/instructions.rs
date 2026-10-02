@@ -2,13 +2,14 @@ use crate::{evm::TempoContext, gas_credits};
 use alloy_evm::Database;
 use revm::{
     bytecode::opcode::SSTORE,
+    context_interface::Host as _,
     handler::instructions::EthInstructions,
     interpreter::{
-        Instruction, InstructionContext, InstructionResult,
+        Instruction, InstructionContext, InstructionResult, as_usize_or_fail, gas,
         instructions::{contract, gas_table_spec, host, instruction_table},
-        interpreter::EthInterpreter,
+        interpreter::{EthInterpreter, resize_memory},
         interpreter_types::InputsTr,
-        push,
+        popn_top, push,
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -36,6 +37,7 @@ pub(crate) fn record_storage_accesses<DB: Database>(
 ) {
     use revm::bytecode::opcode;
     for (opcode, instruction) in [
+        (opcode::KECCAK256, worker_keccak256::<DB> as _),
         (opcode::SLOAD, sload::<DB> as _),
         (opcode::SSTORE, sstore::<DB> as _),
         (opcode::CREATE, create::<DB> as _),
@@ -45,6 +47,55 @@ pub(crate) fn record_storage_accesses<DB: Database>(
         let gas = instructions.gas_table()[opcode as usize];
         instructions.insert_instruction(opcode, Instruction::new(instruction), gas);
     }
+}
+
+// A repeated short hash should not contend on alloy's process-wide cache.
+// Keys are compared byte-for-byte, and retained memory is bounded per worker.
+std::thread_local! {
+    static LAST_HASH: std::cell::RefCell<([u8; 88], usize, alloy_primitives::B256)> =
+        const { std::cell::RefCell::new(([0; 88], 0, alloy_primitives::B256::ZERO)) };
+}
+
+fn worker_hash(input: &[u8]) -> alloy_primitives::B256 {
+    if input.is_empty() || input.len() > 88 {
+        return alloy_primitives::keccak256(input);
+    }
+    LAST_HASH.with_borrow_mut(|(bytes, len, hash)| {
+        if *len != input.len() || bytes[..*len] != *input {
+            *hash = alloy_primitives::keccak256(input);
+            bytes[..input.len()].copy_from_slice(input);
+            *len = input.len();
+        }
+        *hash
+    })
+}
+
+/// Matches revm's KECCAK256 stack, gas and memory operations; only the pure
+/// digest computation uses a worker-local cache. Installed on workers only.
+fn worker_keccak256<DB: Database>(
+    context: TempoInstructionContext<'_, DB>,
+) -> Result<(), InstructionResult> {
+    popn_top!([offset], top, context.interpreter);
+    let len = as_usize_or_fail!(context.interpreter, top);
+    gas!(
+        context.interpreter,
+        context.host.gas_params().keccak256_cost(len)
+    );
+    let hash = if len == 0 {
+        alloy_primitives::KECCAK256_EMPTY
+    } else {
+        let from = as_usize_or_fail!(context.interpreter, offset);
+        resize_memory(
+            &mut context.interpreter.gas,
+            &mut context.interpreter.memory,
+            context.host.gas_params(),
+            from,
+            len,
+        )?;
+        worker_hash(context.interpreter.memory.slice_len(from, len).as_ref())
+    };
+    *top = hash.into();
+    Ok(())
 }
 
 fn record_slot<DB: Database>(context: &TempoInstructionContext<'_, DB>) {

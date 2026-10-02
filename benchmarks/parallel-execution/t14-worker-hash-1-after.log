@@ -1,0 +1,20 @@
+
+running 1 test
+# hardfork=T14
+workload	transactions	workers	seconds	tps	reused	conflicts	retries	backoff	bodies_reused	fees_rebased
+PHASES workload=tip20_paid_aa count=50000 workers=0 batch=128 prepare=0.000008 ordered=0.294726 commit=0.019376
+tip20_paid_aa	50000	0	0.317429	157516	0	0	0	0	0	0
+PHASES workload=tip20_paid_aa count=50000 workers=8 batch=128 prepare=0.148384 ordered=0.099612 commit=0.051486
+tip20_paid_aa	50000	8	0.306198	163293	49993	7	0	0	0	49602
+PHASES workload=tip20_paid_aa_existing count=50000 workers=0 batch=128 prepare=0.000007 ordered=0.244216 commit=0.015141
+tip20_paid_aa_existing	50000	0	0.262275	190640	0	0	0	0	0	0
+PHASES workload=tip20_paid_aa_existing count=50000 workers=8 batch=128 prepare=0.016088 ordered=0.246775 commit=0.019124
+tip20_paid_aa_existing	50000	8	0.285130	175359	1453	4179	0	44368	0	1409
+PHASES workload=compute_paid_chains count=50000 workers=0 batch=128 prepare=0.000008 ordered=0.850044 commit=0.013904
+compute_paid_chains	50000	0	0.866516	57702	0	0	0	0	0	0
+PHASES workload=compute_paid_chains count=50000 workers=8 batch=128 prepare=0.038217 ordered=0.144459 commit=0.043660
+compute_paid_chains	50000	8	0.229155	218193	49993	7	0	0	0	49602
+test parallel::tests::execution_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 145 filtered out; finished in 2.71s
+

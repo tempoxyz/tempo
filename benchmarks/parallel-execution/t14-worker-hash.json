@@ -1,0 +1,472 @@
+{
+  "base_commit": "ca345609d",
+  "hardfork": "T14",
+  "count": 50000,
+  "workers": [
+    0,
+    8
+  ],
+  "batch_size": 128,
+  "block_gas_limit": 5000000000,
+  "phase_clocks": true,
+  "order": [
+    "before",
+    "after",
+    "after",
+    "before"
+  ],
+  "fee_rebasing": true,
+  "state_forwarding": false,
+  "adaptive_backoff": true,
+  "build": "Both test binaries retain symbols and force frame pointers in the tempo-evm test crate, using /tmp/tempo-profile-rustc.py; other compilation options match.",
+  "binaries": [
+    {
+      "path": "/tmp/tempo-t14-fee-rebase-profile-tests",
+      "sha256": "0337ffec78cd047f39de7e8792c4deef2a944e4084540bc47be8a2fbfed24137"
+    },
+    {
+      "path": "/tmp/tempo-t14-worker-hash-profile-tests",
+      "sha256": "d225c37d82b63f04b42133c5e47e8c5368c203854f3e7823b5b81a022e1cd079"
+    }
+  ],
+  "status": "local diagnostic; current GitHub run measures earlier port c60f368, not this optimization",
+  "results": [
+    {
+      "workload": "tip20_paid_aa",
+      "before": {
+        "0": 152173.5,
+        "8": 156826.5
+      },
+      "after": {
+        "0": 160237,
+        "8": 158302.5
+      },
+      "parallel_change_pct": 0.9411674685081861
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "before": {
+        "0": 175811.5,
+        "8": 165038.5
+      },
+      "after": {
+        "0": 190122.5,
+        "8": 178191
+      },
+      "parallel_change_pct": 7.969352605604141
+    },
+    {
+      "workload": "compute_paid_chains",
+      "before": {
+        "0": 59282.5,
+        "8": 48905
+      },
+      "after": {
+        "0": 57840.5,
+        "8": 209231.5
+      },
+      "parallel_change_pct": 327.8325324608936
+    }
+  ],
+  "rows": [
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.325705,
+      "tps": 153513,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 0,
+      "variant": "before"
+    },
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.324671,
+      "tps": 154002,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 0,
+      "variant": "before"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.285971,
+      "tps": 174843,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 0,
+      "variant": "before"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.303467,
+      "tps": 164763,
+      "reused": 1453,
+      "conflicts": 4179,
+      "retries": 0,
+      "backoff": 44368,
+      "bodies_reused": 0,
+      "fees_rebased": 1409,
+      "trial": 0,
+      "variant": "before"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.854546,
+      "tps": 58511,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 0,
+      "variant": "before"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.994794,
+      "tps": 50262,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 0,
+      "variant": "before"
+    },
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.317429,
+      "tps": 157516,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 1,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.306198,
+      "tps": 163293,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 1,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.262275,
+      "tps": 190640,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 1,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.28513,
+      "tps": 175359,
+      "reused": 1453,
+      "conflicts": 4179,
+      "retries": 0,
+      "backoff": 44368,
+      "bodies_reused": 0,
+      "fees_rebased": 1409,
+      "trial": 1,
+      "variant": "after"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.866516,
+      "tps": 57702,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 1,
+      "variant": "after"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.229155,
+      "tps": 218193,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 1,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.306827,
+      "tps": 162958,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 2,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.326132,
+      "tps": 153312,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 2,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.263706,
+      "tps": 189605,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 2,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.276208,
+      "tps": 181023,
+      "reused": 1453,
+      "conflicts": 4179,
+      "retries": 0,
+      "backoff": 44368,
+      "bodies_reused": 0,
+      "fees_rebased": 1409,
+      "trial": 2,
+      "variant": "after"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.862376,
+      "tps": 57979,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 2,
+      "variant": "after"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.249663,
+      "tps": 200270,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 2,
+      "variant": "after"
+    },
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.331489,
+      "tps": 150834,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 3,
+      "variant": "before"
+    },
+    {
+      "workload": "tip20_paid_aa",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.313184,
+      "tps": 159651,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 3,
+      "variant": "before"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.282838,
+      "tps": 176780,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 3,
+      "variant": "before"
+    },
+    {
+      "workload": "tip20_paid_aa_existing",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 0.302455,
+      "tps": 165314,
+      "reused": 1453,
+      "conflicts": 4179,
+      "retries": 0,
+      "backoff": 44368,
+      "bodies_reused": 0,
+      "fees_rebased": 1409,
+      "trial": 3,
+      "variant": "before"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 0,
+      "seconds": 0.83259,
+      "tps": 60054,
+      "reused": 0,
+      "conflicts": 0,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 0,
+      "trial": 3,
+      "variant": "before"
+    },
+    {
+      "workload": "compute_paid_chains",
+      "transactions": 50000,
+      "workers": 8,
+      "seconds": 1.051573,
+      "tps": 47548,
+      "reused": 49993,
+      "conflicts": 7,
+      "retries": 0,
+      "backoff": 0,
+      "bodies_reused": 0,
+      "fees_rebased": 49602,
+      "trial": 3,
+      "variant": "before"
+    }
+  ],
+  "validation": {
+    "evm": {
+      "passed": 144,
+      "ignored": 2
+    },
+    "revm": {
+      "passed": 200
+    },
+    "boundary_test": "Full outcomes/roots compared across T0/T4/T7/T14, including Amsterdam configurations, exact short-key changes, long keys, zero length, memory expansion, overflow offsets, success/halt/validation rejection; reference asserts all three classes occur.",
+    "node": "10 unique node cases pass: four post-block roots, three TIP-20 variants, three mixed-payment variants",
+    "clippy": "All targets, tempo-evm/revm/payload-builder/node/tempo, warnings denied",
+    "benchmark": "Full receipt vectors and state roots compared against sequential in all four trials"
+  },
+  "logs": [
+    {
+      "path": "/tmp/tempo-worker-hash-tests.log",
+      "sha256": "fb1bba753efb1d912445ef30f7203e26dc4fc015d6d3d85c49992b9204af6733"
+    },
+    {
+      "path": "/tmp/tempo-worker-hash-boundaries.log",
+      "sha256": "f12135e0a288d2c97d1046cd41c5017b91bace5c4becd1a74abf5da02a6b3f81"
+    },
+    {
+      "path": "/tmp/tempo-worker-hash-clippy.log",
+      "sha256": "95dd81038d502193cbbae06383c94038ca9af7ab3ee96ffae4ffc279fbb76e7d"
+    },
+    {
+      "path": "/tmp/tempo-worker-hash-node-roots.log",
+      "sha256": "42fc695d96238050bb7660deb11847897ecc6a6ccd11f5604778245c0ef6fe17"
+    },
+    {
+      "path": "/tmp/tempo-worker-hash-node-tip20.log",
+      "sha256": "5857f5f6ec1f8e610ab8da6f2cd92cc631331db56b6b4437aee59590bdc86d2f"
+    },
+    {
+      "path": "/tmp/tempo-worker-hash-node-payment.log",
+      "sha256": "0cc5aeaeba23f3d327fb7a353b2bb88156068dbaaa7096ecae2af7477f35b840"
+    }
+  ]
+}

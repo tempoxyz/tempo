@@ -2819,3 +2819,86 @@ fn storage_action_recording_keeps_canonical_execution_after_preparation() {
     assert_eq!(parallel.take_actions(), sequential.take_actions());
     assert_eq!(parallel.execution_stats().reused, 0);
 }
+
+#[test]
+fn worker_hash_cache_preserves_memory_gas_and_digest_results() {
+    let mut db = TestDB::default();
+    let target = address(900);
+    // Copy calldata, hash the requested memory twice, then return the digest.
+    contract(
+        &mut db,
+        target,
+        &[
+            0x36, 0x60, 0, 0x60, 0, 0x37, 0x60, 0, 0x35, 0x60, 32, 0x35, 0x20, 0x50, 0x60, 0, 0x35,
+            0x60, 32, 0x35, 0x20, 0x60, 0, 0x52, 0x60, 32, 0x60, 0, 0xf3,
+        ],
+    );
+    let mut txs = Vec::new();
+    for len in [
+        U256::ZERO,
+        U256::ONE,
+        U256::from(32),
+        U256::from(88),
+        U256::from(89),
+        U256::from(256),
+        U256::MAX,
+    ] {
+        for offset in [
+            U256::ZERO,
+            U256::from(64),
+            U256::from(4096),
+            U256::from(1_000_000),
+            U256::MAX,
+        ] {
+            for (payload, gas_limit) in [
+                (0u8, 1_000_000),
+                (0, 21_500),
+                (0, 22_400),
+                (0, 24_000),
+                (1, 1_000_000),
+            ] {
+                let mut input = len.to_be_bytes::<32>().to_vec();
+                input.extend_from_slice(&offset.to_be_bytes::<32>());
+                input.extend_from_slice(&[payload; 256]);
+                let mut tx = transaction(txs.len() as u64, target, 0, &input);
+                tx.inner.gas_limit = gas_limit;
+                txs.push(tx);
+            }
+        }
+    }
+    for spec in [
+        TempoHardfork::T0,
+        TempoHardfork::T4,
+        TempoHardfork::T7,
+        TempoHardfork::T14,
+    ] {
+        let mut env = test_evm_with_basefee(TestDB::default(), 0).finish().1;
+        env.cfg_env = revm::context::CfgEnv::new_with_spec_and_gas_params(
+            spec,
+            tempo_revm::gas_params::tempo_gas_params(spec),
+        );
+        let mut reference = TempoEvm::new(db.clone(), env);
+        let mut successes = 0;
+        let mut halts = 0;
+        let mut rejected = 0;
+        for tx in &txs {
+            match reference.transact_raw(tx.clone()) {
+                Ok(result) => {
+                    successes += usize::from(result.result.is_success());
+                    halts += usize::from(matches!(
+                        result.result,
+                        revm::context::result::ExecutionResult::Halt { .. }
+                    ));
+                    reference.db_mut().commit(result.state);
+                }
+                Err(_) => rejected += 1,
+            }
+        }
+        assert!(
+            successes > 0 && halts > 0 && rejected > 0,
+            "{spec:?}: successes={successes}, halts={halts}, rejected={rejected}"
+        );
+        let stats = differential_at_spec(db.clone(), &txs, 4, 16, spec);
+        assert!(stats.reused > 0);
+    }
+}

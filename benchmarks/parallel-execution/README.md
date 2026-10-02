@@ -13,6 +13,12 @@ gas tables retain the conservative fallback. See `t14-fee-rebase.json` for local
 comparisons and their compute-workload regression. Complete speculative results
 still require ordered read validation.
 
+A bounded cache of the last short KECCAK256 input on each speculative worker
+avoids contention in the global cache. Matching local builds raised the T14
+compute workload from 48,905 to 209,232 TPS with eight workers; native-transfer
+results were broadly unchanged relative to their sequential references. This is
+an in-memory diagnostic, not a node throughput claim. See `t14-worker-hash.json`.
+
 Enable node validation and payload building with:
 
 ```sh
