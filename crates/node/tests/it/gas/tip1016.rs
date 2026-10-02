@@ -1612,3 +1612,49 @@ async fn test_tip1016_pool_accepts_total_gas_limit_above_block_limit() -> eyre::
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1016_pool_enforces_execution_budget_with_small_blocks() -> eyre::Result<()> {
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .with_gas_limit("1000000")
+        .build_with_node_access()
+        .await?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let signer = test_signer(0)?;
+    let chain_id = provider.get_chain_id().await?;
+    // Exercise startup and the policy refreshed by a canonical head update.
+    for nonce in 0..2 {
+        let oversized = build_call_tx(
+            &signer,
+            chain_id,
+            nonce,
+            25_000_000,
+            Address::with_last_byte(4),
+            Bytes::new(),
+        );
+        assert!(setup.node.rpc.inject_tx(oversized).await.is_err());
+        let fitting = build_call_tx(
+            &signer,
+            chain_id,
+            nonce,
+            1_000_000,
+            Address::with_last_byte(4),
+            Bytes::new(),
+        );
+        setup.node.rpc.inject_tx(fitting).await?;
+        let payload = setup.node.advance_block().await?;
+        assert!(
+            payload
+                .block()
+                .body()
+                .transactions()
+                .any(|tx| tx.gas_limit() == 1_000_000)
+        );
+        assert_eq!(
+            setup.node.inner.pool.block_info().block_gas_limit,
+            1_000_000
+        );
+    }
+    Ok(())
+}
