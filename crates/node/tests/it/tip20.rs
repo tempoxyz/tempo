@@ -1322,8 +1322,7 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
     assert!(code.is_empty(), "registry should have no code before T3");
 
     // Advance past t3Time to trigger T3 activation.
-    setup.node.advance_block().await?;
-    setup.node.advance_block().await?;
+    setup.node.advance_blocks(2).await?;
 
     // Post-T3: registry should have 0xEF marker bytecode.
     let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;

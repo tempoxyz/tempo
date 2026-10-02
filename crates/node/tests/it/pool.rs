@@ -214,7 +214,6 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 
     // Step 1: Build empty block B on node2 first (before the tx exists)
     let block_b = node2.build_and_submit_payload().await?;
-    let block_b_hash = block_b.block().hash();
 
     // Step 2: Submit a 2D nonce AA tx to node1 and mine it in block A
     let signer_wallet = test_signer(0);
@@ -257,8 +256,7 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
         .wrap_err("tx should be mined out of pool")?;
 
     // Step 3: Import block B into node1 and FCU to it → reorg A→B
-    node1.submit_payload(block_b).await?;
-    node1.update_forkchoice(block_b_hash, block_b_hash).await?;
+    node1.import_payload(block_b).await?;
 
     // Step 4: Wait for the orphaned tx to reappear in node1's pool
     node1
@@ -461,7 +459,6 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     node2.rpc.inject_tx(encoded.into()).await?;
     let policy_payload = node2.build_and_submit_payload().await?;
-    let policy_block_hash = policy_payload.block().hash();
 
     // === Step 2: On node1, add 10 AA transactions using DEFAULT_FEE_TOKEN ===
     // Indices 1–9: non-whitelisted senders (should be evicted)
@@ -539,10 +536,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     );
 
     // === Step 3: Import node2's block into node1 — should trigger eviction ===
-    node1.submit_payload(policy_payload).await?;
-    node1
-        .update_forkchoice(policy_block_hash, policy_block_hash)
-        .await?;
+    node1.import_payload(policy_payload).await?;
 
     // Pool maintenance runs asynchronously; wait for it to evict the non-whitelisted txs
     node1
