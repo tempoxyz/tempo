@@ -753,7 +753,7 @@ impl Transaction for TempoTransaction {
 
 impl Typed2718 for TempoTransaction {
     fn ty(&self) -> u8 {
-        crate::transaction::tempo_transaction::TempoTransaction::tx_type()
+        Self::tx_type()
     }
 }
 

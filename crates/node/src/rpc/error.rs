@@ -76,7 +76,7 @@ where
             return Self::EthApiError(EthApiError::Other(Box::new(rpc_error)));
         }
 
-        TempoEthApiError::from(error)
+        EthApiError::from(error).into()
     }
 }
 
@@ -186,6 +186,17 @@ mod tests {
             assert!(rpc_error.message().contains(message));
             assert_eq!(rpc_error_data(&rpc_error), expected_data);
         }
+    }
+
+    #[test]
+    fn non_fee_token_evm_errors_use_the_inner_conversion() {
+        let error =
+            EVMError::<ProviderError, TempoInvalidTransaction>::Custom("custom error".into());
+        let error = TempoEthApiError::from(error);
+        assert!(matches!(
+            error,
+            TempoEthApiError::EthApiError(EthApiError::EvmCustom(message)) if message == "custom error"
+        ));
     }
 
     #[test]

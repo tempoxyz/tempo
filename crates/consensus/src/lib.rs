@@ -32,6 +32,7 @@ use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
+use reth_node_core as _;
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
 use tracing::info;

@@ -19,9 +19,6 @@ use super::*;
 use crate::storage::PRUNABLE_ITEMS_PER_SECTION;
 use utils::{StubProvider, fresh_prunable_with_section_size, make_block, make_chain};
 
-#[cfg(feature = "bal")]
-use reth_primitives_traits::Block as _;
-
 /// Force every height into its own section so the prunable archive's
 /// `prune(min)` (which rounds down to the nearest section boundary) acts
 /// at single-height granularity. Required for any test that asserts on

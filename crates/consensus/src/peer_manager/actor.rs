@@ -398,7 +398,7 @@ impl PeersBuilder {
                     historic peers that are still in the peer set but no \
                     longer marked active",
                 );
-                let primary = ordered::Map::from_iter_dedup(primary.iter().map(|peer| {
+                let primary = ordered::Map::from_iter_dedup(primary.into_iter().map(|peer| {
                     active_validators.remove_entry(&peer).unwrap_or_else(|| {
                         let decoded = config
                             .validator_by_public_key(public_key_to_b256(&peer))
