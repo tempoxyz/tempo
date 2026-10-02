@@ -113,7 +113,7 @@ on:
         description: General non-payment gas limit override.
         type: string
         required: false
-        default: "1000000000000"
+        default: "1500000000"
       force-bloat:
         description: Force regeneration of local benchmark state.
         type: boolean
@@ -263,7 +263,7 @@ on:
       general-gas-limit:
         type: string
         required: false
-        default: "1000000000000"
+        default: "1500000000"
       run-type:
         type: string
         required: false
@@ -393,7 +393,7 @@ jobs:
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_SKIP_STATE_ROOT: ${{ inputs.skip-state-root == true || inputs.skip-state-root == 'true' }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
-      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit || '1000000000000' }}
+      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit || '1500000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
@@ -613,6 +613,8 @@ jobs:
             });
 
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          toolchain: 1.98.1
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         continue-on-error: true
 
