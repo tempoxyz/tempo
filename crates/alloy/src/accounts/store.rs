@@ -3130,6 +3130,7 @@ fn persisted_scopes_to_call_scopes(
         };
         let entry = &mut grouped[index];
         let Some(selector) = scope.selector else {
+            entry.selector_rules.clear();
             continue;
         };
         if entry
