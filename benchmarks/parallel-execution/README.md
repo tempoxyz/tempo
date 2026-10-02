@@ -686,6 +686,66 @@ accepted transactions confirmed and no failures. This single pair does not
 establish a significant change. Sequential execution still outperforms the
 speculative node on this shared-account payment workload.
 
+## Static AA candidate snapshots
+
+AA selection now sorts the initial independent candidates into a vector and
+drains it from the end. A separate ordered set holds live arrivals and unlocked
+descendants. Selection merges the two maxima and suppresses duplicates that are
+still pending, preserving the previous priority/submission-ID ordering and
+reinsertion behavior. Newer submission IDs skip the snapshot duplicate search.
+A generated insertion/removal oracle compares every selected transaction hash
+against the previous ordered set, including empty snapshots, duplicate entries,
+equal priorities and live updates. All 226 pool tests and both sequential and
+parallel mixed-payment-lane node tests pass.
+
+`candidate-vector.tsv` records five snapshot-and-drain repetitions at 10k, 25k,
+50k and 100k transactions. At 100k, median combined time changes from 51.826 ms
+to 45.519 ms with scattered keys, and from 38.009 ms to 37.512 ms with sorted
+keys. The latter difference is small. These are pool-selection measurements,
+not EVM throughput.
+
+`candidate-vector-node.json` and `node/candidates-*.json` compare the previous
+`df1725b0` binary with the vector implementation. Each trial sends for five
+seconds at 50k offered TPS with the 5B-gas benchmark genesis, 100 accounts and
+256 concurrent client requests. Comparisons run in both orders:
+
+| Execution workers | Previous confirmed TPS | Vector confirmed TPS | Previous, reverse order | Vector, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 26,919 | 27,417 | 27,030 | 27,195 |
+| 16 | 24,875 | 25,661 | 25,432 | 25,604 |
+
+All 1,834,499 accepted transactions in those eight completed trials confirmed
+with zero failures. This is a small increase in these comparisons; sequential
+execution still wins on this shared-account payment workload. With 16 workers,
+pool snapshot time falls from 1.034 / 0.976 seconds to 0.846 / 0.877 seconds.
+The updated runs spend about 3.0 seconds in successful transaction execution,
+4.6 seconds in the full execution loop, and 2.2 seconds in finalization,
+including 1.2 seconds calculating state roots. These metrics span the whole
+trial, including setup and empty blocks, and are nested rather than additive.
+They do not measure confirmation latency or sustained throughput.
+
+The same file and `node/candidates-matrix-*.json` retain a fresh offered-load
+sweep with 16 workers. At 10k / 25k / 75k offered TPS, accepted rates are
+10,015 / 24,979 / 46,600 TPS and confirmed rates including backlog are
+9,912 / 23,733 / 25,301 TPS. All 408,383 accepted transactions confirm with
+zero failures. Together with the 50k trials above, this still shows a node
+ceiling near 25k confirmed TPS on this host and workload.
+
+An additional expiring-nonce trial at 50k offered TPS accepts 49,044 TPS and
+confirms 24,296 TPS including backlog, with all 245,625 accepted transactions
+confirmed and no failures (`node/candidates-expiring-*.json`). Its pool snapshot
+cost is only 0.130 seconds, while state-root calculation takes 2.424 seconds.
+This is an integration check of the other AA nonce mode, without a paired
+baseline or an improvement claim.
+
+The first reverse-order attempt failed with SIGBUS after block 9; it is retained
+in `candidate-vector-failed-trial.json` and excluded from throughput results.
+Disk space was very low, but no core dump was available and the cause remains
+unconfirmed. After deleting obsolete task artifacts, the repeated comparisons
+completed cleanly. The runner now saves process return codes before and after
+cleanup plus starting/ending free disk space; `candidate-vector-exit-status.json`
+retains those diagnostics for the completed reverse-order comparisons.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -764,6 +824,17 @@ and annotation changes: 35,613 user transactions and three system transactions.
 Together the fee-change replays cover 126 local blocks with 172,134 user and
 126 system transactions; all complete results, state deltas and canonical checks
 match. Public historical blocks are still outstanding.
+
+`candidate-vector-canonical.tsv` verifies three large blocks built with the new
+AA snapshot: 38,576 user transactions and three system transactions. Full
+results, state deltas, stored receipts, gas, receipt roots and canonical state
+roots match sequential execution. These are generated local-chain blocks.
+
+`candidate-vector-canonical-expiring.tsv` verifies three newly built blocks with
+expiring AA nonces: 84,238 user transactions and three system transactions,
+with the same full-result and canonical-root checks. Across the two candidate
+snapshot replays, all 122,814 user transactions and six system transactions
+match. Replay timings remain diagnostic only.
 
 ## Correctness model and integration
 

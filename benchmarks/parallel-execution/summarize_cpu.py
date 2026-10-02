@@ -2,6 +2,8 @@
 """Summarize pidstat CPU samples wholly within each trial's send window.
 
 CPU percentages use one logical core = 100%. Both processes share the host.
+Payload timing deltas span the whole trial, including setup and empty blocks;
+they are nested measurements, not additive CPU times or per-transaction latency.
 """
 
 import argparse
@@ -10,6 +12,35 @@ import datetime
 import json
 import pathlib
 import re
+
+
+def payload_timings(directory):
+    names = {
+        "successful_transaction_execution": "transaction_execution",
+        "execution_loop": "total_transaction_execution",
+        "pool_snapshot": "pool_fetch",
+        "finalization": "payload_finalization",
+        "state_root": "state_root_with_updates",
+        "hashed_post_state": "hashed_post_state",
+        "payload_build": "payload_build",
+    }
+    readings = []
+    for suffix in ("before", "after"):
+        path = directory / f"metrics-{suffix}.prom"
+        if not path.exists():
+            return {}
+        values = {}
+        for line in path.read_text().splitlines():
+            fields = line.split()
+            if len(fields) == 2 and fields[0].startswith("reth_tempo_payload_builder_"):
+                values[fields[0]] = float(fields[1])
+        readings.append(values)
+    result = {}
+    for label, name in names.items():
+        key = f"reth_tempo_payload_builder_{name}_duration_seconds_sum"
+        if key in readings[1]:
+            result[label] = round(readings[1][key] - readings[0].get(key, 0), 6)
+    return result
 
 
 def summarize(directory):
@@ -62,6 +93,7 @@ def summarize(directory):
     result["sending"] = report["sending"]
     result["accepted_tps"] = round(report["sending"]["accepted"] /
                                    report["sending"]["send_duration_secs"])
+    result["payload_timing_seconds"] = payload_timings(directory)
     # These isolated dev trials contain one system transaction per block. Check
     # all accepted user transactions before deriving the canonical completion rate.
     included = sum(block["tx_count"] - 1 for block in report["blocks"])

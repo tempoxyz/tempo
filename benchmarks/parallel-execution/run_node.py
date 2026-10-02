@@ -72,6 +72,9 @@ def trial(args, threads, target):
         "node": node_cmd, "bench": bench_cmd, "node_environment_overrides": node_env,
     }, indent=2) + "\n")
     with (directory / "node.log").open("wb") as log:
+        disk_free_start = shutil.disk_usage(directory).free
+        bench = None
+        bench_code_before_cleanup = None
         node = subprocess.Popen(node_cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
                                 env={**os.environ, **node_env})
         try:
@@ -108,6 +111,7 @@ def trial(args, threads, target):
                         if code:
                             raise subprocess.CalledProcessError(code, bench_cmd)
                 finally:
+                    bench_code_before_cleanup = bench.poll()
                     if bench.poll() is None:
                         bench.kill()
                         bench.wait()
@@ -123,12 +127,22 @@ def trial(args, threads, target):
             sending = report["sending"]
             print(json.dumps({"workers": threads, "target_tps": target, **sending}), flush=True)
         finally:
-            node.terminate()
+            node_code_before_cleanup = node.poll()
+            if node_code_before_cleanup is None:
+                node.terminate()
             try:
                 node.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 node.kill()
                 node.wait()
+            (directory / "exit-status.json").write_text(json.dumps({
+                "node_returncode_before_cleanup": node_code_before_cleanup,
+                "node_returncode_after_cleanup": node.returncode,
+                "bench_returncode_before_cleanup": bench_code_before_cleanup,
+                "bench_returncode_after_cleanup": bench.returncode if bench else None,
+                "disk_free_bytes_start": disk_free_start,
+                "disk_free_bytes_end": shutil.disk_usage(directory).free,
+            }, indent=2) + "\n")
 
 
 def main():

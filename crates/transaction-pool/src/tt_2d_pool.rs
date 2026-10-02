@@ -505,10 +505,13 @@ impl AA2dPool {
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
         // Collect independent transactions from both 2D nonce pool and expiring nonce pool
-        let mut independent: BTreeSet<_> =
-            self.independent_transactions.values().cloned().collect();
-        // Expiring nonce txs are always independent (no nonce dependencies)
-        independent.extend(self.expiring_nonce_txs.values().cloned());
+        // Expiring nonce txs are also independent (no nonce dependencies).
+        let independent = IndependentTransactions::new(
+            self.independent_transactions
+                .values()
+                .chain(self.expiring_nonce_txs.values())
+                .cloned(),
+        );
 
         let mut by_id = HashMap::with_capacity_and_hasher(self.pending_2d, Default::default());
         by_id.extend(
@@ -1509,11 +1512,66 @@ enum IncomingAA2dTransaction {
     Stash(PendingTransaction<TxOrdering>),
 }
 
+/// Priority-ordered candidates from a fixed snapshot and subsequent live updates.
+///
+/// Most candidates are present when the iterator is created. Sorting them once
+/// allows constant-time removal without allocating or rebalancing tree nodes for
+/// the snapshot. Arrivals and unlocked descendants retain ordered-set semantics.
+#[derive(Debug)]
+struct IndependentTransactions {
+    snapshot: Vec<PendingTransaction<TxOrdering>>,
+    max_snapshot_submission_id: u64,
+    updates: BTreeSet<PendingTransaction<TxOrdering>>,
+}
+
+impl IndependentTransactions {
+    fn new(transactions: impl Iterator<Item = PendingTransaction<TxOrdering>>) -> Self {
+        let mut snapshot: Vec<_> = transactions.collect();
+        snapshot.sort_unstable();
+        snapshot.dedup();
+        let max_snapshot_submission_id = snapshot
+            .iter()
+            .map(|tx| tx.submission_id)
+            .max()
+            .unwrap_or_default();
+        Self {
+            snapshot,
+            max_snapshot_submission_id,
+            updates: Default::default(),
+        }
+    }
+
+    fn insert(&mut self, tx: PendingTransaction<TxOrdering>) {
+        // An entry can arrive again through promotion or unlocking. Match the
+        // former single BTreeSet: keep the existing entry while it is pending,
+        // but allow an already-popped entry to be inserted again.
+        // New admissions normally have newer IDs. They cannot duplicate a
+        // snapshot entry, regardless of priority, so avoid searching for them.
+        if tx.submission_id > self.max_snapshot_submission_id
+            || self.snapshot.binary_search(&tx).is_err()
+        {
+            self.updates.insert(tx);
+        }
+    }
+
+    fn pop_last(&mut self) -> Option<PendingTransaction<TxOrdering>> {
+        if self
+            .updates
+            .last()
+            .is_some_and(|update| self.snapshot.last().is_none_or(|tx| update > tx))
+        {
+            self.updates.pop_last()
+        } else {
+            self.snapshot.pop()
+        }
+    }
+}
+
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
-    independent: BTreeSet<PendingTransaction<TxOrdering>>,
+    independent: IndependentTransactions,
     /// Pending transactions indexed for nonce-chain lookups; `independent` determines ordering.
     by_id: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
 
@@ -3643,6 +3701,64 @@ mod tests {
     // ============================================
     // BestAA2dTransactions tests
     // ============================================
+
+    #[test]
+    #[allow(clippy::mutable_key_type)]
+    fn independent_candidates_match_ordered_set_with_live_updates() {
+        let transactions = (0..257)
+            .map(|i| {
+                let tx = TxBuilder::aa(Address::from_word(B256::from(U256::from(i + 1))))
+                    .nonce_key(U256::from(i + 1))
+                    .build();
+                PendingTransaction {
+                    submission_id: i,
+                    transaction: Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                    priority: if i % 17 == 0 {
+                        Priority::None
+                    } else {
+                        Priority::Value(u128::from(i % 19))
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        for initial_count in [0, 1, 127, 257] {
+            let initial = transactions[..initial_count]
+                .iter()
+                .chain(&transactions[..initial_count])
+                .cloned();
+            let mut expected: BTreeSet<_> = initial.clone().collect();
+            let mut actual = IndependentTransactions::new(initial);
+            let mut seed = 0x1234_5678u64;
+            for _ in 0..4096 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                if !seed.is_multiple_of(3) {
+                    let tx = &transactions[seed as usize % transactions.len()];
+                    expected.insert(tx.clone());
+                    actual.insert(tx.clone());
+                } else {
+                    assert_eq!(
+                        actual.pop_last().map(|tx| *tx.transaction.hash()),
+                        expected.pop_last().map(|tx| *tx.transaction.hash()),
+                    );
+                }
+            }
+            while let Some(tx) = expected.pop_last() {
+                assert_eq!(
+                    actual.pop_last().unwrap().transaction.hash(),
+                    tx.transaction.hash()
+                );
+            }
+            assert!(actual.pop_last().is_none());
+            actual.insert(transactions[0].clone());
+            assert_eq!(
+                actual.pop_last().unwrap().transaction.hash(),
+                transactions[0].transaction.hash()
+            );
+            assert!(actual.pop_last().is_none());
+        }
+    }
 
     /// Snapshot and selection costs, excluding pool admission and transaction construction.
     #[test]
