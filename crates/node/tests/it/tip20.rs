@@ -16,14 +16,16 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
-#[test_case::test_case(0; "sequential")]
-#[test_case::test_case(4; "parallel")]
+#[test_case::test_case(0, false; "sequential")]
+#[test_case::test_case(4, false; "parallel")]
+#[test_case::test_case(4, true; "parallel_shared_trie")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer(execution_threads: usize) -> eyre::Result<()> {
+async fn test_tip20_transfer(execution_threads: usize, share_sparse_trie: bool) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
         .with_execution_threads(execution_threads)
+        .with_shared_sparse_trie(share_sparse_trie)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

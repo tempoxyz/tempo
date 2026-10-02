@@ -59,7 +59,12 @@
       "disk_free_bytes_start": 17156018176,
       "disk_free_bytes_end": 16862875648
     },
-    "background_root_counter_delta": {}
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 4,
+      "other": []
+    }
   },
   {
     "trial": "workers-16-target-50000",
@@ -122,7 +127,12 @@
       "disk_free_bytes_start": 16862863360,
       "disk_free_bytes_end": 16582983680
     },
-    "background_root_counter_delta": {}
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 7,
+      "other": []
+    }
   },
   {
     "trial": "workers-0-target-50000",
@@ -220,6 +230,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 200.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 10,
+      "other": []
     }
   },
   {
@@ -319,6 +334,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 201.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 11,
+      "other": []
     }
   },
   {
@@ -418,6 +438,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 202.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 13,
+      "other": []
     }
   },
   {
@@ -517,6 +542,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 200.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 14,
+      "other": []
     }
   },
   {
@@ -578,7 +608,12 @@
       "disk_free_bytes_start": 15185207296,
       "disk_free_bytes_end": 14897291264
     },
-    "background_root_counter_delta": {}
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 4,
+      "other": []
+    }
   },
   {
     "trial": "workers-16-target-50000",
@@ -641,7 +676,12 @@
       "disk_free_bytes_start": 15463071744,
       "disk_free_bytes_end": 15185219584
     },
-    "background_root_counter_delta": {}
+    "background_root_counter_delta": {},
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 2,
+      "other": []
+    }
   },
   {
     "trial": "workers-16-target-10000",
@@ -718,6 +758,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 90.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
     }
   },
   {
@@ -819,6 +864,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 139.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 0,
+      "other": []
     }
   },
   {
@@ -918,6 +968,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 204.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 14,
+      "other": []
     }
   },
   {
@@ -1017,6 +1072,11 @@
     },
     "background_root_counter_delta": {
       "reth_tempo_payload_builder_background_state_root_successes_total": 173.0
+    },
+    "rejected_dev_payloads": {
+      "timestamp_through_last_busy_block": 0,
+      "timestamp_after_last_busy_block": 15,
+      "other": []
     }
   }
 ]

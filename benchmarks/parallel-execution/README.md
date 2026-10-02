@@ -886,6 +886,68 @@ python3 benchmarks/parallel-execution/run_node.py \
   --share-sparse-trie --builder-max-tasks 1
 ```
 
+## State-update copying experiment
+
+Copying only touched accounts did not improve node throughput and is not enabled.
+`prototypes/compact-trie-updates.patch` preserves the tested implementation against
+`c0039f32`, including projection and message-order checks and the copy microbenchmark.
+It omits untouched accounts that Reth's trie conversion already ignores, retains
+bulk copies within each touched account, and uses the original whole-map clone
+when every account is touched. The original journal and message ordering stay intact.
+
+`trie-copy-micro-final.tsv` measures 50,000 copies per sample, with seven samples
+and alternating order. Median times on the same host are:
+
+| Journal fixture | Original copy | Touched accounts only |
+| --- | ---: | ---: |
+| 16 accounts × 32 slots, 3 touched accounts | 115.346 ms | 20.863 ms |
+| 8 accounts × 32 slots, all written | 56.828 ms | 58.734 ms |
+| 8 accounts, no storage, 3 touched accounts | 16.780 ms | 6.747 ms |
+
+These measure copying and destruction only. The all-writes fixture adds about
+3.4% overhead to this component. Filtering storage entries individually was also
+rejected: it made the all-writes copy about six times slower. Retained exploration
+records are `trie-copy-micro-initial.tsv` (false = original, true = filter accounts
+and slots) and `trie-copy-micro-variants.tsv` (0 = original, 1 = entry filtering,
+2 = clone touched accounts then retain changed slots, 3 = clone touched accounts).
+The final prototype adds the whole-map fast path for entirely touched journals.
+
+`trie-copy-node.json` and `node/trie-copy-*.json` compare the original and final
+prototype in both orders, with background roots, one payload task, and five-second
+sends at 50k offered TPS. Confirmed throughput includes backlog:
+
+| Execution workers | Original TPS | Prototype TPS | Original, reverse order | Prototype, reverse order |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 28,930 | 28,383 | 28,483 | 28,683 |
+| 16 | 27,726 | 27,335 | 27,327 | 27,303 |
+
+All 1,773,893 accepted transactions confirm without submission or execution
+failures or background-root fallbacks. The 16-worker comparisons are 1.4% and 0.1% slower with the prototype;
+sequential comparisons are mixed. The component benchmark does not translate to
+a useful end-to-end improvement on this workload, so the production hook retains
+the original full-state copy.
+
+The log audit also found rejected dev payloads with duplicate millisecond
+timestamps. They occur strictly after each trial's last user transaction block,
+so the confirmed-TPS window excludes them. `rejected_dev_payloads` records their
+counts in both `trie-copy-node.json` and the preceding `trie-fixed-node.json`.
+No other invalid-payload reasons occur in those trials. Whole-trial metrics still
+include the dev miner's empty-block catch-up activity.
+
+The prototype's projection test checks all 256 account status combinations and
+three balances against the pinned upstream trie conversion. Its message-order and
+original-journal checks pass, as do all four post-block header-root regressions,
+the shared-trie TIP-20 and mixed payment-lane cases, and release Clippy. The two
+new shared-trie integration cases remain enabled with the production hook.
+
+To reproduce the final prototype in a disposable checkout:
+
+```sh
+git apply benchmarks/parallel-execution/prototypes/compact-trie-updates.patch
+CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
+  cargo test -p tempo-payload-builder --release trie_journal_copy_throughput -- --ignored --nocapture
+```
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,

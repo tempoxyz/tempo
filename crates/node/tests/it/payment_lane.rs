@@ -10,14 +10,19 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
-#[test_case::test_case(0; "sequential")]
-#[test_case::test_case(4; "parallel")]
+#[test_case::test_case(0, false; "sequential")]
+#[test_case::test_case(4, false; "parallel")]
+#[test_case::test_case(4, true; "parallel_shared_trie")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_payment_lane_with_mixed_load(execution_threads: usize) -> eyre::Result<()> {
+async fn test_payment_lane_with_mixed_load(
+    execution_threads: usize,
+    share_sparse_trie: bool,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
         .with_execution_threads(execution_threads)
+        .with_shared_sparse_trie(share_sparse_trie)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
