@@ -4,34 +4,9 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_chainspec::{EthereumHardfork, ForkCondition, Hardforks, Head};
 use reth_primitives_traits::AlloyBlockHeader as _;
 use reth_provider::{BlockNumReader, ChainSpecProvider, HeaderProvider};
-use serde::{Deserialize, Serialize};
 use tempo_chainspec::hardfork::TempoHardforks;
 
-/// Response for `tempo_forkSchedule`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForkSchedule {
-    /// Ordered list of Tempo-specific forks (excludes Genesis and Ethereum forks).
-    pub schedule: Vec<ForkInfo>,
-    /// Name of the latest active Tempo fork at the chain head.
-    pub active: String,
-}
-
-/// Information about a single Tempo fork.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForkInfo {
-    /// Fork name (e.g. "T0", "T1", "T2").
-    pub name: String,
-    /// Activation timestamp.
-    pub activation_time: u64,
-    /// Whether this fork is active at the chain head.
-    pub active: bool,
-    /// EIP-2124 fork hash at this fork's activation point (e.g. `"0x471a451c"`).
-    /// `None` if the fork is not yet active.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fork_id: Option<String>,
-}
+pub use tempo_alloy::rpc::{ForkInfo, ForkSchedule};
 
 #[rpc(server, namespace = "tempo")]
 pub trait TempoForkScheduleApi {

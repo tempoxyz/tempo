@@ -290,7 +290,7 @@ where
     ///
     /// Returns `Err` if the vector has reached its maximum capacity.
     #[inline]
-    pub fn push(&self, value: T) -> Result<()>
+    pub fn push(&mut self, value: T) -> Result<()>
     where
         T: Storable,
         T::Handler: Handler<T>,
@@ -323,7 +323,7 @@ where
     /// Returns `None` if the vector is empty. Automatically decrements the length
     /// and zeros out the popped element's storage slot.
     #[inline]
-    pub fn pop(&self) -> Result<Option<T>>
+    pub fn pop(&mut self) -> Result<Option<T>>
     where
         T: Storable,
         T::Handler: Handler<T>,
@@ -1548,7 +1548,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
-            let handler = VecHandler::<U256>::new(len_slot, address);
+            let mut handler = VecHandler::<U256>::new(len_slot, address);
 
             let val1 = U256::random();
             let val2 = U256::random();
@@ -1577,7 +1577,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
-            let handler = VecHandler::<Address>::new(len_slot, address);
+            let mut handler = VecHandler::<Address>::new(len_slot, address);
 
             // Initial length should be 0
             assert_eq!(handler.len().unwrap(), 0);
@@ -1604,7 +1604,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
-            let handler = VecHandler::<u8>::new(len_slot, address);
+            let mut handler = VecHandler::<u8>::new(len_slot, address);
 
             // Push 35 elements (crosses slot boundary: 32 in slot 0, 3 in slot 1)
             for i in 0..35 {
@@ -1635,7 +1635,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
-            let handler = VecHandler::<U256>::new(len_slot, address);
+            let mut handler = VecHandler::<U256>::new(len_slot, address);
 
             // Empty vec - any index should return None
             assert!(handler.at(0)?.is_none());
@@ -1695,7 +1695,7 @@ mod tests {
             let mut len_slot = Slot::<U256>::new(U256::ZERO, address);
 
             // -- packed type (u32: 4 bytes) --
-            let handler = VecHandler::<u32>::new(U256::ZERO, address);
+            let mut handler = VecHandler::<u32>::new(U256::ZERO, address);
             let max_index = u32::MAX as usize / u32::BYTES;
 
             len_slot.write(U256::from(max_index - 1))?;
@@ -1708,7 +1708,7 @@ mod tests {
             assert!(handler.push(1).is_err());
 
             // -- unpacked type (U256: 32 bytes) --
-            let handler = VecHandler::<U256>::new(U256::ZERO, address);
+            let mut handler = VecHandler::<U256>::new(U256::ZERO, address);
             let max_index = u32::MAX as usize;
             let value = U256::random();
 
