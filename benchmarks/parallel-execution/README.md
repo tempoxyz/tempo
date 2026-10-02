@@ -168,3 +168,10 @@ passes both 50,000-block pairs over 42,241,314–42,291,313 after selecting an o
 snapshot within the source's available range. Historical validation throughput
 falls 17.20%; p90 and p99 newPayload latency rise 14.78% and 20.00%. Both this
 replay and the account-lifecycle e2e workflow suppress win-only Slack messages.
+
+[Worker-isolation comparison 37052539277](https://github.com/tempoxyz/tempo/actions/runs/37052539277)
+uses eight feature prewarming workers and measures 17,198 baseline versus 14,303
+feature TPS (-16.83%); builder and validator gas throughput fall 26.12% and 34.38%.
+Builder reuse is 85.95% and validator reuse is 85.78%, with storage conflicts only.
+The workflow suppresses Slack. Cross-run differences do not isolate the effect
+of changing the worker count.

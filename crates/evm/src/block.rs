@@ -588,43 +588,48 @@ where
                 .iter()
                 .position(TempoTxEnvelope::is_system_tx)
                 .unwrap_or(candidates.len())];
-            let first_is_current = candidates.first().is_some_and(|tx| tx == recovered.tx());
-            let known_senders = self.senders.get(start..).unwrap_or_default();
-            let recovery_start = known_senders
-                .len()
-                .min(candidates.len())
-                .max(usize::from(first_is_current));
-            // The current transaction and recovered block prefix need no recovery.
-            // The shared cache checks hits before dispatching only misses through
-            // Reth's parallel recovery. A malformed future signature only cancels
-            // this speculative suffix; ordered execution still reports its error.
-            let recovered_senders = if recovery_start < candidates.len() {
-                let remaining = &candidates[recovery_start..];
-                match &self.sender_recovery_cache {
-                    Some(cache) => cache.recover_signers(remaining),
-                    None => recover_signers(remaining),
-                }
-                .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let mut inputs = Vec::new();
-            for (offset, candidate) in candidates.iter().enumerate() {
-                let fee_recipient = beneficiary;
-                let env = if offset == 0 && first_is_current {
-                    tx_env.clone()
+            // A singleton has no execution to overlap: scheduling it only adds
+            // worker handoff and read validation before the same ordered commit.
+            // Keep already prepared/prewarmed results eligible for normal reuse.
+            if candidates.len() > 1 {
+                let first_is_current = candidates.first().is_some_and(|tx| tx == recovered.tx());
+                let known_senders = self.senders.get(start..).unwrap_or_default();
+                let recovery_start = known_senders
+                    .len()
+                    .min(candidates.len())
+                    .max(usize::from(first_is_current));
+                // The current transaction and recovered block prefix need no recovery.
+                // The shared cache checks hits before dispatching only misses through
+                // Reth's parallel recovery. A malformed future signature only cancels
+                // this speculative suffix; ordered execution still reports its error.
+                let recovered_senders = if recovery_start < candidates.len() {
+                    let remaining = &candidates[recovery_start..];
+                    match &self.sender_recovery_cache {
+                        Some(cache) => cache.recover_signers(remaining),
+                        None => recover_signers(remaining),
+                    }
+                    .unwrap_or_default()
                 } else {
-                    let signer = known_senders
-                        .get(offset)
-                        .copied()
-                        .or_else(|| recovered_senders.get(offset - recovery_start).copied());
-                    let Some(signer) = signer else { break };
-                    tempo_revm::TempoTxEnv::from_recovered_tx(candidate, signer)
+                    Vec::new()
                 };
-                inputs.push((env, fee_recipient));
-            }
-            if !inputs.is_empty() {
-                self.inner.evm.prepare_transactions(inputs);
+                let mut inputs = Vec::new();
+                for (offset, candidate) in candidates.iter().enumerate() {
+                    let fee_recipient = beneficiary;
+                    let env = if offset == 0 && first_is_current {
+                        tx_env.clone()
+                    } else {
+                        let signer = known_senders
+                            .get(offset)
+                            .copied()
+                            .or_else(|| recovered_senders.get(offset - recovery_start).copied());
+                        let Some(signer) = signer else { break };
+                        tempo_revm::TempoTxEnv::from_recovered_tx(candidate, signer)
+                    };
+                    inputs.push((env, fee_recipient));
+                }
+                if inputs.len() > 1 {
+                    self.inner.evm.prepare_transactions(inputs);
+                }
             }
         }
 

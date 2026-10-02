@@ -2879,6 +2879,79 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
 }
 
 #[test]
+fn block_lookahead_skips_singletons_and_reuses_pairs() {
+    use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_evm::block::{BlockExecutor, TxResult};
+    use alloy_primitives::Signature;
+    use reth_primitives_traits::{Recovered, SignedTransaction};
+    use tempo_primitives::TempoTxEnvelope;
+
+    let transactions = (0..3)
+        .map(|i| {
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    gas_limit: 100_000,
+                    gas_price: 1,
+                    to: address(100 + i).into(),
+                    ..Default::default()
+                },
+                Signature::test_signature(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let spec = test_chainspec();
+    // Include a final singleton after a useful pair, and an explicitly
+    // configured one-transaction lookahead over a larger block.
+    for (count, window, scheduled) in [(1, 2, 0), (2, 2, 2), (3, 2, 2), (3, 1, 0)] {
+        let txs = &transactions[..count];
+        let recovered = txs
+            .iter()
+            .map(|tx| Recovered::new_unchecked(tx, tx.try_recover().unwrap()))
+            .collect::<Vec<_>>();
+        let db = funded_tip20_accounts(recovered.iter().map(|tx| tx.signer()));
+        let mut expected = None;
+        for parallel in [false, true] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build_with_transactions(db.clone(), &spec, txs);
+            if parallel {
+                executor.evm_mut().set_speculative_executor(Some(
+                    SpeculativeExecutor::new(2, window)
+                        .unwrap()
+                        .with_streaming(false),
+                ));
+            }
+            executor.apply_pre_execution_changes().unwrap();
+            let mut outcomes = Vec::new();
+            for tx in &recovered {
+                let result = executor.execute_transaction_without_commit(tx).unwrap();
+                outcomes.push((result.result().clone(), result.validator_fee()));
+                executor.commit_transaction(result);
+            }
+            let stats = executor.evm().execution_stats();
+            assert_eq!(
+                stats.speculated,
+                if parallel { scheduled } else { 0 },
+                "count={count}, window={window}, parallel={parallel}"
+            );
+            if parallel && scheduled > 0 {
+                assert!(stats.reused > 0, "the pair must exercise candidate reuse");
+            } else {
+                assert_eq!(stats.reused, 0);
+            }
+            let (evm, result) = executor.finish().unwrap();
+            let actual = (root(evm.db()), result, outcomes);
+            if let Some(expected) = &expected {
+                assert_eq!(&actual, expected, "count={count}, window={window}");
+            } else {
+                expected = Some(actual);
+            }
+        }
+    }
+}
+
+#[test]
 fn lookahead_invalid_signature_preserves_ordered_execution_prefix() {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy};
@@ -2934,6 +3007,10 @@ fn lookahead_invalid_signature_preserves_ordered_execution_prefix() {
         for tx in &recovered {
             executor.execute_transaction(tx).unwrap();
         }
+        // Recovery of the malformed suffix leaves only the authoritative
+        // current transaction, which must not schedule a singleton batch.
+        assert_eq!(executor.evm().execution_stats().speculated, 0);
+        assert_eq!(executor.evm().execution_stats().reused, 0);
         let (evm, result) = executor.finish().unwrap();
         let output = (root(evm.db()), result);
         if let Some(expected) = &expected {

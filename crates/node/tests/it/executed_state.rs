@@ -13,11 +13,14 @@ use tempo_node::node::TempoNode;
 /// genesis. The first block becomes the engine's pending block. The second
 /// block is neither canonical nor pending, so the provider has no state for
 /// it, but [`tempo_node::ExecutedState`] reads it from the engine.
-#[test_case::test_case(0; "sequential")]
-#[test_case::test_case(4; "parallel")]
+#[test_case::test_case(0, 1; "sequential_singleton")]
+#[test_case::test_case(4, 1; "parallel_singleton")]
+#[test_case::test_case(0, 2; "sequential_pair")]
+#[test_case::test_case(4, 2; "parallel_pair")]
 #[tokio::test(flavor = "multi_thread")]
 async fn executed_state_reads_blocks_that_are_not_canonical(
     execution_threads: usize,
+    transaction_count: u64,
 ) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -33,6 +36,12 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     let tx = TransactionRequest::default()
         .to(Address::ZERO)
         .gas_limit(300_000);
+    for _ in 1..transaction_count {
+        producer
+            .rpc
+            .inject_tx(account.sign_tx_bytes(with_t1_fees(tx.clone())).await)
+            .await?;
+    }
     let (_, first) = producer
         .inject_and_advance(account.sign_tx_bytes(with_t1_fees(tx)).await)
         .await?;
@@ -46,8 +55,8 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
         .basic_account(&sender)?;
     assert_eq!(
         expected.map(|account| account.nonce),
-        Some(1),
-        "the transfer must be part of the first block",
+        Some(transaction_count),
+        "all transfers must be part of the first block",
     );
 
     let tempo_node = TempoNode::default().with_execution_threads(execution_threads, 32);
@@ -80,10 +89,18 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     }
 
     // This observer has no builder or pool transactions. Only Engine API
-    // validation can dispatch work; canonical root checks alone would also
+    // validation can dispatch work. Singleton blocks should execute directly,
+    // while a pair must use workers; canonical root checks alone would also
     // pass if precompile-cache installation silently disabled the scheduler.
     if let Some(workers) = workers {
-        assert!(workers.scheduled_transactions() > 0);
+        assert_eq!(
+            workers.scheduled_transactions(),
+            if transaction_count > 1 {
+                transaction_count
+            } else {
+                0
+            },
+        );
     }
 
     assert!(
