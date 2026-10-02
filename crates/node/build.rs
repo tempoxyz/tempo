@@ -15,11 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     emitter.add_instructions(&cargo_builder)?;
 
-    let git_builder = Git2::builder()
-        .describe(false, true, None)
-        .dirty(true)
-        .sha(false)
-        .build();
+    let git_builder = Git2::builder().dirty(true).sha(false).build();
 
     emitter.add_instructions(&git_builder)?;
 
@@ -27,14 +23,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sha = env::var("VERGEN_GIT_SHA")?;
     let sha_short = &sha[0..7];
 
+    // Whether a build is a development build is carried by the Cargo version
+    // itself: main is always at the upcoming `X.Y.Z-dev`, and release branches
+    // are at the exact `X.Y.Z` that gets tagged.
+    //
+    // Git state can't tell us this. `git describe --tags` returns the nearest
+    // tag reachable from HEAD, whatever its name. Node release tags (`v*`) live
+    // on release branches and never become ancestors of main, while SDK release
+    // tags (`tempo-alloy@*` etc.) are created on main. From main, describe
+    // therefore reports an SDK tag, and the release candidate commit on
+    // `pre-release/vX.Y.Z` is built before its tag exists.
+    //
+    // The only git state we report is uncommitted changes.
     let is_dirty = env::var("VERGEN_GIT_DIRTY").is_ok_and(|dirty| dirty == "true");
-    // > git describe --always --tags
-    // if not on a tag: v0.2.0-beta.3-82-g1939939b
-    // if on a tag: v0.2.0-beta.3
-    let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")
-        .map(|describe| describe.ends_with(&format!("-g{sha_short}")))
-        .unwrap_or(true);
-    let version_suffix = if is_dirty || not_on_tag { "-dev" } else { "" };
+    let version_suffix = if is_dirty { "-dirty" } else { "" };
     println!("cargo:rustc-env=RETH_VERSION_SUFFIX={version_suffix}");
 
     // Set short SHA
