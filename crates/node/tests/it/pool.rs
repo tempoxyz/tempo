@@ -214,6 +214,8 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         .get_transactions_by_sender(signer_addr);
     assert_eq!(pooled_txs_before.len(), 1);
 
+    // Build the next block at `valid_before`, so the tx expires instead of being mined.
+    setup.node.set_next_payload_timestamp(tip_timestamp + 5)?;
     setup.node.advance_block().await?;
 
     // Verify tx is evicted
