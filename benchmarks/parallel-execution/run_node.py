@@ -24,8 +24,8 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def request(url, method):
-    data = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": []}).encode()
+def request(url, method, params=None):
+    data = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode()
     req = urllib.request.Request(url, data, {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as response:
         result = json.load(response)
@@ -46,7 +46,7 @@ def trial(args, threads, target):
     rpc = f"http://127.0.0.1:{rpc_port}"
     metrics_url = f"http://127.0.0.1:{metrics_port}/metrics"
     node_cmd = [str(ROOT / "target/release/tempo"), "node",
-                "--chain", str(ROOT / "crates/node/tests/assets/test-genesis.json"),
+                "--chain", str(args.genesis),
                 "--datadir", str(directory / "data"), "--dev", "--dev.block-time", "100ms",
                 "--http", "--http.port", str(rpc_port), "--http.api", "eth,net,web3,txpool",
                 "--authrpc.port", str(auth_port), "--port", "0", "--disable-discovery",
@@ -78,6 +78,9 @@ def trial(args, threads, target):
                     if time.monotonic() >= deadline:
                         raise
                     time.sleep(0.1)
+            block = request(rpc, "eth_getBlockByNumber", ["latest", False])
+            if int(block["gasLimit"], 16) != args.block_gas_limit:
+                raise RuntimeError("node block gas limit differs from benchmark genesis")
             metrics(metrics_url, directory / "metrics-before.prom")
             with (directory / "bench.log").open("wb") as bench_log:
                 subprocess.run(bench_cmd, cwd=directory, stdout=bench_log, stderr=subprocess.STDOUT,
@@ -103,11 +106,24 @@ def main():
     parser.add_argument("--duration", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--nonces", choices=["2d", "expiring"], default="2d")
+    parser.add_argument("--block-gas-limit", type=int,
+                        help="Override the gas limit in a fresh benchmark genesis copy")
     args = parser.parse_args()
+    if args.block_gas_limit is not None and not 0 < args.block_gas_limit < 2**64:
+        parser.error("--block-gas-limit must fit a positive u64")
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
+    args.genesis = ROOT / "crates/node/tests/assets/test-genesis.json"
+    genesis = json.loads(args.genesis.read_text())
+    if args.block_gas_limit is not None:
+        genesis["gasLimit"] = hex(args.block_gas_limit)
+        args.genesis = args.output / "genesis.json"
+        args.genesis.write_text(json.dumps(genesis, indent=2) + "\n")
+    else:
+        args.block_gas_limit = int(genesis["gasLimit"], 16)
     (args.output / "host.json").write_text(json.dumps({"platform": platform.platform(),
-        "processor": platform.processor(), "source": subprocess.check_output(
+        "processor": platform.processor(), "block_gas_limit": args.block_gas_limit,
+        "source": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))}, indent=2) + "\n")
     for threads in map(int, args.workers.split(",")):

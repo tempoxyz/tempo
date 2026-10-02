@@ -215,6 +215,27 @@ A higher benchmark genesis gas limit or a workload that reuses nonce lanes is
 needed to measure node execution capacity above that ceiling. This matrix cannot
 separate that limit from execution or load-generator limits.
 
+The follow-up `node/body-replay-5b-*.json` trials remove that ceiling using a fresh
+5B-gas genesis copy. The driver checks the node's reported gas limit before loading:
+
+```sh
+python3 benchmarks/parallel-execution/run_node.py \
+  --output /tmp/tempo-node-body-replay-5b --duration 5 \
+  --targets 50000,75000 --workers 0,16 --block-gas-limit 5000000000
+```
+
+| Target TPS | Sequential accepted TPS | Partial replay, 16 workers |
+| --- | ---: | ---: |
+| 50,000 | 23,188 | 21,068 |
+| 75,000 | 22,989 | 21,471 |
+
+All accepted transactions confirmed without failures. At the 50k target, partial
+replay spent 2.381 s in the transaction execution section and 1.128 s finishing
+busy payloads (3.738 s total). Removing the gas cap improves observed throughput,
+but this workload still benefits from sequential execution. Both node and client
+share the machine; these trials do not isolate the remaining submission, execution
+and finalization limits or demonstrate sustained 50k TPS.
+
 Earlier `node/sequential-*.json` and `node/speculative-*.json` trials used expiring
 nonces, default queue sizes, and the load generator before parallel signing.
 Both modes accepted and confirmed the 10k and 25k target workloads. The 50k
@@ -301,5 +322,5 @@ differential check also compares actual receipts and ordered state hooks.
   mainnet/testnet replay is claimed. The local replay harness is available.
 - Sustain 50k+ actual node TPS, measure transaction confirmation latency, and profile
   execution separately from pool iteration and block finishing on a larger host.
-  First remove the local benchmark's block-gas ceiling as a confounding limit.
-  The local offered-load matrix does not meet this acceptance criterion.
+  The 5B-gas follow-up removes the original benchmark's block-gas ceiling, but
+  the local offered-load matrix still does not meet this acceptance criterion.
