@@ -1,0 +1,39 @@
+{
+  "l1Genesis": "0xe4c37aeabb3c011af3f06399ed6951df7c9634a9d0cc4a88e4881a941ac91d2d",
+  "zoneGenesis": "0x257e3e47a94fd7051172b0da7f5193bf4f890a1222e4a08652ad8372b9a91b34",
+  "loadSha256": "f8dc63b9e499dae7a74f132fe61d2731ca4a67f0a4cb1de7fa19fa9b23196452",
+  "metricsSha256": "044cb919c564abf045f6039132c75cb34a8c7236543dcd26d3457d640226f50c",
+  "durationSeconds": 1800.1398158073425,
+  "cycles": 450,
+  "l1EarnTransactions": 900,
+  "zonePrivateTransfers": 450,
+  "earnGasUsed": 216192600,
+  "zonePrivateTransferGasUsed": 54707400,
+  "mixedCyclesPerSecond": 0.24998058264612077,
+  "cycleIntervalMedianSeconds": 4.034468650817871,
+  "custody": {
+    "portalBacking": 100000,
+    "shareSupply": 700000,
+    "vaultAssets": 787500,
+    "venueAssets": 787500
+  },
+  "custodyCheckpoints": 18,
+  "l1EarnBlocks": 900,
+  "sampledZeroGeneralEarnBlocks": 898,
+  "sampledMixedGeneralEarnBlocks": [
+    {
+      "block": 3968,
+      "earnGas": 262308,
+      "paymentGas": 262308.0,
+      "generalGas": 1022439.0
+    },
+    {
+      "block": 3981,
+      "earnGas": 218120,
+      "paymentGas": 218120.0,
+      "generalGas": 1000000.0
+    }
+  ],
+  "sampledPaymentDeficitEarnBlocks": [],
+  "unsampledEarnBlocks": []
+}

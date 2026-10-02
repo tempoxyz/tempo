@@ -99,13 +99,29 @@ fn read_u64_word(word: &[u8]) -> Option<usize> {
 
 /// Storage key for one account's system-owned registration field.
 pub fn earn_registration_slot(account: Address, field: EarnRegistrationField) -> U256 {
+    U256::from_be_bytes(keccak256(earn_registration_preimage(account, field)).0)
+}
+
+/// Canonical registry key input, also used by the metered native handler.
+pub fn earn_registration_preimage(account: Address, field: EarnRegistrationField) -> [u8; 96] {
     const DOMAIN: B256 =
         b256!("0xbdebdfb899fbf90c067b2db549c68afc9c76bb8a8c86ce9eda615244bcd63fdf");
     let mut input = [0u8; 96];
     input[..32].copy_from_slice(DOMAIN.as_slice());
     input[44..64].copy_from_slice(account.as_slice());
     input[95] = field as u8;
-    U256::from_be_bytes(keccak256(input).0)
+    input
+}
+
+/// TIP-20's nested `roles[vault][ISSUER_ROLE]` storage slot.
+pub fn earn_share_issuer_role_slot(vault: Address) -> U256 {
+    let mut account_input = [0u8; 64];
+    account_input[12..32].copy_from_slice(vault.as_slice());
+    let account_slot = keccak256(account_input);
+    let mut role_input = [0u8; 64];
+    role_input[..32].copy_from_slice(keccak256(b"ISSUER_ROLE").as_slice());
+    role_input[32..].copy_from_slice(account_slot.as_slice());
+    U256::from_be_bytes(keccak256(role_input).0)
 }
 
 /// Canonical EIP-1167 clone runtime for an implementation.
@@ -136,6 +152,17 @@ mod tests {
         assert_eq!(
             alloy_primitives::keccak256(NATIVE_EARN_DISPATCHER_V1_RUNTIME),
             NATIVE_EARN_DISPATCHER_V1_HASH
+        );
+    }
+
+    #[test]
+    fn issuer_role_slot_matches_archived_earn_share_proof() {
+        let vault = address!("0x856e4424f806d16e8cbc702b3c0f2ede5468eae5");
+        assert_eq!(
+            earn_share_issuer_role_slot(vault),
+            U256::from_be_bytes(
+                b256!("0xb28033fdea4a4b58223b20ff75df53a1ab6ded509f7fd500d7a056357a2e1678").0
+            )
         );
     }
 

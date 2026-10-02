@@ -32,6 +32,10 @@ def code_hash(code):
     return subprocess.check_output(["cast", "keccak", code], text=True).strip()
 
 
+def keccak_hex(value):
+    return subprocess.check_output(["cast", "keccak", "0x" + value], text=True).strip()
+
+
 def address_from_slot(value):
     return "0x" + value[-40:].lower()
 
@@ -80,6 +84,17 @@ def main():
         "engine": engine,
         "engineHash": code_hash(code(engine)),
     }
+    issuer_role = rpc(args.rpc_url, "eth_call", [{"to": earn_share, "data":
+                       keccak_hex("ISSUER_ROLE()".encode().hex())[:10]}, tag])
+    expected_role = keccak_hex("ISSUER_ROLE".encode().hex())
+    if issuer_role.lower() != expected_role.lower():
+        raise ValueError("EarnShare ISSUER_ROLE differs from the canonical TIP-20 role")
+    has_role_selector = keccak_hex("hasRole(address,bytes32)".encode().hex())[:10]
+    has_role_input = has_role_selector + vault[2:].zfill(64) + issuer_role[2:]
+    if int(rpc(args.rpc_url, "eth_call", [{"to": earn_share, "data": has_role_input}, tag]), 16) != 1:
+        raise ValueError("EarnVault lacks EarnShare ISSUER_ROLE")
+    outer_role_slot = keccak_hex(vault[2:].zfill(64) + "0" * 64)
+    issuer_role_slot = keccak_hex(issuer_role[2:] + outer_role_slot[2:])
     proofs = {}
     for address, slots in [
         (vault, [IMPLEMENTATION_SLOT, "0x0", "0x1", "0x2", "0x3"]),
@@ -87,7 +102,7 @@ def main():
         (vault_implementation, []),
         (fees_implementation, []),
         (engine, []),
-        (earn_share, []),
+        (earn_share, [issuer_role_slot]),
     ]:
         proofs[address] = rpc(args.rpc_url, "eth_getProof", [address, slots, tag])
     result = {
@@ -96,6 +111,12 @@ def main():
         "blockHash": block["hash"],
         "stateRoot": block["stateRoot"],
         "nativeEarnManifest": [entry],
+        "earnShareIssuerRole": {
+            "vault": vault,
+            "earnShare": earn_share,
+            "role": issuer_role,
+            "slot": issuer_role_slot,
+        },
         "proofs": proofs,
     }
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n")

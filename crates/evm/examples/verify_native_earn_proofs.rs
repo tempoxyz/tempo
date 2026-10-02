@@ -1,6 +1,6 @@
 //! Verify archived EIP-1186 Earn account and storage proofs against one block root.
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rpc_types_eth::EIP1186AccountProofResponse;
 use reth_trie_common::AccountProof;
 use serde_json::Value;
@@ -95,6 +95,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("{account_field} slot {slot} differs from manifest").into());
             }
         }
+    }
+    let issuer = &evidence["earnShareIssuerRole"];
+    let share = issuer["earnShare"].as_str().ok_or("missing issuer share")?;
+    let vault: Address = issuer["vault"]
+        .as_str()
+        .ok_or("missing issuer vault")?
+        .parse()?;
+    let role: B256 = issuer["role"]
+        .as_str()
+        .ok_or("missing issuer role")?
+        .parse()?;
+    if role != keccak256(b"ISSUER_ROLE") {
+        return Err("EarnShare issuer role is not canonical".into());
+    }
+    if !manifest.iter().any(|entry| {
+        entry["vault"].as_str() == issuer["vault"].as_str()
+            && entry["earnShare"].as_str() == Some(share)
+    }) {
+        return Err("issuer role binding differs from manifest".into());
+    }
+    let mut outer_input = [0u8; 64];
+    outer_input[12..32].copy_from_slice(vault.as_slice());
+    let outer_slot = keccak256(outer_input);
+    let mut inner_input = [0u8; 64];
+    inner_input[..32].copy_from_slice(role.as_slice());
+    inner_input[32..].copy_from_slice(outer_slot.as_slice());
+    let expected_slot = keccak256(inner_input);
+    let actual_slot: B256 = issuer["slot"]
+        .as_str()
+        .ok_or("missing issuer slot")?
+        .parse()?;
+    if actual_slot != expected_slot {
+        return Err("EarnShare issuer role proof slot differs from binding".into());
+    }
+    let proof = proof_for(proofs, share)?["storageProof"]
+        .as_array()
+        .ok_or("missing EarnShare storage proofs")?
+        .iter()
+        .find(|proof| proof["key"].as_str() == issuer["slot"].as_str())
+        .ok_or("missing EarnShare issuer role proof")?;
+    let role_value: U256 = proof["value"]
+        .as_str()
+        .ok_or("missing issuer value")?
+        .parse()?;
+    if role_value != U256::from(1) {
+        return Err("EarnVault lacks the proven issuer role".into());
     }
     println!(
         "verified {} account proofs, {} storage proofs, and {} manifest entries against {}",

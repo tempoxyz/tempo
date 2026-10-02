@@ -8,6 +8,7 @@ use crate::{
     },
     storage::{StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider},
     storage_credits::NonCreditableSlots,
+    tip20::{ISSUER_ROLE, TIP20Token},
 };
 use alloy::primitives::{Address, B256, Bytes, U256};
 use evm2::{
@@ -20,7 +21,7 @@ use tempo_contracts::TempoHardfork;
 use tempo_contracts::earn::{
     EARN_IMPLEMENTATION_SLOT, EarnPaymentKind, EarnRegistrationField,
     NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
-    NATIVE_EARN_REGISTRY_ADDRESS, earn_payment_kind, earn_registration_slot,
+    NATIVE_EARN_REGISTRY_ADDRESS, earn_payment_kind, earn_registration_preimage,
 };
 use tempo_primitives::TempoBlockExt;
 
@@ -38,12 +39,20 @@ fn word_address(word: U256) -> Address {
     Address::from_slice(&bytes[12..])
 }
 
+fn charged_registration_slot(account: Address, field: EarnRegistrationField) -> Result<U256> {
+    Ok(U256::from_be_bytes(
+        StorageCtx
+            .keccak256(&earn_registration_preimage(account, field))?
+            .0,
+    ))
+}
+
 fn registration(address: Address, kind: EarnPaymentKind) -> Result<EarnRegistration> {
     let storage = StorageCtx;
     let read = |field| {
         storage.sload(
             NATIVE_EARN_REGISTRY_ADDRESS,
-            earn_registration_slot(address, field),
+            charged_registration_slot(address, field)?,
         )
     };
     let expected_kind = match kind {
@@ -102,7 +111,7 @@ impl NativeEarnExecution<'_> {
             storage.deduct_gas(input_cost(self.spec, message.input.len())?)?;
             let kind = match storage.sload(
                 NATIVE_EARN_REGISTRY_ADDRESS,
-                earn_registration_slot(message.destination, EarnRegistrationField::Kind),
+                charged_registration_slot(message.destination, EarnRegistrationField::Kind)?,
             )? {
                 value if value == U256::from(1) => EarnPaymentKind::Vault,
                 value if value == U256::from(2) => EarnPaymentKind::Fees,
@@ -156,6 +165,15 @@ impl NativeEarnExecution<'_> {
                         return Err(TempoPrecompileError::OutOfGas);
                     }
                 }
+            }
+            let vault = match kind {
+                EarnPaymentKind::Vault => message.destination,
+                EarnPaymentKind::Fees => registered.pair,
+            };
+            if !TIP20Token::from_address(registered.earn_share)?
+                .has_role_internal(vault, ISSUER_ROLE)?
+            {
+                return Err(TempoPrecompileError::OutOfGas);
             }
             Ok((registered, pair, kind, fee_checkpoint))
         });
@@ -225,6 +243,7 @@ mod tests {
         BaseEvmConfigSelector, ExecutionConfig, SpecId, bytecode::Bytecode, env::TxEnv,
         evm::InMemoryDB, interpreter::Host, registry::TxRegistry,
     };
+    use tempo_contracts::earn::earn_registration_slot;
     use tempo_primitives::TempoBlockEnv;
 
     struct Types;
@@ -248,9 +267,10 @@ mod tests {
     const FEES_IMPL: Address = Address::with_last_byte(0x94);
     const ENGINE: Address = Address::with_last_byte(0x95);
     const ASSET: Address = Address::with_last_byte(0x96);
-    const SHARE: Address = Address::with_last_byte(0x97);
+    const SHARE: Address =
+        alloy::primitives::address!("0x20c0000000000000000000000000000000000097");
 
-    fn setup(registered: bool, nested_fee_call: bool) -> Evm<'static, Types> {
+    fn setup(registered: bool, nested_fee_call: bool, issuer: bool) -> Evm<'static, Types> {
         let spec = TempoHardfork::T16;
         let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
         let slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
@@ -288,6 +308,9 @@ mod tests {
             s.set_code(VAULT_IMPL, vault_impl_code.clone())?;
             s.set_code(FEES_IMPL, fees_impl_code.clone())?;
             s.set_code(ENGINE, engine_code.clone())?;
+            if issuer {
+                TIP20Token::from_address(SHARE)?.grant_role_internal(VAULT, ISSUER_ROLE)?;
+            }
             let address_word = |address: Address| U256::from_be_slice(address.as_slice());
             for (address, slot, value) in [
                 (VAULT, EARN_IMPLEMENTATION_SLOT, address_word(VAULT_IMPL)),
@@ -383,7 +406,7 @@ mod tests {
 
     #[test]
     fn native_vault_delegate_frame_writes_vault_storage_and_marks_payment() {
-        let mut evm = setup(true, false);
+        let mut evm = setup(true, false, true);
         let result = call(&mut evm, VAULT, Address::with_last_byte(0xaa), 0);
         assert!(result.stop.is_success());
         assert!(evm.ext().native_call_context().verified_earn_payment());
@@ -395,7 +418,7 @@ mod tests {
 
     #[test]
     fn unregistered_dispatcher_cannot_mark_a_payment() {
-        let mut evm = setup(false, false);
+        let mut evm = setup(false, false, true);
         let result = call(&mut evm, VAULT, Address::with_last_byte(0xaa), 0);
         assert!(!result.stop.is_success());
         assert!(!evm.ext().native_call_context().verified_earn_payment());
@@ -403,7 +426,7 @@ mod tests {
 
     #[test]
     fn fee_checkpoint_from_vault_uses_registered_fee_implementation() {
-        let mut evm = setup(true, false);
+        let mut evm = setup(true, false, true);
         let result = call(&mut evm, FEES, VAULT, 1);
         assert!(result.stop.is_success());
         assert!(!evm.ext().native_call_context().verified_earn_payment());
@@ -411,7 +434,7 @@ mod tests {
 
     #[test]
     fn vault_and_fee_checkpoint_share_one_bounded_native_budget() {
-        let mut evm = setup(true, true);
+        let mut evm = setup(true, true, true);
         let result = call(&mut evm, VAULT, Address::with_last_byte(0xaa), 0);
         assert!(result.stop.is_success());
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, TempoHardfork::T16);
@@ -419,5 +442,13 @@ mod tests {
             StorageCtx::enter(&mut storage, || StorageCtx.sload(VAULT, U256::from(43))).unwrap();
         assert_eq!(child_succeeded, U256::from(1));
         assert!(evm.ext().native_call_context().verified_earn_payment());
+    }
+
+    #[test]
+    fn registered_vault_without_share_issuer_role_cannot_mark_payment() {
+        let mut evm = setup(true, false, false);
+        let result = call(&mut evm, VAULT, Address::with_last_byte(0xaa), 0);
+        assert!(!result.stop.is_success());
+        assert!(!evm.ext().native_call_context().verified_earn_payment());
     }
 }

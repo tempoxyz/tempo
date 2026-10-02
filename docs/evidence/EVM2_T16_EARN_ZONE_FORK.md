@@ -14,7 +14,9 @@ the stack was reconciled at L1 block 439 using
 [`build-native-earn-manifest.py`](../../scripts/native-payments/build-native-earn-manifest.py).
 Its [EIP-1186 account and storage proofs](evm2-t16-native-earn-manifest-proof.json)
 were verified against that block's state root, including the manifest's code
-hashes and vault/fee bindings. The generated `nativeEarnManifest` was inserted
+hashes, vault/fee bindings, and the vault's EarnShare issuer role. The six
+account proofs and nine storage proofs bind that role to the same manifest
+vault. The generated `nativeEarnManifest` was inserted
 into the local genesis configuration and the node restarted before T16. This
 configuration step is a devnet procedure; a production activation needs a
 published, fixed manifest and commitment before the fork. These are state
@@ -59,6 +61,50 @@ also included a real Earn redemption: the matched metric charged 1,000,000
 general gas to the forged call and 218,120 payment gas to the registered
 payment. Matching bytecode and selector alone therefore did not grant payment
 capacity in this run.
+
+The [30-minute mixed-load record](evm2-t16-mixed-load-summary.json) checks
+[all 450 cycle receipts](evm2-t16-mixed-load-30m.jsonl.gz) against both chains:
+900 Earn deposits/redemptions and 450 private Zone transfers completed in
+1,800 seconds. Eighteen custody checkpoints and the final state held 700,000
+EarnShare, 787,500 vault/venue assets, and 100,000 portal backing. The
+[sampled L1 lane counters](evm2-t16-mixed-load-lane-metrics.jsonl.gz) match all
+900 Earn blocks. In 898 blocks, general gas was zero. Two blocks also contained
+separate general-lane transactions: a forged-dispatcher deployment and its
+rejected call. Their payment gas exactly covered the Earn receipt gas, with
+no payment deficit. The last private transfer was in Zone block 4353; the
+sequencer submitted the batch through block 4360 to L1, where settlement
+receipt `0x21baa9efd6ac2817bf2f659cca8c659e282b1ac3cb29d55e8ea1454f04576038`
+succeeded in L1 block 5434 with 98,842 gas. This is a serial workload at
+0.25 mixed cycles per second, not a capacity benchmark. Settlement used
+NoProof mode, so it does not establish cryptographic execution-proof validity.
+
+The raw load and metric files are gzip-compressed JSONL. Recheck their
+receipts, custody, and lane samples while this devnet is available with:
+
+```bash
+python3 scripts/native-payments/summarize-t16-mixed-load.py \
+  --load docs/evidence/evm2-t16-mixed-load-30m.jsonl.gz \
+  --metrics docs/evidence/evm2-t16-mixed-load-lane-metrics.jsonl.gz \
+  --output /tmp/evm2-t16-mixed-load-rechecked.json
+```
+
+After review added live issuer-role checks and charged registry hashing, the
+L1 was copied and unwound to the common pre-fork block 1171. The
+[reviewed-binary record](evm2-t16-reviewed-fork.json) pins the new binary hash
+and the unchanged block 1171 hash. The reviewed binary activated T16 in its
+new block 1172: vault and fee code became the dispatcher, with 1,000,000
+EarnShare and venue/vault assets unchanged. On that branch, Earn deposit,
+redemption, and spending, plus a new Zone portal deposit and its settlement,
+all had matched payment-gas samples with zero general gas. The private Zone
+transfer moved 1,000 of 10,000 private pathUSD from sender to recipient;
+portal backing and private supply remained 10,000. The batch containing it
+settled on L1 in receipt
+`0x90a55796e214a661fc65d07df519e5ae52650ae77013703d09ad48b0fd88fd80`.
+This branch also uses NoProof settlement. With the reviewed L1 and Zone nodes
+available, `python3 scripts/native-payments/check-t16-reviewed.py` rechecks
+the fork, receipts, custody, and lane samples. Set the two disposable
+`EVM2_ZONE_*_KEY` variables to include authenticated private balances and
+supply; that full check passed on this run.
 
 While these isolated devnets are available, rerun the public receipt and state
 checker from the Tempo checkout:

@@ -26,6 +26,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::NativeEarn
 use tempo_contracts::earn::{
     EARN_IMPLEMENTATION_SLOT, EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_RUNTIME,
     NATIVE_EARN_REGISTRY_ADDRESS, earn_fees_clone_runtime, earn_registration_slot,
+    earn_share_issuer_role_slot,
 };
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
@@ -33,6 +34,7 @@ use tempo_contracts::precompiles::{
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     initial_zone_factory_state, t13_zone_factory_state,
 };
+use tempo_precompiles::tip20::TIP20Token;
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
@@ -416,6 +418,8 @@ impl<'a> TempoBlockExecutor<'a> {
                 || entry.vault_implementation == Address::ZERO
                 || entry.fees_implementation == Address::ZERO
                 || entry.vault == entry.fees
+                || TIP20Token::from_address(entry.asset).is_err()
+                || TIP20Token::from_address(entry.earn_share).is_err()
                 || !seen.insert(entry.vault)
                 || !seen.insert(entry.fees)
             {
@@ -454,6 +458,14 @@ impl<'a> TempoBlockExecutor<'a> {
                     ))
                     .into());
                 }
+            }
+            if self.earn_slot(entry.earn_share, earn_share_issuer_role_slot(entry.vault))?
+                != U256::ONE
+            {
+                return Err(BlockValidationError::msg(
+                    "EarnVault lacks EarnShare ISSUER_ROLE at activation",
+                )
+                .into());
             }
             let runtime =
                 Bytecode::new_raw(Bytes::copy_from_slice(NATIVE_EARN_DISPATCHER_V1_RUNTIME));
@@ -1009,7 +1021,7 @@ mod tests {
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
     use tempo_contracts::earn::{
         EarnRegistrationField, NATIVE_EARN_DISPATCHER_V1_HASH, NATIVE_EARN_REGISTRY_ADDRESS,
-        earn_fees_clone_runtime, earn_registration_slot,
+        earn_fees_clone_runtime, earn_registration_slot, earn_share_issuer_role_slot,
     };
     use tempo_contracts::{
         precompiles::{
@@ -2088,14 +2100,17 @@ mod tests {
 
     #[test]
     fn native_earn_fork_migrates_only_manifest_accounts_atomically() {
-        for corrupt_fee_binding in [false, true] {
+        for (corrupt_fee_binding, missing_issuer_role) in
+            [(false, false), (true, false), (false, true)]
+        {
             let vault_address = Address::with_last_byte(0x91);
             let fees_address = Address::with_last_byte(0x92);
             let vault_implementation = Address::with_last_byte(0x93);
             let fees_implementation = Address::with_last_byte(0x94);
             let engine = Address::with_last_byte(0x95);
-            let asset = Address::with_last_byte(0x96);
-            let earn_share = Address::with_last_byte(0x97);
+            let asset = alloy_primitives::address!("0x20c0000000000000000000000000000000000096");
+            let earn_share =
+                alloy_primitives::address!("0x20c0000000000000000000000000000000000097");
             let unrelated = Address::with_last_byte(0x98);
             let vault_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x00, 0x56]));
             let fees_code = Bytecode::new_raw(Bytes::copy_from_slice(&earn_fees_clone_runtime(
@@ -2182,6 +2197,11 @@ mod tests {
                     }),
                 ),
                 (vault_address, U256::from(42), U256::from(777)),
+                (
+                    earn_share,
+                    earn_share_issuer_role_slot(vault_address),
+                    U256::from(!missing_issuer_role),
+                ),
             ] {
                 db.insert_account_storage(&address, &slot, &value);
             }
@@ -2193,7 +2213,7 @@ mod tests {
             block.timestamp = U256::from(10);
             executor.evm_mut().set_block(block);
             let result = executor.apply_pre_execution_changes();
-            if corrupt_fee_binding {
+            if corrupt_fee_binding || missing_issuer_role {
                 assert!(result.is_err());
                 assert_eq!(
                     executor
