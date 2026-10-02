@@ -4,7 +4,9 @@
 //! accepts it.
 
 use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post_fee_slot_change};
+use crate::shadow_replay::{
+    Boundary, Evidence, ObservedTx, TxOutcome, calls::ObservedCall, fees::post_fee_slot_change,
+};
 use alloy::{
     consensus::Transaction as _,
     primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
@@ -73,6 +75,35 @@ impl Context<'_> {
             .into_iter()
             .flat_map(TempoTxEnvelope::calls)
             .map(|(kind, input)| (kind, input.as_ref()))
+    }
+
+    /// Pairs each envelope call with its observed `(real, shadow)` results. An arm that never
+    /// entered the call (an earlier AA call failed) yields `None`.
+    fn calls(
+        &self,
+    ) -> impl Iterator<Item = (TxKind, &[u8], Option<&ObservedCall>, Option<&ObservedCall>)> + '_
+    {
+        let observed = self.observed_txs();
+        self.call().enumerate().map(move |(index, (kind, input))| {
+            let (real, shadow) = observed.unzip();
+            (
+                kind,
+                input,
+                real.and_then(|tx| tx.calls.get(index)),
+                shadow.and_then(|tx| tx.calls.get(index)),
+            )
+        })
+    }
+
+    /// Whether a call to one of `targets` itself changed `precompile` storage in either arm.
+    fn target_changed_storage(&self, targets: &[Address], precompile: Address) -> bool {
+        let changed = |call: Option<&ObservedCall>| {
+            call.and_then(|call| call.state.transitions.get(&precompile))
+                .is_some_and(|account| account.storage.values().any(|slot| slot.is_changed()))
+        };
+        self.calls().any(|(kind, _, real, shadow)| {
+            kind.to().is_some_and(|to| targets.contains(to)) && (changed(real) || changed(shadow))
+        })
     }
 }
 
@@ -189,9 +220,12 @@ fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
 const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
     id: "t12.allow-abi-suffix",
     check: |ctx, field| {
-        if !ctx.call().any(|(kind, calldata)| {
+        if !ctx.calls().any(|(kind, calldata, real, _)| {
             kind.to()
                 .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata))
+                && real.is_some_and(|call| {
+                    call.outcome == TxOutcome::Revert && call.output_hash == KECCAK256_EMPTY
+                })
         }) {
             return None;
         }
@@ -212,12 +246,11 @@ const T12_TIP20_CHANNEL: Expectation = Expectation {
             return None;
         }
 
-        let is_related = ctx
-            .call()
-            .any(|(kind, _)| matches!(kind.to(), Some(&TIP20_CHANNEL_RESERVE_ADDRESS)));
-
-        is_related.then_some(())?;
-        ctx.observed_txs().map(|_| ())
+        ctx.target_changed_storage(
+            &[TIP20_CHANNEL_RESERVE_ADDRESS],
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+        )
+        .then_some(())
     },
 };
 
@@ -234,17 +267,15 @@ const T12_STABLECOIN_DEX: Expectation = Expectation {
             return None;
         }
 
-        let is_related = ctx.call().any(|(kind, _)| {
-            kind.to().is_some_and(|to| {
-                matches!(
-                    to,
-                    &STABLECOIN_DEX_ADDRESS | &LIFI_DIAMOND | &UNISWAP_UNIVERSAL_ROUTER
-                )
-            })
-        });
-
-        is_related.then_some(())?;
-        ctx.observed_txs().map(|_| ())
+        ctx.target_changed_storage(
+            &[
+                STABLECOIN_DEX_ADDRESS,
+                LIFI_DIAMOND,
+                UNISWAP_UNIVERSAL_ROUTER,
+            ],
+            STABLECOIN_DEX_ADDRESS,
+        )
+        .then_some(())
     },
 };
 
@@ -653,6 +684,86 @@ mod tests {
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
+    }
+
+    fn observed_call(outcome: TxOutcome, dex_slot: Option<u64>) -> ObservedCall {
+        let mut call = ObservedCall {
+            outcome,
+            ..Default::default()
+        };
+        if let Some(value) = dex_slot {
+            call.state.transitions.insert(
+                STABLECOIN_DEX_ADDRESS,
+                TransitionAccount {
+                    storage: [(
+                        U256::ZERO,
+                        StorageSlot::new_changed(U256::ZERO, U256::from(value)),
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            );
+        }
+        call
+    }
+
+    #[test]
+    fn equal_tx_outcomes_still_compare_call_outcomes() {
+        let (mut real, mut shadow) = (evidence(&[21_000]), evidence(&[21_000]));
+        // Both batches revert, but the shadow fails at call 0 and never reaches call 1.
+        for (evidence, calls) in [
+            (&mut real, &[TxOutcome::Success, TxOutcome::Revert][..]),
+            (&mut shadow, &[TxOutcome::Revert][..]),
+        ] {
+            let tx = tx_mut(evidence, 0);
+            tx.outcome = TxOutcome::Revert;
+            tx.calls = calls
+                .iter()
+                .map(|&outcome| observed_call(outcome, None))
+                .collect();
+        }
+        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let mut fields: Vec<_> = report
+            .samples
+            .iter()
+            .map(|(_, diff, _)| diff.field.name)
+            .collect();
+        fields.sort();
+        assert_eq!(fields, ["outcome", "output"]);
+    }
+
+    #[test]
+    fn dex_expectation_requires_the_dex_call_to_change_dex_storage() {
+        let dex = Call {
+            to: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+            value: U256::ZERO,
+            input: Default::default(),
+        };
+        let other = Call {
+            to: TxKind::Call(Address::repeat_byte(0x11)),
+            ..dex.clone()
+        };
+        let block = block(vec![signed_tx(vec![dex, other])]);
+        let analyze = |dex_call: Option<u64>, other_call: Option<u64>| {
+            let (mut real, mut shadow) = (evidence(&[21_000]), evidence(&[21_000]));
+            tx_mut(&mut real, 0).calls = (0..2)
+                .map(|_| observed_call(TxOutcome::Success, None))
+                .collect();
+            let tx = tx_mut(&mut shadow, 0);
+            tx.state = observed_call(TxOutcome::Success, Some(5)).state;
+            tx.calls = vec![
+                observed_call(TxOutcome::Success, dex_call),
+                observed_call(TxOutcome::Success, other_call),
+            ];
+            Report::analyze(&real, &shadow, &[&T12_STABLECOIN_DEX], &block)
+        };
+        assert_eq!(
+            analyze(Some(5), None).expected,
+            [(T12_STABLECOIN_DEX.id, 1)].into()
+        );
+        // A later non-DEX call writing DEX storage is not attributed to the DEX call.
+        assert_eq!(analyze(None, Some(5)).unexplained, 1);
     }
 
     #[test]

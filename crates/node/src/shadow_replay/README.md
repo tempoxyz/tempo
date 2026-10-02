@@ -50,7 +50,11 @@ that could not execute are reported as incomplete coverage.
 
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
 changes in order. Transaction comparisons cover the full success/revert/halt outcome, output,
-ordered receipt logs, and net account and storage transitions. Gas-only differences are not findings, although gas is still
+ordered receipt logs, and net account and storage transitions. A replay-only inspector also
+records each top-level call actually entered (every AA envelope call up to the first failure, or
+the single call of a regular transaction): its outcome, output, and net state relative to call
+entry. Outcome and output comparisons include these per-call values, so a batch that fails at a
+different call is a difference even when both transactions revert. Gas-only differences are not findings, although gas is still
 checked against canonical receipts and used to validate fee-derived effects. This compares
 observable effects at completed boundaries, not opcode traces or internal write history.
 
@@ -74,8 +78,9 @@ accept gas differences because those are not compared.
 A check receives existing execution evidence and a changed field descriptor. It returns `None` when
 it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns
 attribution. The baseline check runs first, followed by fork-specific checks in fork and
-registration order. `Context::call()` iterates every call in an AA batch (or the single call of a
-non-AA transaction), but cannot see internal EVM calls. Fee-slot provenance alone never accepts a
+registration order. `Context::calls()` pairs every envelope call with its observed control and candidate results
+(`None` when not reached), so checks can require that the matching call itself produced the
+effect. Internal EVM calls are part of their top-level call and are not recorded separately. Fee-slot provenance alone never accepts a
 difference.
 
 ## Adding an expectation

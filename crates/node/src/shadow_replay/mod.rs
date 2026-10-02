@@ -20,6 +20,7 @@
 //! is reported separately.
 
 mod analysis;
+mod calls;
 mod expectations;
 mod fees;
 
@@ -31,6 +32,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
+use calls::{CallRecorder, ObservedCall};
 use fees::{FeeWrites, RecordingFeeManager};
 use metrics::{Counter, Gauge, Histogram};
 use reth_chainspec::ForkCondition;
@@ -301,10 +303,12 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .with_bundle_update()
             .build();
         let writes = Rc::new(RefCell::new(FeeWrites::default()));
+        let calls = CallRecorder::default();
         let evm = self
             .real_config
             .evm_for_block(&mut db, block.header())
             .map_err(|e| format!("failed to configure control EVM: {e}"))?
+            .with_inspector(calls.clone())
             .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
         let context = self
             .real_config
@@ -319,6 +323,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             ));
         }
         real.pre_block = Some(drain(executor.evm_mut().db_mut()));
+        calls.take();
 
         // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
         // control results when one arm runs ahead.
@@ -329,15 +334,20 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
                 scope.spawn(|| self.execute_shadow(block, canonical_bal, canonical_results));
             let mut results = Some(results);
             for (index, tx) in block.transactions_recovered().enumerate() {
-                let result = match executor.execute_transaction_without_commit(tx) {
+                let result = executor.execute_transaction_without_commit(tx);
+                let calls = calls.take();
+                let result = match result {
                     Ok(result) => result,
                     Err(e) => {
                         real = real.fail(Boundary::Transaction(index), e.to_string());
                         break;
                     }
                 };
-                let observed =
-                    ObservedTx::from_result(&result, std::mem::take(&mut *writes.borrow_mut()));
+                let observed = ObservedTx::from_result(
+                    &result,
+                    std::mem::take(&mut *writes.borrow_mut()),
+                    calls,
+                );
                 if results
                     .as_ref()
                     .is_some_and(|sender| sender.send(result.clone()).is_err())
@@ -384,10 +394,12 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             .with_bundle_update()
             .build();
         let writes = Rc::new(RefCell::new(FeeWrites::default()));
+        let calls = CallRecorder::default();
         let evm = self
             .shadow_config
             .evm_for_block(&mut db, block.header())
             .map_err(|e| format!("failed to configure shadow EVM: {e}"))?
+            .with_inspector(calls.clone())
             .with_fee_manager(RecordingFeeManager(Rc::clone(&writes)));
         let context = self
             .shadow_config
@@ -399,14 +411,20 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
             return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
         }
         shadow.pre_block = Some(drain(executor.evm_mut().db_mut()));
+        calls.take();
         // Keep candidate pre-block changes in the cache; only transaction results are discarded.
         executor.evm_mut().db_mut().bal_state = canonical_bal;
 
         for tx in block.transactions_recovered() {
-            match executor.execute_transaction_without_commit(tx) {
+            let result = executor.execute_transaction_without_commit(tx);
+            let calls = calls.take();
+            match result {
                 Ok(result) => {
-                    let observed =
-                        ObservedTx::from_result(&result, std::mem::take(&mut *writes.borrow_mut()));
+                    let observed = ObservedTx::from_result(
+                        &result,
+                        std::mem::take(&mut *writes.borrow_mut()),
+                        calls,
+                    );
                     shadow.txs.push(Ok(
                         observed.with_state(transition(result.into_result().state))
                     ));
@@ -567,10 +585,12 @@ struct ObservedTx {
     fee: FeeWrites,
     /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
+    /// Top-level calls actually entered, in envelope order.
+    calls: Vec<ObservedCall>,
 }
 
 impl ObservedTx {
-    fn from_result(result: &TempoTxResult, writes: FeeWrites) -> Self {
+    fn from_result(result: &TempoTxResult, writes: FeeWrites, calls: Vec<ObservedCall>) -> Self {
         let execution = &result.result().result;
         let logs = execution.logs();
         let fee_normalized = normalized_fee_transfer(logs, &writes);
@@ -586,7 +606,13 @@ impl ObservedTx {
             fee_normalized,
             fee: writes,
             state: TransitionState::default(),
+            calls,
         }
+    }
+
+    /// Projects one value from each entered top-level call.
+    fn call_values<T>(&self, get: impl Fn(&ObservedCall) -> T) -> Vec<T> {
+        self.calls.iter().map(get).collect()
     }
 
     fn with_state(mut self, state: TransitionState) -> Self {
