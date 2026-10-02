@@ -177,7 +177,7 @@ pub trait StorableType {
     /// Whether this type can be packed with adjacent fields.
     const IS_PACKABLE: bool = Self::LAYOUT.is_packable();
 
-    /// Whether this type stores it's data in its base slot or not.
+    /// Whether this type stores its data in its base slot or not.
     ///
     /// Dynamic types (`Bytes`, `String`, `Vec`) store data at keccak256-addressed
     /// slots and need special cleanup. Non-dynamic types just zero their slots.
