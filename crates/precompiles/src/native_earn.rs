@@ -389,6 +389,22 @@ mod tests {
         caller: Address,
         depth: u16,
     ) -> evm2::interpreter::MessageResult<Types> {
+        call_with_input(
+            evm,
+            destination,
+            caller,
+            depth,
+            Bytes::from_static(&[0x37, 0xa4, 0xe8, 0x34]),
+        )
+    }
+
+    fn call_with_input(
+        evm: &mut Evm<'static, Types>,
+        destination: Address,
+        caller: Address,
+        depth: u16,
+        input: Bytes,
+    ) -> evm2::interpreter::MessageResult<Types> {
         let mut message = Message::<Types> {
             kind: MessageKind::Call,
             depth,
@@ -396,7 +412,7 @@ mod tests {
             destination,
             call_target: destination,
             caller,
-            input: Bytes::from_static(&[0x37, 0xa4, 0xe8, 0x34]),
+            input,
             code: Bytecode::new_legacy(Bytes::copy_from_slice(NATIVE_EARN_DISPATCHER_V1_RUNTIME)),
             code_address: destination,
             ..Default::default()
@@ -450,5 +466,62 @@ mod tests {
         let result = call(&mut evm, VAULT, Address::with_last_byte(0xaa), 0);
         assert!(!result.stop.is_success());
         assert!(!evm.ext().native_call_context().verified_earn_payment());
+    }
+
+    #[test]
+    fn async_request_and_cancel_use_registered_payment_frame() {
+        let mut evm = setup(true, false, true);
+        // requestRedeem(uint256,bytes,address): three head words and an
+        // empty dynamic bytes tail at the canonical offset.
+        let mut request = vec![0x9f, 0xed, 0x97, 0xfb];
+        request.extend_from_slice(&U256::from(4).to_be_bytes::<32>());
+        request.extend_from_slice(&U256::from(96).to_be_bytes::<32>());
+        request.extend_from_slice(&U256::from(0xaa).to_be_bytes::<32>());
+        request.extend_from_slice(&[0u8; 32]);
+        let result = call_with_input(
+            &mut evm,
+            VAULT,
+            Address::with_last_byte(0xaa),
+            0,
+            Bytes::from(request),
+        );
+        assert!(result.stop.is_success());
+        assert!(evm.ext().native_call_context().verified_earn_payment());
+
+        let mut evm = setup(true, false, true);
+        // cancelRedeem(bytes32,uint256) has two fixed-size arguments.
+        let mut cancel = vec![0x2f, 0xa4, 0x62, 0x97];
+        cancel.extend_from_slice(&[0x11; 32]);
+        cancel.extend_from_slice(&U256::from(1).to_be_bytes::<32>());
+        let result = call_with_input(
+            &mut evm,
+            VAULT,
+            Address::with_last_byte(0xaa),
+            0,
+            Bytes::from(cancel),
+        );
+        assert!(result.stop.is_success());
+        assert!(evm.ext().native_call_context().verified_earn_payment());
+    }
+
+    #[test]
+    fn async_finalize_requires_the_registered_engine() {
+        let mut finalize = vec![0xfb, 0x3a, 0xc8, 0xb8];
+        finalize.extend_from_slice(&[0x11; 32]);
+        finalize.extend_from_slice(&U256::from_be_slice(ASSET.as_slice()).to_be_bytes::<32>());
+        finalize.extend_from_slice(&U256::from(4).to_be_bytes::<32>());
+        let mut evm = setup(true, false, true);
+        let rejected = call_with_input(
+            &mut evm,
+            VAULT,
+            Address::with_last_byte(0xaa),
+            0,
+            Bytes::from(finalize.clone()),
+        );
+        assert!(!rejected.stop.is_success());
+        assert!(!evm.ext().native_call_context().verified_earn_payment());
+        let accepted = call_with_input(&mut evm, VAULT, ENGINE, 0, Bytes::from(finalize));
+        assert!(accepted.stop.is_success());
+        assert!(evm.ext().native_call_context().verified_earn_payment());
     }
 }
