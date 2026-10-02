@@ -34,6 +34,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             evm_env,
             execution_ctx:
                 TempoBlockExecutionCtx {
+                    transactions: _,
                     inner,
                     general_gas_limit,
                     shared_gas_limit,
@@ -160,6 +161,7 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
+            transactions: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -269,6 +271,7 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
+            transactions: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),

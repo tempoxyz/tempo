@@ -46,7 +46,7 @@ use rand::{random_range, seq::IndexedRandom};
 use rlimit::Resource;
 use serde::Serialize;
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs::File,
     io::BufWriter,
     num::{NonZeroU32, NonZeroU64},
@@ -55,7 +55,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS,
@@ -535,73 +535,91 @@ impl MaxTpsArgs {
             cancel_token.clone(),
         ));
 
-        let rate_limiter =
-            RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
+        let rate_limiter = RateLimiter::direct(
+            Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap())
+                .allow_burst(NonZeroU32::new((self.tps as u32 / 100).max(1)).unwrap()),
+        );
         let start_block_number = provider.get_block_number().await?;
+        let send_start = Instant::now();
 
-        let mut pending_txs =
-            generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
-                // Take exactly the required number of transactions to not over-send
-                .take(target_count)
-                // Stop when duration exceeded, no matter if we sent all transactions or not
-                .take_until(sleep(Duration::from_secs(self.duration)))
-                // Keep a buffer of pre-generated transactions to send as fast as possible
-                .buffer_unordered(self.tps as usize)
-                // Filter only successfully generated transactions
-                .filter_map(|result| async {
+        let mut pending_txs = generate_transactions(
+            signer_provider_manager.clone(),
+            gen_input,
+            counters.clone(),
+        )
+        // Take exactly the required number of transactions to not over-send
+        .take(target_count)
+        // Stop when duration exceeded, no matter if we sent all transactions or not
+        .take_until(sleep(Duration::from_secs(self.duration)))
+        // Signing is CPU work. Polling every generator in this one stream
+        // otherwise caps the offered load at a single core's signing rate.
+        // The buffer below bounds the number of scheduled tasks.
+        .map(|generate| async move { tokio::spawn(generate).await.map_err(eyre::Report::from)? })
+        // Keep a buffer of pre-generated transactions to send as fast as possible
+        .buffer_unordered(self.max_concurrent_requests)
+        // Filter only successfully generated transactions
+        .filter_map({
+            let counters = counters.clone();
+            move |result| {
+                let counters = counters.clone();
+                async move {
                     match result {
                         Ok(bytes) => Some(bytes),
                         Err(e) => {
+                            counters.generation_failed.fetch_add(1, Ordering::Relaxed);
                             debug!(?e, "Transaction generation failed");
                             None
                         }
                     }
-                })
-                .boxed()
-                .ratelimit_stream(&rate_limiter)
-                // Pair each transaction with a random provider to send it
-                .zip(stream::repeat_with(|| {
-                    signer_provider_manager.random_unsigned_provider()
-                }))
-                // Prepare transaction sending futures
-                .map(|(bytes, provider)| async move {
-                    tokio::time::timeout(
-                        Duration::from_secs(1),
-                        provider.send_raw_transaction(&bytes),
-                    )
-                    .await
-                })
-                // Send transactions in parallel with up to the specified concurrency limit
-                .buffer_unordered(self.max_concurrent_requests)
-                .filter_map({
-                    let counters = counters.clone();
-                    move |result| {
-                        let counters = counters.clone();
-                        async move {
-                            match result {
-                                Ok(Ok(pending_tx)) => {
-                                    counters.sent.fetch_add(1, Ordering::Relaxed);
-                                    counters.success.fetch_add(1, Ordering::Relaxed);
-                                    Some(pending_tx)
-                                }
-                                Ok(Err(err)) => {
-                                    counters.sent.fetch_add(1, Ordering::Relaxed);
-                                    counters.failed.fetch_add(1, Ordering::Relaxed);
-                                    debug!(?err, "Failed to send transaction");
-                                    None
-                                }
-                                Err(_) => {
-                                    counters.sent.fetch_add(1, Ordering::Relaxed);
-                                    counters.timed_out.fetch_add(1, Ordering::Relaxed);
-                                    debug!("Transaction sending timed out");
-                                    None
-                                }
-                            }
+                }
+            }
+        })
+        .boxed()
+        .ratelimit_stream(&rate_limiter)
+        // Pair each transaction with a random provider to send it
+        .zip(stream::repeat_with(|| {
+            signer_provider_manager.random_unsigned_provider()
+        }))
+        // Prepare transaction sending futures
+        .map(|(bytes, provider)| async move {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                provider.send_raw_transaction(&bytes),
+            )
+            .await
+        })
+        // Send transactions in parallel with up to the specified concurrency limit
+        .buffer_unordered(self.max_concurrent_requests)
+        .filter_map({
+            let counters = counters.clone();
+            move |result| {
+                let counters = counters.clone();
+                async move {
+                    match result {
+                        Ok(Ok(pending_tx)) => {
+                            counters.sent.fetch_add(1, Ordering::Relaxed);
+                            counters.success.fetch_add(1, Ordering::Relaxed);
+                            Some(pending_tx)
+                        }
+                        Ok(Err(err)) => {
+                            counters.sent.fetch_add(1, Ordering::Relaxed);
+                            counters.failed.fetch_add(1, Ordering::Relaxed);
+                            debug!(?err, "Failed to send transaction");
+                            None
+                        }
+                        Err(_) => {
+                            counters.sent.fetch_add(1, Ordering::Relaxed);
+                            counters.timed_out.fetch_add(1, Ordering::Relaxed);
+                            debug!("Transaction sending timed out");
+                            None
                         }
                     }
-                })
-                .collect::<VecDeque<_>>()
-                .await;
+                }
+            }
+        })
+        .collect::<VecDeque<_>>()
+        .await;
+        let send_duration_secs = send_start.elapsed().as_secs_f64();
 
         cancel_token.cancel();
 
@@ -615,10 +633,17 @@ impl MaxTpsArgs {
             success = counters.success.load(Ordering::Relaxed),
             failed = counters.failed.load(Ordering::Relaxed),
             timed_out = counters.timed_out.load(Ordering::Relaxed),
+            generation_failed = counters.generation_failed.load(Ordering::Relaxed),
+            send_duration_secs,
             "Finished sending transactions"
         );
 
-        let end_block_number = provider.get_block_number().await?;
+        let accepted_hashes = pending_txs
+            .iter()
+            .map(|tx| *tx.tx_hash())
+            .collect::<HashSet<_>>();
+        let (end_block_number, unconfirmed) =
+            wait_for_inclusion(&provider, start_block_number, accepted_hashes).await?;
 
         // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
@@ -660,7 +685,21 @@ impl MaxTpsArgs {
             "Collected a sample of receipts"
         );
 
-        generate_report(provider, start_block_number, end_block_number, &self).await?;
+        generate_report(
+            provider,
+            start_block_number,
+            end_block_number,
+            &self,
+            SendSummary {
+                accepted: counters.success.load(Ordering::Relaxed),
+                rejected: counters.failed.load(Ordering::Relaxed),
+                timed_out: counters.timed_out.load(Ordering::Relaxed),
+                generation_failed: counters.generation_failed.load(Ordering::Relaxed),
+                unconfirmed,
+                send_duration_secs,
+            },
+        )
+        .await?;
 
         Ok(())
     }
@@ -696,6 +735,7 @@ impl MnemonicArg {
 
 #[derive(Clone, Default)]
 struct TransactionCounters {
+    generation_failed: Arc<AtomicUsize>,
     /// Per-type generation counters
     tip20_transfers: Arc<AtomicUsize>,
     tip20_virtual_transfers: Arc<AtomicUsize>,
@@ -732,6 +772,12 @@ struct GenerateTransactionsInput {
     virtual_master_ids: Vec<MasterId>,
 }
 
+#[derive(Default)]
+struct GasEstimateCache {
+    values: OnceLock<(u128, u128, u64)>,
+    initialize: tokio::sync::Mutex<()>,
+}
+
 /// Returns an infinite stream of futures, each generating, signing, and encoding one transaction.
 fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     signer_provider_manager: SignerProviderManager<F>,
@@ -766,7 +812,7 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         mpp_weight,
     ];
     // Cached gas estimates for each transaction type
-    let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
+    let gas_estimates: [Arc<GasEstimateCache>; TX_TYPES] = Default::default();
     // Global tx counter used to bump priority fee, ensuring unique tx hashes
     // when using expiring nonces (which share nonce=0).
     let tx_id = Arc::new(AtomicUsize::new(0));
@@ -884,13 +930,23 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
             tx.inner.set_from(signer.address());
 
             let gas = &gas_estimates[tx_index];
+            // Only one request initializes a transaction type. Without this guard,
+            // the whole generation buffer races to estimate gas and can exhaust
+            // RPC connections before the benchmark sends its first transaction.
+            let mut initialize = if gas.values.get().is_none() {
+                Some(gas.initialize.lock().await)
+            } else {
+                None
+            };
             // If we already filled the gas fields once for that transaction type, use it.
             // This will skip the gas filler.
-            if let Some((max_fee_per_gas, max_priority_fee_per_gas, gas_limit)) = gas.get() {
+            if let Some((max_fee_per_gas, max_priority_fee_per_gas, gas_limit)) = gas.values.get() {
                 tx.inner.set_max_fee_per_gas(*max_fee_per_gas);
                 tx.inner
                     .set_max_priority_fee_per_gas(*max_priority_fee_per_gas);
                 tx.inner.set_gas_limit(*gas_limit);
+                // A preceding initializer may have populated the cache while we waited.
+                drop(initialize.take());
             }
 
             // Fill the rest of transaction. In case we already filled the gas fields,
@@ -900,8 +956,8 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
             // If we never filled the gas fields for that transaction type, cache the estimated
             // gas.
-            if gas.get().is_none() {
-                let _ = gas.set(match &filled {
+            if gas.values.get().is_none() {
+                let _ = gas.values.set(match &filled {
                     SendableTx::Builder(builder) => (
                         builder
                             .max_fee_per_gas()
@@ -922,6 +978,7 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     ),
                 });
             }
+            drop(initialize);
 
             let mut req = filled.try_into_request()?;
 
@@ -1051,14 +1108,59 @@ struct BenchmarkMetadata {
 #[derive(Serialize)]
 struct BenchmarkReport {
     metadata: BenchmarkMetadata,
+    sending: SendSummary,
     blocks: Vec<BenchmarkedBlock>,
 }
 
-pub async fn generate_report(
+#[derive(Serialize)]
+struct SendSummary {
+    accepted: usize,
+    rejected: usize,
+    timed_out: usize,
+    generation_failed: usize,
+    unconfirmed: usize,
+    send_duration_secs: f64,
+}
+
+/// Scan receipts by block until every accepted hash is included, or report the
+/// remainder after a bounded drain. Sampling alone can omit the final busy blocks.
+async fn wait_for_inclusion(
+    provider: &DynProvider<TempoNetwork>,
+    start_block: BlockNumber,
+    mut pending: HashSet<B256>,
+) -> eyre::Result<(BlockNumber, usize)> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut end_block = start_block;
+    while !pending.is_empty() && Instant::now() < deadline {
+        let head = provider.get_block_number().await?;
+        for number in (end_block + 1)..=head {
+            let receipts = provider
+                .get_block_receipts(number.into())
+                .await?
+                .ok_or_else(|| eyre::eyre!("Missing receipts for canonical block {number}"))?;
+            for receipt in receipts {
+                pending.remove(&receipt.transaction_hash());
+            }
+            end_block = number;
+        }
+        if !pending.is_empty() {
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+    info!(
+        end_block,
+        unconfirmed = pending.len(),
+        "Finished inclusion drain"
+    );
+    Ok((end_block, pending.len()))
+}
+
+async fn generate_report(
     provider: DynProvider<TempoNetwork>,
     start_block: BlockNumber,
     end_block: BlockNumber,
     args: &MaxTpsArgs,
+    sending: SendSummary,
 ) -> eyre::Result<()> {
     info!(start_block, end_block, "Generating report");
 
@@ -1135,6 +1237,7 @@ pub async fn generate_report(
 
     let report = BenchmarkReport {
         metadata,
+        sending,
         blocks: benchmarked_blocks,
     };
 

@@ -90,6 +90,20 @@ pub(crate) struct TempoPayloadBuilderMetrics {
 }
 
 impl TempoPayloadBuilderMetrics {
+    /// Records speculative work separately from transactions actually included.
+    pub(crate) fn record_speculative_execution(&self, stats: tempo_evm::parallel::ExecutionStats) {
+        metrics::counter!("tempo_payload_builder_speculated_transactions_total")
+            .increment(stats.speculated);
+        metrics::counter!("tempo_payload_builder_reused_transactions_total")
+            .increment(stats.reused);
+        metrics::counter!("tempo_payload_builder_conflicting_transactions_total")
+            .increment(stats.conflicts);
+        metrics::counter!("tempo_payload_builder_speculative_retries_total")
+            .increment(stats.retries);
+        metrics::counter!("tempo_payload_builder_speculative_backoff_total")
+            .increment(stats.backoff);
+    }
+
     /// Increments the unified pool transaction skip counter with the given reason label.
     ///
     /// Note: `mark_invalid` may also prune descendant transactions from the iterator,

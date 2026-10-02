@@ -16,11 +16,16 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
+#[test_case::test_case(0; "sequential")]
+#[test_case::test_case(4; "parallel")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer() -> eyre::Result<()> {
+async fn test_tip20_transfer(execution_threads: usize) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_execution_threads(execution_threads)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

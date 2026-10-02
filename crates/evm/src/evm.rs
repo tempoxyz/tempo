@@ -9,7 +9,10 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
@@ -17,6 +20,7 @@ use tempo_revm::{
 };
 
 use crate::TempoBlockEnv;
+use crate::parallel::{ExecutionStats, SpeculativeExecutor, SpeculativeResult};
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -60,11 +64,18 @@ impl EvmFactory for TempoEvmFactory {
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
     inspect: bool,
+    speculative: Option<SpeculativeExecutor>,
+    prepared: VecDeque<SpeculativeResult<DB::Error>>,
+    execution_stats: ExecutionStats,
+    last_sample: ExecutionStats,
+    backoff_remaining: usize,
+    worker_cfg: reth_revm::context::CfgEnv<TempoHardfork>,
 }
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+        let worker_cfg = input.cfg_env.clone();
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -74,11 +85,117 @@ impl<DB: Database> TempoEvm<DB> {
         Self {
             inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
+            speculative: None,
+            prepared: VecDeque::new(),
+            execution_stats: ExecutionStats::default(),
+            last_sample: ExecutionStats::default(),
+            backoff_remaining: 0,
+            worker_cfg,
         }
     }
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
+    /// Enables bounded speculative execution using the standard Tempo EVM configuration.
+    pub fn set_speculative_executor(&mut self, executor: Option<SpeculativeExecutor>) {
+        self.prepared.clear();
+        self.speculative = executor;
+        self.last_sample = self.execution_stats;
+        self.backoff_remaining = 0;
+    }
+
+    /// Maximum lookahead, or zero when speculative execution is disabled.
+    pub fn speculative_batch_size(&self) -> usize {
+        if self.inspect {
+            return 0;
+        }
+        self.speculative
+            .as_ref()
+            .map_or(0, SpeculativeExecutor::batch_size)
+    }
+
+    /// Returns execution counters for this EVM instance.
+    pub const fn execution_stats(&self) -> ExecutionStats {
+        self.execution_stats
+    }
+
+    pub(crate) fn has_prepared_transactions(&self) -> bool {
+        !self.prepared.is_empty() || self.backoff_remaining > 0
+    }
+
+    /// Speculates on a bounded set of transactions with their respective fee recipients.
+    /// No writes are committed. Candidates are checked against the actual transaction,
+    /// configuration, block environment and database reads before reuse.
+    pub fn prepare_transactions(
+        &mut self,
+        transactions: impl IntoIterator<Item = (TempoTxEnv, Address)>,
+    ) {
+        self.prepared.clear();
+        if self.inspect
+            // Instructions and precompiles were constructed with this configuration.
+            // Mutating ctx.cfg alone does not reconstruct those components.
+            || self.inner.ctx.cfg != self.worker_cfg
+            || self.inner.ctx.cfg.disable_fee_charge
+            || self.inner.skip_valid_after_check
+            || self.inner.skip_liquidity_check
+            || !self.inner.ctx.journaled_state.state.is_empty()
+            || !self.inner.ctx.journaled_state.transient_storage.is_empty()
+            || !self.inner.ctx.journaled_state.logs.is_empty()
+        {
+            return;
+        }
+        let Some(executor) = &self.speculative else {
+            return;
+        };
+        let sampled = self.execution_stats.speculated - self.last_sample.speculated;
+        let reused = self.execution_stats.reused - self.last_sample.reused;
+        if executor.adaptive_backoff() && sampled >= 32 && reused * 8 < sampled {
+            // This is only a scheduling choice. No result bypasses read validation.
+            // Retry periodically so a later independent workload can use the pool.
+            self.backoff_remaining = executor.batch_size().saturating_mul(8);
+        }
+        self.last_sample = self.execution_stats;
+        if self.backoff_remaining > 0 {
+            // Advance a payload builder's preview iterator by the same window even
+            // when workers are idle, preserving its lookahead alignment.
+            transactions
+                .into_iter()
+                .take(executor.batch_size())
+                .for_each(drop);
+            return;
+        }
+        // Limit speculative gas as well as transaction count. A malformed block
+        // or a pool of high-limit transactions must not multiply a whole block's
+        // maximum execution work by the lookahead window.
+        let mut remaining_gas = self.inner.ctx.block.gas_limit;
+        let inputs = transactions
+            .into_iter()
+            .take(executor.batch_size())
+            .filter_map(|(mut tx, beneficiary)| {
+                if tx.is_system_tx {
+                    return None;
+                }
+                remaining_gas = remaining_gas.checked_sub(tx.inner.gas_limit)?;
+                if let Some(aa) = tx.tempo_tx_env.as_mut() {
+                    aa.expiring_nonce_idx = None;
+                }
+                let mut block_env = self.inner.ctx.block.clone();
+                block_env.beneficiary = beneficiary;
+                Some((
+                    tx,
+                    EvmEnv {
+                        block_env,
+                        cfg_env: self.inner.ctx.cfg.clone(),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        self.execution_stats.speculated += inputs.len() as u64;
+        self.prepared = executor
+            .speculate(&mut self.inner.ctx.journaled_state.database, inputs)
+            .into();
+    }
+
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
     pub fn into_inner(self) -> tempo_revm::TempoEvm<DB, I> {
         self.inner
@@ -96,6 +213,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
     pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
+        // Custom instructions or precompiles must execute on this EVM.
+        self.set_speculative_executor(None);
         &mut self.inner
     }
 
@@ -104,6 +223,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
             inspect: true,
+            speculative: self.speculative,
+            prepared: VecDeque::new(),
+            execution_stats: self.execution_stats,
+            last_sample: self.last_sample,
+            backoff_remaining: self.backoff_remaining,
+            worker_cfg: self.worker_cfg,
         }
     }
 
@@ -170,6 +295,50 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        if self.backoff_remaining > 0 && !tx.is_system_tx {
+            self.backoff_remaining -= 1;
+            self.execution_stats.backoff += 1;
+        }
+        if !self.inspect
+            && !self.inner.skip_valid_after_check
+            && !self.inner.skip_liquidity_check
+            && self.inner.ctx.journaled_state.state.is_empty()
+            && self.inner.ctx.journaled_state.transient_storage.is_empty()
+            && self.inner.ctx.journaled_state.logs.is_empty()
+            && let Some(index) = self.prepared.iter().position(|candidate| {
+                candidate.tx == tx
+                    && candidate
+                        .tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .zip(tx.tempo_tx_env.as_ref())
+                        .is_none_or(|(a, b)| {
+                            a.tempo_authorization_list
+                                .iter()
+                                .zip(&b.tempo_authorization_list)
+                                .all(|(a, b)| a.authority_status() == b.authority_status())
+                        })
+            })
+        {
+            self.prepared.drain(..index);
+            let candidate = self.prepared.pop_front().expect("located candidate");
+            if candidate.env.cfg_env == self.inner.ctx.cfg
+                && candidate.env.block_env == self.inner.ctx.block
+            {
+                if candidate.result.is_err() {
+                    self.execution_stats.retries += 1;
+                } else if candidate
+                    .validate(&mut self.inner.ctx.journaled_state.database)
+                    .unwrap_or(false)
+                {
+                    self.execution_stats.reused += 1;
+                    self.inner.ctx.tx = tx;
+                    return candidate.result;
+                } else {
+                    self.execution_stats.conflicts += 1;
+                }
+            }
+        }
         if tx.is_system_tx {
             let TxKind::Call(to) = tx.inner.kind else {
                 return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
@@ -222,6 +391,9 @@ where
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
         self.inspect = enabled;
+        if enabled {
+            self.prepared.clear();
+        }
     }
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
@@ -233,11 +405,20 @@ where
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
+        // Access to the instruction/precompile or inspector configuration invalidates
+        // the assumption that workers run the same standard Tempo EVM.
+        self.set_speculative_executor(None);
         (
             &mut self.inner.inner.ctx.journaled_state.database,
             &mut self.inner.inner.inspector,
             &mut self.inner.inner.precompiles,
         )
+    }
+
+    fn db_mut(&mut self) -> &mut Self::DB {
+        // Database mutations are covered by read validation and do not require
+        // disabling the pool (this is also the ordinary ordered commit path).
+        &mut self.inner.inner.ctx.journaled_state.database
     }
 }
 

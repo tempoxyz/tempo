@@ -19,7 +19,7 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, ToTxEnv,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
@@ -226,7 +226,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl Fn(BestTransactionsAttributes) -> Txs,
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
@@ -420,14 +420,21 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
-        let mut best_txs = best_txs(BestTransactionsAttributes::new(
+        let pool_attributes = BestTransactionsAttributes::new(
             base_fee,
             builder
                 .evm_mut()
                 .block()
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
-        ));
+        );
+        let batch_size = builder.evm().speculative_batch_size();
+        // A separate iterator provides speculative candidates. The authoritative
+        // iterator is still advanced one transaction at a time: mark_invalid and
+        // payment-lane switching must retain their original ordering semantics.
+        let mut speculative_txs = (batch_size > 0).then(|| best_txs(pool_attributes));
+        let mut speculation_remaining = 0;
+        let mut best_txs = best_txs(pool_attributes);
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -440,6 +447,23 @@ where
             }
 
             check_cancel!();
+
+            if speculation_remaining == 0 {
+                if let Some(preview) = speculative_txs.as_mut() {
+                    let beneficiary = builder.evm().block().beneficiary;
+                    builder
+                        .evm_mut()
+                        .prepare_transactions(preview.by_ref().take(batch_size).map(|tx| {
+                            (
+                                tx.transaction.clone().into_with_tx_env().tx_env,
+                                beneficiary,
+                            )
+                        }));
+                    check_cancel!();
+                }
+                speculation_remaining = batch_size.max(1);
+            }
+            speculation_remaining -= 1;
 
             let Some(pool_tx) = best_txs.next() else {
                 if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
@@ -609,26 +633,38 @@ where
             let subblock_start = Instant::now();
             let mut subblock_tx_count = 0f64;
 
-            for tx in subblock.transactions_recovered() {
-                if let Err(err) = builder.execute_transaction(tx.cloned()) {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        ..
-                    }) = &err
-                    {
-                        error!(
-                            ?err,
-                            "subblock transaction failed execution, aborting payload building"
-                        );
-                        self.highest_invalid_subblock
-                            .store(builder.evm().block().number.to(), Ordering::Relaxed);
-                        self.metrics.inc_build_failure("subblock_invalid_tx");
-                        return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
-                    }
+            let transactions = subblock.transactions_recovered().collect::<Vec<_>>();
+            let batch_size = builder.evm().speculative_batch_size();
+            for batch in transactions.chunks(batch_size.max(1)) {
+                check_cancel!();
+                if batch_size > 0 {
+                    builder.evm_mut().prepare_transactions(
+                        batch
+                            .iter()
+                            .map(|tx| (tx.to_tx_env(), subblock.fee_recipient)),
+                    );
                 }
+                for tx in batch {
+                    if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                        if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                            ..
+                        }) = &err
+                        {
+                            error!(
+                                ?err,
+                                "subblock transaction failed execution, aborting payload building"
+                            );
+                            self.highest_invalid_subblock
+                                .store(builder.evm().block().number.to(), Ordering::Relaxed);
+                            self.metrics.inc_build_failure("subblock_invalid_tx");
+                            return Err(PayloadBuilderError::evm(err));
+                        } else {
+                            return Err(PayloadBuilderError::evm(err));
+                        }
+                    }
 
-                subblock_tx_count += 1.0;
+                    subblock_tx_count += 1.0;
+                }
             }
 
             self.metrics
@@ -674,6 +710,8 @@ where
             .record(total_transaction_execution_elapsed);
 
         let builder_finish_start = Instant::now();
+        self.metrics
+            .record_speculative_execution(builder.evm().execution_stats());
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
         let finish_provider = || InstrumentedFinishProvider {
             inner: &*state_provider,

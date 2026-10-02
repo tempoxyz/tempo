@@ -14,9 +14,8 @@ mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
 mod engine;
-#[cfg(feature = "engine")]
-use rayon as _;
 mod error;
+pub mod parallel;
 pub use error::TempoEvmError;
 pub mod evm;
 use std::{borrow::Cow, sync::Arc};
@@ -54,6 +53,8 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
+    /// Optional worker pool, shared between validation and block building.
+    pub speculative_executor: Option<parallel::SpeculativeExecutor>,
 }
 
 impl TempoEvmConfig {
@@ -64,7 +65,14 @@ impl TempoEvmConfig {
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
+            speculative_executor: None,
         }
+    }
+
+    /// Enables ordered speculative execution for node validation and block building.
+    pub fn with_speculative_executor(mut self, executor: parallel::SpeculativeExecutor) -> Self {
+        self.speculative_executor = Some(executor);
+        self
     }
 
     /// Returns the chain spec
@@ -100,13 +108,14 @@ impl BlockExecutorFactory for TempoEvmConfig {
 
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: TempoEvm<DB, I>,
+        mut evm: TempoEvm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
         DB: StateDB + 'a,
         I: Inspector<TempoContext<DB>> + 'a,
     {
+        evm.set_speculative_executor(self.speculative_executor.clone());
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
 }
@@ -211,6 +220,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .collect();
 
         Ok(TempoBlockExecutionCtx {
+            transactions: &block.body().transactions,
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
@@ -240,6 +250,7 @@ impl ConfigureEvm for TempoEvmConfig {
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<TempoBlockExecutionCtx<'_>, Self::Error> {
         Ok(TempoBlockExecutionCtx {
+            transactions: &[],
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,

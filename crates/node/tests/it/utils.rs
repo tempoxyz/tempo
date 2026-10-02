@@ -284,6 +284,7 @@ pub(crate) struct HttpOnlySetup {
 
 /// Builder for creating test nodes
 pub(crate) struct TestNodeBuilder {
+    execution_threads: usize,
     genesis_content: String,
     custom_gas_limit: Option<String>,
     node_count: usize,
@@ -298,6 +299,7 @@ impl TestNodeBuilder {
     /// Create a new builder with default test genesis
     pub(crate) fn new() -> Self {
         Self {
+            execution_threads: 0,
             genesis_content: include_str!("../assets/test-genesis.json").to_string(),
             custom_gas_limit: None,
             node_count: 1,
@@ -307,6 +309,12 @@ impl TestNodeBuilder {
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
         }
+    }
+
+    /// Configure speculative execution for an HTTP test node.
+    pub(crate) fn with_execution_threads(mut self, threads: usize) -> Self {
+        self.execution_threads = threads;
+        self
     }
 
     /// Set the fork schedule (Devnet, Testnet, or Mainnet)
@@ -443,7 +451,7 @@ impl TestNodeBuilder {
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(runtime.clone())
-            .node(TempoNode::default())
+            .node(TempoNode::default().with_execution_threads(self.execution_threads, 32))
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
                 let validator = dynamic_validator

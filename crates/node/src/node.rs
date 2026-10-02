@@ -54,6 +54,13 @@ use tempo_transaction_pool::{
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
 pub struct TempoNodeArgs {
+    /// Worker threads for experimental speculative execution (zero disables it).
+    #[arg(long = "execution.threads", default_value_t = 0)]
+    pub execution_threads: usize,
+
+    /// Maximum transactions in a speculative execution window.
+    #[arg(long = "execution.batch-size", default_value_t = 128, value_parser = clap::value_parser!(u32).range(1..))]
+    pub execution_batch_size: u32,
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
@@ -93,6 +100,7 @@ impl TempoNodeArgs {
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
+    executor_builder: TempoExecutorBuilder,
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
     /// Payload builder builder.
@@ -102,9 +110,23 @@ pub struct TempoNode {
 }
 
 impl TempoNode {
+    /// Enables speculative execution when this node's components are built.
+    /// Zero workers selects the sequential executor.
+    pub fn with_execution_threads(mut self, threads: usize, batch_size: usize) -> Self {
+        self.executor_builder = TempoExecutorBuilder {
+            threads,
+            batch_size: batch_size.max(1),
+        };
+        self
+    }
+
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
         Self {
+            executor_builder: TempoExecutorBuilder {
+                threads: args.execution_threads,
+                batch_size: args.execution_batch_size.max(1) as usize,
+            },
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
@@ -271,6 +293,7 @@ where
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(self.pool_builder, self.payload_builder_builder)
+            .executor(self.executor_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -333,7 +356,12 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 /// A regular ethereum evm and executor builder.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    /// Number of workers; zero retains sequential execution.
+    pub threads: usize,
+    /// Maximum speculative transactions per window.
+    pub batch_size: usize,
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -342,7 +370,14 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        if self.threads > 0 {
+            let executor = tempo_evm::parallel::SpeculativeExecutor::new(
+                self.threads,
+                self.batch_size.max(1),
+            )?;
+            evm_config = evm_config.with_speculative_executor(executor);
+        }
         Ok(evm_config)
     }
 }

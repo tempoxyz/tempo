@@ -19,7 +19,7 @@ use tempo_primitives::{
 };
 
 /// Tempo transaction environment for AA features.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TempoBatchCallEnv {
     /// Signature bytes for Tempo transactions
     pub signature: TempoSignature,
@@ -71,7 +71,7 @@ pub struct TempoBatchCallEnv {
     pub expiring_nonce_idx: Option<usize>,
 }
 /// Tempo transaction environment.
-#[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
     /// Inner Ethereum [`TxEnv`].
     #[deref]
