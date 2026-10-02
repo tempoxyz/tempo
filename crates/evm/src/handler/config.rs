@@ -227,6 +227,18 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         Ok(())
     }
 
+    fn eip7702_auth_gas_policy(
+        host: &Evm<'_, TempoEvmTypes>,
+        _envelope: &TempoTxEnv,
+    ) -> eip7702::AuthGasPolicy {
+        if host.feature(EvmFeatures::EIP8037) {
+            // TIP-1016 charges every authorization intrinsically, including redelegation.
+            eip7702::AuthGasPolicy::Intrinsic
+        } else {
+            eip7702::AuthGasPolicy::Ethereum
+        }
+    }
+
     fn before_execution(
         host: &mut Evm<'_, TempoEvmTypes>,
         envelope: &TempoTxEnv,
@@ -530,121 +542,6 @@ fn prepare_eip7702(
     eip7702::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }
 
-/// Tempo charges every delegation intrinsically, including redelegation; old
-/// code remains in the code database. Ethereum's account/bytecode refills do
-/// not apply, and execution failure must retain these pre-execution charges.
-fn execute_eip7702(
-    request: TxRequest<'_, '_, TempoEvmTypes, LazyTxEip7702>,
-    prepared: PreparedTx,
-) -> HandlerResult<TxResult<TempoEvmTypes>> {
-    if !request.host.feature(EvmFeatures::EIP8037) {
-        return eip7702::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>(request, prepared);
-    }
-    struct IntrinsicAuth;
-    impl eip7702::AuthAccounting for IntrinsicAuth {
-        fn rejected(&mut self) {}
-        fn accepted(
-            &mut self,
-            _: Address,
-            _: &eip7702::AppliedAuth,
-        ) -> Result<(), evm2::interpreter::InstrStop> {
-            Ok(())
-        }
-    }
-    let tx = request.tx.inner();
-    let chain_id = request.host.version().chain_id;
-    let caller = request.tx.signer();
-    let gas_price = evm2::ethereum::effective_gas_price(
-        U256::from(tx.max_fee_per_gas),
-        U256::from(tx.max_priority_fee_per_gas),
-        request.host.block().basefee,
-    );
-    // PreparedTx is opaque upstream. Reuse its validation/pre-execution path,
-    // then derive the same intrinsic counters for Tempo's authorization policy.
-    let (accounts, slots) = evm2::ethereum::access_list_counts(&tx.access_list);
-    let mut intrinsic = evm2::ethereum::intrinsic_gas(
-        request.host.version(),
-        caller,
-        tx.to.into(),
-        &tx.input,
-        accounts,
-        slots,
-        tx.value,
-    )
-    .saturating_add(
-        (tx.authorization_list.len() as u64).saturating_mul(u64::from(
-            request.host.version().gas_params[GasId::TxEip7702PerEmptyAccountCost],
-        )),
-    );
-    let mut initial_state_gas = 0;
-    let mut floor_gas = evm2::ethereum::floor_gas(
-        request.host.version(),
-        caller,
-        tx.to.into(),
-        &tx.input,
-        accounts,
-        slots,
-        tx.value,
-    );
-    TempoHandlerHooks::adjust_intrinsic_gas(
-        request.host,
-        request.envelope,
-        &mut intrinsic,
-        &mut initial_state_gas,
-        &mut floor_gas,
-    )?;
-    eip7702::apply_auth_list(
-        request.host,
-        chain_id,
-        &tx.authorization_list,
-        &mut IntrinsicAuth,
-    )?;
-    let (execution, reservoir) = evm2::ethereum::initial_gas_and_reservoir(
-        request.host.version(),
-        tx.gas_limit,
-        intrinsic,
-        initial_state_gas,
-    );
-    let mut gas =
-        evm2::interpreter::GasTracker::new_with_execution_gas_and_reservoir(execution, reservoir);
-    let frame = evm2::ethereum::prepare_initial_frame(
-        request.host,
-        caller,
-        tx.nonce,
-        tx.to.into(),
-        &tx.input,
-        tx.value,
-        &mut gas,
-    )?;
-    let tx_env = evm2::env::TxEnv::<TempoEvmTypes> {
-        origin: caller,
-        gas_price,
-        chain_id: U256::from(chain_id),
-        ..Default::default()
-    };
-    let result = evm2::ethereum::execute_initial_frame(
-        request.host,
-        &tx_env,
-        frame,
-        &mut gas,
-        execution,
-        reservoir,
-    )?;
-    TempoHandlerHooks::settle_transaction(
-        request.host,
-        request.envelope,
-        GasSettlement {
-            caller,
-            gas_price,
-            gas_limit: tx.gas_limit,
-            floor_gas,
-            initial_state_gas,
-            state_refund: 0,
-            result,
-        },
-    )
-}
-
 fn validate_no_native_value(envelope: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
     if envelope.transaction().value().is_zero() {
         Ok(())
@@ -685,7 +582,10 @@ pub fn tempo_tx_registry(spec_id: SpecId) -> TxRegistry<TempoEvmTypes, TxResult<
         registry.register(
             4,
             TempoTxEnv::as_eip7702,
-            handler(prepare_eip7702, execute_eip7702),
+            handler(
+                prepare_eip7702,
+                eip7702::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
+            ),
         );
     }
     registry.register(
