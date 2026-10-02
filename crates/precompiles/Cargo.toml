@@ -76,6 +76,7 @@ test-utils = [
     "dep:serde",
     "dep:serde_json",
     "tempo-primitives/test-utils",
+    "tempo-revm/test-utils",
 ]
 rpc = ["tempo-contracts/rpc"]
 serde = [

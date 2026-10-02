@@ -229,7 +229,7 @@ pub(crate) fn fallback_payment_fixture(
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
-        storage::{StorageActions, StorageCtx},
+        storage::{ContractStorage, StorageActions, StorageCtx},
         test_util::TIP20Setup,
         tip_fee_manager::TipFeeManager,
     };

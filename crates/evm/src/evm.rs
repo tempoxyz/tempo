@@ -1434,7 +1434,7 @@ mod tests {
                 let slot = TIP20Token::from_address_unchecked(*token).balances[payer].slot();
                 let expected =
                     U256::from(balances[index]) - if index == selected { fee } else { U256::ZERO };
-                assert_eq!(evm.db_mut().storage(*token, slot).unwrap(), expected);
+                assert_eq!(evm.db().storage_ref(*token, slot).unwrap(), expected);
             }
         }
     }
