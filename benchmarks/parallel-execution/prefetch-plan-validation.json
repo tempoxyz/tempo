@@ -1,0 +1,39 @@
+{
+  "revm": {
+    "command": "cargo test --release --locked -p tempo-revm --lib",
+    "log": "/tmp/tempo-prefetch-plan-revm.log",
+    "passed": 129,
+    "status": "passed"
+  },
+  "evm": {
+    "command": "cargo test --release --locked -p tempo-evm --lib",
+    "log": "/tmp/tempo-prefetch-plan-tests.log",
+    "passed": 93,
+    "ignored": 2,
+    "status": "passed"
+  },
+  "node": {
+    "commands": [
+      "cargo test --release --locked -p tempo-node --test it shared_trie -- --nocapture",
+      "cargo test --release --locked -p tempo-node --test it test_payment_lane_with_mixed_load -- --nocapture"
+    ],
+    "log": "/tmp/tempo-prefetch-plan-node-tests.log",
+    "passed": [
+      6,
+      3
+    ],
+    "status": "passed"
+  },
+  "clippy": {
+    "command": "cargo clippy --release --locked -p tempo-evm -p tempo-revm -p tempo-payload-builder --all-targets -- -D warnings",
+    "log": "/tmp/tempo-prefetch-plan-clippy.log",
+    "status": "passed"
+  },
+  "build": {
+    "command": "cargo build --release --locked -p tempo --bin tempo",
+    "log": "/tmp/tempo-prefetch-plan-build.log",
+    "binary": "/tmp/tempo-prefetch-plan",
+    "sha256": "07901172314a5d582677bd4e52f474d18157bde40ef20bf48b11c0c154c0f238",
+    "status": "passed"
+  }
+}

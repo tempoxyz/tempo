@@ -26,7 +26,9 @@ execution time. This benchmark does not model an offered-load queue.
 
 `TEMPO_BENCH_WORKLOADS` selects a comma-separated subset of the workloads below.
 `TEMPO_BENCH_BATCH_SIZE` changes the window (default 128; the declared-gas bound
-still applies). `TEMPO_BENCH_PHASES=1` prints preparation, ordered execution and
+still applies). `TEMPO_BENCH_BLOCK_GAS_LIMIT` changes the benchmark block budget
+(default 500M), allowing larger windows to be compared at the same 5B budget as
+the node measurements. `TEMPO_BENCH_PHASES=1` prints preparation, ordered execution and
 commit times to help distinguish worker scheduling from serial replay costs.
 Phase timing adds per-transaction clock reads, so compare equally instrumented runs.
 `TEMPO_BENCH_STREAMING=0` waits for all workers before ordered execution, for a
@@ -1561,6 +1563,170 @@ outcomes, state deltas, canonical receipts, gas, receipt roots and state roots.
 Replay timings are diagnostic: adaptive backoff and the minimum body-time
 threshold are disabled, and sequential execution warms the provider caches first.
 
+## Window-size follow-up (2026-10-02)
+
+`window-sweep.{json,tsv}` compares windows of 128, 256, 512 and 1,024 at a
+5B-gas budget on the same 16-core/32-thread host. Each size appears twice, in
+forward then reverse order, with 50,000 generated transactions per workload and
+0/16/32 workers. The saved executable uses `ccc70f56` plus the benchmark-only gas
+budget parameter. Phase clocks are enabled equally; full receipts and state roots
+are checked against sequential execution for every parallel result.
+
+| Workload | Window | 16-worker execution TPS | 32-worker execution TPS |
+| --- | ---: | ---: | ---: |
+| Paid compute, repeated payers | 128 | 49,302 | 62,918 |
+| Paid compute, repeated payers | 256 | 53,528 | 61,998 |
+| Paid compute, repeated payers | 512 | 54,096 | 64,676 |
+| Paid compute, repeated payers | 1,024 | 56,866 | 66,422 |
+| Paid AA TIP-20 | 128 | 114,152 | 100,764 |
+| Paid AA TIP-20 | 256 | 104,612 | 100,200 |
+| Paid AA TIP-20 | 512 | 109,488 | 106,726 |
+| Paid AA TIP-20 | 1,024 | 110,308 | 107,574 |
+
+Larger windows improve paid compute, but do not consistently improve native AA
+transfers. At 16 workers, AA preparation still takes 0.25–0.26 seconds per 50,000
+transactions, over half of measured execution time. These are in-memory T0
+execution measurements, excluding networking, transaction admission and trie
+hashing.
+
+`window-node.json` records six complete node trials using the normal `ccc70f56`
+executable, 16 workers, shared sparse trie, one concurrent builder, a 5B-gas
+budget, 100 signers and two-dimensional AA nonces. New recipients use a 50k
+sending target and existing recipients use 75k, each for ten seconds. Actual
+confirmed throughput includes the time needed to drain the accepted backlog.
+
+| Recipients | Window | Confirmed TPS | Execution loop (s) | Pool snapshot (s) | Finalization (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| New | 128 | 22,677 | 10.447 | 2.036 | 1.466 |
+| New | 512 | 23,015 | 10.239 | 2.062 | 1.524 |
+| New | 1,024 | 22,048 | 10.538 | 2.264 | 2.407 |
+| Existing | 128 | 28,027 | 9.747 | 1.043 | 1.459 |
+| Existing | 512 | 28,254 | 9.635 | 1.037 | 1.442 |
+| Existing | 1,024 | 28,401 | 9.623 | 0.973 | 1.417 |
+
+All 2,476,001 accepted user transactions confirmed, with zero execution failures
+or rejected payloads. These single trials show no consistent whole-node gain
+that justifies changing the default window of 128. New-recipient finalization at
+1,024 includes 0.928 seconds waiting for the background root; the other five
+trials wait 0.053–0.078 seconds. Payload timings include attempted builders.
+
+The new-recipient 512 trial aborted during shutdown, after all transactions had
+confirmed and SIGTERM was received, with `pthread lock: Invalid argument`. The
+message matches RocksDB's `PthreadCall("lock", ...)` error path; the underlying
+cause is unverified. Its database and logs are retained for investigation, and
+the nonzero exit status is preserved in the results.
+`window-shutdown-anomaly.json` retains the shutdown log excerpt. No clean-shutdown claim is
+made for that trial.
+
+`window-canonical-*.tsv` checks three busy consecutive blocks from each trial
+against sequential execution and canonical receipts, gas, receipt roots and state
+roots: 18 blocks with 217,775 user transactions plus 18 system transactions.
+Replay timings are diagnostic. Disposable 512/1,024 databases with clean shutdown
+were removed after replay; reports, logs and metrics remain, with retention
+metadata in the JSON results. The two 128 controls and the anomalous 512 database
+are retained.
+
+## Grouping repeated prefetch keys (2026-10-02)
+
+The per-transaction prefetch planner constructed the same mapping slots repeatedly
+before the database cache discarded duplicate keys. `PrefetchPlan` tracks the
+payers, tokens, fee collectors and token holders already visited in one window.
+It constructs their mapping slots once, emits keys directly into the existing
+prefetch cache, and adds reward-storage hints when a previously balance-only
+holder needs them. All hint state is discarded after preparing that window;
+actual database reads still determine validation dependencies. Account and nonce
+hints, authoritative validation, fee checks and ordered commits retain their
+existing paths.
+
+A generated coverage oracle compares the union of emitted keys after every
+prefix against the previous planner, in forward and reverse order. Its inputs
+mix zero/paid fees, sponsored/ordinary callers, default/explicit/called tokens,
+malformed transfers, contract creation, nonce modes, beneficiaries and forks.
+It verifies identical coverage through balance-to-reward upgrades and repeated
+visits, with more than four times fewer emitted hint keys in the mixed sequence.
+The 93 EVM tests, 129 revm tests, release Clippy for EVM/revm/payload builder, and
+nine shared-trie/payment-lane node checks pass.
+
+`prefetch-plan-micro.{json,tsv}` compares saved before/after test executables at
+50,000 transactions, 5B block gas and 0/16/32 workers. Each combination appears
+twice, with reversed before/after ordering. It includes the same phase clocks in
+both executables and verifies full receipts and final state roots against the
+sequential run. No builds, replays or other throughput runs overlap these trials.
+
+| Workload | Window | Workers | Before execution TPS | After execution TPS | Preparation before → after (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Paid compute, repeated payers | 128 | 16 | 47,808 | 55,612 | 0.174 → 0.093 |
+| Paid compute, repeated payers | 128 | 32 | 62,456 | 69,435 | 0.192 → 0.108 |
+| Paid compute, repeated payers | 1,024 | 16 | 54,914 | 62,784 | 0.141 → 0.027 |
+| Paid compute, repeated payers | 1,024 | 32 | 65,342 | 77,798 | 0.153 → 0.034 |
+| Paid AA TIP-20 | 128 | 16 | 114,939 | 124,690 | 0.260 → 0.194 |
+| Paid AA TIP-20 | 128 | 32 | 100,109 | 122,679 | 0.295 → 0.208 |
+| Paid AA TIP-20 | 1,024 | 16 | 112,200 | 155,209 | 0.248 → 0.132 |
+| Paid AA TIP-20 | 1,024 | 32 | 106,876 | 143,554 | 0.253 → 0.139 |
+
+These are generated T0 in-memory execution results. In particular, the 155k AA
+result does not include transaction admission, networking or trie hashing, and
+is not a full-node throughput claim. Larger windows remain optional.
+
+`prefetch-plan-diverse.{json,tsv}` additionally checks seven workloads at 10,000
+transactions, 0/16 workers and a 128-transaction window, in before/after/after/before
+order. The results below are means of the two 16-worker runs:
+
+| Workload | Before execution TPS | After execution TPS |
+| --- | ---: | ---: |
+| storage | 264,372 | 273,442 |
+| compute | 87,906 | 84,485 |
+| compute_paid | 33,912 | 36,778 |
+| compute_paid_chains | 54,560 | 53,859 |
+| tip20 | 177,188 | 183,322 |
+| tip20_paid | 126,353 | 149,686 |
+| tip20_paid_aa | 112,914 | 127,444 |
+
+Preparation is unchanged for ordinary unpaid compute/storage and decreases for
+all five native fee/token workloads. Total time does not improve uniformly: the
+short unpaid-compute and repeated-payer compute cases are 3.9% and 1.3% slower,
+respectively, despite unchanged or reduced preparation time. The larger repeated-
+payer measurements above show a gain; these short runs do not establish one.
+
+`prefetch-plan-node.json` records the normal-node comparison at 16 workers,
+shared sparse trie, one concurrent builder, 5B block gas and 100 signers.
+New-recipient and existing-recipient two-dimensional AA trials use 50k and 75k
+sending targets for ten seconds, respectively. Expiring nonces use existing
+recipients and a 50k target for five seconds, staying below the 300,000-entry
+protocol capacity. Each trial fully drains before the next starts. The 128-window
+pairs alternate which executable runs first; the two after-only 1,024-window
+trials run last. These are single trials per combination.
+
+| Workload | Variant | Window | Confirmed TPS | Execution loop (s) | Pool snapshot (s) | Finalization (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| new | after | 128 | 23,053 | 10.140 | 1.982 | 1.496 |
+| new | before | 128 | 22,737 | 10.360 | 2.058 | 1.476 |
+| existing | before | 128 | 28,329 | 9.670 | 1.014 | 1.419 |
+| existing | after | 128 | 28,287 | 9.637 | 1.041 | 1.426 |
+| expiring | after | 128 | 27,606 | 5.698 | 0.075 | 0.845 |
+| expiring | before | 128 | 27,629 | 5.761 | 0.078 | 0.829 |
+| new | after | 1,024 | 23,236 | 10.105 | 1.859 | 1.542 |
+| existing | after | 1,024 | 27,785 | 9.604 | 1.012 | 1.830 |
+
+All 2,928,792 accepted transactions confirmed,
+with zero execution failures or rejected payloads and clean shutdown in all eight
+trials. The default-window new-recipient pair improves 1.4%; existing recipients
+and expiring nonces are effectively flat. The execution-only gains do not imply
+equal gains in complete node throughput. The after-only 1,024-window trials
+reach 23,236 TPS for new recipients and 27,785 TPS for existing recipients. The
+latter includes 0.499 seconds waiting for the background root, versus 0.072 at
+128. This is not enough evidence for a universal window increase; the default
+remains 128.
+
+`prefetch-plan-canonical-*.tsv` verifies three busy consecutive blocks from every
+trial, including both executables and both window sizes: 24 blocks containing
+438,573 user transactions plus 24 system
+transactions. Full outcomes, state deltas, canonical receipts, gas, receipt roots
+and state roots match sequential execution. Replay timings are diagnostic, with
+backoff/minimum body-duration gates disabled and sequential execution warming the
+provider caches. Before databases were removed after replay; reports, metrics,
+logs and retention metadata remain. After databases are retained.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed
@@ -1598,6 +1764,9 @@ configuration changes, and thread-bound database/panic behavior. A block-executo
 differential check also compares actual receipts and ordered state hooks.
 
 ## Outstanding goal work
+
+- Investigate the RocksDB mutex abort seen once during SIGTERM shutdown of the
+  pre-prefetch-plan binary; retained evidence is in `window-shutdown-anomaly.json`.
 
 - Reduce cheap-transaction scheduling and read-validation overhead.
 - Reduce the remaining serial fee-processing and partial-replay overhead.

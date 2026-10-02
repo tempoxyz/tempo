@@ -1822,6 +1822,8 @@ fn execution_throughput() {
         .unwrap_or_else(|_| "storage,compute,compute_paid,tip20,tip20_paid".into());
     let batch_size = std::env::var("TEMPO_BENCH_BATCH_SIZE")
         .map_or(128, |value| value.parse::<usize>().unwrap());
+    let block_gas_limit = std::env::var("TEMPO_BENCH_BLOCK_GAS_LIMIT")
+        .map_or(500_000_000, |value| value.parse::<u64>().unwrap());
     let profile = std::env::var_os("TEMPO_BENCH_PHASES").is_some();
     let streaming = std::env::var("TEMPO_BENCH_STREAMING").map_or(true, |value| value != "0");
     let fee_rebasing = std::env::var("TEMPO_BENCH_FEE_REBASING").map_or(true, |value| value != "0");
@@ -1916,7 +1918,7 @@ fn execution_throughput() {
             let mut baseline = None;
             for threads in workers.split(',').map(|s| s.parse::<usize>().unwrap()) {
                 let mut evm = test_evm_with_basefee(db.clone(), 0);
-                evm.ctx_mut().block.gas_limit = 500_000_000;
+                evm.ctx_mut().block.gas_limit = block_gas_limit;
                 if threads > 0 {
                     evm.set_speculative_executor(Some(
                         SpeculativeExecutor::new(threads, batch_size)

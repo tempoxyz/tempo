@@ -137,18 +137,17 @@ impl SpeculativeExecutor {
         // Accounts named by the transaction can be loaded without waiting for a
         // worker round trip. This is only a cache hint: errors are observed by the
         // actual read, and accesses are recorded even when they hit this map.
+        let mut plan = tempo_revm::replay::PrefetchPlan::default();
         for (tx, env) in &inputs {
             for key in std::iter::once(tx.inner.caller)
                 .chain(tx.calls().filter_map(|(kind, _)| kind.to().copied()))
                 .map(ReadKey::Account)
-                .chain(tempo_revm::replay::prefetch_keys(
-                    tx,
-                    env.block_env.beneficiary,
-                    env.cfg_env.spec,
-                ))
             {
                 prefetch(db, &mut prefetched, key);
             }
+            plan.visit(tx, env.block_env.beneficiary, env.cfg_env.spec, |key| {
+                prefetch(db, &mut prefetched, key);
+            });
         }
         let count = inputs.len();
         let shared = Arc::new(Work {

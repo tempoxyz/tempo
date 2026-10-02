@@ -6,7 +6,10 @@
 //! does not make fee operations commute or bypass their overflow/liquidity checks.
 
 use alloy_evm::Database;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{HashMap, HashSet},
+};
 use revm::{
     context::{JournalEntry, JournalInner},
     context_interface::cfg::gas::InitialAndFloorGas,
@@ -87,11 +90,192 @@ pub fn nonce_hint(
     Some((ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, slot), bound))
 }
 
-/// Bounded hints for fee storage, the expiring nonce pointer and the first native
-/// TIP-20 transfer. The scheduler separately prefetches [`nonce_hint`].
-/// These do not resolve token preferences, virtual recipients or reward delegates:
-/// conditional accesses still use the database, and only actual reads become dependencies.
-pub fn prefetch_keys(
+/// A per-window plan for fee storage, the expiring nonce pointer and the first
+/// native TIP-20 transfer. Repeated payers, tokens and holders need their mapping
+/// slots constructed only once. This caches keys, never values across windows.
+///
+/// Preferences, virtual recipients and reward delegates still use conditional
+/// database reads. Only actual execution reads become validation dependencies.
+#[derive(Debug, Default)]
+pub struct PrefetchPlan {
+    initialized: bool,
+    nonce_account: bool,
+    nonce_ring: bool,
+    payers: HashSet<Address>,
+    beneficiaries: HashSet<Address>,
+    tokens: HashMap<Address, TokenHints>,
+    collectors: HashSet<(Address, Address)>,
+    holders: HashMap<(Address, Address), bool>,
+}
+
+#[derive(Debug, Default)]
+struct TokenHints {
+    account: bool,
+    transfer: bool,
+    fee: bool,
+}
+
+impl PrefetchPlan {
+    /// Visits newly needed keys. The scheduler separately prefetches [`nonce_hint`].
+    pub fn visit(
+        &mut self,
+        tx: &crate::TempoTxEnv,
+        beneficiary: Address,
+        spec: tempo_chainspec::hardfork::TempoHardfork,
+        mut emit: impl FnMut(ReadKey),
+    ) {
+        use alloy_sol_types::SolCall;
+        use tempo_precompiles::{
+            NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+            nonce::slots as nonce_slots,
+            storage::StorageKey,
+            tip_fee_manager::slots as fee_slots,
+            tip20::{ITIP20, slots as token_slots},
+        };
+        use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
+
+        if !self.initialized {
+            emit(ReadKey::Account(TIP_FEE_MANAGER_ADDRESS));
+            self.initialized = true;
+        }
+        let payer = tx.fee_payer().unwrap_or(tx.inner.caller);
+        if self.payers.insert(payer) {
+            emit(ReadKey::Storage(
+                TIP_FEE_MANAGER_ADDRESS,
+                payer.mapping_slot(fee_slots::USER_TOKENS),
+            ));
+        }
+        if let Some(aa) = &tx.tempo_tx_env
+            && !aa.nonce_key.is_zero()
+        {
+            if !self.nonce_account {
+                emit(ReadKey::Account(NONCE_PRECOMPILE_ADDRESS));
+                self.nonce_account = true;
+            }
+            if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() && !self.nonce_ring {
+                emit(ReadKey::Storage(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    nonce_slots::EXPIRING_NONCE_RING_PTR,
+                ));
+                self.nonce_ring = true;
+            }
+        }
+        let pays_fees = tx.inner.gas_price != 0;
+        if pays_fees && self.beneficiaries.insert(beneficiary) {
+            emit(ReadKey::Storage(
+                TIP_FEE_MANAGER_ADDRESS,
+                beneficiary.mapping_slot(fee_slots::VALIDATOR_TOKENS),
+            ));
+        }
+        let call = tx.calls().next();
+        let called_token = call
+            .as_ref()
+            .and_then(|(kind, _)| kind.to().copied())
+            .filter(|token| token.is_tip20());
+        let recipient = called_token.and_then(|_| {
+            ITIP20::transferCall::abi_decode(call.as_ref()?.1)
+                .ok()
+                .map(|call| call.to)
+        });
+        let tokens = [
+            Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
+            tx.fee_token,
+            called_token,
+        ];
+        for (index, token) in tokens.iter().enumerate() {
+            let Some(token) = *token else { continue };
+            if tokens[..index].contains(&Some(token)) {
+                continue;
+            }
+            let recipient = recipient.filter(|_| called_token == Some(token));
+            let flags = self.tokens.entry(token).or_default();
+            if !flags.account {
+                emit(ReadKey::Account(token));
+                flags.account = true;
+            }
+            if (pays_fees || recipient.is_some()) && !flags.transfer {
+                for slot in [
+                    token_slots::PAUSED,
+                    token_slots::TRANSFER_POLICY_ID,
+                    token_slots::GLOBAL_REWARD_PER_TOKEN,
+                ] {
+                    emit(ReadKey::Storage(token, slot));
+                }
+                flags.transfer = true;
+            }
+            if pays_fees && !flags.fee {
+                emit(ReadKey::Storage(
+                    token,
+                    TIP_FEE_MANAGER_ADDRESS.mapping_slot(token_slots::BALANCES),
+                ));
+                emit(ReadKey::Storage(token, token_slots::CURRENCY));
+                flags.fee = true;
+            }
+            if pays_fees && self.collectors.insert((token, beneficiary)) {
+                emit(ReadKey::Storage(
+                    TIP_FEE_MANAGER_ADDRESS,
+                    token.mapping_slot(beneficiary.mapping_slot(fee_slots::COLLECTED_FEES)),
+                ));
+            }
+            self.holder(
+                token,
+                payer,
+                pays_fees || recipient.is_some_and(|to| payer == tx.inner.caller || payer == to),
+                &mut emit,
+            );
+            if let Some(recipient) = recipient {
+                if tx.inner.caller != payer {
+                    self.holder(token, tx.inner.caller, true, &mut emit);
+                }
+                if recipient != payer && recipient != tx.inner.caller {
+                    self.holder(token, recipient, true, &mut emit);
+                }
+            }
+        }
+    }
+
+    fn holder(
+        &mut self,
+        token: Address,
+        holder: Address,
+        rewards: bool,
+        emit: &mut impl FnMut(ReadKey),
+    ) {
+        use std::collections::hash_map::Entry;
+        use tempo_precompiles::{
+            storage::{StorableType, StorageKey},
+            tip20::{rewards::UserRewardInfo, slots},
+        };
+        let new_rewards = match self.holders.entry((token, holder)) {
+            Entry::Vacant(entry) => {
+                emit(ReadKey::Storage(
+                    token,
+                    holder.mapping_slot(slots::BALANCES),
+                ));
+                entry.insert(rewards);
+                rewards
+            }
+            Entry::Occupied(mut entry) => {
+                let new_rewards = rewards && !*entry.get();
+                *entry.get_mut() |= rewards;
+                new_rewards
+            }
+        };
+        if new_rewards {
+            let base = holder.mapping_slot(slots::USER_REWARD_INFO);
+            for offset in 0..UserRewardInfo::SLOTS {
+                emit(ReadKey::Storage(
+                    token,
+                    base.wrapping_add(U256::from(offset)),
+                ));
+            }
+        }
+    }
+}
+
+// Original per-transaction planner, retained as an independent coverage oracle.
+#[cfg(test)]
+fn reference_prefetch_keys(
     tx: &crate::TempoTxEnv,
     beneficiary: Address,
     spec: tempo_chainspec::hardfork::TempoHardfork,
@@ -374,4 +558,96 @@ pub(crate) struct BodyReplay {
     pub captured: Option<BodyCache>,
     pub candidate: Option<BodyCache>,
     pub reused: bool,
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use super::*;
+    use alloy_evm::FromRecoveredTx;
+    use alloy_primitives::{Bytes, TxKind, address};
+    use alloy_sol_types::SolCall;
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+
+    #[test]
+    fn grouped_hints_preserve_each_prefix_of_the_original_plan() {
+        let tokens = [
+            PATH_USD_ADDRESS,
+            address!("20c0000000000000000000000000000000000001"),
+        ];
+        let txs = (0..96)
+            .map(|i| {
+                let sender = Address::repeat_byte((i % 4 + 1) as u8);
+                let recipient = Address::repeat_byte((i % 5 + 1) as u8);
+                let signed = TempoTransaction {
+                    chain_id: 1,
+                    gas_limit: 1_000_000,
+                    max_fee_per_gas: (i % 3 == 1).into(),
+                    nonce_key: [U256::ZERO, U256::from(13), U256::MAX][i % 3],
+                    calls: vec![Call {
+                        to: if i % 7 == 0 {
+                            TxKind::Create
+                        } else {
+                            tokens[i % 2].into()
+                        },
+                        value: U256::ZERO,
+                        input: if i % 5 == 0 {
+                            Bytes::from_static(&[1, 2, 3])
+                        } else {
+                            ITIP20::transferCall {
+                                to: recipient,
+                                amount: U256::from(17),
+                            }
+                            .abi_encode()
+                            .into()
+                        },
+                    }],
+                    ..Default::default()
+                }
+                .into_signed(TempoSignature::default());
+                let mut tx = crate::TempoTxEnv::from_recovered_tx(&signed, sender);
+                tx.fee_token = (i % 4 != 0).then_some(tokens[(i / 2) % 2]);
+                tx.fee_payer = Some(Some(Address::repeat_byte((i / 3 % 5 + 1) as u8)));
+                if i % 11 == 0 {
+                    tx.tempo_tx_env = None;
+                }
+                tx
+            })
+            .collect::<Vec<_>>();
+        for reverse in [false, true] {
+            let mut plan = PrefetchPlan::default();
+            let mut expected = HashSet::<ReadKey>::default();
+            let mut actual = HashSet::<ReadKey>::default();
+            let mut reference_count = 0;
+            let mut planned_count = 0;
+            for step in 0..txs.len() * 2 {
+                let index = if reverse {
+                    txs.len() - 1 - step % txs.len()
+                } else {
+                    step % txs.len()
+                };
+                let tx = &txs[index];
+                let beneficiary = Address::repeat_byte((step % 3 + 10) as u8);
+                let spec = [
+                    TempoHardfork::T0,
+                    TempoHardfork::T1,
+                    TempoHardfork::T1B,
+                    TempoHardfork::T4,
+                ][step % 4];
+                let original = reference_prefetch_keys(tx, beneficiary, spec);
+                reference_count += original.len();
+                expected.extend(original);
+                plan.visit(tx, beneficiary, spec, |key| {
+                    actual.insert(key);
+                    planned_count += 1;
+                });
+                assert_eq!(actual, expected, "step={step} reverse={reverse}");
+            }
+            assert!(
+                planned_count * 4 < reference_count,
+                "{planned_count} vs {reference_count}"
+            );
+        }
+    }
 }
