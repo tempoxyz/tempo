@@ -234,7 +234,9 @@ impl<'a> TempoBlockExecutor<'a> {
             evm.block().number.saturating_to::<u64>(),
         );
         let extra_data = ctx.inner.extra_data.clone();
-        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
+        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder)
+            .with_block_state_gas_limit(false)
+            .with_block_gas_refunds(true);
         inner.set_spec_id(spec_id);
         Self {
             t13_active_at_genesis: chain_spec
@@ -628,24 +630,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
-        let inner = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            self.validate_transaction_gas_limit(original.gas_limit())?;
-            if self.evm().state().bal_builder().is_some() {
-                let index = BlockAccessIndex::new(self.receipts().len() as u64 + 1);
-                self.inner.set_block_access_index(index);
-            }
-            // Reth's Ethereum executor also caps block state gas. Tempo only
-            // uses its commit/receipt machinery, enforcing its own gas limits.
-            let result = self
-                .evm_mut()
-                .transact(&tx_env)
-                .map_err(|err| crate::error::map_transaction_error(err, tx_hash))?
-                .detach();
-            EthTransactionResultWithState::new(result, tx_type, 0)
-        } else {
-            self.inner
-                .execute_transaction_without_commit((tx_env, recovered))?
-        };
+        let inner = self
+            .inner
+            .execute_transaction_without_commit((tx_env, recovered))?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -715,15 +702,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         self.replay_state.commit_tx_changes();
 
-        if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            Ok(GasOutput::new_with_regular(
-                gas_output.tx_gas_used(),
-                block_gas_used,
-                gas_output.state_gas_used(),
-            ))
-        } else {
-            Ok(gas_output)
-        }
+        Ok(gas_output)
     }
 
     fn finish_with_block_access_list(
@@ -761,7 +740,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
         // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
+        // max(total_spent - state_spent - refunded, floor).
         //
         // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
         // cumulative_tx_gas_used (total_spent - refunded), matching the original
@@ -793,25 +772,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         &mut self,
         gas_limit: u64,
     ) -> Result<(), BlockExecutionError> {
-        if !self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            return self.inner.validate_transaction_gas_limit(gas_limit);
-        }
-        let available = self
-            .evm()
-            .block()
-            .gas_limit
-            .saturating_to::<u64>()
-            .saturating_sub(self.block_gas_used);
-        if gas_limit.min(self.evm().version().tx_gas_limit_cap) > available {
-            return Err(
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                    transaction_gas_limit: gas_limit,
-                    block_available_gas: available,
-                }
-                .into(),
-            );
-        }
-        Ok(())
+        self.inner.validate_transaction_gas_limit(gas_limit)
     }
 
     fn convert_block_access_list(
