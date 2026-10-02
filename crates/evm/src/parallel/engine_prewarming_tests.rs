@@ -725,3 +725,112 @@ fn committed_engine_prefix_preserves_parent_relative_expiring_offsets() {
         U256::from(parent_ptr),
     );
 }
+
+#[test]
+fn typed_state_executors_preserve_reused_outputs_and_bal_builder() {
+    use revm::{database::State, state::bal::Bal};
+
+    let env = env(TempoHardfork::T0);
+    let parent = contract(&[0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0]);
+    let recovered = (0..3).map(legacy_transaction).collect::<Vec<_>>();
+    let transactions = recovered
+        .iter()
+        .map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()))
+        .collect::<Vec<_>>();
+    let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+        .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+    let context = block_context();
+    for short_borrow in [false, true] {
+        for build_bal in [false, true] {
+            let (factory, _) = factory(&env, &transactions);
+            let mut expected_state = State::builder().with_database(parent.clone()).build();
+            let mut actual_state = State::builder().with_database(parent.clone()).build();
+            if build_bal {
+                expected_state.bal_state.bal_builder = Some(Bal::new());
+                actual_state.bal_state.bal_builder = Some(Bal::new());
+            }
+            // Both typed hooks must preserve generic executor semantics. The
+            // context and config outlive these successive State borrows.
+            let evm = factory.create_evm(&mut actual_state, env.clone());
+            let mut actual = if short_borrow {
+                reth_evm::ConfigureEvm::create_executor_with_state(&config, evm, context.clone())
+            } else {
+                reth_evm::ConfigureEvm::create_executor(&config, evm, context.clone())
+            };
+            let mut expected = BlockExecutorFactory::create_executor(
+                &config,
+                TempoEvm::new(&mut expected_state, env.clone()),
+                context.clone(),
+            );
+            let mut worker = factory.create_evm(parent.clone(), relaxed(&env));
+            for (index, tx) in recovered.iter().enumerate() {
+                worker.transact_raw(transactions[index].clone()).unwrap();
+                actual.evm_mut().db_mut().bump_bal_index();
+                expected.evm_mut().db_mut().bump_bal_index();
+                let expected_output = expected.execute_transaction_without_commit(tx).unwrap();
+                let actual_output = actual.execute_transaction_without_commit(tx).unwrap();
+                assert_eq!(actual_output.result(), expected_output.result());
+                actual.commit_transaction(actual_output);
+                expected.commit_transaction(expected_output);
+            }
+            assert_eq!(actual.evm().execution_stats().reused, 3);
+            assert_eq!(actual.evm().execution_stats().conflicts, 0);
+            assert_eq!(actual.receipts(), expected.receipts());
+            assert_eq!(actual.evm().db().cache, expected.evm().db().cache);
+            assert_eq!(
+                actual.evm().db().bal_state.bal_builder,
+                expected.evm().db().bal_state.bal_builder,
+                "read validation must preserve the complete generated BAL"
+            );
+        }
+    }
+}
+
+#[test]
+fn typed_state_executors_honor_bal_attached_after_construction() {
+    use revm::{database::State, state::bal::Bal};
+
+    let env = env(TempoHardfork::T0);
+    let parent = contract(&[0x60, 0, 0x54, 0]);
+    let tx = legacy_transaction(0);
+    let tx_env = TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer());
+    let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+        .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+    for short_borrow in [false, true] {
+        let mut actual_state = State::builder().with_database(parent.clone()).build();
+        let mut expected_state = State::builder().with_database(parent.clone()).build();
+        for state in [&mut actual_state, &mut expected_state] {
+            state.basic(address(0)).unwrap();
+            state.basic(address(900)).unwrap();
+            state.storage(address(900), U256::ZERO).unwrap();
+        }
+        let evm = TempoEvm::new(&mut actual_state, env.clone());
+        let mut actual = if short_borrow {
+            reth_evm::ConfigureEvm::create_executor_with_state(&config, evm, block_context())
+        } else {
+            reth_evm::ConfigureEvm::create_executor(&config, evm, block_context())
+        };
+        let mut expected = BlockExecutorFactory::create_executor(
+            &config,
+            TempoEvm::new(&mut expected_state, env.clone()),
+            block_context(),
+        );
+        let candidate = crate::parallel::PrewarmingExecutor::new(parent.clone(), env.clone())
+            .execute(tx_env.clone(), None)
+            .unwrap();
+        actual.evm_mut().set_preexecuted_transaction(candidate);
+        for state in [actual.evm_mut().db_mut(), expected.evm_mut().db_mut()] {
+            state.set_bal(Some(Arc::new(Bal::new())));
+            state.bump_bal_index();
+        }
+        // An empty received BAL cannot be bypassed by values already warmed in
+        // State, even when the BAL was attached after installing the validator.
+        let actual_error = actual.execute_transaction_without_commit(&tx).unwrap_err();
+        let expected_error = expected
+            .execute_transaction_without_commit(&tx)
+            .unwrap_err();
+        assert_eq!(actual_error.to_string(), expected_error.to_string());
+        assert_eq!(actual.evm().execution_stats().reused, 0);
+        assert!(actual.receipts().is_empty());
+    }
+}

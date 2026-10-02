@@ -30,16 +30,20 @@ use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
-    self, EvmEnv,
-    block::BlockExecutorFactory,
+    self, Database, EvmEnv,
+    block::{BlockExecutorFactory, BlockExecutorFor},
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
 use alloy_primitives::Address;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor, SenderRecoveryCache, block::StateDB};
+use reth_evm::{
+    self, BlockExecutorForEvm, ConfigureEvm, EvmEnvFor, EvmFor, InspectorFor, SenderRecoveryCache,
+    block::StateDB,
+};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
+use reth_revm::State;
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 use crate::evm::TempoEvm;
@@ -194,6 +198,32 @@ impl ConfigureEvm for TempoEvmConfig {
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
+    }
+
+    fn create_executor<'a, DB, I>(
+        &'a self,
+        mut evm: EvmFor<Self, &'a mut State<DB>, I>,
+        ctx: <Self::BlockExecutorFactory as BlockExecutorFactory>::ExecutionCtx<'a>,
+    ) -> BlockExecutorForEvm<'a, Self, DB, I>
+    where
+        DB: Database,
+        I: InspectorFor<Self, &'a mut State<DB>> + 'a,
+    {
+        evm.enable_state_cache_validation();
+        BlockExecutorFactory::create_executor(self, evm, ctx)
+    }
+
+    fn create_executor_with_state<'a, 'db, DB, I>(
+        &'a self,
+        mut evm: EvmFor<Self, &'db mut State<DB>, I>,
+        ctx: <Self::BlockExecutorFactory as BlockExecutorFactory>::ExecutionCtx<'a>,
+    ) -> BlockExecutorFor<'a, Self::BlockExecutorFactory, &'db mut State<DB>, I>
+    where
+        DB: Database,
+        I: InspectorFor<Self, &'db mut State<DB>>,
+    {
+        evm.enable_state_cache_validation();
+        BlockExecutorFactory::create_executor(self, evm, ctx)
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
