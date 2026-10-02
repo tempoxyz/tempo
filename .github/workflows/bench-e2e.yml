@@ -128,7 +128,7 @@ on:
         description: Skip Slack notification (manual runs otherwise notify on wins).
         type: boolean
         required: true
-        default: true
+        default: false
       bench-args:
         description: Extra bench args.
         type: string
