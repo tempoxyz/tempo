@@ -600,6 +600,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             self.evm().config_spec_id().is_t15() && original.is_native_portal_deposit_candidate();
         let native_settlement_candidate = self.evm().config_spec_id().is_t15()
             && original.is_native_portal_settlement_candidate();
+        let native_withdrawal_candidate = self.evm().config_spec_id().is_t15()
+            && original.is_native_portal_withdrawal_candidate();
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
@@ -614,7 +616,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     .ext()
                     .native_call_context
                     .verified_portal_deposit())
-            || (native_settlement_candidate
+            || ((native_settlement_candidate || native_withdrawal_candidate)
                 && self
                     .evm()
                     .ext()

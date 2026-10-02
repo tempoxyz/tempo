@@ -572,6 +572,10 @@ where
                         .transaction
                         .inner()
                         .is_native_portal_settlement_candidate()
+                    || tx
+                        .transaction
+                        .inner()
+                        .is_native_portal_withdrawal_candidate()
             } else if hardfork.is_t5() {
                 tx.transaction.is_payment()
             } else {

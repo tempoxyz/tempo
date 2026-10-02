@@ -312,6 +312,89 @@ impl NativePortalExecution<'_> {
             self.dependency_limits,
         )
     }
+
+    /// Executes bounded FIFO withdrawals through the canonical implementation.
+    /// The delegate frame charges transfer, messenger, callback, and bounce work.
+    pub fn process_withdrawals<T: EvmTypes<BlockEnvExt = TempoBlockExt>>(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> PrecompileResult
+    where
+        T::EvmExt: NativeCallExt,
+    {
+        if message.destination != message.code_address {
+            return Err(PrecompileError::Revert(
+                DelegateCallNotAllowed {}.abi_encode().into(),
+            ));
+        }
+        if !message.value.is_zero() {
+            return Err(PrecompileError::Revert(Bytes::new()));
+        }
+        if message.input.len() > 65_536 {
+            return Err(PrecompileHalt::OutOfGas.into());
+        }
+        let prepared = self.with_storage(evm, message, gas, |portal| {
+            portal
+                .storage
+                .deduct_gas(input_cost(self.spec, message.input.len())?)?;
+            if portal.storage.is_static() {
+                return Err(TempoPrecompileError::StaticCallNotAllowed);
+            }
+            if !ZoneFactory::new().is_zone_portal(message.destination)?
+                || !portal.initialized.read()?
+                || message.code.original_byte_slice() != ZONE_PORTAL_PROXY_RUNTIME
+            {
+                return Err(ZonePortalError::PortalNotRegistered(
+                    ZonePortal::PortalNotRegistered {},
+                )
+                .into());
+            }
+            if portal.role[message.caller].read()? != 1 {
+                return Err(ZonePortalError::NotSequencer(ZonePortal::NotSequencer {}).into());
+            }
+            let call = ZonePortal::processWithdrawalsCall::abi_decode_with_config(
+                &message.input,
+                crate::dispatch::abi_decoder_config_for_spec(self.spec),
+            )
+            .map_err(|_| TempoPrecompileError::OutOfGas)?;
+            if call.abi_encode().as_slice() != message.input.as_ref()
+                || call.withdrawals.len() > 16
+                || call.withdrawals.iter().any(|withdrawal| {
+                    withdrawal.callbackData.len() > 4_096
+                        || withdrawal.encryptedSender.len() > 256
+                        || withdrawal.gasLimit > 8_000_000
+                })
+            {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+            Ok(())
+        });
+        if let Err(error) = prepared {
+            return error.into_precompile_result();
+        }
+        verify_native_code(
+            evm,
+            gas,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            *PORTAL_IMPLEMENTATION_HASH,
+        )?;
+        if message.depth == 0 {
+            evm.ext()
+                .native_call_context()
+                .record_verified_portal_settlement();
+        }
+        native_delegate_call(
+            evm,
+            message,
+            gas,
+            self.budget,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            message.input.clone(),
+            self.dependency_limits,
+        )
+    }
 }
 
 #[cfg(test)]

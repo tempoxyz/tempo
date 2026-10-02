@@ -234,6 +234,18 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
                     .starts_with(&ZonePortal::submitBatch_1Call::SELECTOR))
     }
 
+    fn is_native_portal_withdrawal(&self, message: &Message<T>) -> bool {
+        use tempo_contracts::precompiles::zone_portal::ZonePortal;
+
+        self.spec.is_t15()
+            && message.kind == MessageKind::Call
+            && message.destination == message.code_address
+            && message.code_address.zone_portal_id().is_some()
+            && message
+                .input
+                .starts_with(&ZonePortal::processWithdrawalsCall::SELECTOR)
+    }
+
     fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
@@ -304,6 +316,7 @@ where
     fn contains_message(&self, message: &Message<T>) -> bool {
         self.is_native_portal_deposit(message)
             || self.is_native_portal_settlement(message)
+            || self.is_native_portal_withdrawal(message)
             || self.contains(&message.code_address)
     }
 
@@ -347,6 +360,24 @@ where
                     },
                 }
                 .submit_batch(evm, message, gas),
+            );
+        }
+        if self.is_native_portal_withdrawal(message) {
+            let budget = evm.ext().native_call_context().budget(8, 16_000_000);
+            return Some(
+                NativePortalExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                    dependency_limits: NativeCallLimits {
+                        execution_gas: 12_000_000,
+                        state_gas: 4_000_000,
+                        input_bytes: 65_536,
+                        output_bytes: 1_024,
+                    },
+                }
+                .process_withdrawals(evm, message, gas),
             );
         }
         if let Some(result) = self.base.execute(evm, message, gas) {

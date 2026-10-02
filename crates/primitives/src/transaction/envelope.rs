@@ -379,6 +379,43 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// T15 candidate for bounded ZonePortal FIFO withdrawal processing.
+    /// Runtime checks portal identity and sequencer authority before admission.
+    pub fn is_native_portal_withdrawal_candidate(&self) -> bool {
+        if !self.value().is_zero() {
+            return false;
+        }
+        match self {
+            Self::Legacy(tx) => is_canonical_portal_withdrawal(tx.tx().to.to(), &tx.tx().input),
+            Self::Eip2930(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_withdrawal(tx.to.to(), &tx.input)
+            }
+            Self::Eip1559(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty() && is_canonical_portal_withdrawal(tx.to.to(), &tx.input)
+            }
+            Self::Eip7702(tx) => {
+                let tx = tx.tx();
+                tx.access_list.is_empty()
+                    && tx.authorization_list.is_empty()
+                    && is_canonical_portal_withdrawal(Some(&tx.to), &tx.input)
+            }
+            Self::AA(tx) => {
+                let tx = tx.tx();
+                tx.calls.len() == 1
+                    && tx.access_list.is_empty()
+                    && tx.tempo_authorization_list.is_empty()
+                    && tx
+                        .key_authorization
+                        .as_ref()
+                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                    && tx.calls[0].value.is_zero()
+                    && is_canonical_portal_withdrawal(tx.calls[0].to.to(), &tx.calls[0].input)
+            }
+        }
+    }
+
     /// Returns whether this transaction uses the reserved subblock nonce prefix.
     pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
         self.as_aa()
@@ -679,6 +716,21 @@ fn is_canonical_portal_settlement(to: Option<&Address>, input: &[u8]) -> bool {
     false
 }
 
+fn is_canonical_portal_withdrawal(to: Option<&Address>, input: &[u8]) -> bool {
+    if to.is_none_or(|to| to.zone_portal_id().is_none()) || input.len() > 65_536 {
+        return false;
+    }
+    ZonePortal::processWithdrawalsCall::abi_decode(input).is_ok_and(|call| {
+        call.abi_encode().as_slice() == input
+            && call.withdrawals.len() <= 16
+            && call.withdrawals.iter().all(|withdrawal| {
+                withdrawal.callbackData.len() <= 4_096
+                    && withdrawal.encryptedSender.len() <= 256
+                    && withdrawal.gasLimit <= 8_000_000
+            })
+    })
+}
+
 /// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
 #[inline]
 fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
@@ -908,6 +960,32 @@ mod tests {
         assert!(
             !payment_envelopes_to(Address::with_last_byte(1), input)[2]
                 .is_native_portal_settlement_candidate()
+        );
+    }
+
+    #[test]
+    fn t15_withdrawal_candidate_requires_canonical_bounded_calldata() {
+        let portal = Address::from([
+            0x5a, 0xd0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
+        let input: Bytes = ZonePortal::processWithdrawalsCall {
+            withdrawals: vec![],
+            remainingQueue: B256::ZERO,
+        }
+        .abi_encode()
+        .into();
+        for envelope in payment_envelopes_to(portal, input.clone()) {
+            assert!(envelope.is_native_portal_withdrawal_candidate());
+        }
+        let mut trailing = input.to_vec();
+        trailing.push(0);
+        assert!(
+            !payment_envelopes_to(portal, trailing.into())[2]
+                .is_native_portal_withdrawal_candidate()
+        );
+        assert!(
+            !payment_envelopes_to(Address::with_last_byte(1), input)[2]
+                .is_native_portal_withdrawal_candidate()
         );
     }
 
