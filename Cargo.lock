@@ -14345,6 +14345,7 @@ dependencies = [
  "proptest",
  "rand 0.8.8",
  "scoped-tls",
+ "secp256k1 0.30.0",
  "serde",
  "serde_json",
  "sha2 0.10.9",

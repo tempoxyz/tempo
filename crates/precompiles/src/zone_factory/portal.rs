@@ -4,6 +4,9 @@
 //! REVM precompile interface cannot make the external calls required by ZonePortal. Calls to a
 //! portal continue to execute the ERC-1167 proxy and the canonical Solidity implementation.
 
+pub mod deposit;
+pub mod execution;
+
 use crate::{
     error::Result,
     storage::{Handler, Mapping, Slot},

@@ -223,6 +223,8 @@ macro_rules! zone_portal_abi {
                 error InvalidProof();
                 error InvalidTempoBlockNumber();
                 error NotFactory();
+                /// Native dispatch requires a registered, initialized canonical portal.
+                error PortalNotRegistered();
                 error NotSelf();
                 error AlreadyInitialized();
                 error MustDelegateCall();
