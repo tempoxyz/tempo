@@ -13,8 +13,12 @@ use tempo_node::node::TempoNode;
 /// genesis. The first block becomes the engine's pending block. The second
 /// block is neither canonical nor pending, so the provider has no state for
 /// it, but [`tempo_node::ExecutedState`] reads it from the engine.
+#[test_case::test_case(0; "sequential")]
+#[test_case::test_case(4; "parallel")]
 #[tokio::test(flavor = "multi_thread")]
-async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()> {
+async fn executed_state_reads_blocks_that_are_not_canonical(
+    execution_threads: usize,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut producer = crate::utils::TestNodeBuilder::new()
@@ -46,7 +50,7 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
         "the transfer must be part of the first block",
     );
 
-    let tempo_node = TempoNode::default();
+    let tempo_node = TempoNode::default().with_execution_threads(execution_threads, 32);
     let executed_state = tempo_node.executed_state();
     let runtime = Runtime::test();
     let mut config = NodeConfig::new(chain_spec).with_unused_ports();
@@ -57,6 +61,14 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
         .launch()
         .await?;
     let observer = &observer_handle.node;
+    let workers = observer.evm_config.speculative_executor.as_ref();
+    assert_eq!(workers.is_some(), execution_threads > 0);
+    assert_eq!(
+        workers
+            .map(|pool| pool.scheduled_transactions())
+            .unwrap_or(0),
+        0
+    );
 
     for payload in [first, second] {
         let status = observer
@@ -65,6 +77,13 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
             .new_payload(payload.into())
             .await?;
         assert!(status.is_valid(), "unexpected payload status: {status:?}");
+    }
+
+    // This observer has no builder or pool transactions. Only Engine API
+    // validation can dispatch work; canonical root checks alone would also
+    // pass if precompile-cache installation silently disabled the scheduler.
+    if let Some(workers) = workers {
+        assert!(workers.scheduled_transactions() > 0);
     }
 
     assert!(

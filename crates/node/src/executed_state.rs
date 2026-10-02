@@ -105,7 +105,7 @@ impl TempoEngineTreeValidatorBuilder {
 
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder
 where
-    Node: FullNodeComponents<Types = TempoNode>,
+    Node: FullNodeComponents<Types = TempoNode, Evm = tempo_evm::TempoEvmConfig>,
     BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<Node>,
 {
     type EngineValidator =
@@ -120,6 +120,16 @@ where
         overlay_manager: OverlayManager<PrimitivesTy<Node::Types>>,
     ) -> eyre::Result<Self::EngineValidator> {
         self.executed_state.set(overlay_manager.clone());
+        // Reth installs cached precompiles through `Evm::precompiles_mut`, which
+        // correctly disables speculation for potentially custom precompiles.
+        // Use the standard precompiles when workers are enabled so Engine API
+        // validation runs the same scheduler as block building. Their outputs
+        // and gas are unchanged; only the engine's optional result cache is off.
+        let tree_config = if ctx.node.evm_config().speculative_executor.is_some() {
+            tree_config.without_precompile_cache(true)
+        } else {
+            tree_config
+        };
         self.inner
             .build_tree_validator(ctx, tree_config, overlay_manager)
             .await

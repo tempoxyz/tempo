@@ -1874,6 +1874,7 @@ async fn test_expiring_nonce_transfer_batch(execution_threads: usize) -> eyre::R
     use std::time::Duration;
     use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots};
 
+    reth_tracing::init_test_tracing();
     let setup = TestNodeBuilder::new()
         .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
         .with_execution_threads(execution_threads)

@@ -25,7 +25,7 @@ use reth_revm::{
 use std::{
     sync::{
         Arc, RwLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     time::Duration,
@@ -63,6 +63,7 @@ pub struct SpeculativeExecutor {
     chained_workers: bool,
     state_forwarding: bool,
     nonce_prediction: bool,
+    scheduled_transactions: Arc<AtomicU64>,
 }
 
 impl SpeculativeExecutor {
@@ -91,6 +92,7 @@ impl SpeculativeExecutor {
             chained_workers: true,
             state_forwarding: false,
             nonce_prediction: true,
+            scheduled_transactions: Arc::default(),
         })
     }
 
@@ -156,6 +158,13 @@ impl SpeculativeExecutor {
         self.batch_size
     }
 
+    /// Candidates dispatched across all EVMs sharing this pool, including work
+    /// later cancelled or replayed. Useful for checking that an integration is
+    /// actually exercising workers rather than falling back to sequential EVMs.
+    pub fn scheduled_transactions(&self) -> u64 {
+        self.scheduled_transactions.load(Ordering::Relaxed)
+    }
+
     /// Starts a bounded batch without committing any writes to `db`.
     ///
     /// Each input has its own block context and fee recipient.
@@ -183,6 +192,8 @@ impl SpeculativeExecutor {
             });
         }
         let count = inputs.len();
+        self.scheduled_transactions
+            .fetch_add(count as u64, Ordering::Relaxed);
         let mut nonce_ptrs = vec![None; count];
         if self.nonce_prediction {
             let mut next_ptr = None;
