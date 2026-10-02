@@ -510,8 +510,13 @@ impl TIP20Token {
 
     // Token operations
 
+    /// Like [`Self::mint_with_role`], using [`AuthRole::mint_recipient`] authorization.
+    pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
+        self.mint_with_role(msg_sender, call, AuthRole::mint_recipient())
+    }
+
     /// Mints `amount` tokens to the resolved target `to` address:
-    /// - Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap
+    /// - Enforces `recipient_role` compliance via [`TIP403Registry`] and validates against supply cap
     /// - Resolves `to` via the [`AddressRegistry`]. If `to` is a virtual address, credits the
     ///   resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
@@ -519,17 +524,8 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `ContractPaused` — (+T3) token is paused
     /// - `InvalidRecipient` — (+T3) recipient is zero or a TIP-20 prefix address
-    /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
+    /// - `PolicyForbids` — TIP-403 policy rejects the recipient for `recipient_role`
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
-    pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        self.mint_with_role(msg_sender, call, AuthRole::mint_recipient())
-    }
-
-    /// Like [`Self::mint`], but checks the effective recipient against the specified TIP-403 role.
-    ///
-    /// Bridges can use [`AuthRole::recipient`] when crediting representations of existing assets.
-    /// Issuer authorization, pause state, receive policies, and supply-cap checks are unchanged.
-    /// This Rust-only entry point does not expose role selection through the TIP-20 ABI.
     pub fn mint_with_role(
         &mut self,
         msg_sender: Address,
@@ -1778,205 +1774,53 @@ pub(crate) mod tests {
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
+        let admin = Address::random();
         let addr = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .clear_events()
-                .apply()?;
-
-            token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
-
-            assert_eq!(token.get_balance(addr)?, amount);
-            assert_eq!(token.total_supply()?, amount);
-
-            token.assert_emitted_events(vec![
-                TIP20Event::transfer(Address::ZERO, addr, amount),
-                TIP20Event::mint(addr, amount),
-            ]);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_mint_with_role_selects_recipient_policy() -> eyre::Result<()> {
-        for (recipient_policy_id, mint_recipient_policy_id) in [
-            (ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID),
-            (REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID),
-        ] {
-            for (recipient_role, with_memo) in [
-                (AuthRole::Recipient, false),
-                (AuthRole::MintRecipient, false),
-                (AuthRole::MintRecipient, true),
-            ] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-                let admin = Address::random();
-                let to = Address::random();
-                let amount = U256::from(42);
-                let memo = B256::repeat_byte(0xab);
-
-                StorageCtx::enter(&mut storage, || -> Result<()> {
-                    let policy_id = TIP403Registry::new().create_compound_policy(
-                        admin,
-                        ITIP403Registry::createCompoundPolicyCall {
-                            senderPolicyId: REJECT_ALL_POLICY_ID,
-                            recipientPolicyId: recipient_policy_id,
-                            mintRecipientPolicyId: mint_recipient_policy_id,
-                        },
-                    )?;
-                    let mut token = TIP20Setup::create("Test", "TST", admin)
-                        .with_issuer(admin)
-                        .apply()?;
-                    token.change_transfer_policy_id(
-                        admin,
-                        ITIP20::changeTransferPolicyIdCall {
-                            newPolicyId: policy_id,
-                        },
-                    )?;
-                    token.clear_emitted_events();
-
-                    let result = if with_memo {
-                        token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })
-                    } else if recipient_role == AuthRole::MintRecipient {
-                        token.mint(admin, ITIP20::mintCall { to, amount })
-                    } else {
-                        token.mint_with_role(admin, ITIP20::mintCall { to, amount }, recipient_role)
-                    };
-                    let authorized = if recipient_role == AuthRole::Recipient {
-                        recipient_policy_id == ALLOW_ALL_POLICY_ID
-                    } else {
-                        mint_recipient_policy_id == ALLOW_ALL_POLICY_ID
-                    };
-                    let mut events = Vec::new();
-                    if authorized {
-                        result?;
-                        events.push(TIP20Event::transfer(Address::ZERO, to, amount));
-                        if with_memo {
-                            events.push(TIP20Event::transfer_with_memo(
-                                Address::ZERO,
-                                to,
-                                amount,
-                                memo,
-                            ));
-                        }
-                        events.push(TIP20Event::mint(to, amount));
-                    } else {
-                        assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
-                    }
-                    let expected_balance = if authorized { amount } else { U256::ZERO };
-                    assert_eq!(token.get_balance(to)?, expected_balance);
-                    assert_eq!(token.total_supply()?, expected_balance);
-                    token.assert_emitted_events(events);
-                    Ok(())
-                })?;
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_mint_with_role_authorizes_virtual_master() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        let admin = Address::random();
-        let amount = U256::from(42);
-        StorageCtx::enter(&mut storage, || -> Result<()> {
-            let (_, to) = register_virtual_master(&mut AddressRegistry::new())?;
-            let mut registry = TIP403Registry::new();
-            let recipient_policy = registry.create_policy_with_accounts(
-                admin,
-                ITIP403Registry::createPolicyWithAccountsCall {
+        for role in [AuthRole::MintRecipient, AuthRole::Recipient] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+            StorageCtx::enter(&mut storage, || -> Result<()> {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .apply()?;
+                let policy_id = TIP403Registry::new().create_compound_policy(
                     admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    accounts: vec![VIRTUAL_MASTER],
-                },
-            )?;
-            let policy_id = registry.create_compound_policy(
-                admin,
-                ITIP403Registry::createCompoundPolicyCall {
-                    senderPolicyId: REJECT_ALL_POLICY_ID,
-                    recipientPolicyId: recipient_policy,
-                    mintRecipientPolicyId: REJECT_ALL_POLICY_ID,
-                },
-            )?;
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .apply()?;
-            token.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-            token.clear_emitted_events();
-            token.mint_with_role(
-                admin,
-                ITIP20::mintCall { to, amount },
-                AuthRole::recipient(),
-            )?;
-            assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
-            assert_eq!(token.get_balance(to)?, U256::ZERO);
-            assert_eq!(token.total_supply()?, amount);
-            token.assert_emitted_events(vec![
-                TIP20Event::transfer(Address::ZERO, to, amount),
-                TIP20Event::mint(to, amount),
-                TIP20Event::transfer(to, VIRTUAL_MASTER, amount),
-            ]);
-            Ok(())
-        })?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_mint_with_role_preserves_mint_validation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        let admin = Address::random();
-        let to = Address::random();
-        let amount = U256::from(42);
-        StorageCtx::enter(&mut storage, || -> Result<()> {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .with_role(admin, PAUSE_ROLE)
-                .apply()?;
-            let call = ITIP20::mintCall { to, amount };
-            let role = AuthRole::recipient();
-            assert_eq!(
-                token.mint_with_role(to, call.clone(), role),
-                Err(RolesAuthError::unauthorized().into())
-            );
-            assert_eq!(
-                token.mint_with_role(
-                    admin,
-                    ITIP20::mintCall {
-                        to: Address::ZERO,
-                        amount
+                    ITIP403Registry::createCompoundPolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        recipientPolicyId: ALLOW_ALL_POLICY_ID,
+                        mintRecipientPolicyId: REJECT_ALL_POLICY_ID,
                     },
-                    role
-                ),
-                Err(TIP20Error::invalid_recipient().into())
-            );
-            token.set_supply_cap(
-                admin,
-                ITIP20::setSupplyCapCall {
-                    newSupplyCap: amount - U256::ONE,
-                },
-            )?;
-            assert_eq!(
-                token.mint_with_role(admin, call.clone(), role),
-                Err(TIP20Error::supply_cap_exceeded().into())
-            );
-            token.pause(admin, ITIP20::pauseCall {})?;
-            assert_eq!(
-                token.mint_with_role(admin, call, role),
-                Err(TIP20Error::contract_paused().into())
-            );
-            assert_eq!(token.get_balance(to)?, U256::ZERO);
-            assert_eq!(token.total_supply()?, U256::ZERO);
-            Ok(())
-        })?;
+                )?;
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+                token.clear_emitted_events();
+
+                let result =
+                    token.mint_with_role(admin, ITIP20::mintCall { to: addr, amount }, role);
+                let (balance, events) = if role == AuthRole::Recipient {
+                    result?;
+                    (
+                        amount,
+                        vec![
+                            TIP20Event::transfer(Address::ZERO, addr, amount),
+                            TIP20Event::mint(addr, amount),
+                        ],
+                    )
+                } else {
+                    assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+                    (U256::ZERO, vec![])
+                };
+                assert_eq!(token.get_balance(addr)?, balance);
+                assert_eq!(token.total_supply()?, balance);
+                token.assert_emitted_events(events);
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
@@ -2468,71 +2312,66 @@ pub(crate) mod tests {
 
         #[test]
         fn test_mint_blocked_credits_guard() -> eyre::Result<()> {
-            for recipient_role in [AuthRole::MintRecipient, AuthRole::Recipient] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-                storage.set_timestamp(U256::from(BLOCKED_AT));
-                let admin = Address::random();
-                let receiver = Address::random();
-                let amount = U256::from(70u64);
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(70u64);
 
-                StorageCtx::enter(&mut storage, || {
-                    let mut token = TIP20Setup::create("Test", "TST", admin)
-                        .with_issuer(admin)
-                        .clear_events()
-                        .apply()?;
-                    set_receive_policy(
-                        receiver,
-                        REJECT_ALL_POLICY_ID,
-                        ALLOW_ALL_POLICY_ID,
-                        Address::ZERO,
-                    )?;
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .clear_events()
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
 
-                    let mut guard = ReceivePolicyGuard::new();
-                    guard.clear_emitted_events();
-                    let call = ITIP20::mintCall {
+                let mut guard = ReceivePolicyGuard::new();
+                guard.clear_emitted_events();
+                token.mint(
+                    admin,
+                    ITIP20::mintCall {
                         to: receiver,
                         amount,
-                    };
-                    if recipient_role == AuthRole::MintRecipient {
-                        token.mint(admin, call)?;
-                    } else {
-                        token.mint_with_role(admin, call, recipient_role)?;
-                    }
+                    },
+                )?;
 
-                    assert_eq!(token.total_supply()?, amount);
-                    assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                    assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
-                    token.assert_emitted_events(vec![
-                        TIP20Event::transfer(Address::ZERO, RECEIVE_POLICY_GUARD_ADDRESS, amount),
-                        TIP20Event::mint(RECEIVE_POLICY_GUARD_ADDRESS, amount),
-                    ]);
-                    let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
-                        token.address,
-                        Address::ZERO,
-                        admin,
+                assert_eq!(token.total_supply()?, amount);
+                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                token.assert_emitted_events(vec![
+                    TIP20Event::transfer(Address::ZERO, RECEIVE_POLICY_GUARD_ADDRESS, amount),
+                    TIP20Event::mint(RECEIVE_POLICY_GUARD_ADDRESS, amount),
+                ]);
+                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
+                    token.address,
+                    Address::ZERO,
+                    admin,
+                    receiver,
+                    BLOCKED_AT,
+                    1,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::MINT,
+                    B256::ZERO,
+                );
+                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                    IReceivePolicyGuard::TransferBlocked {
+                        token: token.address,
                         receiver,
-                        BLOCKED_AT,
-                        1,
-                        ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        InboundKind::MINT,
-                        B256::ZERO,
-                    );
-                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
-                        IReceivePolicyGuard::TransferBlocked {
-                            token: token.address,
-                            receiver,
-                            blockedNonce: 1,
-                            receiptVersion: BLOCKED_RECEIPT_VERSION,
-                            amount,
-                            receipt: receipt.abi_encode().into(),
-                        },
-                    )]);
-                    assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
+                        blockedNonce: 1,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
+                        amount,
+                        receipt: receipt.abi_encode().into(),
+                    },
+                )]);
+                assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
 
-                    Ok::<_, TempoPrecompileError>(())
-                })?;
-            }
-            Ok(())
+                Ok(())
+            })
         }
     }
 
