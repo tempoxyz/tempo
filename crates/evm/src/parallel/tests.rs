@@ -1471,6 +1471,76 @@ fn sponsored_expiring_nonces_preserve_ring_updates_and_replay_rejection() {
 }
 
 #[test]
+fn expiring_nonce_predictions_preserve_order_and_rejections() {
+    use alloy_evm::FromRecoveredTx;
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::ITIP20};
+    use tempo_primitives::{TempoSignature, TempoTransaction, transaction::Call};
+    let mut db = funded_tip20_db(16);
+    contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+    contract(&mut db, NONCE_PRECOMPILE_ADDRESS, &[0]);
+    let txs = (0..16)
+        .map(|i| {
+            let signed = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: 1,
+                nonce_key: U256::MAX,
+                valid_before: std::num::NonZeroU64::new(25),
+                calls: vec![Call {
+                    to: PATH_USD_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: ITIP20::transferCall {
+                        to: address(100 + i),
+                        amount: U256::from(17),
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::default());
+            TempoTxEnv::from_recovered_tx(&signed, address(i))
+        })
+        .collect::<Vec<_>>();
+    for spec in FEE_SPECS
+        .into_iter()
+        .chain(CURRENT_SPECS)
+        .filter(|spec| spec.is_t1())
+    {
+        let stats = differential_mode(db.clone(), &txs, 4, 16, spec, false, (false, true));
+        assert_eq!(stats.reused, 16, "{spec:?}: {stats:?}");
+        // An invalid predecessor and a duplicate invalidate cursor predictions.
+        // All later transactions must still produce the canonical outcomes.
+        let mut rejected = txs.clone();
+        rejected[0].tempo_tx_env.as_mut().unwrap().valid_before = Some(0);
+        rejected.insert(8, rejected[7].clone());
+        differential_at_spec(db.clone(), &rejected, 4, 32, spec);
+    }
+
+    // A builder may omit or reorder preview candidates after validation. Those
+    // predictions must not change which transactions succeed or their state.
+    let (_, mut env) = test_evm_with_basefee(TestDB::default(), 0).finish();
+    env.cfg_env = revm::context::CfgEnv::new_with_spec_and_gas_params(
+        TempoHardfork::T14,
+        tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14),
+    );
+    let mut canonical = TempoEvm::new(db.clone(), env.clone());
+    let mut parallel = TempoEvm::new(db, env);
+    parallel.set_speculative_executor(Some(SpeculativeExecutor::new(4, 16).unwrap()));
+    parallel.prepare_transactions(txs.iter().cloned().map(|tx| (tx, Address::ZERO)));
+    for index in [2, 1, 4, 3, 8, 15] {
+        let expected = canonical.transact_raw(txs[index].clone()).unwrap();
+        let actual = parallel.transact_raw(txs[index].clone()).unwrap();
+        assert_eq!(actual, expected);
+        canonical.db_mut().commit(expected.state);
+        parallel.db_mut().commit(actual.state);
+    }
+    assert_eq!(root(parallel.db()), root(canonical.db()));
+    assert!(parallel.execution_stats().conflicts > 0);
+}
+
+#[test]
 fn expiring_nonce_ring_wrap_rechecks_full_and_expired_entries() {
     use alloy_evm::FromRecoveredTx;
     use revm::Database as _;
@@ -1505,7 +1575,11 @@ fn expiring_nonce_ring_wrap_rechecks_full_and_expired_entries() {
         })
         .collect::<Vec<_>>();
 
-    for spec in FEE_SPECS.into_iter().filter(|spec| spec.is_t1()) {
+    for spec in FEE_SPECS
+        .into_iter()
+        .chain(CURRENT_SPECS)
+        .filter(|spec| spec.is_t1())
+    {
         for expired in [false, true] {
             let mut db = funded_tip20_db(3);
             contract(&mut db, target, &[0]);
@@ -1534,9 +1608,8 @@ fn expiring_nonce_ring_wrap_rechecks_full_and_expired_entries() {
                     .unwrap();
             }
 
-            // The first transaction wraps the pointer to slot zero. A frozen
-            // worker sees the previously empty final slot for every candidate;
-            // ordered replay must check the newly reached entry's expiry.
+            // Prediction crosses the ring boundary. The occupied next slot must
+            // still reject an unexpired entry; later predictions then need replay.
             let mut canonical = TempoEvm::new(
                 db.clone(),
                 EvmEnv {
@@ -1584,8 +1657,16 @@ fn expiring_nonce_ring_wrap_rechecks_full_and_expired_entries() {
             }
 
             let stats = differential_at_spec(db, &txs, 3, 3, spec);
-            assert_eq!(stats.reused, 1, "{spec:?}, expired={expired}: {stats:?}");
-            assert_eq!(stats.conflicts, 2, "{spec:?}, expired={expired}: {stats:?}");
+            assert_eq!(
+                stats.reused,
+                if expired { 3 } else { 1 },
+                "{spec:?}, expired={expired}: {stats:?}"
+            );
+            assert_eq!(
+                stats.conflicts + stats.retries,
+                if expired { 0 } else { 2 },
+                "{spec:?}, expired={expired}: {stats:?}"
+            );
         }
     }
 }
@@ -1814,7 +1895,7 @@ fn body_replay_preserves_precompile_failure() {
 }
 
 #[test]
-fn expiring_aa_bodies_rebase_nonce_ring_and_atomic_reverts() {
+fn expiring_aa_predictions_preserve_nonce_ring_and_atomic_reverts() {
     use alloy_evm::FromRecoveredTx;
     use tempo_primitives::{
         TempoSignature, TempoTransaction,
@@ -1869,9 +1950,10 @@ fn expiring_aa_bodies_rebase_nonce_ring_and_atomic_reverts() {
         TempoHardfork::T4,
     ] {
         let stats = differential_at_spec(db.clone(), &txs, 4, 32, spec);
-        assert_eq!(stats.bodies_reused, 15, "{spec:?}: {stats:?}");
+        assert_eq!(stats.reused, 16, "{spec:?}: {stats:?}");
         assert_eq!(
-            stats.conflicts, 16,
+            stats.conflicts + stats.retries,
+            1,
             "duplicate nonce must still fail at {spec:?}"
         );
     }
@@ -2128,6 +2210,8 @@ fn execution_throughput() {
     let fee_rebasing = std::env::var("TEMPO_BENCH_FEE_REBASING").map_or(true, |value| value != "0");
     let chained = std::env::var("TEMPO_BENCH_CHAINED").map_or(true, |value| value != "0");
     let forwarding = std::env::var("TEMPO_BENCH_FORWARDING").is_ok_and(|value| value != "0");
+    let nonce_prediction =
+        std::env::var("TEMPO_BENCH_NONCE_PREDICTION").map_or(true, |value| value != "0");
     println!(
         "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused\tfees_rebased"
     );
@@ -2143,10 +2227,14 @@ fn execution_throughput() {
                     | "tip20_paid"
                     | "tip20_paid_aa"
                     | "tip20_paid_aa_existing"
+                    | "tip20_paid_aa_expiring"
             ));
             let users = if matches!(
                 workload,
-                "compute_paid_chains" | "tip20_paid_aa" | "tip20_paid_aa_existing"
+                "compute_paid_chains"
+                    | "tip20_paid_aa"
+                    | "tip20_paid_aa_existing"
+                    | "tip20_paid_aa_expiring"
             ) {
                 100
             } else {
@@ -2189,7 +2277,13 @@ fn execution_throughput() {
                             gas_limit: 1_000_000,
                             max_fee_per_gas: 1,
                             max_priority_fee_per_gas: 1,
-                            nonce_key: U256::from(1 + i / users),
+                            nonce_key: if workload == "tip20_paid_aa_expiring" {
+                                U256::MAX
+                            } else {
+                                U256::from(1 + i / users)
+                            },
+                            valid_before: (workload == "tip20_paid_aa_expiring")
+                                .then_some(std::num::NonZeroU64::new(25).unwrap()),
                             calls: vec![Call {
                                 to: PATH_USD_ADDRESS.into(),
                                 value: U256::ZERO,
@@ -2246,7 +2340,8 @@ fn execution_throughput() {
                             .with_streaming(streaming)
                             .with_fee_rebasing(fee_rebasing)
                             .with_chained_workers(chained)
-                            .with_state_forwarding(forwarding),
+                            .with_state_forwarding(forwarding)
+                            .with_nonce_prediction(nonce_prediction),
                     ));
                 }
                 let mut receipts = Vec::with_capacity(txs.len());
@@ -2734,6 +2829,7 @@ fn worker_panic_releases_other_workers_waiting_for_reads() {
     let tx = transaction(0, address(900), 0, &[]);
     let shared = Arc::new(Work {
         inputs: vec![(tx.clone(), env)],
+        nonce_ptrs: vec![None],
         prefetched: HashMap::default(),
         cache: RwLock::default(),
         next: AtomicUsize::new(0),

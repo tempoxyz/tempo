@@ -31,7 +31,14 @@ use std::{
     time::Duration,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::fee_updates::{self, FeeUpdate};
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS,
+    nonce::slots as nonce_slots,
+    storage::{
+        StorageKey,
+        fee_updates::{self, FeeUpdate},
+    },
+};
 use tempo_revm::{
     TempoInvalidTransaction, TempoTxEnv,
     replay::{BodyCache, ReadKey, ReadValue, read},
@@ -55,6 +62,7 @@ pub struct SpeculativeExecutor {
     fee_rebasing: bool,
     chained_workers: bool,
     state_forwarding: bool,
+    nonce_prediction: bool,
 }
 
 impl SpeculativeExecutor {
@@ -82,7 +90,15 @@ impl SpeculativeExecutor {
             fee_rebasing: true,
             chained_workers: true,
             state_forwarding: false,
+            nonce_prediction: true,
         })
+    }
+
+    /// Predicts expiring-nonce ring positions in input order. Every predicted read
+    /// still requires exact validation against the committed transaction prefix.
+    pub fn with_nonce_prediction(mut self, enabled: bool) -> Self {
+        self.nonce_prediction = enabled;
+        self
     }
 
     /// Controls periodic sequential backoff when fewer than half of a window's
@@ -167,11 +183,72 @@ impl SpeculativeExecutor {
             });
         }
         let count = inputs.len();
+        let mut nonce_ptrs = vec![None; count];
+        if self.nonce_prediction {
+            let mut next_ptr = None;
+            for (index, (tx, env)) in inputs.iter().enumerate() {
+                if !env.cfg_env.spec.is_t1()
+                    || !tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .is_some_and(|aa| aa.nonce_key == U256::MAX)
+                {
+                    continue;
+                }
+                let ptr = match next_ptr {
+                    Some(ptr) => ptr,
+                    None => {
+                        prefetch(
+                            db,
+                            &mut prefetched,
+                            ReadKey::Account(NONCE_PRECOMPILE_ADDRESS),
+                        );
+                        let Some(ReadValue::Storage(value)) =
+                            prefetch(db, &mut prefetched, nonce_ptr_key())
+                        else {
+                            continue;
+                        };
+                        let Ok(ptr) = u32::try_from(*value) else {
+                            continue;
+                        };
+                        ptr
+                    }
+                };
+                let capacity = env.cfg_env.spec.expiring_nonce_set_capacity();
+                if ptr >= capacity {
+                    continue;
+                }
+                // The predicted slot is cheap to prefetch and otherwise requires
+                // a coordinator round trip for nearly every expiring transaction.
+                if let Some(ReadValue::Storage(old_hash)) = prefetch(
+                    db,
+                    &mut prefetched,
+                    ReadKey::Storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        ptr.mapping_slot(nonce_slots::EXPIRING_NONCE_RING),
+                    ),
+                ) && !old_hash.is_zero()
+                {
+                    let old_hash = B256::from(*old_hash);
+                    prefetch(
+                        db,
+                        &mut prefetched,
+                        ReadKey::Storage(
+                            NONCE_PRECOMPILE_ADDRESS,
+                            old_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN),
+                        ),
+                    );
+                }
+                nonce_ptrs[index] = Some(U256::from(ptr));
+                next_ptr = Some(if ptr + 1 == capacity { 0 } else { ptr + 1 });
+            }
+        }
         let forwarding = self
             .state_forwarding
             .then(|| forwarding::Forwarding::new(&inputs));
         let shared = Arc::new(Work {
             inputs,
+            nonce_ptrs,
             prefetched,
             cache: RwLock::new(HashMap::default()),
             next: AtomicUsize::new(0),
@@ -266,6 +343,7 @@ fn prefetch<'a, DB: Database>(
 #[derive(Debug)]
 struct Work {
     inputs: Vec<(TempoTxEnv, Env)>,
+    nonce_ptrs: Vec<Option<U256>>,
     prefetched: HashMap<ReadKey, ReadValue>,
     cache: RwLock<HashMap<ReadKey, ReadValue>>,
     next: AtomicUsize,
@@ -294,6 +372,7 @@ fn run_worker<E: DBErrorMarker>(
         reads: Vec::new(),
         body_reads: Vec::new(),
         forwarded: None,
+        predicted_nonce_ptr: None,
     };
     let mut indices = indices.map(Vec::into_iter);
     let mut evm = TempoEvm::new(db, shared.inputs[0].1.clone());
@@ -320,6 +399,7 @@ fn run_worker<E: DBErrorMarker>(
         let Some((tx, env)) = shared.inputs.get(index) else {
             break;
         };
+        evm.ctx_mut().journaled_state.database.predicted_nonce_ptr = shared.nonce_ptrs[index];
         if evm.ctx().cfg != env.cfg_env {
             let (db, _) = evm.finish();
             evm = TempoEvm::new(db, env.clone());
@@ -645,6 +725,14 @@ struct RecordingDatabase<'a, E> {
     reads: Vec<(ReadKey, ReadValue)>,
     body_reads: Vec<(ReadKey, ReadValue)>,
     forwarded: Option<HashMap<ReadKey, ReadValue>>,
+    predicted_nonce_ptr: Option<U256>,
+}
+
+fn nonce_ptr_key() -> ReadKey {
+    ReadKey::Storage(
+        NONCE_PRECOMPILE_ADDRESS,
+        nonce_slots::EXPIRING_NONCE_RING_PTR,
+    )
 }
 
 impl<E: DBErrorMarker> RecordingDatabase<'_, E> {
@@ -653,8 +741,15 @@ impl<E: DBErrorMarker> RecordingDatabase<'_, E> {
             return Err(ProxyError::Cancelled);
         }
         let start = tempo_revm::replay::is_recording_body().then(std::time::Instant::now);
-        let value = if let Some(value) = self.forwarded.as_ref().and_then(|values| values.get(&key))
+        // This prediction only supplies a worker's read. It is recorded below,
+        // including body reads, and receives ordinary exact read validation.
+        // Rejected or omitted predecessors therefore cause replay, never a commit
+        // based on the wrong ring position. Override stale private lane caches too.
+        let value = if key == nonce_ptr_key()
+            && let Some(ptr) = self.predicted_nonce_ptr
         {
+            ReadValue::Storage(ptr)
+        } else if let Some(value) = self.forwarded.as_ref().and_then(|values| values.get(&key)) {
             value.clone()
         } else {
             match &mut self.overlay {

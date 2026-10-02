@@ -31,6 +31,16 @@ and `github-37009502041/` for the exact reports and configuration. A second
 profiled run measures the newer revision with duplicate builder prewarming
 disabled; its result is pending in `github-benchmarks.json`.
 
+Workers also predict expiring-nonce ring positions in candidate order and
+prefetch those slots. Predicted values remain ordinary validated reads; skipped,
+reordered, rejected, or duplicate candidates cause replay when the prediction is
+wrong. Differential checks cover ring wrap and occupied entries through T14.
+The local expiring-transfer fixture reused 99,993/100,000 results, but mean
+throughput improved only about 4% and remained below sequential execution.
+See `t14-nonce-prediction.json`; this is not evidence of a node speedup.
+`TEMPO_BENCH_WORKLOADS=tip20_paid_aa_expiring` selects this fixture and
+`TEMPO_BENCH_NONCE_PREDICTION=0` disables the prediction for comparison.
+
 Enable node validation and payload building with:
 
 ```sh

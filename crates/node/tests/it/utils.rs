@@ -463,6 +463,11 @@ impl TestNodeBuilder {
         self
     }
 
+    pub(crate) fn with_block_time(mut self, block_time: Duration) -> Self {
+        self.block_time = Some(block_time);
+        self
+    }
+
     pub(crate) fn with_shared_sparse_trie(mut self, enabled: bool) -> Self {
         self.share_sparse_trie = enabled;
         self

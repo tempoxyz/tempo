@@ -1867,6 +1867,80 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 // Expiring Nonce Tests
 // ============================================================================
 
+#[test_case::test_case(0; "sequential")]
+#[test_case::test_case(4; "parallel")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_expiring_nonce_transfer_batch(execution_threads: usize) -> eyre::Result<()> {
+    use std::time::Duration;
+    use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots};
+
+    let setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
+        .with_execution_threads(execution_threads)
+        .with_block_time(Duration::from_secs(2))
+        .build_http_only()
+        .await?;
+    let provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(setup.http_url.clone());
+    let chain_id = provider.get_chain_id().await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while provider.get_block_number().await? == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, eyre::Error>(())
+    })
+    .await??;
+    let latest = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let valid_before = latest.header.timestamp() + 300;
+    let initial_ptr = provider
+        .get_storage_at(NONCE_PRECOMPILE_ADDRESS, slots::EXPIRING_NONCE_RING_PTR)
+        .await?;
+    let token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
+    let mut pending = Vec::new();
+    let mut recipients = Vec::new();
+    for i in 0..64u64 {
+        let signer = test_signer((i % 8) as u32);
+        let recipient = Address::random();
+        let mut tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
+        tx.nonce = i.wrapping_mul(0x9e3779b97f4a7c15);
+        tx.calls[0] = Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount: U256::from(1),
+            }
+            .abi_encode()
+            .into(),
+        };
+        let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        pending.push(
+            provider
+                .send_raw_transaction(&envelope.encoded_2718())
+                .await?,
+        );
+        recipients.push(recipient);
+    }
+    for tx in pending {
+        assert!(tx.get_receipt().await?.status());
+    }
+    for recipient in recipients {
+        assert_eq!(token.balanceOf(recipient).call().await?, U256::from(1));
+    }
+    let actual_ptr = provider
+        .get_storage_at(NONCE_PRECOMPILE_ADDRESS, slots::EXPIRING_NONCE_RING_PTR)
+        .await?;
+    assert_eq!(
+        actual_ptr,
+        (initial_ptr + U256::from(64)) % U256::from(3_000_000)
+    );
+    Ok(())
+}
+
 #[test_case::test_case(TempoHardfork::T11, [true, false, false] ; "t11")]
 #[test_case::test_case(TempoHardfork::T12, [true, true, true] ; "t12")]
 #[tokio::test(flavor = "multi_thread")]

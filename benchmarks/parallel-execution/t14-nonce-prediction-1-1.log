@@ -1,0 +1,12 @@
+
+running 1 test
+# hardfork=T14
+workload	transactions	workers	seconds	tps	reused	conflicts	retries	backoff	bodies_reused	fees_rebased
+PHASES workload=tip20_paid_aa_expiring count=100000 workers=0 batch=128 prepare=0.000015 ordered=0.691682 commit=0.046809
+tip20_paid_aa_expiring	100000	0	0.744826	134260	0	0	0	0	0	0
+PHASES workload=tip20_paid_aa_expiring count=100000 workers=8 batch=128 prepare=0.355141 ordered=0.234743 commit=0.125687
+tip20_paid_aa_expiring	100000	8	0.731314	136740	99993	7	0	0	0	99211
+test parallel::tests::execution_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 146 filtered out; finished in 2.17s
+
