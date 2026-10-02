@@ -173,6 +173,39 @@ pub fn native_call<T: EvmTypes>(
     native_call_outcome(evm, parent, gas, budget, target, input, read_only, limits)?.into_result()
 }
 
+/// Executes an approved implementation in the native account's storage context.
+///
+/// The caller and value are inherited from the parent message, exactly as EVM
+/// `DELEGATECALL` does. Callers must authenticate the target code identity
+/// before entry; the work and returned bytes use the same transaction budget.
+#[allow(clippy::too_many_arguments)]
+pub fn native_delegate_call<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    parent: &Message<T>,
+    gas: &mut GasTracker,
+    budget: &NativeCallBudget,
+    implementation: Address,
+    input: Bytes,
+    limits: NativeCallLimits,
+) -> PrecompileResult {
+    let tx_env = evm.precompile_tx_env().cloned().ok_or_else(|| {
+        PrecompileError::Fatal("native delegate call requires an active transaction context".into())
+    })?;
+    native_call_outcome_with_env_kind(
+        evm,
+        &tx_env,
+        parent,
+        gas,
+        budget,
+        implementation,
+        input,
+        false,
+        limits,
+        MessageKind::DelegateCall,
+    )?
+    .into_result()
+}
+
 /// Executes a bounded dependency frame with recoverable child failure results.
 ///
 /// Only the outcome of an executed child is recoverable. An `Err` here includes
@@ -228,6 +261,33 @@ fn native_call_outcome_with_env<T: EvmTypes>(
     read_only: bool,
     limits: NativeCallLimits,
 ) -> Result<NativeCallOutcome, PrecompileError> {
+    native_call_outcome_with_env_kind(
+        evm,
+        tx_env,
+        parent,
+        gas,
+        budget,
+        target,
+        input,
+        read_only,
+        limits,
+        MessageKind::Call,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_call_outcome_with_env_kind<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    tx_env: &TxEnv<T>,
+    parent: &Message<T>,
+    gas: &mut GasTracker,
+    budget: &NativeCallBudget,
+    target: Address,
+    input: Bytes,
+    read_only: bool,
+    limits: NativeCallLimits,
+    kind: MessageKind,
+) -> Result<NativeCallOutcome, PrecompileError> {
     if input.len() > limits.input_bytes {
         return Err(PrecompileHalt::OutOfGas.into());
     }
@@ -271,6 +331,12 @@ fn native_call_outcome_with_env<T: EvmTypes>(
         code = account.code;
         code_address = delegated;
     }
+    // An implementation address must contain its own code. In particular,
+    // EIP-7702 cannot silently redirect an approved implementation identity.
+    if kind == MessageKind::DelegateCall && (target == parent.destination || code_address != target)
+    {
+        return Err(PrecompileError::Revert(Bytes::new()));
+    }
     let execution_gas = if features.contains(EvmFeatures::EIP150) {
         limits
             .execution_gas
@@ -284,7 +350,9 @@ fn native_call_outcome_with_env<T: EvmTypes>(
     let unforwarded_reservoir = gas.reservoir() - state_gas;
     let is_static = read_only || parent.caller_is_static || parent.kind == MessageKind::StaticCall;
     let mut child = Message::<T> {
-        kind: if is_static {
+        kind: if kind == MessageKind::DelegateCall {
+            MessageKind::DelegateCall
+        } else if is_static {
             MessageKind::StaticCall
         } else {
             MessageKind::Call
@@ -292,14 +360,26 @@ fn native_call_outcome_with_env<T: EvmTypes>(
         depth,
         gas_limit: execution_gas,
         reservoir: state_gas,
-        destination: target,
+        destination: if kind == MessageKind::DelegateCall {
+            parent.destination
+        } else {
+            target
+        },
         call_target: target,
-        caller: parent.destination,
+        caller: if kind == MessageKind::DelegateCall {
+            parent.caller
+        } else {
+            parent.destination
+        },
         input,
-        value: U256::ZERO,
+        value: if kind == MessageKind::DelegateCall {
+            parent.value
+        } else {
+            U256::ZERO
+        },
         code,
         code_address,
-        disable_precompiles: code_address != target,
+        disable_precompiles: kind == MessageKind::DelegateCall || code_address != target,
         caller_is_static: is_static,
         ..Message::<T>::default()
     };
@@ -480,6 +560,87 @@ mod tests {
         assert!(
             gas.spent() > 2600,
             "child execution and output copy must be charged"
+        );
+    }
+
+    #[test]
+    fn delegate_call_preserves_vault_context_and_charges_storage() {
+        // CALLER, ADDRESS, CALLVALUE, then SSTORE in the native account.
+        let mut evm = evm(
+            bytes!("336000523060205234604052600160005560606000f3"),
+            SpecId::OSAKA,
+        );
+        let mut parent = parent();
+        parent.value = U256::from(9);
+        let mut gas = GasTracker::new(150_000);
+        let result = native_call_outcome_with_env_kind(
+            &mut evm,
+            &tx_env(),
+            &parent,
+            &mut gas,
+            &NativeCallBudget::new(1, 70_000),
+            TARGET,
+            Bytes::new(),
+            false,
+            LIMITS,
+            MessageKind::DelegateCall,
+        )
+        .unwrap();
+        let NativeCallOutcome::Success(output) = result else {
+            panic!("expected successful delegate call")
+        };
+        let words = output
+            .chunks_exact(32)
+            .map(U256::from_be_slice)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            words,
+            vec![
+                U256::from_be_slice(ORIGIN.as_slice()),
+                U256::from_be_slice(NATIVE.as_slice()),
+                U256::from(9),
+            ]
+        );
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&NATIVE, &U256::ZERO)
+                .unwrap(),
+            U256::from(1)
+        );
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&TARGET, &U256::ZERO)
+                .unwrap(),
+            U256::ZERO
+        );
+        assert!(gas.spent() > 20_000);
+    }
+
+    #[test]
+    fn delegate_call_inherits_static_context_and_rolls_back() {
+        let mut evm = evm(bytes!("600160005500"), SpecId::OSAKA);
+        let mut parent = parent();
+        parent.caller_is_static = true;
+        let mut gas = GasTracker::new(150_000);
+        let result = native_call_outcome_with_env_kind(
+            &mut evm,
+            &tx_env(),
+            &parent,
+            &mut gas,
+            &NativeCallBudget::new(1, 70_000),
+            TARGET,
+            Bytes::new(),
+            false,
+            LIMITS,
+            MessageKind::DelegateCall,
+        )
+        .unwrap();
+        assert!(matches!(result, NativeCallOutcome::Halt(_)));
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&NATIVE, &U256::ZERO)
+                .unwrap(),
+            U256::ZERO
         );
     }
 
