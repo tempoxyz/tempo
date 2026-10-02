@@ -24,6 +24,12 @@ CARGO_PROFILE_RELEASE_LTO=false CARGO_BUILD_JOBS=16 \
 not offered TPS. The `tps` column is completed transactions divided by measured
 execution time. This benchmark does not model an offered-load queue.
 
+`TEMPO_BENCH_WORKLOADS` selects a comma-separated subset of the workloads below.
+`TEMPO_BENCH_BATCH_SIZE` changes the window (default 128; the declared-gas bound
+still applies). `TEMPO_BENCH_PHASES=1` prints preparation, ordered execution and
+commit times to help distinguish worker scheduling from serial replay costs.
+Phase timing adds per-transaction clock reads, so compare equally instrumented runs.
+
 The timer includes speculative scheduling, database reads, conflict validation,
 replays, receipt construction, and state commits. Signing, initial state setup,
 networking, consensus, disk I/O and trie hashing are excluded. After each run,
@@ -135,7 +141,9 @@ reverted/halted bodies, storage gas, precompile failures, expiring AA nonce ring
 atomic multicall reverts, and post-execution fee-accumulator overflow. Tests compare
 complete per-transaction outcomes and final trie roots, not just scheduling counts.
 AMM tests cover liquidity exhaustion and pre-/post-T1C transient reservations while
-the call bodies remain independent. The current EVM/revm suites pass 202 tests
+the call bodies remain independent. Reward tests change the global accumulator
+and shared reward recipient, checking both independent bodies and bodies that
+observe those values. The current EVM/revm suites pass 203 tests
 (one throughput benchmark is ignored by default); Clippy with warnings denied
 and the EVM build without default features also pass.
 
@@ -144,6 +152,39 @@ table initialized from the first EVM's configuration. The failure was reproduced
 on the previous commit; deriving the table from the active configuration passed
 40 repeated concurrent runs of all 128 revm tests. This is recorded separately
 in commit `8ea53ad8`.
+
+## Prefetching and replay allocation
+
+`prefetch.tsv` records the next optimization: prefetch common fee balances,
+preferences and reward slots, plus sender/recipient slots from the first native
+TIP-20 `transfer` call. Hints are bounded, do not warm the EVM journal, and do not
+replace execution reads or conflict checks. Dynamic reward delegates, token
+preferences and virtual-recipient resolution retain the ordinary database path.
+Call-body reuse now applies its storage changes onto the fresh journal, avoiding
+copies of the fee/nonce journal, logs and unobserved slots.
+
+The file retains two alternating 100k runs of the baseline (`021c07df`) and an
+intermediate version with fee hints only. That intermediate version regressed
+fee-free TIP-20 transfers with 32 workers. Adding transfer hints raised that case
+to 143–145k TPS in two repeated runs, versus 77–91k for the baseline. Paid transfers
+measured 102–103k TPS. Two samples are not a confidence interval.
+
+The `final` rows are a complete 10k/25k/50k/100k transaction matrix with phase
+timing enabled. At 100,000 transactions:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Storage | 489,851 | 354,829 | 233,862 |
+| Compute, no fees | 7,933 | 75,915 | 79,337 |
+| Compute, paid | 7,671 | 37,026 | 38,732 |
+| TIP-20, no fees | 174,796 | 160,365 | 144,337 |
+| TIP-20, paid | 112,574 | 103,162 | 101,971 |
+
+All measured receipt vectors and state roots match. Paid compute still spends
+1.469 s preparing workers, 1.049 s in ordered execution and 0.057 s committing
+100k transactions with 32 workers. Increasing the window to 256 did not produce
+a consistent improvement, so the default remains 128. Cheap transactions still
+benefit from sequential execution, and paid compute remains below 50k TPS.
 
 ## Local node trials
 
@@ -236,6 +277,28 @@ but this workload still benefits from sequential execution. Both node and client
 share the machine; these trials do not isolate the remaining submission, execution
 and finalization limits or demonstrate sustained 50k TPS.
 
+`node/prefetch-5b-*.json` repeats the full offered-load matrix after prefetching:
+
+| Target TPS | Sequential accepted TPS | Prefetch, 16 workers |
+| --- | ---: | ---: |
+| 10,000 | 10,000 | 10,018 |
+| 25,000 | 23,275 | 22,446 |
+| 50,000 | 22,093 | 21,502 |
+| 75,000 | 22,195 | 21,419 |
+
+All 767,635 accepted transactions confirmed, with no generation, submission or
+execution failures. Each trial lasts five seconds of offered load plus its drain;
+the rates divide accepted transactions by measured send duration. These results
+remain in the earlier node range despite the in-memory gains.
+
+At the 50k target, the 16-worker run spent 2.304 s in busy payload execution
+sections and 1.159 s finishing them (3.712 s total). The reports additionally retain
+payload histogram counter deltas: transaction execution, pool fetch, finalization,
+state-root computation and post-state hashing. Their scope includes setup and
+all payload attempts, unlike the busy-payload rows. They are diagnostic component
+timings, not independently measured throughput or confirmation latency. This
+workload still does not sustain 50k node TPS.
+
 Earlier `node/sequential-*.json` and `node/speculative-*.json` trials used expiring
 nonces, default queue sizes, and the load generator before parallel signing.
 Both modes accepted and confirmed the 10k and 25k target workloads. The 50k
@@ -280,12 +343,19 @@ expiring AA nonces. Complete state deltas, stored receipts, receipt roots, gas a
 state roots match. These replays ran concurrently with correctness checks; their
 timing columns are not benchmark results.
 
+`prefetch-canonical-2d.tsv` and `prefetch-canonical-expiring.tsv` revalidate those
+same 120 blocks after prefetching and the journal-allocation changes. All 100,000
+user transactions and 120 system transactions match complete state deltas,
+canonical receipts, gas, receipt roots and state roots. The two replays ran
+concurrently; their timings are diagnostic only.
+
 ## Correctness model and integration
 
 Workers execute against a frozen batch view. Database cache misses are served on
 the database's owning thread, supporting Reth providers that cannot be shared
-between threads without unsafe code. Accounts named by a transaction are prefetched;
-other reads are cached on demand. Every read is recorded, including reads in
+between threads without unsafe code. Accounts named by a transaction and bounded
+fee/transfer storage hints are prefetched; other reads are cached on demand.
+Every execution read is recorded, including reads in
 transaction validation, native precompiles and reverted calls. Before reusing a
 result, its transaction and environment must match and every read must still
 match the committed prefix. Conflicting transactions run again through the ordinary

@@ -54,6 +54,101 @@ pub fn read<DB: Database>(db: &mut DB, key: ReadKey) -> Result<ReadValue, DB::Er
     }
 }
 
+/// Bounded hints for common fee storage and the first native TIP-20 transfer.
+/// These do not resolve token preferences, virtual recipients or reward delegates:
+/// conditional accesses still use the database, and only actual reads become dependencies.
+pub fn prefetch_keys(tx: &crate::TempoTxEnv, beneficiary: Address) -> Vec<ReadKey> {
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{
+        TIP_FEE_MANAGER_ADDRESS,
+        storage::{StorableType, StorageKey},
+        tip_fee_manager::slots as fee_slots,
+        tip20::{ITIP20, rewards::UserRewardInfo, slots as token_slots},
+    };
+    use tempo_primitives::TempoAddressExt;
+
+    let payer = tx.fee_payer().unwrap_or(tx.inner.caller);
+    let mut keys = vec![
+        ReadKey::Account(TIP_FEE_MANAGER_ADDRESS),
+        ReadKey::Storage(
+            TIP_FEE_MANAGER_ADDRESS,
+            payer.mapping_slot(fee_slots::USER_TOKENS),
+        ),
+    ];
+    let pays_fees = tx.inner.gas_price != 0;
+    if pays_fees {
+        keys.push(ReadKey::Storage(
+            TIP_FEE_MANAGER_ADDRESS,
+            beneficiary.mapping_slot(fee_slots::VALIDATOR_TOKENS),
+        ));
+    }
+    let call = tx.calls().next();
+    let called_token = call
+        .as_ref()
+        .and_then(|(kind, _)| kind.to().copied())
+        .filter(|token| token.is_tip20());
+    let recipient = called_token.and_then(|_| {
+        ITIP20::transferCall::abi_decode(call.as_ref()?.1)
+            .ok()
+            .map(|call| call.to)
+    });
+    let mut tokens = vec![tempo_contracts::precompiles::DEFAULT_FEE_TOKEN];
+    tokens.extend(tx.fee_token);
+    tokens.extend(called_token);
+    tokens.sort_unstable();
+    tokens.dedup();
+    for token in tokens {
+        keys.extend([
+            ReadKey::Account(token),
+            ReadKey::Storage(token, payer.mapping_slot(token_slots::BALANCES)),
+        ]);
+        let recipient = recipient.filter(|_| called_token == Some(token));
+        if !pays_fees && recipient.is_none() {
+            continue;
+        }
+        keys.extend([
+            ReadKey::Storage(token, token_slots::PAUSED),
+            ReadKey::Storage(token, token_slots::TRANSFER_POLICY_ID),
+            ReadKey::Storage(token, token_slots::GLOBAL_REWARD_PER_TOKEN),
+        ]);
+        if pays_fees {
+            keys.extend([
+                ReadKey::Storage(
+                    token,
+                    TIP_FEE_MANAGER_ADDRESS.mapping_slot(token_slots::BALANCES),
+                ),
+                ReadKey::Storage(token, token_slots::CURRENCY),
+                ReadKey::Storage(
+                    TIP_FEE_MANAGER_ADDRESS,
+                    token.mapping_slot(beneficiary.mapping_slot(fee_slots::COLLECTED_FEES)),
+                ),
+            ]);
+        }
+        let mut holders = Vec::with_capacity(3);
+        if pays_fees {
+            holders.push(payer);
+        }
+        if let Some(recipient) = recipient {
+            holders.extend([tx.inner.caller, recipient]);
+        }
+        holders.sort_unstable();
+        holders.dedup();
+        for holder in holders {
+            keys.push(ReadKey::Storage(
+                token,
+                holder.mapping_slot(token_slots::BALANCES),
+            ));
+            let rewards = holder.mapping_slot(token_slots::USER_REWARD_INFO);
+            keys.extend(
+                (0..UserRewardInfo::SLOTS).map(|offset| {
+                    ReadKey::Storage(token, rewards.wrapping_add(U256::from(offset)))
+                }),
+            );
+        }
+    }
+    keys
+}
+
 /// The call-body boundary recorded on a worker. Inspectors and custom instruction
 /// tables must not use this cache, since their callbacks cannot be replayed.
 #[derive(Debug)]
@@ -82,6 +177,10 @@ impl BodyCache {
             || before.depth != after.depth
             || !after.journal.starts_with(&before.journal)
             || !after.logs.starts_with(&before.logs)
+            || before
+                .state
+                .keys()
+                .any(|address| !after.state.contains_key(address))
             || after
                 .state
                 .values()
@@ -107,7 +206,7 @@ impl BodyCache {
     }
 
     pub(crate) fn try_apply<DB: Database>(
-        mut self,
+        self,
         context: &mut crate::evm::TempoContext<DB>,
         gas: &InitialAndFloorGas,
     ) -> Option<FrameResult> {
@@ -160,30 +259,59 @@ impl BodyCache {
 
         // All checks precede mutations. Keep the fresh fee/nonces journal prefix
         // so post-execution and error unwinding see its exact writes and logs.
-        let mut entries = fresh.journal.clone();
-        entries.extend(self.after.journal.drain(self.before.journal.len()..));
-        self.after.journal = entries;
-        let mut logs = fresh.logs.clone();
-        logs.extend(self.after.logs.drain(self.before.logs.len()..));
-        self.after.logs = logs;
-
-        for (address, old) in &self.before.state {
-            let new = &fresh.state[address];
-            let after = self.after.state.get_mut(address)?;
-            // Replace all unobserved prefix slots, including those loaded only
-            // by one of the two pre-executions (e.g. an expiring-nonce ring index).
-            for key in old.storage.keys() {
-                if !self.accesses.slots.contains(&(*address, *key)) {
-                    after.storage.remove(key);
+        let JournalInner {
+            state,
+            transient_storage,
+            logs,
+            depth,
+            journal: entries,
+            transaction_id,
+            cfg,
+            warm_addresses,
+            selfdestructed_addresses,
+        } = self.after;
+        let fresh = &mut journal.inner;
+        fresh
+            .journal
+            .extend(entries.into_iter().skip(self.before.journal.len()));
+        fresh
+            .logs
+            .extend(logs.into_iter().skip(self.before.logs.len()));
+        for (address, mut account) in state {
+            if let Some(old) = self.before.state.get(&address) {
+                let current = fresh
+                    .state
+                    .get_mut(&address)
+                    .expect("validated prefix account");
+                // Keep the freshly executed fee/nonce slots in place. Only slots
+                // observed by the body need their recorded final value/warmness.
+                let mut storage = std::mem::take(&mut current.storage);
+                if !self.accesses.slots.is_empty() {
+                    for key in old.storage.keys() {
+                        if self.accesses.slots.contains(&(address, *key))
+                            && !account.storage.contains_key(key)
+                        {
+                            storage.remove(key);
+                        }
+                    }
+                    for (key, slot) in account.storage {
+                        if self.accesses.slots.contains(&(address, key)) {
+                            storage.insert(key, slot);
+                        }
+                    }
                 }
-            }
-            for (key, slot) in &new.storage {
-                if !self.accesses.slots.contains(&(*address, *key)) {
-                    after.storage.insert(*key, slot.clone());
-                }
+                account.storage = storage;
+                *current = account;
+            } else {
+                fresh.state.insert(address, account);
             }
         }
-        journal.inner = self.after;
+        fresh.transient_storage = transient_storage;
+        fresh.depth = depth;
+        fresh.transaction_id = transaction_id;
+        fresh.cfg = cfg;
+        fresh.warm_addresses = warm_addresses;
+        fresh.selfdestructed_addresses = selfdestructed_addresses;
         context.local.precompile_error_message = self.after_error_context;
         Some(self.result)
     }

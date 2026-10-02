@@ -901,6 +901,81 @@ fn body_reuse_rechecks_amm_liquidity_and_reservations() {
 }
 
 #[test]
+fn reward_changes_rebase_unobserved_slots_and_invalidate_observed_slots() {
+    use alloy_sol_types::SolCall;
+    use revm::context_interface::JournalTr;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        storage::StorageCtx,
+        tip20::{ITIP20, TIP20Token},
+    };
+
+    let mut db = funded_tip20_db(16);
+    contract(&mut db, TIP_FEE_MANAGER_ADDRESS, &[0]);
+    let target = address(900);
+    contract(&mut db, target, &[0]);
+    let recipient = address(99);
+    let mut setup = test_evm_with_basefee(db, 0);
+    StorageCtx::enter_ctx(setup.ctx_mut(), || {
+        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
+        for i in 0..16 {
+            token
+                .set_reward_recipient(address(i), ITIP20::setRewardRecipientCall { recipient })
+                .unwrap();
+        }
+        token
+            .distribute_reward(
+                address(0),
+                ITIP20::distributeRewardCall {
+                    amount: U256::from(1_000_000),
+                },
+            )
+            .unwrap();
+    });
+    let state = setup.ctx_mut().journaled_state.finalize();
+    setup.db_mut().commit(state);
+    let db = setup.finish().0;
+
+    for observe in [false, true] {
+        let txs = (0..16)
+            .map(|i| {
+                let mut tx = if i == 0 {
+                    transaction(
+                        i,
+                        PATH_USD_ADDRESS,
+                        0,
+                        &ITIP20::distributeRewardCall {
+                            amount: U256::from(1_000_000),
+                        }
+                        .abi_encode(),
+                    )
+                } else if observe {
+                    transaction(
+                        i,
+                        PATH_USD_ADDRESS,
+                        0,
+                        &ITIP20::getPendingRewardsCall { account: recipient }.abi_encode(),
+                    )
+                } else {
+                    transaction(i, target, 0, &[])
+                };
+                tx.inner.gas_price = 1;
+                tx
+            })
+            .collect::<Vec<_>>();
+        for spec in [TempoHardfork::T0, TempoHardfork::T1C, TempoHardfork::T4] {
+            let stats = differential_at_spec(db.clone(), &txs, 4, 16, spec);
+            assert_eq!(stats.conflicts, 15, "{spec:?}: {stats:?}");
+            if observe {
+                assert_eq!(stats.bodies_reused, 0, "{spec:?}: {stats:?}");
+            } else {
+                assert_eq!(stats.bodies_reused, 15, "{spec:?}: {stats:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn body_replay_preserves_storage_gas_and_warmness() {
     use revm::context::transaction::AccessListItem;
     for warm in [false, true] {
@@ -949,11 +1024,20 @@ fn execution_throughput() {
     let counts =
         std::env::var("TEMPO_BENCH_COUNTS").unwrap_or_else(|_| "10000,25000,50000,100000".into());
     let workers = std::env::var("TEMPO_BENCH_WORKERS").unwrap_or_else(|_| "0,1,4,16,32".into());
+    let workloads = std::env::var("TEMPO_BENCH_WORKLOADS")
+        .unwrap_or_else(|_| "storage,compute,compute_paid,tip20,tip20_paid".into());
+    let batch_size = std::env::var("TEMPO_BENCH_BATCH_SIZE")
+        .map_or(128, |value| value.parse::<usize>().unwrap());
+    let profile = std::env::var_os("TEMPO_BENCH_PHASES").is_some();
     println!(
         "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused"
     );
     for count in counts.split(',').map(|s| s.parse::<u64>().unwrap()) {
-        for workload in ["storage", "compute", "compute_paid", "tip20", "tip20_paid"] {
+        for workload in workloads.split(',') {
+            assert!(matches!(
+                workload,
+                "storage" | "compute" | "compute_paid" | "tip20" | "tip20_paid"
+            ));
             let mut db = if matches!(workload, "storage" | "compute") {
                 TestDB::default()
             } else {
@@ -1006,20 +1090,29 @@ fn execution_throughput() {
                 evm.ctx_mut().block.gas_limit = 500_000_000;
                 if threads > 0 {
                     evm.set_speculative_executor(Some(
-                        SpeculativeExecutor::new(threads, 128).unwrap(),
+                        SpeculativeExecutor::new(threads, batch_size).unwrap(),
                     ));
                 }
                 let mut receipts = Vec::with_capacity(txs.len());
                 let mut cumulative_gas = 0;
+                let mut phases = [Duration::ZERO; 3];
                 let start = Instant::now();
-                for batch in txs.chunks(128) {
+                for batch in txs.chunks(batch_size) {
+                    let preparation_start = profile.then(Instant::now);
                     if threads > 0 {
                         evm.prepare_transactions(
                             batch.iter().cloned().map(|tx| (tx, Address::ZERO)),
                         );
                     }
+                    if let Some(start) = preparation_start {
+                        phases[0] += start.elapsed();
+                    }
                     for tx in batch {
+                        let execution_start = profile.then(Instant::now);
                         let result = evm.transact_raw(tx.clone()).unwrap();
+                        if let Some(start) = execution_start {
+                            phases[1] += start.elapsed();
+                        }
                         assert!(result.result.is_success());
                         cumulative_gas += result.result.tx_gas_used();
                         receipts.push(tempo_primitives::TempoReceipt {
@@ -1028,11 +1121,23 @@ fn execution_throughput() {
                             cumulative_gas_used: cumulative_gas,
                             logs: result.result.into_logs(),
                         });
+                        let commit_start = profile.then(Instant::now);
                         evm.db_mut().commit(result.state);
+                        if let Some(start) = commit_start {
+                            phases[2] += start.elapsed();
+                        }
                     }
                 }
                 let elapsed = start.elapsed().as_secs_f64();
                 let stats = evm.execution_stats();
+                if profile {
+                    eprintln!(
+                        "PHASES workload={workload} count={count} workers={threads} batch={batch_size} prepare={:.6} ordered={:.6} commit={:.6}",
+                        phases[0].as_secs_f64(),
+                        phases[1].as_secs_f64(),
+                        phases[2].as_secs_f64()
+                    );
+                }
                 let output = (root(evm.db()), receipts);
                 if let Some(baseline) = &baseline {
                     assert_eq!(&output, baseline);
@@ -1263,9 +1368,13 @@ impl revm::Database for LocalDatabase {
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         revm::Database::basic(&mut self.inner, address)
     }
-    fn storage(&mut self, address: Address, slot: U256) -> Result<U256, Self::Error> {
-        assert!(!self.panic_on_storage, "injected provider panic");
-        revm::Database::storage(&mut self.inner, address, slot)
+    fn storage(&mut self, account: Address, slot: U256) -> Result<U256, Self::Error> {
+        // Fail on the worker's contract read, after fee prefetching has finished.
+        assert!(
+            !(self.panic_on_storage && account == address(900)),
+            "injected provider panic"
+        );
+        revm::Database::storage(&mut self.inner, account, slot)
     }
     fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
         revm::Database::code_by_hash(&mut self.inner, hash)

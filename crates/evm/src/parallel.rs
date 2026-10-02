@@ -107,11 +107,15 @@ impl SpeculativeExecutor {
         // worker round trip. This is only a cache hint: errors are observed by the
         // actual read, and accesses are recorded even when they hit this map.
         let mut prefetched = HashMap::default();
-        for (tx, _) in &inputs {
-            for address in std::iter::once(tx.inner.caller)
+        for (tx, env) in &inputs {
+            for key in std::iter::once(tx.inner.caller)
                 .chain(tx.calls().filter_map(|(kind, _)| kind.to().copied()))
+                .map(ReadKey::Account)
+                .chain(tempo_revm::replay::prefetch_keys(
+                    tx,
+                    env.block_env.beneficiary,
+                ))
             {
-                let key = ReadKey::Account(address);
                 if let std::collections::hash_map::Entry::Vacant(entry) = prefetched.entry(key)
                     && let Ok(value) = read(db, key)
                 {
