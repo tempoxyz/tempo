@@ -1,32 +1,24 @@
-use crate::utils::TEST_MNEMONIC;
 use alloy::{
     consensus::Transaction,
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
+use eyre::WrapErr;
 use reth_chainspec::EthChainSpec;
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::{
-    evm::revm::primitives::hex,
-    node::builder::{NodeBuilder, NodeHandle},
-    pool::TransactionPool,
-    primitives::SignerRecoverable,
-    tasks::Runtime,
+    evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
 };
 use reth_node_builder::BuiltPayload;
-use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionError};
 use reth_transaction_pool::{
     TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::AddedTransactionState,
 };
-use std::{num::NonZeroU64, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TempoChainSpec};
-use tempo_node::node::TempoNode;
+use std::num::NonZeroU64;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
@@ -36,24 +28,11 @@ use tempo_primitives::{
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let runtime = Runtime::test();
-    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
-    ))?);
-
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-    let NodeHandle {
-        node,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config.clone())
-        .testing_node(runtime.clone())
-        .node(TempoNode::default())
-        .launch()
-        .await?;
+    let node = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?
+        .node
+        .inner;
 
     // <cast mktx 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)' 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000 --gas-price 44000000000000 --priority-gas-price 1 --chain-id 1337 --nonce 0>
     let raw = hex!(
@@ -83,27 +62,14 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_insufficient_funds() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let runtime = Runtime::test();
-    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
-    ))?);
-
-    let node_config = NodeConfig::new(Arc::new(chain_spec.clone()))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-    let NodeHandle {
-        node,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config.clone())
-        .testing_node(runtime.clone())
-        .node(TempoNode::default())
-        .launch()
-        .await?;
+    let node = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?
+        .node
+        .inner;
 
     let tx = TempoTransaction {
-        chain_id: chain_spec.chain_id(),
+        chain_id: node.chain_spec().chain_id(),
         nonce: U64::random().to(),
         fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,
@@ -155,7 +121,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     let mut setup = crate::utils::TestNodeBuilder::new()
         .build_with_node_access()
         .await?;
-    let signer_wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer_wallet = test_signer(0);
     let signer_addr = signer_wallet.address();
 
     let payload = setup.node.advance_block().await?;
@@ -214,16 +180,15 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         .get_transactions_by_sender(signer_addr);
     assert_eq!(pooled_txs_before.len(), 1);
 
+    // Build the next block at `valid_before`, so the tx expires instead of being mined.
+    setup.node.set_next_payload_timestamp(tip_timestamp + 5)?;
     setup.node.advance_block().await?;
 
     // Verify tx is evicted
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    let pooled_txs_after = setup
+    setup
         .node
-        .inner
-        .pool
-        .get_transactions_by_sender(signer_addr);
-    assert!(pooled_txs_after.is_empty());
+        .wait_for_pool(|pool| pool.get_transactions_by_sender(signer_addr).is_empty())
+        .await?;
 
     Ok(())
 }
@@ -251,10 +216,9 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 
     // Step 1: Build empty block B on node2 first (before the tx exists)
     let block_b = node2.build_and_submit_payload().await?;
-    let block_b_hash = block_b.block().hash();
 
     // Step 2: Submit a 2D nonce AA tx to node1 and mine it in block A
-    let signer_wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer_wallet = test_signer(0);
 
     let tx_aa = TempoTransaction {
         chain_id: 1337,
@@ -288,25 +252,19 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 
     node1.advance_block().await?;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    assert!(
-        !node1.inner.pool.contains(&tx_hash),
-        "tx should be mined out of pool"
-    );
+    node1
+        .wait_for_pool(|pool| !pool.contains(&tx_hash))
+        .await
+        .wrap_err("tx should be mined out of pool")?;
 
     // Step 3: Import block B into node1 and FCU to it → reorg A→B
-    node1.submit_payload(block_b).await?;
-    node1.update_forkchoice(block_b_hash, block_b_hash).await?;
+    node1.import_payload(block_b).await?;
 
     // Step 4: Wait for the orphaned tx to reappear in node1's pool
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-    while !node1.inner.pool.contains(&tx_hash) {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "tx should be back in node1 pool after reorg (timed out)"
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    }
+    node1
+        .wait_for_pool(|pool| pool.contains(&tx_hash))
+        .await
+        .wrap_err("tx should be back in node1 pool after reorg")?;
 
     Ok(())
 }
@@ -322,8 +280,7 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 /// block producers (tracked via the AMM liquidity cache).
 #[tokio::test(flavor = "multi_thread")]
 async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
-    use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
-    use alloy::signers::local::MnemonicBuilder;
+    use crate::utils::TestNodeBuilder;
     use alloy_primitives::address;
 
     reth_tracing::init_test_tracing();
@@ -331,13 +288,8 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     // Setup node with direct access
     let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    // Set up signers - first is validator (coinbase), we use second for user transactions
-    let signers = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .into_iter()
-        .take(2)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let user_signer = signers[1].clone();
+    // First signer is the validator (coinbase), we use the second for user transactions
+    let user_signer = test_signer(1);
     let user_addr = user_signer.address();
 
     // Create a fake "new validator token" address that is NOT in the active validator set.
@@ -434,12 +386,10 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     let node1 = multi.nodes.remove(0);
     let mut node2 = multi.nodes.remove(0);
 
-    let admin_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let admin_signer = test_signer(0);
 
     // The whitelisted user is mnemonic index 10
-    let whitelisted_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(10)?
-        .build()?;
+    let whitelisted_signer = test_signer(10);
     let whitelisted_addr = whitelisted_signer.address();
 
     // === Step 1: On node2, mine a block with a single AA tx that creates a whitelist
@@ -511,7 +461,6 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     node2.rpc.inject_tx(encoded.into()).await?;
     let policy_payload = node2.build_and_submit_payload().await?;
-    let policy_block_hash = policy_payload.block().hash();
 
     // === Step 2: On node1, add 10 AA transactions using DEFAULT_FEE_TOKEN ===
     // Indices 1–9: non-whitelisted senders (should be evicted)
@@ -520,9 +469,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     let mut evictable_hashes = Vec::new();
 
     for i in 1..=9u32 {
-        let user_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-            .index(i)?
-            .build()?;
+        let user_signer = test_signer(i);
 
         let tx_aa = TempoTransaction {
             chain_id: 1337,
@@ -591,21 +538,13 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     );
 
     // === Step 3: Import node2's block into node1 — should trigger eviction ===
-    node1.submit_payload(policy_payload).await?;
+    node1.import_payload(policy_payload).await?;
+
+    // Pool maintenance runs asynchronously; wait for it to evict the non-whitelisted txs
     node1
-        .update_forkchoice(policy_block_hash, policy_block_hash)
-        .await?;
-
-    // Pool maintenance runs asynchronously; give it a moment to re-validate
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    // Non-whitelisted transactions should be evicted
-    for hash in &evictable_hashes {
-        assert!(
-            !node1.inner.pool.contains(hash),
-            "non-whitelisted tx should be evicted after policy change"
-        );
-    }
+        .wait_for_pool(|pool| evictable_hashes.iter().all(|hash| !pool.contains(hash)))
+        .await
+        .wrap_err("non-whitelisted tx should be evicted after policy change")?;
 
     // Whitelisted transaction should still be in the pool
     assert!(
