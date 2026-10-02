@@ -106,6 +106,18 @@ the fork, receipts, custody, and lane samples. Set the two disposable
 `EVM2_ZONE_*_KEY` variables to include authenticated private balances and
 supply; that full check passed on this run.
 
+The Zone binary was then rebuilt against Tempo revision
+`746d98bfe35e7e965509b6d7772d23dc41dc7993` and restarted on the same
+Zone datadir. It resumed L1 ingestion and settlement. A recipient with 1,000
+private units attempted to send all 1,000; the transaction reverted with
+`InsufficientBalance()` after its 1-unit private fee, and no transfer occurred.
+Sending the remaining 998 succeeded, leaving 10,000 with the sender and zero
+with the recipient while private supply and portal backing stayed 10,000. The
+batch through Zone block 2200 settled on L1 in receipt
+`0x4bfe04db2f936fed8b7249e1986d8e70e236ec9f4ec699a6187917e0916e7b8a`.
+The reviewed record and checker include both receipts, the revert data,
+authenticated balances, and that settlement.
+
 While these isolated devnets are available, rerun the public receipt and state
 checker from the Tempo checkout:
 

@@ -17,15 +17,15 @@ zone_auth_token = helpers["zone_auth_token"]
 require = helpers["require"]
 
 
-def check_receipt(url, expected, payment=False):
+def check_receipt(url, expected, payment=False, expected_status=1):
     receipt = rpc(url, "eth_getTransactionReceipt", [expected["hash"]])
     require(receipt is not None, f"missing receipt {expected['hash']}")
     number = int(receipt["blockNumber"], 16)
     block = rpc(url, "eth_getBlockByNumber", [hex(number), False])
     require(number == expected["block"] and receipt["blockHash"] == expected["blockHash"],
             f"receipt moved: {expected['hash']}")
-    require(int(receipt["status"], 16) == expected["status"] == 1,
-            f"receipt failed: {expected['hash']}")
+    require(int(receipt["status"], 16) == expected["status"] == expected_status,
+            f"receipt status differs: {expected['hash']}")
     require(int(receipt["gasUsed"], 16) == expected["gasUsed"],
             f"gas differs: {expected['hash']}")
     require(int(block["timestamp"], 16) == expected["timestamp"],
@@ -125,7 +125,35 @@ def main():
         require(scalar(args.zone_private_rpc_url, address["asset"], "0x18160ddd",
                        private_block, token) == zone_data["privateBalancesAfterTransfer"]["supply"],
                 "private supply differs")
-    print("checked reviewed T16 fork, Earn payment receipts, Zone deposit/transfer/settlement")
+
+    pinned = record["zonePinnedRevalidation"]
+    failed_block = check_receipt(zone, pinned["failedTransfer"], expected_status=0)
+    trace = rpc(zone, "debug_traceTransaction", [pinned["failedTransfer"]["hash"],
+                                                 {"tracer": "callTracer"}])
+    require(trace["output"] == pinned["failedTransferRevertData"]
+            and trace["error"] == "execution reverted",
+            "insufficient-balance failure changed")
+    success_block = check_receipt(zone, pinned["successfulTransfer"])
+    require(failed_block < success_block <= pinned["settledThroughZoneBlock"],
+            "pinned Zone transfer outside submitted batch")
+    settlement_block = check_receipt(l1, pinned["settlement"])
+    require(scalar(l1, address["asset"], balance_selector(address["portal"]),
+                   settlement_block) == pinned["privateBalancesAfterSuccess"]["supply"],
+            "pinned Zone backing differs")
+    for role in ("sender", "recipient"):
+        key = os.getenv(f"EVM2_ZONE_{role.upper()}_KEY")
+        if key:
+            token = zone_auth_token(key, zone_data["id"], int(record["zoneChainId"], 16))
+            balance = scalar(args.zone_private_rpc_url, address["asset"],
+                             balance_selector(address[role]), success_block, token)
+            require(balance == pinned["privateBalancesAfterSuccess"][role],
+                    f"pinned Zone {role} balance differs")
+    if sender_key:
+        token = zone_auth_token(sender_key, zone_data["id"], int(record["zoneChainId"], 16))
+        require(scalar(args.zone_private_rpc_url, address["asset"], "0x18160ddd",
+                       success_block, token) == pinned["privateBalancesAfterSuccess"]["supply"],
+                "pinned Zone supply differs")
+    print("checked reviewed T16 fork, Earn payments, Zone settlement and pinned-SDK failure")
 
 
 if __name__ == "__main__":

@@ -160,5 +160,40 @@
       }
     },
     "proofMode": "NoProof"
+  },
+  "zonePinnedRevalidation": {
+    "binarySha256": "0d03f89822b860d8e635235aa6136f9bff3db61214c426bd811b72a094a1a9b9",
+    "tempoRevision": "746d98bfe35e7e965509b6d7772d23dc41dc7993",
+    "failedTransfer": {
+      "hash": "0x703a034d6d0e0e4f03b8ed4d14467c681ed04d60dab9756479ada29f442128b1",
+      "block": 2133,
+      "blockHash": "0x592e93c639fca9bc7b70ffa15c457c1dc8ae1df5d7ea8e1877189e2b1b2bd0e1",
+      "status": 0,
+      "gasUsed": 371584,
+      "timestamp": 1790930600
+    },
+    "failedTransferRevertData": "0xf4d678b8",
+    "successfulTransfer": {
+      "hash": "0x9c7c82742c25b5a7c3e176ab38b7f9dbfe638097ac092022432614454f30d1da",
+      "block": 2198,
+      "blockHash": "0x5796d704d5faad8f1871faa47ce3ca56abf500eed35e2e608cc220270aac19fc",
+      "status": 1,
+      "gasUsed": 121584,
+      "timestamp": 1790930665
+    },
+    "settledThroughZoneBlock": 2200,
+    "settlement": {
+      "hash": "0x4bfe04db2f936fed8b7249e1986d8e70e236ec9f4ec699a6187917e0916e7b8a",
+      "block": 3873,
+      "blockHash": "0x46d39bd019c0a4e324b894edefa2e1d2de20493bcd8a01d53ffb771768d512e6",
+      "status": 1,
+      "gasUsed": 98842,
+      "timestamp": 1790930608
+    },
+    "privateBalancesAfterSuccess": {
+      "sender": 10000,
+      "recipient": 0,
+      "supply": 10000
+    }
   }
 }
