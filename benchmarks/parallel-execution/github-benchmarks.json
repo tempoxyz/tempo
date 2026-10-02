@@ -1,5 +1,5 @@
 {
-  "status": "optimized_rerun_in_progress",
+  "status": "historical_replay_in_progress",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
@@ -7,7 +7,7 @@
   },
   "repository": "tempoxyz/tempo",
   "published_branch": "onbjerg/parallel-execution",
-  "published_commit": "17f6165d95f50f91be9a9e00760b0cd0edce0b5e",
+  "published_commit": "844f7bb21",
   "source_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
   "publication": "Git push; original local history linked to earlier API snapshot and latest main",
   "workflow": ".github/workflows/bench-e2e.yml",
@@ -100,7 +100,7 @@
       "id": 37013292128,
       "url": "https://github.com/tempoxyz/tempo/actions/runs/37013292128",
       "created_at": "2026-10-02T13:29:09Z",
-      "status": "in_progress",
+      "status": "completed",
       "harness_sha": "b13a6ba5d8e0ad7d3ac69ddd95e51a6b1b041f11",
       "feature_sha": "17f6165d95f50f91be9a9e00760b0cd0edce0b5e",
       "inputs": {
@@ -126,7 +126,48 @@
         "run-pairs": "3"
       },
       "purpose": "Measure newer T14 fee rebasing and worker hash cache with duplicate builder prewarming disabled. Sampler profiles enabled on both sides.",
-      "runner": "ghr-euw-07"
+      "runner": "ghr-euw-07",
+      "conclusion": "success",
+      "result": "throughput regression with builder prewarming disabled",
+      "baseline_tps": 11935,
+      "feature_tps": 5192,
+      "delta_pct": -56.5,
+      "artifact_id": 11229773279,
+      "report": "github-37013292128/summary.md",
+      "sender_report_failures": {
+        "baseline": [
+          48242,
+          21577,
+          49947
+        ],
+        "feature": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": 37016709789,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37016709789",
+      "created_at": "2026-10-02T13:59:17Z",
+      "status": "in_progress",
+      "workflow": ".github/workflows/bench-replay.yml",
+      "harness_sha": "4caada90d070419af2e72900914849867f4bb5e8",
+      "inputs": {
+        "chain": "mainnet",
+        "blocks": "5000",
+        "warmup": "1250",
+        "run-pairs": "2",
+        "samply": "false",
+        "otlp": "true",
+        "baseline": "4caada90d070419af2e72900914849867f4bb5e8",
+        "feature": "844f7bb21ba07005747fefb15d6d023fd8d7135f",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "slack": "never"
+      },
+      "purpose": "Replay 5000 historical mainnet blocks with normal Engine API root verification, after 1250 warmup blocks; compare two pairs against latest main.",
+      "runner": "ghr-euw-03"
     }
   ]
 }

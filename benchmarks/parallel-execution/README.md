@@ -27,9 +27,13 @@ transfers, 15% MPP opens, 5% mints), with a 100,000 MiB bloat input and three
 interleaved pairs. The trimmed summary contains no included-transaction errors;
 raw sender reports do contain failures on both sides. Preserve that distinction
 when reading the reports. See [the workflow run](https://github.com/tempoxyz/tempo/actions/runs/37009502041)
-and `github-37009502041/` for the exact reports and configuration. A second
-profiled run measures the newer revision with duplicate builder prewarming
-disabled; its result is pending in `github-benchmarks.json`.
+and `github-37009502041/` for the exact reports and configuration. The second
+profiled run, with builder prewarming disabled, regressed further: 11,935 baseline
+versus 5,192 feature TPS (-56.50%), and builder gas throughput fell 84.14%.
+See `github-37013292128/`. Keep normal prewarming in subsequent comparisons.
+The two runs used different runners and only their paired comparisons are
+interpretable; neither establishes a gain. Historical mainnet replay is now
+running with the later cursor-prediction revision (see `github-benchmarks.json`).
 
 Workers also predict expiring-nonce ring positions in candidate order and
 prefetch those slots. Predicted values remain ordinary validated reads; skipped,

@@ -1,0 +1,13 @@
+[
+  {
+    "log": "logs-baseline-2-a",
+    "time": "2026-10-02T13:47:17.359825Z",
+    "fields": {
+      "message": "executor encountered fatal execution-layer update error; shutting down to prevent consensus-execution divergence",
+      "error": "[failed delivering finalized block `0xe78495023dabeaab2258eaef0bcaaedd5fa8acc91c778d9dddbcabce098a71f7` at height `143`, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "spans": [
+      "shutdown"
+    ]
+  }
+]
