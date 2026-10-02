@@ -9,10 +9,7 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
-use std::{
-    collections::VecDeque,
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
@@ -20,7 +17,7 @@ use tempo_revm::{
 };
 
 use crate::TempoBlockEnv;
-use crate::parallel::{ExecutionStats, SpeculativeExecutor, SpeculativeResult};
+use crate::parallel::{ExecutionStats, SpeculativeBatch, SpeculativeExecutor};
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -65,7 +62,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
     inspect: bool,
     speculative: Option<SpeculativeExecutor>,
-    prepared: VecDeque<SpeculativeResult<DB::Error>>,
+    prepared: Option<SpeculativeBatch<DB::Error>>,
     execution_stats: ExecutionStats,
     last_sample: ExecutionStats,
     backoff_remaining: usize,
@@ -86,7 +83,7 @@ impl<DB: Database> TempoEvm<DB> {
             inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
             speculative: None,
-            prepared: VecDeque::new(),
+            prepared: None,
             execution_stats: ExecutionStats::default(),
             last_sample: ExecutionStats::default(),
             backoff_remaining: 0,
@@ -98,7 +95,7 @@ impl<DB: Database> TempoEvm<DB> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Enables bounded speculative execution using the standard Tempo EVM configuration.
     pub fn set_speculative_executor(&mut self, executor: Option<SpeculativeExecutor>) {
-        self.prepared.clear();
+        self.prepared = None;
         self.speculative = executor;
         self.last_sample = self.execution_stats;
         self.backoff_remaining = 0;
@@ -120,7 +117,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     pub(crate) fn has_prepared_transactions(&self) -> bool {
-        !self.prepared.is_empty() || self.backoff_remaining > 0
+        self.prepared
+            .as_ref()
+            .is_some_and(|batch| !batch.is_empty())
+            || self.backoff_remaining > 0
     }
 
     /// Speculates on a bounded set of transactions with their respective fee recipients.
@@ -130,7 +130,17 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &mut self,
         transactions: impl IntoIterator<Item = (TempoTxEnv, Address)>,
     ) {
-        self.prepared.clear();
+        self.prepare_transactions_with(transactions, std::convert::identity);
+    }
+
+    /// Converts candidates only when workers will use them. Backoff still advances
+    /// the source iterator, but avoids cloning transaction data and signatures.
+    pub fn prepare_transactions_with<T>(
+        &mut self,
+        transactions: impl IntoIterator<Item = T>,
+        convert: impl FnMut(T) -> (TempoTxEnv, Address),
+    ) {
+        self.prepared = None;
         if self.inspect
             // Instructions and precompiles were constructed with this configuration.
             // Mutating ctx.cfg alone does not reconstruct those components.
@@ -173,6 +183,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         let inputs = transactions
             .into_iter()
             .take(executor.batch_size())
+            .map(convert)
             .filter_map(|(mut tx, beneficiary)| {
                 if tx.is_system_tx {
                     return None;
@@ -193,9 +204,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             })
             .collect::<Vec<_>>();
         self.execution_stats.speculated += inputs.len() as u64;
-        self.prepared = executor
-            .speculate(&mut self.inner.ctx.journaled_state.database, inputs)
-            .into();
+        self.prepared =
+            Some(executor.speculate(&mut self.inner.ctx.journaled_state.database, inputs));
     }
 
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
@@ -226,7 +236,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner: self.inner.with_inspector(inspector),
             inspect: true,
             speculative: self.speculative,
-            prepared: VecDeque::new(),
+            prepared: None,
             execution_stats: self.execution_stats,
             last_sample: self.last_sample,
             backoff_remaining: self.backoff_remaining,
@@ -308,39 +318,25 @@ where
             && self.inner.ctx.journaled_state.state.is_empty()
             && self.inner.ctx.journaled_state.transient_storage.is_empty()
             && self.inner.ctx.journaled_state.logs.is_empty()
-            && let Some(index) = self.prepared.iter().position(|candidate| {
-                candidate.tx == tx
-                    && candidate
-                        .tx
-                        .tempo_tx_env
-                        .as_ref()
-                        .zip(tx.tempo_tx_env.as_ref())
-                        .is_none_or(|(a, b)| {
-                            a.tempo_authorization_list
-                                .iter()
-                                .zip(&b.tempo_authorization_list)
-                                .all(|(a, b)| a.authority_status() == b.authority_status())
-                        })
-            })
+            && let Some(candidate) = self
+                .prepared
+                .as_mut()
+                .and_then(|batch| batch.take(&tx, &mut self.inner.ctx.journaled_state.database))
+            && candidate.env.cfg_env == self.inner.ctx.cfg
+            && candidate.env.block_env == self.inner.ctx.block
         {
-            self.prepared.drain(..index);
-            let candidate = self.prepared.pop_front().expect("located candidate");
-            if candidate.env.cfg_env == self.inner.ctx.cfg
-                && candidate.env.block_env == self.inner.ctx.block
+            if candidate.result.is_err() {
+                self.execution_stats.retries += 1;
+            } else if candidate
+                .validate(&mut self.inner.ctx.journaled_state.database)
+                .unwrap_or(false)
             {
-                if candidate.result.is_err() {
-                    self.execution_stats.retries += 1;
-                } else if candidate
-                    .validate(&mut self.inner.ctx.journaled_state.database)
-                    .unwrap_or(false)
-                {
-                    self.execution_stats.reused += 1;
-                    self.inner.ctx.tx = tx;
-                    return candidate.result;
-                } else {
-                    self.execution_stats.conflicts += 1;
-                    self.inner.set_body_replay(candidate.body);
-                }
+                self.execution_stats.reused += 1;
+                self.inner.ctx.tx = tx;
+                return candidate.result;
+            } else {
+                self.execution_stats.conflicts += 1;
+                self.inner.set_body_replay(candidate.body);
             }
         }
         if tx.is_system_tx {
@@ -400,7 +396,7 @@ where
     fn set_inspector_enabled(&mut self, enabled: bool) {
         self.inspect = enabled;
         if enabled {
-            self.prepared.clear();
+            self.prepared = None;
         }
     }
 

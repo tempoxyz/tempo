@@ -91,6 +91,29 @@ fn differential_with_backoff(
     spec: TempoHardfork,
     adaptive: bool,
 ) -> ExecutionStats {
+    // Exercise actual streaming, then a frozen view that makes conflict-count
+    // assertions deterministic and forces the maximum number of reuse checks.
+    differential_mode(
+        db.clone(),
+        transactions,
+        threads,
+        batch_size,
+        spec,
+        adaptive,
+        true,
+    );
+    differential_mode(db, transactions, threads, batch_size, spec, adaptive, false)
+}
+
+fn differential_mode(
+    db: TestDB,
+    transactions: &[TempoTxEnv],
+    threads: usize,
+    batch_size: usize,
+    spec: TempoHardfork,
+    adaptive: bool,
+    streaming: bool,
+) -> ExecutionStats {
     let env = EvmEnv {
         cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
             spec,
@@ -111,6 +134,7 @@ fn differential_with_backoff(
         SpeculativeExecutor::new(threads, batch_size)
             .unwrap()
             .with_adaptive_backoff(adaptive)
+            .with_streaming(streaming)
             .with_minimum_body_duration(Duration::ZERO),
     ));
     let mut sequential_gas = 0;
@@ -256,6 +280,37 @@ fn conflict_backoff_preserves_results_and_resumes_parallel_work() {
     assert_eq!(stats.conflicts, 31);
     assert_eq!(stats.backoff, 256);
     assert_eq!(stats.reused, 33);
+}
+
+#[test]
+fn backoff_advances_candidates_without_converting_transactions() {
+    let target = address(900);
+    let mut db = TestDB::default();
+    contract(
+        &mut db,
+        target,
+        &[0x60, 0, 0x54, 0x60, 1, 1, 0x60, 0, 0x55, 0],
+    );
+    let mut evm = test_evm_with_basefee(db, 0);
+    evm.ctx_mut().block.gas_limit = 500_000_000;
+    evm.set_speculative_executor(Some(
+        SpeculativeExecutor::new(4, 32)
+            .unwrap()
+            .with_streaming(false),
+    ));
+    evm.prepare_transactions((0..32).map(|i| (transaction(i, target, 0, &[]), Address::ZERO)));
+    for i in 0..32 {
+        let result = evm.transact_raw(transaction(i, target, 0, &[])).unwrap();
+        evm.db_mut().commit(result.state);
+    }
+    assert_eq!(evm.execution_stats().conflicts, 31);
+    let visited = std::cell::Cell::new(0);
+    let mut candidates = (32..96).inspect(|_| visited.set(visited.get() + 1));
+    evm.prepare_transactions_with(&mut candidates, |_| {
+        panic!("backoff must not clone or convert candidate transaction data")
+    });
+    assert_eq!(visited.get(), 32);
+    assert_eq!(candidates.next(), Some(64));
 }
 
 #[test]
@@ -1029,6 +1084,7 @@ fn execution_throughput() {
     let batch_size = std::env::var("TEMPO_BENCH_BATCH_SIZE")
         .map_or(128, |value| value.parse::<usize>().unwrap());
     let profile = std::env::var_os("TEMPO_BENCH_PHASES").is_some();
+    let streaming = std::env::var("TEMPO_BENCH_STREAMING").map_or(true, |value| value != "0");
     println!(
         "workload\ttransactions\tworkers\tseconds\ttps\treused\tconflicts\tretries\tbackoff\tbodies_reused"
     );
@@ -1090,7 +1146,9 @@ fn execution_throughput() {
                 evm.ctx_mut().block.gas_limit = 500_000_000;
                 if threads > 0 {
                     evm.set_speculative_executor(Some(
-                        SpeculativeExecutor::new(threads, batch_size).unwrap(),
+                        SpeculativeExecutor::new(threads, batch_size)
+                            .unwrap()
+                            .with_streaming(streaming),
                     ));
                 }
                 let mut receipts = Vec::with_capacity(txs.len());
@@ -1361,12 +1419,18 @@ struct LocalDatabase {
     // Makes this database !Send and !Sync, like a thread-bound provider transaction.
     _thread_bound: std::rc::Rc<()>,
     panic_on_storage: bool,
+    storage_error: Option<Address>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("injected storage failure")]
+struct LocalDatabaseError;
+impl DBErrorMarker for LocalDatabaseError {}
+
 impl revm::Database for LocalDatabase {
-    type Error = std::convert::Infallible;
+    type Error = LocalDatabaseError;
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        revm::Database::basic(&mut self.inner, address)
+        Ok(revm::Database::basic(&mut self.inner, address).unwrap())
     }
     fn storage(&mut self, account: Address, slot: U256) -> Result<U256, Self::Error> {
         // Fail on the worker's contract read, after fee prefetching has finished.
@@ -1374,13 +1438,16 @@ impl revm::Database for LocalDatabase {
             !(self.panic_on_storage && account == address(900)),
             "injected provider panic"
         );
-        revm::Database::storage(&mut self.inner, account, slot)
+        if self.storage_error == Some(account) {
+            return Err(LocalDatabaseError);
+        }
+        Ok(revm::Database::storage(&mut self.inner, account, slot).unwrap())
     }
     fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
-        revm::Database::code_by_hash(&mut self.inner, hash)
+        Ok(revm::Database::code_by_hash(&mut self.inner, hash).unwrap())
     }
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
-        revm::Database::block_hash(&mut self.inner, number)
+        Ok(revm::Database::block_hash(&mut self.inner, number).unwrap())
     }
 }
 
@@ -1391,6 +1458,7 @@ fn thread_bound_database_and_provider_unwind() {
             inner: TestDB::default(),
             _thread_bound: Default::default(),
             panic_on_storage,
+            storage_error: None,
         };
         let target = address(900);
         contract(&mut db.inner, target, &[0x60, 0, 0x54, 0]);
@@ -1407,4 +1475,166 @@ fn thread_bound_database_and_provider_unwind() {
         }));
         assert_eq!(outcome.is_err(), panic_on_storage);
     }
+}
+
+#[test]
+fn streaming_returns_before_later_reads_and_joins_cancelled_workers() {
+    let mut db = LocalDatabase {
+        inner: TestDB::default(),
+        _thread_bound: Default::default(),
+        panic_on_storage: true,
+        storage_error: None,
+    };
+    let first = address(901);
+    let later = address(900);
+    contract(&mut db.inner, first, &[0]);
+    contract(&mut db.inner, later, &[0x60, 0, 0x54, 0]);
+    let (_, env) = test_evm_with_basefee(TestDB::default(), 0).finish();
+    let tx = transaction(0, first, 0, &[]);
+    let pool = SpeculativeExecutor::new(1, 2).unwrap();
+    let mut batch = pool.speculate(
+        &mut db,
+        vec![
+            (tx.clone(), env.clone()),
+            (transaction(1, later, 0, &[]), env),
+        ],
+    );
+    let shared = Arc::downgrade(&batch.shared);
+    // The batch must also complete after the last executor handle is dropped.
+    drop(pool);
+    assert!(
+        batch
+            .take(&tx, &mut db)
+            .unwrap()
+            .result
+            .unwrap()
+            .result
+            .is_success()
+    );
+    // A single worker sends the first result before asking for the second body's
+    // storage. Neither taking that result nor abandoning the batch may read it.
+    drop(batch);
+    assert!(
+        shared.upgrade().is_none(),
+        "cancelled worker still owns batch state"
+    );
+}
+
+#[test]
+fn provider_errors_retry_on_the_owning_thread() {
+    use alloy_sol_types::SolCall;
+    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    for target in [address(900), PATH_USD_ADDRESS] {
+        let mut db = funded_tip20_db(1);
+        let tx = if target == PATH_USD_ADDRESS {
+            transaction(
+                0,
+                target,
+                0,
+                &ITIP20::transferCall {
+                    to: address(901),
+                    amount: U256::ONE,
+                }
+                .abi_encode(),
+            )
+        } else {
+            contract(&mut db, target, &[0x60, 0, 0x54, 0]);
+            transaction(0, target, 0, &[])
+        };
+        let failing = |inner| LocalDatabase {
+            inner,
+            _thread_bound: Default::default(),
+            panic_on_storage: false,
+            storage_error: Some(target),
+        };
+        let mut sequential = test_evm_with_basefee(failing(db.clone()), 0);
+        let mut parallel = test_evm_with_basefee(failing(db), 0);
+        parallel.set_speculative_executor(Some(SpeculativeExecutor::new(2, 2).unwrap()));
+        parallel.prepare_transactions([(tx.clone(), Address::ZERO)]);
+        assert_eq!(
+            parallel.transact_raw(tx.clone()).unwrap_err().to_string(),
+            sequential.transact_raw(tx).unwrap_err().to_string(),
+        );
+        assert_eq!(parallel.execution_stats().retries, 1);
+        assert_eq!(parallel.execution_stats().reused, 0);
+    }
+}
+
+#[test]
+fn streaming_mixed_prefix_reads_force_replay() {
+    let target = address(900);
+    let mut db = TestDB::default();
+    // Return (storage[0], address(this).balance), combining an on-demand storage
+    // read with prefetched account metadata.
+    contract(
+        &mut db,
+        target,
+        &[
+            0x60, 0, 0x54, 0x60, 0, 0x52, 0x30, 0x31, 0x60, 32, 0x52, 0x60, 64, 0x60, 0, 0xf3,
+        ],
+    );
+    let tx = transaction(0, target, 0, &[]);
+    let mut evm = test_evm_with_basefee(db, 0);
+    evm.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
+    evm.prepare_transactions([(tx.clone(), Address::ZERO)]);
+    let mut info = revm::Database::basic(evm.db_mut(), target)
+        .unwrap()
+        .unwrap();
+    info.balance = U256::from(17);
+    evm.db_mut().insert_account_info(target, info);
+    evm.db_mut()
+        .insert_account_storage(target, U256::ZERO, U256::from(9))
+        .unwrap();
+    let mut sequential = test_evm_with_basefee(evm.db().clone(), 0);
+    assert_eq!(
+        evm.transact_raw(tx.clone()).unwrap(),
+        sequential.transact_raw(tx).unwrap()
+    );
+    assert_eq!(evm.execution_stats().conflicts, 1);
+    assert_eq!(evm.execution_stats().reused, 0);
+}
+
+#[test]
+fn worker_panic_releases_other_workers_waiting_for_reads() {
+    let (_, env) = test_evm_with_basefee(TestDB::default(), 0).finish();
+    let tx = transaction(0, address(900), 0, &[]);
+    let shared = Arc::new(Work {
+        inputs: vec![(tx.clone(), env)],
+        prefetched: HashMap::default(),
+        cache: RwLock::default(),
+        next: AtomicUsize::new(0),
+        cancelled: AtomicBool::new(false),
+    });
+    let (sender, receiver) = mpsc::channel();
+    // Deliver a worker failure before another worker's outstanding read.
+    sender
+        .send(Message::Stopped(Some(Box::new("worker failure"))))
+        .unwrap();
+    let worker = std::thread::spawn(move || {
+        let (reply, receive) = mpsc::sync_channel(1);
+        sender
+            .send(Message::Read(
+                ReadKey::Storage(address(900), U256::ZERO),
+                reply,
+            ))
+            .unwrap();
+        assert!(receive.recv().is_err());
+        sender.send(Message::Stopped(None)).unwrap();
+    });
+    let mut batch = SpeculativeBatch {
+        shared,
+        receiver,
+        outputs: vec![None],
+        cursor: 0,
+        workers: 2,
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        batch.take(&tx, &mut TestDB::default());
+    }));
+    assert_eq!(
+        *result.unwrap_err().downcast::<&str>().unwrap(),
+        "worker failure"
+    );
+    drop(batch);
+    worker.join().unwrap();
 }

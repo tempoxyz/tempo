@@ -29,6 +29,9 @@ execution time. This benchmark does not model an offered-load queue.
 still applies). `TEMPO_BENCH_PHASES=1` prints preparation, ordered execution and
 commit times to help distinguish worker scheduling from serial replay costs.
 Phase timing adds per-transaction clock reads, so compare equally instrumented runs.
+`TEMPO_BENCH_STREAMING=0` waits for all workers before ordered execution, for a
+comparison with streaming (the default). With streaming, ordered time includes
+waiting for individual results and serving outstanding worker database reads.
 
 The timer includes speculative scheduling, database reads, conflict validation,
 replays, receipt construction, and state commits. Signing, initial state setup,
@@ -143,7 +146,7 @@ complete per-transaction outcomes and final trie roots, not just scheduling coun
 AMM tests cover liquidity exhaustion and pre-/post-T1C transient reservations while
 the call bodies remain independent. Reward tests change the global accumulator
 and shared reward recipient, checking both independent bodies and bodies that
-observe those values. The current EVM/revm suites pass 203 tests
+observe those values. The current EVM/revm suites pass 208 tests
 (one throughput benchmark is ignored by default); Clippy with warnings denied
 and the EVM build without default features also pass.
 
@@ -185,6 +188,56 @@ All measured receipt vectors and state roots match. Paid compute still spends
 100k transactions with 32 workers. Increasing the window to 256 did not produce
 a consistent improvement, so the default remains 128. Cheap transactions still
 benefit from sequential execution, and paid compute remains below 50k TPS.
+
+## Streaming speculative batches
+
+Workers now keep running while the owner validates and executes earlier candidates.
+Preparation prefetches a bounded batch and starts its workers; ordered execution
+waits for the required candidate while serving database requests. Dropping or
+replacing a batch cancels outstanding reads and waits for its workers to finish,
+so work and memory cannot accumulate behind cancelled payloads. Provider access
+stays on the owner thread. Worker panics are caught and passed back to the owner.
+
+The generated differentials run both streaming and a frozen batch, preserving
+coverage of maximum conflicts as well as concurrent scheduling. Additional tests
+cover returning before later reads, cancellation, provider unwind and errors,
+worker panic cleanup, and replay when prefetched accounts and later storage reads describe
+different prefixes. Configuration, full-result read validation and call-body
+validation retain their existing checks.
+
+`streaming-profile-baseline.json` records the preceding node's builder CPU profile.
+On the 16-worker trial, preparation accounted for 34.8% of sampled builder CPU,
+including preview iteration and transaction cloning during backoff. The payload
+builder now defers conversion to an EVM input until the scheduler actually starts
+workers. Backoff still advances the same number of preview candidates. The
+profiled twenty-second trials exceeded the confirmation drain and are diagnostic
+profiles, not successful throughput measurements.
+
+`streaming.tsv` retains both barrier/streaming comparisons and the final
+10k/25k/50k/100k transaction matrix. At 100k paid-compute transactions, two barrier
+runs measured 36,720 and 37,087 TPS with 16 workers. Three streaming runs measured
+51,761, 49,862 and 51,236 TPS. With 32 workers, streaming measured 45,724–46,786 TPS.
+These are individual runs, not confidence intervals or evidence of sustained node
+throughput. The first pair predates removal of an unused transaction clone from
+worker results; the repeated comparison and final matrix use the final code.
+
+At 100,000 transactions in the final streaming matrix:
+
+| Workload | Sequential TPS | 16 workers | 32 workers |
+| --- | ---: | ---: | ---: |
+| Storage | 488,643 | 297,572 | 224,913 |
+| Compute, no fees | 7,390 | 69,968 | 88,313 |
+| Compute, paid | 7,234 | 49,862 | 45,724 |
+| TIP-20, no fees | 176,812 | 162,071 | 139,549 |
+| TIP-20, paid | 112,479 | 103,433 | 103,249 |
+
+Every run checks complete receipt vectors and final trie roots against sequential
+execution. Streaming improves paid compute by overlapping its call bodies with
+ordered fee work, but still adds overhead to cheap independent transactions.
+The final paid-compute run spends 0.392 s in preparation, 1.525 s in ordered
+execution (including worker waits), and 0.081 s committing with 16 workers.
+The `speculated` counter now counts scheduled candidates, including work cancelled
+when a prepared batch is abandoned; it must not be read as committed throughput.
 
 ## Local node trials
 
@@ -391,6 +444,24 @@ saved executable; `--client-concurrency` controls RPC pressure. The driver's hos
 record includes `TOKIO_WORKER_THREADS` when explicitly set. CPU summaries use only
 whole one-second intervals inside sending; 100% means one logical core.
 
+`streaming-node-matrix.json` and `node/streaming-matrix-*.json` repeat the five-second
+matrix with streaming and deferred preview conversion:
+
+| Target TPS | Accepted, sequential | Accepted, 16 workers | Confirmed, sequential | Confirmed, 16 workers |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 | 10,004 | 10,001 | 9,935 | 9,880 |
+| 25,000 | 24,980 | 24,982 | 24,035 | 23,612 |
+| 50,000 | 46,268 | 45,735 | 26,626 | 23,625 |
+| 75,000 | 46,232 | 45,980 | 26,571 | 23,509 |
+
+All 1,272,588 user transactions confirmed with no execution failures. At the
+50k offered target, the speculative confirmation rate increases from 21,507 to
+23,625 TPS, while sequential remains about 26.6k TPS. Busy payload execution time
+falls from 6.820 s for 234,048 transactions to 5.717 s for 229,056 transactions;
+finishing takes 1.959 s. These are separate trials with different transaction
+counts. The node still falls far short of sustained 50k TPS, and speculative
+execution still loses to sequential execution on this cheap shared-state workload.
+
 ## Canonical replay
 
 The new read-only command compares complete execution results and state deltas,
@@ -434,13 +505,25 @@ results, complete state deltas, canonical receipts, gas, receipt roots and state
 roots with speculation and call-body reuse forced on. These remain local generated
 chains, not public historical-chain evidence.
 
+`streaming-canonical-2d.tsv`, `streaming-canonical-expiring.tsv` and
+`streaming-canonical-busy.tsv` verify 123 stored local blocks with streaming and
+call-body reuse enabled: 143,247 user transactions plus 123 system transactions.
+This includes both AA nonce modes and three large blocks built by the updated
+node. Complete state deltas, execution results, canonical receipts, gas, receipt
+roots and state roots match. The replay jobs overlap correctness checks and each
+other, so their timings are diagnostic only. Public historical replay remains
+outstanding.
+
 ## Correctness model and integration
 
-Workers execute against a frozen batch view. Database cache misses are served on
-the database's owning thread, supporting Reth providers that cannot be shared
-between threads without unsafe code. Accounts named by a transaction and bounded
-fee/transfer storage hints are prefetched; other reads are cached on demand.
-Every execution read is recorded, including reads in
+Workers execute against a cached view while the owner advances the committed
+prefix. Prefetched values come from the batch start; other reads are cached when
+served and may observe later commits. This can produce an inconsistent speculative
+view, which is safe only because every recorded value must match the actual
+transaction's committed prefix before reuse. Otherwise the result is replayed.
+Database cache misses remain on the database's owning thread, supporting Reth
+providers that cannot be shared between threads without unsafe code. Every
+execution read is recorded, including reads in
 transaction validation, native precompiles and reverted calls. Before reusing a
 result, its transaction and environment must match and every read must still
 match the committed prefix. Conflicting transactions run again through the ordinary

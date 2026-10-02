@@ -451,14 +451,15 @@ where
             if speculation_remaining == 0 {
                 if let Some(preview) = speculative_txs.as_mut() {
                     let beneficiary = builder.evm().block().beneficiary;
-                    builder
-                        .evm_mut()
-                        .prepare_transactions(preview.by_ref().take(batch_size).map(|tx| {
+                    builder.evm_mut().prepare_transactions_with(
+                        preview.by_ref().take(batch_size),
+                        |tx| {
                             (
                                 tx.transaction.clone().into_with_tx_env().tx_env,
                                 beneficiary,
                             )
-                        }));
+                        },
+                    );
                     check_cancel!();
                 }
                 speculation_remaining = batch_size.max(1);

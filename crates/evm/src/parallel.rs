@@ -1,6 +1,6 @@
 //! Ordered optimistic execution for Tempo transactions.
 //!
-//! Workers execute against an immutable view of the state at the beginning of a batch.
+//! Workers execute against cached values while the owner advances the committed prefix.
 //! The database stays on its owning thread: cache misses are served by the coordinator,
 //! so even providers that are neither `Send` nor `Sync` are supported without unsafe code.
 //! Every database read (including reads in reverted calls and transaction validation) is
@@ -22,7 +22,7 @@ use reth_revm::{
 };
 use std::sync::{
     Arc, RwLock,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc,
 };
 use std::time::Duration;
@@ -40,6 +40,7 @@ pub struct SpeculativeExecutor {
     batch_size: usize,
     adaptive_backoff: bool,
     minimum_body_duration: Duration,
+    streaming: bool,
 }
 
 impl SpeculativeExecutor {
@@ -63,6 +64,7 @@ impl SpeculativeExecutor {
             batch_size,
             adaptive_backoff: true,
             minimum_body_duration: Duration::from_micros(20),
+            streaming: true,
         })
     }
 
@@ -80,6 +82,13 @@ impl SpeculativeExecutor {
         self
     }
 
+    /// Allow ordered execution to overlap workers. Disabling this keeps a frozen
+    /// batch for differential coverage of maximal conflicts and scheduling comparisons.
+    pub fn with_streaming(mut self, enabled: bool) -> Self {
+        self.streaming = enabled;
+        self
+    }
+
     pub(crate) const fn adaptive_backoff(&self) -> bool {
         self.adaptive_backoff
     }
@@ -89,20 +98,17 @@ impl SpeculativeExecutor {
         self.batch_size
     }
 
-    /// Executes a bounded batch without committing any writes to `db`.
+    /// Starts a bounded batch without committing any writes to `db`.
     ///
     /// Each input has its own block context, including the subblock fee recipient.
-    /// The returned results are in input order, independent of worker completion order.
+    /// The owner retrieves results in input order and serves worker reads while waiting.
     pub(crate) fn speculate<DB: Database>(
         &self,
         db: &mut DB,
         inputs: Vec<(TempoTxEnv, Env)>,
-    ) -> Vec<SpeculativeResult<DB::Error>> {
+    ) -> SpeculativeBatch<DB::Error> {
         assert!(inputs.len() <= self.batch_size);
         let count = inputs.len();
-        if count == 0 {
-            return Vec::new();
-        }
         // Accounts named by the transaction can be loaded without waiting for a
         // worker round trip. This is only a cache hint: errors are observed by the
         // actual read, and accesses are recorded even when they hit this map.
@@ -123,104 +129,229 @@ impl SpeculativeExecutor {
                 }
             }
         }
-        let cache = RwLock::new(HashMap::default());
-        let next = AtomicUsize::new(0);
+        let shared = Arc::new(Work {
+            inputs,
+            prefetched,
+            cache: RwLock::new(HashMap::default()),
+            next: AtomicUsize::new(0),
+            cancelled: AtomicBool::new(false),
+        });
         let (sender, receiver) = mpsc::channel();
-        let mut outputs: Vec<_> = (0..count).map(|_| None).collect();
+        let workers = count.min(self.pool.current_num_threads());
+        let mut batch = SpeculativeBatch {
+            shared: shared.clone(),
+            receiver,
+            outputs: (0..count).map(|_| None).collect(),
+            cursor: 0,
+            workers,
+        };
+        for _ in 0..workers {
+            let sender = sender.clone();
+            let shared = shared.clone();
+            let minimum_body_duration = self.minimum_body_duration;
+            self.pool.spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_worker(&shared, &sender, minimum_body_duration);
+                }));
+                drop(shared);
+                // Catch worker panics before leaving Rayon. The owning coordinator
+                // propagates them after releasing other workers, including on unwind.
+                let _ = sender.send(Message::Stopped(result.err()));
+            });
+        }
+        drop(sender);
+        if !self.streaming {
+            batch.complete(db);
+        }
+        batch
+    }
+}
 
-        // Unlike `scope`, `in_place_scope` does not require moving the coordinator
-        // closure (or its database) to the pool.
-        self.pool.in_place_scope(|scope| {
-            // Drop pending response senders before the scope joins workers if a
-            // provider panics while serving a read.
-            let receiver = receiver;
-            for _ in 0..count.min(self.pool.current_num_threads()) {
-                let sender = sender.clone();
-                let cache = &cache;
-                let prefetched = &prefetched;
-                let inputs = &inputs;
-                let next = &next;
-                scope.spawn(move |_| {
-                    let db = RecordingDatabase {
-                        sender: sender.clone(),
-                        cache,
-                        prefetched,
-                        reads: Vec::new(),
-                        body_reads: Vec::new(),
-                    };
-                    let mut evm = TempoEvm::new(db, inputs[0].1.clone());
-                    evm.inner_mut()
-                        .enable_body_recording(self.minimum_body_duration);
-                    loop {
-                        let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some((tx, env)) = inputs.get(index) else {
-                            break;
-                        };
-                        if evm.ctx().cfg != env.cfg_env {
-                            let (db, _) = evm.finish();
-                            evm = TempoEvm::new(db, env.clone());
-                            evm.inner_mut()
-                                .enable_body_recording(self.minimum_body_duration);
-                        } else {
-                            evm.ctx_mut().block = env.block_env.clone();
-                        }
-                        let result = evm.transact_raw(tx.clone());
-                        let reads =
-                            std::mem::take(&mut evm.ctx_mut().journaled_state.database.reads);
-                        let body_reads =
-                            std::mem::take(&mut evm.ctx_mut().journaled_state.database.body_reads);
-                        let mut body = evm.inner_mut().take_recorded_body();
-                        if let Some(body) = &mut body {
-                            body.set_database_reads(body_reads);
-                        }
-                        // A panic drops this worker's senders. The receiver can
-                        // terminate and the scope propagates the panic.
-                        let _ = sender.send(Message::Finished(
-                            index,
-                            Box::new(SpeculativeResult {
-                                tx: tx.clone(),
-                                env: env.clone(),
-                                reads,
-                                result,
-                                body,
-                            }),
-                        ));
-                    }
-                });
+#[derive(Debug)]
+struct Work {
+    inputs: Vec<(TempoTxEnv, Env)>,
+    prefetched: HashMap<ReadKey, ReadValue>,
+    cache: RwLock<HashMap<ReadKey, ReadValue>>,
+    next: AtomicUsize,
+    cancelled: AtomicBool,
+}
+
+fn run_worker<E: DBErrorMarker>(
+    shared: &Work,
+    sender: &mpsc::Sender<Message<E>>,
+    minimum_body_duration: Duration,
+) {
+    let db = RecordingDatabase {
+        sender: sender.clone(),
+        shared,
+        reads: Vec::new(),
+        body_reads: Vec::new(),
+    };
+    let mut evm = TempoEvm::new(db, shared.inputs[0].1.clone());
+    evm.inner_mut().enable_body_recording(minimum_body_duration);
+    while !shared.cancelled.load(Ordering::Relaxed) {
+        let index = shared.next.fetch_add(1, Ordering::Relaxed);
+        let Some((tx, env)) = shared.inputs.get(index) else {
+            break;
+        };
+        if evm.ctx().cfg != env.cfg_env {
+            let (db, _) = evm.finish();
+            evm = TempoEvm::new(db, env.clone());
+            evm.inner_mut().enable_body_recording(minimum_body_duration);
+        } else {
+            evm.ctx_mut().block = env.block_env.clone();
+        }
+        let result = match evm.transact_raw(tx.clone()) {
+            Err(EVMError::Database(ProxyError::Cancelled)) => break,
+            result => result.map_err(|error| {
+                error.map_db_err(|error| match error {
+                    ProxyError::Provider(error) => error,
+                    ProxyError::Cancelled => unreachable!("handled cancellation"),
+                })
+            }),
+        };
+        let reads = std::mem::take(&mut evm.ctx_mut().journaled_state.database.reads);
+        let body_reads = std::mem::take(&mut evm.ctx_mut().journaled_state.database.body_reads);
+        let mut body = evm.inner_mut().take_recorded_body();
+        if let Some(body) = &mut body {
+            body.set_database_reads(body_reads);
+        }
+        let _ = sender.send(Message::Finished(
+            index,
+            Box::new(SpeculativeResult {
+                env: env.clone(),
+                reads,
+                result,
+                body,
+            }),
+        ));
+    }
+}
+
+/// Bounded in-flight work. Only this owner accesses the database. Reads served
+/// after a commit may see a newer prefix than prefetched values; every recorded
+/// value must still match the actual transaction's prefix before reuse.
+/// An inconsistent speculative view therefore causes replay, never a commit.
+pub(crate) struct SpeculativeBatch<E> {
+    shared: Arc<Work>,
+    receiver: mpsc::Receiver<Message<E>>,
+    outputs: Vec<Option<SpeculativeResult<E>>>,
+    cursor: usize,
+    workers: usize,
+}
+
+impl<E> std::fmt::Debug for SpeculativeBatch<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpeculativeBatch")
+            .field("candidates", &self.outputs.len())
+            .field("cursor", &self.cursor)
+            .field("workers", &self.workers)
+            .finish()
+    }
+}
+
+impl<E: DBErrorMarker> SpeculativeBatch<E> {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cursor == self.shared.inputs.len()
+    }
+
+    fn receive<DB: Database<Error = E>>(&mut self, db: &mut DB) {
+        match self
+            .receiver
+            .recv()
+            .expect("workers stopped without reporting completion")
+        {
+            Message::Read(key, response) => {
+                let cached = self
+                    .shared
+                    .cache
+                    .read()
+                    .expect("read cache poisoned")
+                    .get(&key)
+                    .cloned();
+                let value = cached.map(Ok).unwrap_or_else(|| read(db, key));
+                if let Ok(value) = &value {
+                    self.shared
+                        .cache
+                        .write()
+                        .expect("read cache poisoned")
+                        .insert(key, value.clone());
+                }
+                let _ = response.send(value);
             }
-            drop(sender);
-            while let Ok(message) = receiver.recv() {
-                match message {
-                    Message::Read(key, response) => {
-                        let cached = cache
-                            .read()
-                            .expect("read cache poisoned")
-                            .get(&key)
-                            .cloned();
-                        let value = cached.map(Ok).unwrap_or_else(|| read(db, key));
-                        if let Ok(value) = &value {
-                            cache
-                                .write()
-                                .expect("read cache poisoned")
-                                .insert(key, value.clone());
-                        }
-                        let _ = response.send(value);
-                    }
-                    Message::Finished(index, result) => outputs[index] = Some(*result),
+            Message::Finished(index, result) => {
+                if index >= self.cursor {
+                    self.outputs[index] = Some(*result);
                 }
             }
-        });
-        outputs
-            .into_iter()
-            .map(|output| output.expect("worker did not return a result"))
-            .collect()
+            Message::Stopped(panic) => {
+                self.workers -= 1;
+                if let Some(panic) = panic {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        }
+    }
+
+    fn complete<DB: Database<Error = E>>(&mut self, db: &mut DB) {
+        while self.workers > 0 {
+            self.receive(db);
+        }
+    }
+
+    pub(crate) fn take<DB: Database<Error = E>>(
+        &mut self,
+        tx: &TempoTxEnv,
+        db: &mut DB,
+    ) -> Option<SpeculativeResult<E>> {
+        let index = self.shared.inputs[self.cursor..]
+            .iter()
+            .position(|(candidate, _)| {
+                candidate == tx
+                    && candidate
+                        .tempo_tx_env
+                        .as_ref()
+                        .zip(tx.tempo_tx_env.as_ref())
+                        .is_none_or(|(a, b)| {
+                            a.tempo_authorization_list
+                                .iter()
+                                .zip(&b.tempo_authorization_list)
+                                .all(|(a, b)| a.authority_status() == b.authority_status())
+                        })
+            })?
+            + self.cursor;
+        for skipped in self.cursor..index {
+            self.outputs[skipped] = None;
+        }
+        self.cursor = index;
+        while self.outputs[index].is_none() {
+            assert!(self.workers > 0, "worker did not return a result");
+            self.receive(db);
+        }
+        self.cursor = index + 1;
+        self.outputs[index].take()
+    }
+}
+
+impl<E> Drop for SpeculativeBatch<E> {
+    fn drop(&mut self) {
+        self.shared.cancelled.store(true, Ordering::Relaxed);
+        // Closing replies wakes workers waiting for DB reads. Join even on unwind,
+        // so replacing or abandoning batches cannot accumulate background work.
+        while self.workers > 0 {
+            match self.receiver.recv() {
+                Ok(Message::Stopped(_)) => self.workers -= 1,
+                Ok(message) => drop(message),
+                Err(_) => break,
+            }
+        }
     }
 }
 
 /// Per-EVM counters. Speculation is never reported as committed work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionStats {
-    /// Transactions executed by workers, including speculative failures.
+    /// Candidates scheduled on workers, including speculative failures and cancelled work.
     pub speculated: u64,
     /// Successful speculative results reused after validating their reads.
     pub reused: u64,
@@ -236,7 +367,6 @@ pub struct ExecutionStats {
 
 #[derive(Debug)]
 pub(crate) struct SpeculativeResult<E> {
-    pub(crate) tx: TempoTxEnv,
     pub(crate) env: Env,
     reads: Vec<(ReadKey, ReadValue)>,
     pub(crate) result: Outcome<E>,
@@ -256,27 +386,39 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
     }
 }
 
-#[derive(Debug)]
 enum Message<E> {
     Read(ReadKey, mpsc::SyncSender<Result<ReadValue, E>>),
     Finished(usize, Box<SpeculativeResult<E>>),
+    Stopped(Option<Box<dyn std::any::Any + Send>>),
 }
+
+#[derive(Debug, thiserror::Error)]
+enum ProxyError<E> {
+    #[error(transparent)]
+    Provider(E),
+    #[error("speculative batch cancelled")]
+    Cancelled,
+}
+impl<E: DBErrorMarker> DBErrorMarker for ProxyError<E> {}
 
 #[derive(Debug)]
 struct RecordingDatabase<'a, E> {
     sender: mpsc::Sender<Message<E>>,
-    cache: &'a RwLock<HashMap<ReadKey, ReadValue>>,
-    prefetched: &'a HashMap<ReadKey, ReadValue>,
+    shared: &'a Work,
     reads: Vec<(ReadKey, ReadValue)>,
     body_reads: Vec<(ReadKey, ReadValue)>,
 }
 
 impl<E> RecordingDatabase<'_, E> {
-    fn read(&mut self, key: ReadKey) -> Result<ReadValue, E> {
+    fn read(&mut self, key: ReadKey) -> Result<ReadValue, ProxyError<E>> {
+        if self.shared.cancelled.load(Ordering::Relaxed) {
+            return Err(ProxyError::Cancelled);
+        }
         let start = tempo_revm::replay::is_recording_body().then(std::time::Instant::now);
         // Release the read lock before waiting for the coordinator to populate it.
-        let cached = self.prefetched.get(&key).cloned().or_else(|| {
-            self.cache
+        let cached = self.shared.prefetched.get(&key).cloned().or_else(|| {
+            self.shared
+                .cache
                 .read()
                 .expect("read cache poisoned")
                 .get(&key)
@@ -288,8 +430,11 @@ impl<E> RecordingDatabase<'_, E> {
             let (sender, receiver) = mpsc::sync_channel(1);
             self.sender
                 .send(Message::Read(key, sender))
-                .unwrap_or_else(|_| panic!("database coordinator stopped"));
-            receiver.recv().expect("database coordinator stopped")?
+                .map_err(|_| ProxyError::Cancelled)?;
+            receiver
+                .recv()
+                .map_err(|_| ProxyError::Cancelled)?
+                .map_err(ProxyError::Provider)?
         };
         self.reads.push((key, value.clone()));
         if let Some(start) = start {
@@ -301,30 +446,30 @@ impl<E> RecordingDatabase<'_, E> {
 }
 
 impl<E: DBErrorMarker> reth_revm::Database for RecordingDatabase<'_, E> {
-    type Error = E;
+    type Error = ProxyError<E>;
 
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, E> {
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let ReadValue::Account(info) = self.read(ReadKey::Account(address))? else {
             unreachable!()
         };
         Ok(info)
     }
 
-    fn storage(&mut self, address: Address, slot: U256) -> Result<U256, E> {
+    fn storage(&mut self, address: Address, slot: U256) -> Result<U256, Self::Error> {
         let ReadValue::Storage(value) = self.read(ReadKey::Storage(address, slot))? else {
             unreachable!()
         };
         Ok(value)
     }
 
-    fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, E> {
+    fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
         let ReadValue::Code(code) = self.read(ReadKey::Code(hash))? else {
             unreachable!()
         };
         Ok(code)
     }
 
-    fn block_hash(&mut self, number: u64) -> Result<B256, E> {
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
         let ReadValue::BlockHash(hash) = self.read(ReadKey::BlockHash(number))? else {
             unreachable!()
         };
