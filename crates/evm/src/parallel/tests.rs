@@ -998,6 +998,130 @@ fn sponsored_expiring_nonces_preserve_ring_updates_and_replay_rejection() {
 }
 
 #[test]
+fn expiring_nonce_ring_wrap_rechecks_full_and_expired_entries() {
+    use alloy_evm::FromRecoveredTx;
+    use revm::Database as _;
+    use tempo_precompiles::{
+        NONCE_PRECOMPILE_ADDRESS,
+        nonce::{EXPIRING_NONCE_SET_CAPACITY, slots},
+        storage::StorageKey,
+    };
+    use tempo_primitives::{
+        TempoSignature, TempoTransaction,
+        transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
+    };
+
+    let now = revm::context::BlockEnv::default()
+        .timestamp
+        .saturating_to::<u64>();
+    let old_hash = B256::repeat_byte(0xff);
+    let target = address(900);
+    let txs = (0..3)
+        .map(|i: u64| {
+            let signed = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: 1,
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                valid_before: std::num::NonZeroU64::new(now + 25),
+                calls: vec![Call {
+                    to: target.into(),
+                    value: U256::ZERO,
+                    input: Bytes::copy_from_slice(&i.to_be_bytes()),
+                }],
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::default());
+            TempoTxEnv::from_recovered_tx(&signed, address(i))
+        })
+        .collect::<Vec<_>>();
+
+    for spec in FEE_SPECS.into_iter().filter(|spec| spec.is_t1()) {
+        for expired in [false, true] {
+            let mut db = funded_tip20_db(3);
+            contract(&mut db, target, &[0]);
+            db.insert_account_info(
+                NONCE_PRECOMPILE_ADDRESS,
+                AccountInfo {
+                    nonce: 1,
+                    ..Default::default()
+                },
+            );
+            for (slot, value) in [
+                (
+                    slots::EXPIRING_NONCE_RING_PTR,
+                    U256::from(EXPIRING_NONCE_SET_CAPACITY - 1),
+                ),
+                (
+                    0u32.mapping_slot(slots::EXPIRING_NONCE_RING),
+                    U256::from_be_bytes(old_hash.0),
+                ),
+                (
+                    old_hash.mapping_slot(slots::EXPIRING_NONCE_SEEN),
+                    U256::from(if expired { now } else { now + 25 }),
+                ),
+            ] {
+                db.insert_account_storage(NONCE_PRECOMPILE_ADDRESS, slot, value)
+                    .unwrap();
+            }
+
+            // The first transaction wraps the pointer to slot zero. A frozen
+            // worker sees the previously empty final slot for every candidate;
+            // ordered replay must check the newly reached entry's expiry.
+            let mut canonical = TempoEvm::new(
+                db.clone(),
+                EvmEnv {
+                    cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
+                        spec,
+                        tempo_revm::gas_params::tempo_gas_params(spec),
+                    ),
+                    block_env: TempoBlockEnv {
+                        inner: revm::context::BlockEnv {
+                            basefee: 0,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                },
+            );
+            let first = canonical.transact_raw(txs[0].clone()).unwrap();
+            canonical.db_mut().commit(first.state);
+            assert_eq!(
+                canonical
+                    .db_mut()
+                    .storage(NONCE_PRECOMPILE_ADDRESS, slots::EXPIRING_NONCE_RING_PTR)
+                    .unwrap(),
+                U256::ZERO
+            );
+            let second = canonical.transact_raw(txs[1].clone());
+            if expired {
+                let second = second.unwrap();
+                canonical.db_mut().commit(second.state);
+                assert_eq!(
+                    canonical
+                        .db_mut()
+                        .storage(
+                            NONCE_PRECOMPILE_ADDRESS,
+                            old_hash.mapping_slot(slots::EXPIRING_NONCE_SEEN)
+                        )
+                        .unwrap(),
+                    U256::ZERO
+                );
+            } else {
+                assert!(
+                    matches!(second, Err(EVMError::Transaction(TempoInvalidTransaction::NonceManagerError(ref error))) if error.contains("ExpiringNonceSetFull")),
+                    "{spec:?}: {second:?}"
+                );
+            }
+
+            let stats = differential_at_spec(db, &txs, 3, 3, spec);
+            assert_eq!(stats.reused, 1, "{spec:?}, expired={expired}: {stats:?}");
+            assert_eq!(stats.conflicts, 2, "{spec:?}, expired={expired}: {stats:?}");
+        }
+    }
+}
+
+#[test]
 fn selfdestruct_balance_changes_invalidate_later_reads() {
     let source = address(900);
     let beneficiary = address(901);

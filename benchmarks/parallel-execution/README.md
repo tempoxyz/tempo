@@ -1368,6 +1368,65 @@ The tool selects only complete profiles inside the submission window and only th
 profile's sampled totals, window and skip counters exactly. Raw profile paths and
 SHA-256 hashes are retained in each summary.
 
+## Collect payload limits with the AA snapshot
+
+Payload iterators now compute their minimum gas and encoded-size bounds during
+the existing snapshot/index traversal. This removes the additional minimum-gas
+scan identified by the profile. Ordinary pool iterators and speculative preview
+iterators retain their unrestricted selection behavior. The encoded-size bound
+uses cached EIP-2718 lengths as conservative lower bounds; an oversized-candidate
+notification uses that candidate's full RLP length to recover the remaining block
+budget. Smaller descendants and live arrivals still prevent premature termination.
+
+`selection-limits-node.json` compares the new binary against `8f3ae43c`, with
+16 execution workers, shared trie roots, 5B block gas and the same local client:
+
+| Workload | Offered TPS | Submission seconds | Before, confirmed TPS | After, confirmed TPS |
+| --- | ---: | ---: | ---: | ---: |
+| 2D, new recipients | 50,000 | 10 | 21,082 | 21,885 |
+| 2D, existing recipients | 75,000 | 10 | 27,080 | 28,083 |
+| Expiring, existing recipients | 50,000 | 5 | 27,017 | 27,499 |
+| Expiring, existing recipients | 25,000 | 10 | 22,568 | 23,636 |
+
+All 2,605,917 accepted transactions confirm without execution failures or rejected
+dev payloads. The two 2D snapshot totals fall from 3.21 s to 2.39 s and 1.54 s to
+1.15 s, approximately 25% less. The short expiring pair reduces encoded-size skips
+from 317,787 to five. These are individual paired trials, not confidence intervals;
+the 25k expiring pair never triggers a size bound, and its timing difference is
+largely background-root waiting, so it is a control rather than evidence of a size
+optimization gain. Confirmed rates include backlog and remain below 50k TPS.
+
+`selection-limits-snapshot.tsv` measures paired iterator construction with payload
+bounds disabled/enabled/enabled/disabled, five repeats per size per trial. At 100k
+candidates, unrestricted construction averages 26.78 ms and construction with
+bounds averages 30.29 ms. This compares the new constructor's incremental cost,
+not the old separate-scan implementation. Both iterators must preserve the full
+expected selection order. Set `TEMPO_POOL_BENCH_LIMITS=1`,
+`TEMPO_POOL_BENCH_PAIR=1` and `TEMPO_POOL_BENCH_SCATTERED=1` to reproduce the
+payload case with the ignored `best_transactions_throughput` test.
+
+`selection-limits-expiring-capacity.json` separately preserves the ten-second,
+50k-offered expiring stress pair. Both exceed the protocol's 300,000-entry
+unexpired replay-protection ring with the benchmark's 25-second expiry. In the
+updated run, cumulative inclusion reaches exactly 300,000 user transactions, then
+pauses until expiry frees entries. Size skips fall from 1,087,680 to eight, but
+85,706/455,098 transactions before the change and 88,400/455,934 afterward remain
+unconfirmed. These are failed load trials, not throughput results. The executor
+must preserve the ring's rejection and eviction rules; increasing its capacity is
+outside this optimization.
+
+The 242 pool tests pass, including 960 generated mixed gas/size budgets checked
+against full scanning, RLP-header boundary cases, descendants and queued arrivals.
+The 91 EVM tests pass, including new differential coverage of ring wrap, rejection
+of unexpired entries and eviction exactly at expiry across T1 through T4 and all
+worker/replay modes. Clippy passes for the EVM, pool and payload builder; shared
+trie root-proof, TIP-20 and mixed payment-lane node checks pass.
+`selection-limits-canonical-*.tsv` verifies 27 generated blocks containing 262,128
+user transactions and 27 system transactions, including the ring-capacity pause
+and subsequent resumption. Full outcomes, state deltas, stored receipts, gas and
+canonical roots agree. Replay timings overlap correctness checks and are
+diagnostic only.
+
 ## Correctness model and integration
 
 Workers execute against a cached view while the owner advances the committed
@@ -1413,6 +1472,8 @@ differential check also compares actual receipts and ordered state hooks.
 - Replay historical blocks against verified parent state and canonical receipts and
   roots. The public Moderato endpoint returned HTTP 403 from this host; no historical
   mainnet/testnet replay is claimed. The local replay harness is available.
+  The snapshot metadata API configured in the node also returns HTTP 403
+  (`historical-snapshot-access.json`, checked 2026-10-02).
 - Sustain 50k+ actual node TPS, measure transaction confirmation latency, and profile
   execution separately from pool iteration and block finishing on a larger host.
   The 5B-gas follow-up removes the original benchmark's block-gas ceiling, but

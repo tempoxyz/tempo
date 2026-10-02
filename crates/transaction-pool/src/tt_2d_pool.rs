@@ -1,5 +1,7 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
+use alloy_consensus::Transaction;
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, HashMap, HashSet, U256Map},
@@ -502,14 +504,29 @@ impl AA2dPool {
     }
 
     /// Returns the best, executable transactions for this sub-pool
-    #[allow(clippy::mutable_key_type)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
+        self.best_transactions_inner(false)
+    }
+
+    /// Return payload candidates with conservative gas and encoded-size bounds.
+    pub(crate) fn best_transactions_for_payload(&self) -> BestAA2dTransactions {
+        self.best_transactions_inner(true)
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    fn best_transactions_inner(&self, payload_limits: bool) -> BestAA2dTransactions {
+        let mut limits = payload_limits.then(SelectionLimits::default);
         // Collect independent transactions from both 2D nonce pool and expiring nonce pool
         // Expiring nonce txs are also independent (no nonce dependencies).
         let independent = IndependentTransactions::new(
             self.independent_transactions
                 .values()
                 .chain(self.expiring_nonce_txs.values())
+                .inspect(|tx| {
+                    if let Some(limits) = &mut limits {
+                        limits.observe(&tx.transaction.transaction);
+                    }
+                })
                 .cloned(),
         );
 
@@ -518,7 +535,14 @@ impl AA2dPool {
             self.by_id
                 .iter()
                 .filter(|(_, tx)| tx.is_pending())
-                .map(|(id, tx)| (*id, tx.inner.clone())),
+                .map(|(id, tx)| {
+                    // Include nonce descendants while collecting the index. This
+                    // avoids another traversal after building the snapshot.
+                    if let Some(limits) = &mut limits {
+                        limits.observe(&tx.inner.transaction.transaction);
+                    }
+                    (*id, tx.inner.clone())
+                }),
         );
         BestAA2dTransactions {
             independent,
@@ -526,7 +550,7 @@ impl AA2dPool {
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
-            gas_budget: None,
+            limits,
         }
     }
 
@@ -534,15 +558,18 @@ impl AA2dPool {
     /// The caller holds the pool read lock across construction, so both live feeds
     /// subscribe before any admission can change the snapshot. Iteration, updates
     /// and invalidation remain private to each consumer.
-    pub(crate) fn best_transactions_pair(&self) -> (BestAA2dTransactions, BestAA2dTransactions) {
-        let best = self.best_transactions();
+    pub(crate) fn best_transactions_pair(
+        &self,
+        payload_limits: bool,
+    ) -> (BestAA2dTransactions, BestAA2dTransactions) {
+        let best = self.best_transactions_inner(payload_limits);
         let preview = BestAA2dTransactions {
             independent: best.independent.clone(),
             by_id: best.by_id.clone(),
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
-            gas_budget: None,
+            limits: None,
         };
         (best, preview)
     }
@@ -1600,36 +1627,44 @@ pub(crate) struct BestAA2dTransactions {
     /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
     last_priority: Option<Priority<u128>>,
     /// Payload-only budget tracking; ordinary pool iterators keep their original
-    /// invalidation behavior. The minimum is a conservative lower bound and is
-    /// never raised when a transaction is removed.
-    gas_budget: Option<SelectionGasBudget>,
+    /// invalidation behavior. Minima are conservative lower bounds and are never
+    /// raised when a transaction is removed.
+    limits: Option<SelectionLimits>,
 }
 
 #[derive(Debug)]
-struct SelectionGasBudget {
-    remaining: u64,
-    minimum: u64,
+struct SelectionLimits {
+    remaining_gas: u64,
+    minimum_gas: u64,
+    remaining_size: usize,
+    minimum_size: usize,
+}
+
+impl Default for SelectionLimits {
+    fn default() -> Self {
+        Self {
+            remaining_gas: u64::MAX,
+            minimum_gas: u64::MAX,
+            remaining_size: usize::MAX,
+            minimum_size: usize::MAX,
+        }
+    }
+}
+
+impl SelectionLimits {
+    fn observe(&mut self, tx: &TempoPooledTransaction) {
+        self.minimum_gas = self.minimum_gas.min(tx.gas_limit());
+        // The cached EIP-2718 length excludes the outer RLP header, so it is a
+        // conservative lower bound on the size charged by the payload builder.
+        self.minimum_size = self.minimum_size.min(tx.encoded_length());
+    }
+
+    fn exhausted(&self) -> bool {
+        self.minimum_gas > self.remaining_gas || self.minimum_size > self.remaining_size
+    }
 }
 
 impl BestAA2dTransactions {
-    /// Stop scanning when no known transaction can fit the payload's decreasing
-    /// remaining gas budget. Include descendants, not just independent heads.
-    pub(crate) fn with_remaining_gas_tracking(mut self) -> Self {
-        let minimum = self
-            .by_id
-            .values()
-            .chain(self.independent.snapshot.iter())
-            .chain(self.independent.updates.iter())
-            .map(|tx| tx.transaction.gas_limit())
-            .min()
-            .unwrap_or(u64::MAX);
-        self.gas_budget = Some(SelectionGasBudget {
-            remaining: u64::MAX,
-            minimum,
-        });
-        self
-    }
-
     /// Removes the best transaction from the set
     fn pop_best(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let tx = self.independent.pop_last()?;
@@ -1672,8 +1707,8 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Process(tx) => (tx, true),
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
-                if let Some(budget) = &mut self.gas_budget {
-                    budget.minimum = budget.minimum.min(tx.transaction.gas_limit());
+                if let Some(limits) = &mut self.limits {
+                    limits.observe(&tx.transaction.transaction);
                 }
                 if tx.transaction.transaction.is_expiring_nonce() {
                     if process {
@@ -1708,16 +1743,13 @@ impl BestAA2dTransactions {
     )> {
         loop {
             self.add_new_transactions();
-            if self
-                .gas_budget
-                .as_ref()
-                .is_some_and(|budget| budget.minimum > budget.remaining)
+            if self.limits.as_ref().is_some_and(SelectionLimits::exhausted)
                 && self
                     .new_transaction_receiver
                     .as_ref()
                     .is_none_or(|receiver| receiver.is_empty())
             {
-                // A queued live update might have a smaller gas limit. Preserve
+                // A queued live update might have a smaller gas limit or size. Preserve
                 // bounded update draining and keep yielding until that queue is
                 // empty before relying on the bound. Retain candidates so a later
                 // next() can resume if a cheaper transaction arrives.
@@ -1752,10 +1784,20 @@ impl Iterator for BestAA2dTransactions {
 
 impl BestTransactions for BestAA2dTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
-        if let Some(budget) = &mut self.gas_budget
-            && let InvalidPoolTransactionError::ExceedsGasLimit(_, remaining) = kind
-        {
-            budget.remaining = budget.remaining.min(*remaining);
+        if let Some(limits) = &mut self.limits {
+            match kind {
+                InvalidPoolTransactionError::ExceedsGasLimit(_, remaining) => {
+                    limits.remaining_gas = limits.remaining_gas.min(*remaining);
+                }
+                InvalidPoolTransactionError::OversizedData { size, limit } => {
+                    // The payload reports its estimated total with this candidate.
+                    // Subtract the candidate's full RLP length to recover bytes
+                    // already used. The remaining budget only decreases.
+                    let used = size.saturating_sub(transaction.transaction.inner().network_len());
+                    limits.remaining_size = limits.remaining_size.min(limit.saturating_sub(used));
+                }
+                _ => {}
+            }
         }
         // Skip invalidation for expiring nonce transactions - they are independent
         // and should not block other expiring nonce txs from the same sender
@@ -3838,6 +3880,7 @@ mod tests {
         // Compare two independent constructions (0) with a paired snapshot (1).
         // Unset retains the original single-iterator benchmark.
         let pair = std::env::var("TEMPO_POOL_BENCH_PAIR").ok();
+        let payload_limits = std::env::var_os("TEMPO_POOL_BENCH_LIMITS").is_some();
         let counts = std::env::var("TEMPO_POOL_BENCH_COUNTS")
             .unwrap_or_else(|_| "10000,25000,50000,100000".into());
         println!("transactions\trepeat\tsnapshot_seconds\tdrain_seconds\tselected_per_second");
@@ -3889,11 +3932,14 @@ mod tests {
                 let start = Instant::now();
                 let (best, preview) = match pair.as_deref() {
                     Some("1") => {
-                        let (best, preview) = pool.best_transactions_pair();
+                        let (best, preview) = pool.best_transactions_pair(payload_limits);
                         (best, Some(preview))
                     }
-                    Some("0") => (pool.best_transactions(), Some(pool.best_transactions())),
-                    None => (pool.best_transactions(), None),
+                    Some("0") => (
+                        pool.best_transactions_inner(payload_limits),
+                        Some(pool.best_transactions()),
+                    ),
+                    None => (pool.best_transactions_inner(payload_limits), None),
                     Some(value) => panic!("unsupported TEMPO_POOL_BENCH_PAIR={value}"),
                 };
                 let snapshot = start.elapsed().as_secs_f64();
@@ -3914,9 +3960,14 @@ mod tests {
         }
     }
 
-    #[test_case::test_case(false ; "both live")]
-    #[test_case::test_case(true ; "frozen preview")]
-    fn paired_best_transactions_keep_independent_selection_state(freeze_preview: bool) {
+    #[test_case::test_case(false, false ; "both live")]
+    #[test_case::test_case(true, false ; "frozen preview")]
+    #[test_case::test_case(false, true ; "payload both live")]
+    #[test_case::test_case(true, true ; "payload frozen preview")]
+    fn paired_best_transactions_keep_independent_selection_state(
+        freeze_preview: bool,
+        payload_limits: bool,
+    ) {
         use reth_primitives_traits::transaction::error::InvalidTransactionError;
         let mut pool = AA2dPool::default();
         let sender = Address::repeat_byte(1);
@@ -3932,7 +3983,7 @@ mod tests {
             )
             .unwrap();
         }
-        let (mut best, mut preview) = pool.best_transactions_pair();
+        let (mut best, mut preview) = pool.best_transactions_pair(payload_limits);
         let mut expected = pool.best_transactions();
         let mut expected_preview = pool.best_transactions();
         if freeze_preview {
@@ -3970,12 +4021,18 @@ mod tests {
         assert_eq!(selected, vec![incoming_hash]);
     }
 
-    fn select_with_gas_budget(
+    fn select_with_gas_budget(best: BestAA2dTransactions, remaining: u64) -> (Vec<TxHash>, usize) {
+        select_with_payload_limits(best, remaining, usize::MAX)
+    }
+
+    fn select_with_payload_limits(
         mut best: BestAA2dTransactions,
         mut remaining: u64,
+        size_limit: usize,
     ) -> (Vec<TxHash>, usize) {
         let mut selected = Vec::new();
         let mut visited = 0;
+        let mut used_size = 0;
         while let Some(tx) = best.next() {
             visited += 1;
             if tx.gas_limit() > remaining {
@@ -3983,11 +4040,23 @@ mod tests {
                     &tx,
                     &InvalidPoolTransactionError::ExceedsGasLimit(tx.gas_limit(), remaining),
                 );
-            } else {
-                selected.push(*tx.hash());
-                // Actual use can be lower than the declared limit.
-                remaining -= tx.gas_limit() / 2;
+                continue;
             }
+            let size = used_size + tx.transaction.inner().network_len();
+            if size > size_limit {
+                best.mark_invalid(
+                    &tx,
+                    &InvalidPoolTransactionError::OversizedData {
+                        size,
+                        limit: size_limit,
+                    },
+                );
+                continue;
+            }
+            selected.push(*tx.hash());
+            // Actual use can be lower than the declared limit.
+            remaining -= tx.gas_limit() / 2;
+            used_size = size;
         }
         (selected, visited)
     }
@@ -4027,10 +4096,8 @@ mod tests {
             .unwrap();
         }
         let (expected, old_visits) = select_with_gas_budget(pool.best_transactions(), 500_000);
-        let (actual, visits) = select_with_gas_budget(
-            pool.best_transactions().with_remaining_gas_tracking(),
-            500_000,
-        );
+        let (actual, visits) =
+            select_with_gas_budget(pool.best_transactions_for_payload(), 500_000);
         assert_eq!(actual, expected);
         assert!(actual.is_empty());
         assert_eq!(old_visits, 64);
@@ -4055,7 +4122,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mut best = pool.best_transactions().with_remaining_gas_tracking();
+        let mut best = pool.best_transactions_for_payload();
         let first = best.next().unwrap();
         best.mark_invalid(
             &first,
@@ -4119,16 +4186,13 @@ mod tests {
             .unwrap();
         }
         let expected = select_with_gas_budget(pool.best_transactions(), 1_000_000);
-        let actual = select_with_gas_budget(
-            pool.best_transactions().with_remaining_gas_tracking(),
-            1_000_000,
-        );
+        let actual = select_with_gas_budget(pool.best_transactions_for_payload(), 1_000_000);
         assert_eq!(actual.0, expected.0);
         assert_eq!(actual.0, hashes);
     }
 
     #[test]
-    fn gas_budget_selection_matches_complete_scan() {
+    fn payload_limits_selection_matches_complete_scan() {
         for seed in 0..32u64 {
             let mut pool = AA2dPool::default();
             for nonce in 0..4 {
@@ -4140,6 +4204,11 @@ mod tests {
                         .nonce_key(U256::from(1))
                         .nonce(nonce)
                         .gas_limit([200_000, 500_000, 1_000_000, 2_000_000][mixed as usize % 4])
+                        .calls(vec![Call {
+                            to: TxKind::Call(Address::ZERO),
+                            value: U256::ZERO,
+                            input: Bytes::from(vec![0; [0, 8, 128, 512, 4096][mixed as usize % 5]]),
+                        }])
                         .max_fee(20_000_000_000)
                         .max_priority_fee(1_000_000_000 * u128::from(1 + mixed % 7))
                         .build();
@@ -4152,14 +4221,186 @@ mod tests {
                 }
             }
             for budget in [0, 200_000, 500_000, 1_000_000, 3_000_000, 10_000_000] {
-                let expected = select_with_gas_budget(pool.best_transactions(), budget);
-                let actual = select_with_gas_budget(
-                    pool.best_transactions().with_remaining_gas_tracking(),
-                    budget,
-                );
-                assert_eq!(actual.0, expected.0, "seed={seed}, budget={budget}");
+                for size in [0, 128, 1024, 4096, usize::MAX] {
+                    let expected =
+                        select_with_payload_limits(pool.best_transactions(), budget, size);
+                    let actual = select_with_payload_limits(
+                        pool.best_transactions_for_payload(),
+                        budget,
+                        size,
+                    );
+                    assert_eq!(
+                        actual.0, expected.0,
+                        "seed={seed}, gas={budget}, size={size}"
+                    );
+                }
             }
         }
+    }
+
+    fn size_candidate(index: u64, size: usize, expiring: bool) -> TempoPooledTransaction {
+        let mut input = index.to_be_bytes().to_vec();
+        input.resize(input.len() + size, 0);
+        TxBuilder::aa(Address::repeat_byte(1))
+            .nonce_key(if expiring {
+                U256::MAX
+            } else {
+                U256::from(index + 1)
+            })
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::from(input),
+            }])
+            .build()
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn size_budget_stops_oversized_tail(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..64 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    size_candidate(i, 1024, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_payload_limits(pool.best_transactions(), u64::MAX, 100);
+        let actual =
+            select_with_payload_limits(pool.best_transactions_for_payload(), u64::MAX, 100);
+        assert_eq!(actual.0, expected.0);
+        assert!(actual.0.is_empty());
+        assert_eq!(expected.1, 64);
+        assert_eq!(actual.1, 1);
+    }
+
+    #[test_case::test_case(false ; "2d")]
+    #[test_case::test_case(true ; "expiring")]
+    fn size_budget_resumes_for_queued_smaller_arrivals(expiring: bool) {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 128,
+            ..Default::default()
+        });
+        for i in 0..8 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    size_candidate(i, 1024, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let mut best = pool.best_transactions_for_payload();
+        let first = best.next().unwrap();
+        best.mark_invalid(
+            &first,
+            &InvalidPoolTransactionError::OversizedData {
+                size: first.transaction.inner().network_len(),
+                limit: 500,
+            },
+        );
+        assert!(best.next().is_none());
+        for i in 8..8 + MAX_NEW_TRANSACTIONS_PER_BATCH as u64 + 1 {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(
+                    size_candidate(i, 1024, expiring),
+                    TransactionOrigin::Local,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let small = size_candidate(100, 0, expiring);
+        let hash = *small.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(small, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        assert_eq!(
+            select_with_payload_limits(best, u64::MAX, 500).0,
+            vec![hash]
+        );
+    }
+
+    #[test]
+    fn size_budget_recovers_remaining_bytes_with_the_full_rlp_header() {
+        let mut pool = AA2dPool::default();
+        let large = size_candidate(0, 65_536, false);
+        let small = size_candidate(1, 0, false);
+        let limit = small.inner().network_len();
+        assert!(
+            large.inner().network_len() - large.encoded_length() > limit - small.encoded_length()
+        );
+        let hash = *small.hash();
+        for tx in [large, small] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_payload_limits(pool.best_transactions(), u64::MAX, limit);
+        let actual =
+            select_with_payload_limits(pool.best_transactions_for_payload(), u64::MAX, limit);
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.0, vec![hash]);
+    }
+
+    #[test]
+    fn size_budget_accounts_for_smaller_nonce_descendants() {
+        let mut pool = AA2dPool::default();
+        let parent_builder = TxBuilder::aa(Address::repeat_byte(1)).nonce_key(U256::from(1));
+        let parent = parent_builder
+            .clone()
+            .max_priority_fee(3_000_000_000)
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0; 1024]),
+            }])
+            .build();
+        let child = parent_builder
+            .nonce(1)
+            .max_priority_fee(1_000_000_000)
+            .build();
+        let other = TxBuilder::aa(Address::repeat_byte(2))
+            .nonce_key(U256::from(1))
+            .max_priority_fee(2_000_000_000)
+            .calls(vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0; 2048]),
+            }])
+            .build();
+        let limit = parent.inner().network_len() + child.inner().network_len();
+        let hashes = vec![*parent.hash(), *child.hash()];
+        for tx in [parent, child, other] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+        let expected = select_with_payload_limits(pool.best_transactions(), u64::MAX, limit);
+        let actual =
+            select_with_payload_limits(pool.best_transactions_for_payload(), u64::MAX, limit);
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.0, hashes);
     }
 
     #[test]
