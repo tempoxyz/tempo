@@ -21,7 +21,8 @@ while read -r -u 3 fork; do
   image=$(field image)
   sha=$(field commit)
   sha=${sha##*/}
-  expected=$(jq -c '.pcrs' <<<"$entry")
+  expected=$(jq -cS '.pcrs' <<<"$entry")
+  indexes=$(jq -c '.pcrs | keys' <<<"$entry")
   fail() { echo "::error title=$fork PCRs::$*"; failed=1; }
   echo "::group::$fork: $image"
 
@@ -38,14 +39,15 @@ while read -r -u 3 fork; do
   source=$(jq -r '.["org.opencontainers.image.source"] // ""' <<<"$labels")
   [[ "$revision" == "$sha" ]] || fail "image revision is '$revision', expected $sha"
   [[ "$source" == https://github.com/tempoxyz/zones ]] || fail "image source is '$source'"
-  label_pcrs=$(jq -c '[.["xyz.tempo.zone-prover.nitro.pcr0"], .["xyz.tempo.zone-prover.nitro.pcr1"],
-    .["xyz.tempo.zone-prover.nitro.pcr2"]]' <<<"$labels")
+  label_pcrs=$(jq -cS --argjson indexes "$indexes" \
+    '. as $l | $indexes | map({key: ., value: $l["xyz.tempo.zone-prover.nitro.pcr\(.)"]}) | from_entries' <<<"$labels")
   [[ "$label_pcrs" == "$expected" ]] || fail "image PCR labels $label_pcrs differ from $expected"
 
   # The prover image ships nitro-cli alongside the EIF it measures.
   measured=$(docker run --rm --platform linux/amd64 --entrypoint nitro-cli "$image" \
     describe-eif --eif-path "$eif_path" |
-    jq -c '[.Measurements.PCR0, .Measurements.PCR1, .Measurements.PCR2]')
+    jq -cS --argjson indexes "$indexes" \
+      '.Measurements as $m | $indexes | map({key: ., value: $m["PCR\(.)"]}) | from_entries')
   [[ "$measured" == "$expected" ]] || fail "EIF measures $measured, expected $expected"
   # The labels are what operators and dev-platform read, so they must describe the shipped EIF.
   [[ "$label_pcrs" == "$measured" ]] || fail "image PCR labels $label_pcrs differ from EIF measurements $measured"

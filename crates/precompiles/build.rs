@@ -17,8 +17,8 @@ const IMAGE_PREFIX: &str = "ghcr.io/tempoxyz/tempo-zone-prover@sha256:";
 struct Entry {
     commit: String,
     image: String,
-    /// PCR0, PCR1 and PCR2.
-    pcrs: [String; 3],
+    /// Measurements keyed by PCR index. Only PCR0, PCR1 and PCR2 are enforced today.
+    pcrs: BTreeMap<String, String>,
 }
 
 /// Generates `APPROVED_PCRS` from `pcrs.json` so measurements are reviewed as data and checked
@@ -37,7 +37,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         check_hex(&entry.commit, COMMIT_PREFIX, 40, "commit")?;
         check_hex(&entry.image, IMAGE_PREFIX, 64, "image")?;
 
-        let pcrs = pcr::parse_pcrs(entry.pcrs.iter().map(String::as_str))
+        if !entry.pcrs.keys().eq(["0", "1", "2"]) {
+            return Err(
+                format!("{PCRS_PATH}: {fork}: pcrs must have exactly keys 0, 1 and 2").into(),
+            );
+        }
+        let pcrs = pcr::parse_pcrs(entry.pcrs.values().map(String::as_str))
             .map_err(|e| format!("{PCRS_PATH}: {fork}: {e}"))?;
         writeln!(out, "    (TempoHardfork::{fork}, [")?;
         for pcr in pcrs {
