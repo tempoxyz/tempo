@@ -702,8 +702,8 @@ mod tests {
     };
     use tempo_contracts::{
         precompiles::{
-            ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
-            zone_factory::{INITIAL_FACTORY_OWNER, initial_zone_factory_config},
+            INITIAL_FACTORY_OWNER, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+            initial_zone_factory_config,
         },
         zones::{T13_ZONE_PORTAL_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
