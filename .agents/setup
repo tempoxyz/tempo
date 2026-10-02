@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb for building and testing Tempo. Idempotent; safe to rerun on a warm snapshot.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+NEXTEST_VERSION="0.9.127" # matches .github/workflows/test.yml
+
+step() {
+  local name="$1"
+  shift
+  local start=$SECONDS
+  echo "==> $name"
+  "$@"
+  echo "<== $name ($((SECONDS - start))s)"
+}
+
+install_apt_packages() {
+  # Build deps from Dockerfile.chef, plus shellcheck for tempoup tests.
+  local packages=(build-essential pkg-config libssl-dev clang libclang-dev mold shellcheck)
+  local missing=()
+  for pkg in "${packages[@]}"; do
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || missing+=("$pkg")
+  done
+  if ((${#missing[@]})); then
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+  else
+    echo "all apt packages present"
+  fi
+}
+
+install_rust() {
+  if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    # Rustup adds `. "$HOME/.cargo/env"` to ~/.profile, ~/.bash_profile, and ~/.bashrc.
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+      sh -s -- -y --profile minimal --default-toolchain none
+  fi
+  # shellcheck disable=SC1091
+  source "$HOME/.cargo/env"
+  local installed
+  installed="$(rustup toolchain list)"
+  grep -q '^stable' <<<"$installed" ||
+    rustup toolchain install stable --profile minimal -c rustfmt,clippy
+  # Nightly is used for `cargo +nightly fmt` (see AGENTS.md) and clippy in CI.
+  grep -q '^nightly' <<<"$installed" ||
+    rustup toolchain install nightly --profile minimal -c rustfmt,clippy --allow-downgrade
+  rustup default stable >/dev/null
+}
+
+install_nextest() {
+  if [[ "$(cargo nextest --version 2>/dev/null | head -1)" != "cargo-nextest $NEXTEST_VERSION"* ]]; then
+    curl -LsSf "https://get.nexte.st/$NEXTEST_VERSION/linux" | tar zxf - -C "$HOME/.cargo/bin"
+  fi
+  cargo nextest --version | head -1
+}
+
+install_just() {
+  if ! command -v just >/dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to "$HOME/.cargo/bin"
+  fi
+  just --version
+}
+
+step "apt packages" install_apt_packages
+step "rust toolchains" install_rust
+step "cargo-nextest" install_nextest
+step "just" install_just
+step "cargo fetch" cargo fetch --locked
+# Warm target/ so the snapshot ships compiled dependencies. ~13 min cold on a1.medium;
+# incremental on stale snapshots.
+step "warm build" cargo build --workspace --locked

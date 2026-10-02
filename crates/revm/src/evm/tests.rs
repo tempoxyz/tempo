@@ -3478,12 +3478,25 @@ fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
         Ok(TempoTxEnv::from_recovered_tx(&signed_tx, caller))
     };
 
-    let mut pre_activation =
-        create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T11);
-    assert!(
-        pre_activation.transact_commit(build_env(1)?).is_err(),
-        "T11 must reject a non-zero expiring nonce"
-    );
+    for nonce in [1, u64::MAX] {
+        let mut pre_activation =
+            create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T11);
+        let err = pre_activation
+            .transact_commit(build_env(nonce)?)
+            .expect_err("T11 must reject a non-zero expiring nonce");
+        let revm::context::result::EVMError::Transaction(err) = err else {
+            panic!("expected a transaction validation error, got {err:?}");
+        };
+        assert_eq!(
+            err,
+            TempoInvalidTransaction::ExpiringNonceNonceNotZero,
+            "T11 discriminator {nonce} must use the fork-dependent Tempo error"
+        );
+        assert!(
+            !err.is_bad_transaction(),
+            "a T12-valid discriminator must not be classified as permanently bad"
+        );
+    }
 
     for nonce in [0, 1, u64::MAX] {
         let mut evm =
