@@ -1,5 +1,5 @@
 use alloy::{
-    genesis::{ChainConfig, Genesis, GenesisAccount},
+    genesis::{Genesis, GenesisAccount},
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
@@ -22,34 +22,34 @@ use itertools::Itertools;
 use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
 use rayon::prelude::*;
-use reth_evm::{
-    Evm as _, EvmEnv, EvmFactory,
-    revm::{
-        DatabaseCommit,
-        context_interface::JournalTr as _,
-        database::{CacheDB, EmptyDB},
-        state::{AccountInfo, Bytecode},
-    },
-};
+use reth_evm::revm::context_interface::JournalTr as _;
 use std::{
     collections::BTreeMap,
     iter::repeat_with,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    TempoHardfork,
+    cli::TempoHardforkArgs,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
+    SAFE_DEPLOYER_ADDRESS,
+    contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
         t13_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
+use tempo_evm::genesis::{
+    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
+    ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
+    with_genesis_storage,
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
@@ -58,7 +58,7 @@ use tempo_precompiles::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{ContractStorage, StorageActions, StorageCtx},
+    storage::ContractStorage,
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -80,6 +80,10 @@ pub(crate) struct GenesisArgs {
         default_value = "test test test test test test test test test test test junk"
     )]
     mnemonic: String,
+
+    /// Read the account-generation mnemonic from a file.
+    #[arg(long, value_name = "PATH", conflicts_with = "mnemonic")]
+    mnemonic_file: Option<PathBuf>,
 
     /// Coinbase address
     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
@@ -154,77 +158,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     no_pairwise_liquidity: bool,
 
-    /// Timestamp for T0 hardfork activation (0 = genesis).
-    #[arg(long, default_value = "0")]
-    t0_time: u64,
-
-    /// T1 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1_time: u64,
-
-    /// T1.A hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1a_time: u64,
-
-    /// T1.B hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1b_time: u64,
-
-    /// T1.C hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t1c_time: u64,
-
-    /// T2 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t2_time: u64,
-
-    /// T3 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t3_time: u64,
-
-    /// T4 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t4_time: u64,
-
-    /// T5 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t5_time: u64,
-
-    /// T6 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t6_time: u64,
-
-    /// T7 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t7_time: u64,
-
-    /// T8 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t8_time: u64,
-
-    /// T9 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t9_time: u64,
-
-    /// T10 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t10_time: u64,
-
-    /// T11 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t11_time: u64,
-
-    /// T12 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t12_time: u64,
-
-    /// T13 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t13_time: u64,
-
-    /// T14 hardfork activation time.
-    #[arg(long, default_value = "0")]
-    t14_time: u64,
+    /// Tempo hardfork schedule. Individual `--<fork>-time` flags default to genesis (0).
+    #[command(flatten)]
+    hardforks: TempoHardforkArgs,
 }
 
 #[derive(Clone, Debug)]
@@ -287,9 +223,10 @@ impl GenesisArgs {
                 return Err(eyre!("not enough accounts created for validators"));
             }
 
+            let mnemonic = self.resolved_mnemonic()?;
             (1..=validator_count)
                 .map(|worker_id| {
-                    let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                    let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
                     Ok(secret_key_to_address(signer.credential()))
                 })
                 .collect()
@@ -307,13 +244,14 @@ impl GenesisArgs {
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
     pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, Option<ConsensusConfig>)> {
+        let mnemonic = self.resolved_mnemonic()?;
         println!("Generating {:?} accounts", self.accounts);
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
             .progress()
             .map(|worker_id| -> eyre::Result<Address> {
-                let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
                 let address = secret_key_to_address(signer.credential());
                 Ok(address)
             })
@@ -323,17 +261,17 @@ impl GenesisArgs {
 
         let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
         let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
-        let mut evm = setup_tempo_evm(self.chain_id);
+        let mut evm = create_genesis_evm(genesis_evm_env(self.chain_id));
 
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm)?;
 
         println!("Initializing registry");
-        initialize_registry(&mut evm)?;
+        with_genesis_storage(&mut evm, || TIP403Registry::new().initialize())?;
 
         // Initialize TIP20Factory once before creating any tokens
         println!("Initializing TIP20Factory");
-        initialize_tip20_factory(&mut evm)?;
+        with_genesis_storage(&mut evm, || TIP20Factory::new().initialize())?;
 
         println!("Creating pathUSD through factory");
         create_path_usd_token(pathusd_admin, &addresses, self.pathusd_amount, &mut evm)?;
@@ -426,26 +364,14 @@ impl GenesisArgs {
         let consensus_config =
             generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
-        let validator_onchain_addresses = if self.validator_addresses.is_empty() {
-            if addresses.len() < self.validators.len() + 1 {
-                return Err(eyre!("not enough accounts created for validators"));
-            }
-
-            &addresses[1..self.validators.len() + 1]
-        } else {
-            if self.validator_addresses.len() < self.validators.len() {
-                return Err(eyre!("not enough addresses provided for validators"));
-            }
-
-            &self.validator_addresses[0..self.validators.len()]
-        };
+        let validator_onchain_addresses = self.validator_onchain_addresses()?;
 
         println!("Initializing validator config v2");
         initialize_validator_config_v2(
             validator_admin,
             &mut evm,
             &consensus_config,
-            validator_onchain_addresses,
+            &validator_onchain_addresses,
             self.no_dkg_in_genesis,
             self.chain_id,
         )?;
@@ -473,25 +399,25 @@ impl GenesisArgs {
         );
 
         println!("Initializing stablecoin exchange");
-        initialize_stablecoin_dex(&mut evm)?;
+        with_genesis_storage(&mut evm, || StablecoinDEX::new().initialize())?;
 
         println!("Initializing nonce manager");
-        initialize_nonce_manager(&mut evm)?;
+        with_genesis_storage(&mut evm, || NonceManager::new().initialize())?;
 
         println!("Initializing account keychain");
-        initialize_account_keychain(&mut evm)?;
+        with_genesis_storage(&mut evm, || AccountKeychain::new().initialize())?;
 
         println!("Initializing TIP20 registry");
-        initialize_address_registry(&mut evm)?;
+        with_genesis_storage(&mut evm, || AddressRegistry::new().initialize())?;
 
-        if self.t3_time == 0 {
+        if self.hardforks.active_at_genesis(TempoHardfork::T3) {
             println!("Initializing signature verifier (T3 active at genesis)");
-            initialize_signature_verifier(&mut evm)?;
+            with_genesis_storage(&mut evm, || SignatureVerifier::new().initialize())?;
         }
 
-        if self.t6_time == 0 {
+        if self.hardforks.active_at_genesis(TempoHardfork::T6) {
             println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
-            initialize_receive_policy_guard(&mut evm)?;
+            with_genesis_storage(&mut evm, || ReceivePolicyGuard::new().initialize())?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -527,88 +453,25 @@ impl GenesisArgs {
             .iter()
             .progress()
             .map(|(address, account)| {
-                let storage = if !account.storage.is_empty() {
-                    Some(
-                        account
-                            .storage
-                            .iter()
-                            .map(|(key, val)| ((*key).into(), val.present_value.into()))
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-                let genesis_account = GenesisAccount {
-                    nonce: Some(account.info.nonce),
-                    code: account.info.code.as_ref().map(|c| c.original_bytes()),
-                    storage,
-                    ..Default::default()
-                };
-                (*address, genesis_account)
+                let storage = account
+                    .storage
+                    .iter()
+                    .map(|(key, val)| (*key, val.present_value));
+                (*address, genesis_account(&account.info, storage))
             })
             .collect();
 
-        genesis_alloc.insert(
-            MULTICALL3_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&Multicall3::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
+        for (address, code) in [
+            (MULTICALL3_ADDRESS, &Multicall3::DEPLOYED_BYTECODE),
+            (CREATEX_ADDRESS, &CreateX::DEPLOYED_BYTECODE),
+            (SAFE_DEPLOYER_ADDRESS, &SafeDeployer::DEPLOYED_BYTECODE),
+            (HISTORY_STORAGE_ADDRESS, &HISTORY_STORAGE_CODE),
+        ] {
+            genesis_alloc.insert(address, predeployed_contract(code));
+        }
+        insert_zone_state_at_genesis(&self.hardforks, &mut genesis_alloc);
 
-        genesis_alloc.insert(
-            CREATEX_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&CreateX::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
-            SAFE_DEPLOYER_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&SafeDeployer::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        insert_zone_state_at_genesis(self.t10_time, self.t13_time, &mut genesis_alloc);
-
-        genesis_alloc.insert(
-            HISTORY_STORAGE_ADDRESS,
-            GenesisAccount {
-                code: Some(HISTORY_STORAGE_CODE.clone()),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        let mut chain_config = ChainConfig {
-            chain_id: self.chain_id,
-            homestead_block: Some(0),
-            eip150_block: Some(0),
-            eip155_block: Some(0),
-            eip158_block: Some(0),
-            byzantium_block: Some(0),
-            constantinople_block: Some(0),
-            petersburg_block: Some(0),
-            istanbul_block: Some(0),
-            berlin_block: Some(0),
-            london_block: Some(0),
-            merge_netsplit_block: Some(0),
-            shanghai_time: Some(0),
-            cancun_time: Some(0),
-            prague_time: Some(0),
-            osaka_time: Some(0),
-            terminal_total_difficulty: Some(U256::from(0)),
-            terminal_total_difficulty_passed: true,
-            deposit_contract_address: Some(Address::ZERO),
-            ..Default::default()
-        };
-
+        let mut chain_config = ethereum_chain_config(self.chain_id);
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
@@ -617,60 +480,7 @@ impl GenesisArgs {
                 .extra_fields
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
         }
-        chain_config
-            .extra_fields
-            .insert_value("t0Time".to_string(), self.t0_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1Time".to_string(), self.t1_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1aTime".to_string(), self.t1a_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1bTime".to_string(), self.t1b_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t1cTime".to_string(), self.t1c_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t2Time".to_string(), self.t2_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t3Time".to_string(), self.t3_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t4Time".to_string(), self.t4_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t5Time".to_string(), self.t5_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t6Time".to_string(), self.t6_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t7Time".to_string(), self.t7_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t8Time".to_string(), self.t8_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t9Time".to_string(), self.t9_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t10Time".to_string(), self.t10_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t11Time".to_string(), self.t11_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t12Time".to_string(), self.t12_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t13Time".to_string(), self.t13_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("t14Time".to_string(), self.t14_time)?;
+        self.hardforks.write_to(&mut chain_config);
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -681,8 +491,8 @@ impl GenesisArgs {
             }
         }
 
-        // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
-        let base_fee: u128 = if self.t1_time == 0 {
+        // Base fee determined by hardfork: T1 active at genesis uses T1 fee
+        let base_fee: u128 = if self.hardforks.active_at_genesis(TempoHardfork::T1) {
             u128::from(TEMPO_T1_BASE_FEE)
         } else {
             u128::from(TEMPO_T0_BASE_FEE)
@@ -700,16 +510,28 @@ impl GenesisArgs {
 
         Ok((genesis, consensus_config))
     }
+
+    fn resolved_mnemonic(&self) -> eyre::Result<String> {
+        let Some(path) = &self.mnemonic_file else {
+            return Ok(self.mnemonic.clone());
+        };
+        let mnemonic = std::fs::read_to_string(path)
+            .wrap_err_with(|| format!("failed reading mnemonic file `{}`", path.display()))?;
+        let mnemonic = mnemonic.trim();
+        if mnemonic.is_empty() {
+            return Err(eyre!("mnemonic file `{}` is empty", path.display()));
+        }
+        Ok(mnemonic.to_owned())
+    }
 }
 
 fn insert_zone_state_at_genesis(
-    t10_time: u64,
-    t13_time: u64,
+    hardforks: &TempoHardforkArgs,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
-    if t10_time == 0 {
+    if hardforks.active_at_genesis(TempoHardfork::T10) {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if t13_time == 0 {
+        let accounts = if hardforks.active_at_genesis(TempoHardfork::T13) {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -729,116 +551,44 @@ fn insert_zone_state_at_genesis(
     }
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
-    // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
-    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
-    env.cfg_env.chain_id = chain_id;
-
-    let factory = TempoEvmFactory::default();
-    factory.create_evm(db, env)
-}
-
-/// Deploys the Arachnid CREATE2 factory by directly inserting it into the EVM state.
-fn deploy_arachnid_create2_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) {
-    println!("Deploying Arachnid CREATE2 factory at {ARACHNID_CREATE2_FACTORY_ADDRESS}");
-
-    evm.db_mut().insert_account_info(
-        ARACHNID_CREATE2_FACTORY_ADDRESS,
-        AccountInfo {
-            code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
-            nonce: 0,
-            ..Default::default()
-        },
-    );
-}
-
-/// Deploys Permit2 contract via the Arachnid CREATE2 factory.
-fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    // Build calldata for Arachnid CREATE2 factory: salt (32 bytes) || creation bytecode
-    let bytecode = &tempo_contracts::Permit2::BYTECODE;
-    let calldata: Bytes = PERMIT2_SALT
-        .as_slice()
-        .iter()
-        .chain(bytecode.iter())
-        .copied()
-        .collect();
-
-    println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
-
-    let result =
-        evm.transact_system_call(Address::ZERO, ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)?;
-
-    if !result.result.is_success() {
-        return Err(eyre!("Permit2 deployment failed: {:?}", result));
-    }
-
-    evm.db_mut().commit(result.state);
-
-    println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
-    Ok(())
-}
-
-/// Initializes the TIP20Factory contract (should be called once before creating any tokens)
-fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || TIP20Factory::new().initialize(),
-    )?;
-    Ok(())
-}
-
 /// Creates pathUSD as the first TIP20 token at a reserved address.
 /// pathUSD is not created via factory since it's at a reserved address.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
     amount_per_recipient: u64,
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    evm: &mut GenesisEvm,
 ) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || {
-            TIP20Factory::new().create_token_reserved_address(
-                PATH_USD_ADDRESS,
-                "pathUSD",
-                "pathUSD",
-                "USD",
-                Address::ZERO,
-                admin,
-            )?;
+    with_genesis_storage(evm, || {
+        TIP20Factory::new().create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "pathUSD",
+            "pathUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+        )?;
 
-            // Initialize pathUSD directly (not via factory) since it's at a reserved address.
-            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
-                .expect("Could not create pathUSD token instance");
-            token.grant_role_internal(admin, ISSUER_ROLE)?;
+        // Initialize pathUSD directly (not via factory) since it's at a reserved address.
+        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("Could not create pathUSD token instance");
+        token.grant_role_internal(admin, ISSUER_ROLE)?;
 
-            // Mint to all recipients
-            for recipient in recipients.iter().progress() {
-                token
-                    .mint(
-                        admin,
-                        ITIP20::mintCall {
-                            to: *recipient,
-                            amount: U256::from(amount_per_recipient),
-                        },
-                    )
-                    .expect("Could not mint pathUSD");
-            }
+        // Mint to all recipients
+        for recipient in recipients.iter().progress() {
+            token
+                .mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: *recipient,
+                        amount: U256::from(amount_per_recipient),
+                    },
+                )
+                .expect("Could not mint pathUSD");
+        }
 
-            Ok(())
-        },
-    )
+        Ok(())
+    })
 }
 
 enum SaltOrAddress {
@@ -857,87 +607,72 @@ fn create_and_mint_token(
     recipients: &[Address],
     mint_amount: U256,
     salt_or_address: SaltOrAddress,
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    evm: &mut GenesisEvm,
 ) -> eyre::Result<Address> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || {
-            let mut factory = TIP20Factory::new();
-            assert!(
-                factory
-                    .is_initialized()
-                    .expect("Could not check factory initialization"),
-                "TIP20Factory must be initialized before creating tokens"
-            );
+    with_genesis_storage(evm, || {
+        let mut factory = TIP20Factory::new();
+        assert!(
+            factory
+                .is_initialized()
+                .expect("Could not check factory initialization"),
+            "TIP20Factory must be initialized before creating tokens"
+        );
 
-            let token_address = match salt_or_address {
-                SaltOrAddress::Salt(salt) => factory
-                    .create_token(
+        let token_address = match salt_or_address {
+            SaltOrAddress::Salt(salt) => factory
+                .create_token(
+                    admin,
+                    createTokenCall {
+                        name: name.into(),
+                        symbol: symbol.into(),
+                        currency: currency.into(),
+                        quoteToken: quote_token,
+                        salt,
                         admin,
-                        createTokenCall {
-                            name: name.into(),
-                            symbol: symbol.into(),
-                            currency: currency.into(),
-                            quoteToken: quote_token,
-                            salt,
-                            admin,
-                        },
-                    )
-                    .expect("Could not create token"),
-                SaltOrAddress::Address(address) => factory
-                    .create_token_reserved_address(
-                        address,
-                        name,
-                        symbol,
-                        currency,
-                        quote_token,
-                        admin,
-                    )
-                    .expect("Could not create token"),
-            };
+                    },
+                )
+                .expect("Could not create token"),
+            SaltOrAddress::Address(address) => factory
+                .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
+                .expect("Could not create token"),
+        };
 
-            let mut token =
-                TIP20Token::from_address(token_address).expect("Could not create token instance");
-            token.grant_role_internal(admin, ISSUER_ROLE)?;
+        let mut token =
+            TIP20Token::from_address(token_address).expect("Could not create token instance");
+        token.grant_role_internal(admin, ISSUER_ROLE)?;
 
-            let result = token.set_supply_cap(
+        let result = token.set_supply_cap(
+            admin,
+            ITIP20::setSupplyCapCall {
+                newSupplyCap: U256::from(u128::MAX),
+            },
+        );
+        assert!(result.is_ok());
+
+        token
+            .mint(
                 admin,
-                ITIP20::setSupplyCapCall {
-                    newSupplyCap: U256::from(u128::MAX),
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: mint_amount,
                 },
-            );
-            assert!(result.is_ok());
+            )
+            .expect("Token minting failed");
 
+        for address in recipients.iter().progress() {
             token
                 .mint(
                     admin,
                     ITIP20::mintCall {
-                        to: admin,
-                        amount: mint_amount,
+                        to: *address,
+                        amount: U256::from(u64::MAX),
                     },
                 )
-                .expect("Token minting failed");
+                .expect("Could not mint fee token");
+        }
 
-            for address in recipients.iter().progress() {
-                token
-                    .mint(
-                        admin,
-                        ITIP20::mintCall {
-                            to: *address,
-                            amount: U256::from(u64::MAX),
-                        },
-                    )
-                    .expect("Could not mint fee token");
-            }
-
-            Ok(token.address())
-        },
-    )
+        Ok(token.address())
+    })
 }
 
 fn initialize_fee_manager(
@@ -945,152 +680,44 @@ fn initialize_fee_manager(
     user_fee_token_address: Address,
     initial_accounts: Vec<Address>,
     validators: Vec<Address>,
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    evm: &mut GenesisEvm,
 ) {
     // Update the beneficiary since the validator can't set the validator fee token for themselves
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || {
-            let mut fee_manager = TipFeeManager::new();
+    with_genesis_storage(evm, || {
+        let mut fee_manager = TipFeeManager::new();
+        fee_manager
+            .initialize()
+            .expect("Could not init fee manager");
+        println!(
+            "Setting user fee token {user_fee_token_address} for {} accounts",
+            initial_accounts.len()
+        );
+        for address in initial_accounts.iter().progress() {
             fee_manager
-                .initialize()
-                .expect("Could not init fee manager");
-            println!(
-                "Setting user fee token {user_fee_token_address} for {} accounts",
-                initial_accounts.len()
-            );
-            for address in initial_accounts.iter().progress() {
-                fee_manager
-                    .set_user_token(
-                        *address,
-                        IFeeManager::setUserTokenCall {
-                            token: user_fee_token_address,
-                        },
-                    )
-                    .expect("Could not set fee token");
-            }
+                .set_user_token(
+                    *address,
+                    IFeeManager::setUserTokenCall {
+                        token: user_fee_token_address,
+                    },
+                )
+                .expect("Could not set fee token");
+        }
 
-            // Set validator fee tokens to pathUSD
-            for validator in validators {
-                println!("Setting user token for {validator} {validator_fee_token_address}");
-                fee_manager
-                    .set_validator_token(
-                        validator,
-                        IFeeManager::setValidatorTokenCall {
-                            token: validator_fee_token_address,
-                        },
-                        // use random address to avoid `CannotChangeWithinBlock` error
-                        Address::random(),
-                    )
-                    .expect("Could not set validator fee token");
-            }
-        },
-    );
-}
-
-/// Initializes the [`TIP403Registry`] contract.
-fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || TIP403Registry::new().initialize(),
-    )?;
-
-    Ok(())
-}
-
-fn initialize_stablecoin_dex(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || StablecoinDEX::new().initialize(),
-    )?;
-
-    Ok(())
-}
-
-fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || NonceManager::new().initialize(),
-    )?;
-
-    Ok(())
-}
-
-/// Initializes the [`AccountKeychain`] contract.
-fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || AccountKeychain::new().initialize(),
-    )?;
-
-    Ok(())
-}
-
-fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || AddressRegistry::new().initialize(),
-    )?;
-
-    Ok(())
-}
-
-fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || SignatureVerifier::new().initialize(),
-    )?;
-
-    Ok(())
-}
-
-fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || ReceivePolicyGuard::new().initialize(),
-    )?;
-
-    Ok(())
+        // Set validator fee tokens to pathUSD
+        for validator in validators {
+            println!("Setting user token for {validator} {validator_fee_token_address}");
+            fee_manager
+                .set_validator_token(
+                    validator,
+                    IFeeManager::setValidatorTokenCall {
+                        token: validator_fee_token_address,
+                    },
+                    // use random address to avoid `CannotChangeWithinBlock` error
+                    Address::random(),
+                )
+                .expect("Could not set validator fee token");
+        }
+    });
 }
 
 /// Initializes the [`ValidatorConfigV2`] contract at genesis (T2 active at genesis).
@@ -1099,88 +726,80 @@ fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre
 /// Each `add_validator` call requires an Ed25519 signature from the validator's signing key.
 fn initialize_validator_config_v2(
     admin: Address,
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    evm: &mut GenesisEvm,
     consensus_config: &Option<ConsensusConfig>,
     onchain_validator_addresses: &[Address],
     no_dkg_in_genesis: bool,
     chain_id: u64,
 ) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || {
-            let mut v2 = ValidatorConfigV2::new();
-            v2.initialize(admin)
-                .wrap_err("failed to initialize validator config v2")?;
+    with_genesis_storage(evm, || {
+        let mut v2 = ValidatorConfigV2::new();
+        v2.initialize(admin)
+            .wrap_err("failed to initialize validator config v2")?;
 
-            if no_dkg_in_genesis {
-                println!("no-dkg-in-genesis passed; not writing validators to genesis block");
-                return Ok(());
-            }
+        if no_dkg_in_genesis {
+            println!("no-dkg-in-genesis passed; not writing validators to genesis block");
+            return Ok(());
+        }
 
-            let Some(consensus_config) = consensus_config.clone() else {
-                println!("no consensus config passed; no validators to write to contract");
-                return Ok(());
+        let Some(consensus_config) = consensus_config.clone() else {
+            println!("no consensus config passed; no validators to write to contract");
+            return Ok(());
+        };
+
+        let num_validators = consensus_config.validators.len();
+        if onchain_validator_addresses.len() < num_validators {
+            return Err(eyre!(
+                "need {} addresses for all validators, but only {} were provided",
+                num_validators,
+                onchain_validator_addresses.len()
+            ));
+        }
+
+        println!("writing {num_validators} validators into v2 contract");
+        for (i, validator) in consensus_config.validators.iter().enumerate() {
+            let validator_address = onchain_validator_addresses[i];
+            let public_key = validator.public_key();
+            let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
+            let addr = validator.addr;
+
+            let config = tempo_validator_config::ValidatorConfig {
+                chain_id,
+                validator_address,
+                public_key: pubkey,
+                ingress: addr,
+                egress: addr.ip(),
             };
 
-            let num_validators = consensus_config.validators.len();
-            if onchain_validator_addresses.len() < num_validators {
-                return Err(eyre!(
-                    "need {} addresses for all validators, but only {} were provided",
-                    num_validators,
-                    onchain_validator_addresses.len()
-                ));
-            }
+            let message = config.add_validator_message_hash(validator_address);
+            let private_key = validator.signing_key.clone().into_inner();
+            let signature = private_key.sign(
+                tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD,
+                message.as_slice(),
+            );
 
-            println!("writing {num_validators} validators into v2 contract");
-            for (i, validator) in consensus_config.validators.iter().enumerate() {
-                let validator_address = onchain_validator_addresses[i];
-                let public_key = validator.public_key();
-                let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
-                let addr = validator.addr;
+            v2.add_validator(
+                admin,
+                IValidatorConfigV2::addValidatorCall {
+                    validatorAddress: validator_address,
+                    publicKey: pubkey,
+                    ingress: config.ingress.to_string(),
+                    egress: config.egress.to_string(),
+                    feeRecipient: validator_address,
+                    signature: signature.encode().into(),
+                },
+            )
+            .wrap_err("failed to add validator to V2")?;
 
-                let config = tempo_validator_config::ValidatorConfig {
-                    chain_id,
-                    validator_address,
-                    public_key: pubkey,
-                    ingress: addr,
-                    egress: addr.ip(),
-                };
-
-                let message = config.add_validator_message_hash(validator_address);
-                let private_key = validator.signing_key.clone().into_inner();
-                let signature = private_key.sign(
-                    tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD,
-                    message.as_slice(),
-                );
-
-                v2.add_validator(
-                    admin,
-                    IValidatorConfigV2::addValidatorCall {
-                        validatorAddress: validator_address,
-                        publicKey: pubkey,
-                        ingress: config.ingress.to_string(),
-                        egress: config.egress.to_string(),
-                        feeRecipient: validator_address,
-                        signature: signature.encode().into(),
-                    },
-                )
-                .wrap_err("failed to add validator to V2")?;
-
-                println!(
-                    "added validator (v2)\
+            println!(
+                "added validator (v2)\
                     \n\tpublic key: {public_key}\
                     \n\tonchain address: {validator_address}\
                     \n\tnet address: {addr}"
-                );
-            }
-            Ok(())
-        },
-    )
+            );
+        }
+        Ok(())
+    })
 }
 
 /// Generates the consensus configs of the validators.
@@ -1241,30 +860,23 @@ fn mint_pairwise_liquidity(
     b_tokens: Vec<Address>,
     amount: U256,
     admin: Address,
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    evm: &mut GenesisEvm,
 ) {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || {
-            let mut fee_manager = TipFeeManager::new();
+    with_genesis_storage(evm, || {
+        let mut fee_manager = TipFeeManager::new();
 
-            for b_token_address in b_tokens {
-                fee_manager
-                    .mint(admin, a_token, b_token_address, amount, admin)
-                    .expect("Could not mint A -> B Liquidity pool");
-            }
-        },
-    );
+        for b_token_address in b_tokens {
+            fee_manager
+                .mint(admin, a_token, b_token_address, amount, admin)
+                .expect("Could not mint A -> B Liquidity pool");
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use tempo_contracts::{
         precompiles::{
             ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
@@ -1276,10 +888,73 @@ mod tests {
         },
     };
 
+    #[derive(Debug, clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        genesis: GenesisArgs,
+    }
+
+    fn parse(args: &str) -> Result<GenesisArgs, clap::Error> {
+        use clap::Parser as _;
+        let base = "xtask --accounts 2 --no-dkg-in-genesis --seed 1";
+        Cli::try_parse_from(format!("{base} {args}").split_whitespace()).map(|cli| cli.genesis)
+    }
+
+    async fn generate(args: &str) -> Genesis {
+        parse(args).unwrap().generate_genesis().await.unwrap().0
+    }
+
+    #[tokio::test]
+    async fn legacy_genesis_writes_every_fork_time() {
+        let genesis = generate("--t3-time 100").await;
+
+        for fork in TempoHardfork::VARIANTS.iter().skip(1) {
+            let expected = if *fork == TempoHardfork::T3 { 100 } else { 0 };
+            assert_eq!(
+                genesis.config.extra_fields.get(fork.genesis_key().unwrap()),
+                Some(&serde_json::json!(expected)),
+                "{fork}"
+            );
+        }
+        // T3 is not active at genesis, so the signature verifier is not initialized.
+        assert!(
+            !genesis
+                .alloc
+                .contains_key(&tempo_precompiles::SIGNATURE_VERIFIER_ADDRESS)
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_genesis_disables_later_forks() {
+        let genesis = generate("--hardfork T13").await;
+        let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis.clone());
+
+        assert_eq!(
+            genesis.config.extra_fields.get("t13Time"),
+            Some(&serde_json::json!(0))
+        );
+        assert_eq!(
+            genesis.config.extra_fields.get("t14Time"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            tempo_chainspec::TempoHardforks::tempo_hardfork_at(&chainspec, u64::MAX),
+            TempoHardfork::T13
+        );
+        assert_eq!(
+            genesis.alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
+            Some(&T13_ZONE_PORTAL_RUNTIME)
+        );
+    }
+
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, 1, &mut alloc);
+        let hardforks = TempoHardforkArgs {
+            t13_time: Some(1),
+            ..Default::default()
+        };
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
         let expected_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
@@ -1301,7 +976,11 @@ mod tests {
     #[test]
     fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(1, 1, &mut alloc);
+        let hardforks = TempoHardforkArgs {
+            t10_time: Some(1),
+            ..Default::default()
+        };
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
     }
@@ -1309,7 +988,8 @@ mod tests {
     #[test]
     fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(0, 0, &mut alloc);
+        let hardforks = TempoHardforkArgs::default();
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         for (destination, expected) in [
             (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
@@ -1318,5 +998,50 @@ mod tests {
         ] {
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
+    }
+
+    #[derive(Parser)]
+    struct GenesisCli {
+        #[command(flatten)]
+        args: GenesisArgs,
+    }
+
+    #[test]
+    fn mnemonic_file_matches_inline_validator_accounts() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mnemonic");
+        std::fs::write(&path, format!("{mnemonic}\n")).unwrap();
+        let args = [
+            "genesis",
+            "--validators",
+            "127.0.0.1:8000",
+            "--accounts",
+            "2",
+        ];
+        let inline = GenesisCli::parse_from(args.into_iter().chain(["--mnemonic", mnemonic])).args;
+        let from_file = GenesisCli::parse_from(
+            args.into_iter()
+                .chain(["--mnemonic-file", path.to_str().unwrap()]),
+        )
+        .args;
+        assert_eq!(from_file.resolved_mnemonic().unwrap(), mnemonic);
+        assert_eq!(
+            from_file.validator_onchain_addresses().unwrap(),
+            inline.validator_onchain_addresses().unwrap()
+        );
+        assert!(
+            GenesisCli::try_parse_from(args.into_iter().chain([
+                "--mnemonic",
+                mnemonic,
+                "--mnemonic-file",
+                path.to_str().unwrap(),
+            ]))
+            .is_err()
+        );
+        std::fs::write(&path, " \n").unwrap();
+        assert!(from_file.resolved_mnemonic().is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(from_file.validator_onchain_addresses().is_err());
     }
 }

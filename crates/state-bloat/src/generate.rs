@@ -37,7 +37,7 @@ const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
 
 /// Generate state bloat file
 #[derive(Debug, clap::Args)]
-pub(crate) struct GenerateStateBloat {
+pub struct GenerateStateBloat {
     /// Mnemonic to use for account generation
     #[arg(
         short,
@@ -45,6 +45,10 @@ pub(crate) struct GenerateStateBloat {
         default_value = "test test test test test test test test test test test junk"
     )]
     mnemonic: String,
+
+    /// Read the account-generation mnemonic from a file.
+    #[arg(long, value_name = "PATH", conflicts_with = "mnemonic")]
+    mnemonic_file: Option<PathBuf>,
 
     /// Target file size in MiB
     #[arg(short, long, default_value = "1024")]
@@ -74,9 +78,11 @@ pub(crate) struct GenerateStateBloat {
 }
 
 impl GenerateStateBloat {
-    pub(crate) async fn run(self) -> eyre::Result<()> {
+    /// Generate the TIP20 binary storage dump described by these CLI arguments.
+    pub async fn run(self) -> eyre::Result<()> {
         let Self {
             mnemonic,
+            mnemonic_file,
             size,
             token: tokens,
             out,
@@ -84,6 +90,20 @@ impl GenerateStateBloat {
             signable_count,
             chunk_size,
         } = self;
+
+        let mnemonic = if let Some(path) = mnemonic_file {
+            let mnemonic = std::fs::read_to_string(&path)
+                .wrap_err_with(|| format!("failed reading mnemonic file `{}`", path.display()))?;
+            let mnemonic = mnemonic.trim();
+            ensure!(
+                !mnemonic.is_empty(),
+                "mnemonic file `{}` is empty",
+                path.display()
+            );
+            mnemonic.to_owned()
+        } else {
+            mnemonic
+        };
 
         ensure!(
             !tokens.is_empty(),
@@ -279,6 +299,7 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_token_address() {
@@ -331,5 +352,60 @@ mod tests {
         let slot = U256::ZERO.to_be_bytes::<32>();
         let value = U256::from(1).to_be_bytes::<32>();
         assert_eq!(slot.len() + value.len(), 64);
+    }
+
+    #[derive(Parser)]
+    struct GeneratorCli {
+        #[command(flatten)]
+        args: GenerateStateBloat,
+    }
+
+    #[tokio::test]
+    async fn mnemonic_file_matches_inline_dump() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mnemonic");
+        let output = directory.path().join("state.bin");
+        std::fs::write(&path, format!("{mnemonic}\n")).unwrap();
+        let args = [
+            "generate",
+            "--size",
+            "1",
+            "--signable-count",
+            "1",
+            "--out",
+            output.to_str().unwrap(),
+        ];
+        GeneratorCli::parse_from(args.into_iter().chain(["--mnemonic", mnemonic]))
+            .args
+            .run()
+            .await
+            .unwrap();
+        let expected = std::fs::read(&output).unwrap();
+        let file_args = || {
+            GeneratorCli::parse_from(
+                args.into_iter()
+                    .chain(["--mnemonic-file", path.to_str().unwrap()]),
+            )
+            .args
+        };
+        file_args().run().await.unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+        assert!(
+            GeneratorCli::try_parse_from(args.into_iter().chain([
+                "--mnemonic",
+                mnemonic,
+                "--mnemonic-file",
+                path.to_str().unwrap(),
+            ]))
+            .is_err()
+        );
+        std::fs::remove_file(&output).unwrap();
+        std::fs::write(&path, " \n").unwrap();
+        assert!(file_args().run().await.is_err());
+        assert!(!output.exists());
+        std::fs::remove_file(&path).unwrap();
+        assert!(file_args().run().await.is_err());
+        assert!(!output.exists());
     }
 }
