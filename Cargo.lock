@@ -14161,6 +14161,7 @@ dependencies = [
  "rand_distr 0.5.1",
  "reqwest 0.13.3",
  "rustls",
+ "serde_json",
  "tempo-alloy",
  "tempo-precompiles",
  "tempo-primitives",
