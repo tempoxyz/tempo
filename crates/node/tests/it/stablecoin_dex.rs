@@ -1,5 +1,5 @@
 use alloy::{primitives::U256, providers::ProviderBuilder, sol_types::SolError};
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_contracts::precompiles::{
     IStablecoinDEX,
     ITIP20::{self, ITIP20Instance},
@@ -8,7 +8,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, stablecoin_dex::MIN_ORDER_AMOUNT,
 };
 
-use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bids() -> eyre::Result<()> {
@@ -43,13 +43,13 @@ async fn test_bids() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending.drain(..)).await?;
 
     // Mint tokens to each account
     for (account, _) in &account_data {
         pending.push(quote.mint(*account, mint_amount).send().await?);
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending.drain(..)).await?;
 
     // Pair is auto-created on first place() call
     let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
@@ -69,7 +69,7 @@ async fn test_bids() -> eyre::Result<()> {
                 .await?,
         );
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     let num_orders = account_data.len() as u128;
     // Place bid orders for each account
@@ -86,7 +86,7 @@ async fn test_bids() -> eyre::Result<()> {
         let order_tx = call.send().await?;
         pending_orders.push(order_tx);
     }
-    await_receipts(&mut pending_orders).await?;
+    await_successful_receipts(pending_orders).await?;
 
     for order_id in 1..=num_orders {
         let order = exchange.getOrder(order_id).call().await?;
@@ -191,7 +191,7 @@ async fn test_asks() -> eyre::Result<()> {
     for (account, _) in &account_data {
         pending.push(base.mint(*account, mint_amount).send().await?);
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending.drain(..)).await?;
 
     // Pair is auto-created on first place() call
     let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
@@ -210,7 +210,7 @@ async fn test_asks() -> eyre::Result<()> {
                 .await?,
         );
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     let num_orders = account_data.len() as u128;
     // Place ask orders for each account
@@ -227,7 +227,7 @@ async fn test_asks() -> eyre::Result<()> {
         let order_tx = call.send().await?;
         pending_orders.push(order_tx);
     }
-    await_receipts(&mut pending_orders).await?;
+    await_successful_receipts(pending_orders).await?;
 
     for order_id in 1..=num_orders {
         let order = exchange.getOrder(order_id).call().await?;
@@ -347,7 +347,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     for (account, _) in &account_data {
         pending.push(quote.mint(*account, mint_amount).send().await?);
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending.drain(..)).await?;
 
     // Pair is auto-created on first place() call
     let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
@@ -367,7 +367,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
                 .await?,
         );
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     let num_orders = account_data.len() as u128;
     // Place bid orders for each account
@@ -383,7 +383,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         let order_tx = call.send().await?;
         pending_orders.push(order_tx);
     }
-    await_receipts(&mut pending_orders).await?;
+    await_successful_receipts(pending_orders).await?;
 
     // Verify orders were created correctly
     for order_id in 1..=num_orders {
@@ -459,7 +459,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     // Mint USDC to Bob (trader)
     pending.push(usdc.mint(bob, mint_amount).send().await?);
 
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     // Alice approves exchange to spend her tokens
     let alice_provider = ProviderBuilder::new()
@@ -488,7 +488,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     // Alice places liquidity orders at tick 0 (1:1 price)
     let alice_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, alice_provider);
@@ -616,7 +616,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let mut pending = vec![];
     pending.push(base.mint(caller, mint_amount).send().await?);
     pending.push(quote.mint(caller, mint_amount).send().await?);
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     let mut pending = vec![];
     pending.push(
@@ -630,7 +630,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     let expected_selector = format!(
         "0x{}",
@@ -708,7 +708,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let mut pending = vec![];
     pending.push(base.mint(caller, mint_amount).send().await?);
     pending.push(quote.mint(caller, mint_amount).send().await?);
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     let mut pending = vec![];
     pending.push(
@@ -722,7 +722,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     let expected_selector = format!(
         "0x{}",

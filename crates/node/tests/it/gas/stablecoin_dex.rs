@@ -5,7 +5,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     sol_types::SolEvent,
 };
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinDEX, IStorageCredits,
@@ -20,7 +20,7 @@ use tempo_precompiles::{
 };
 use test_case::test_case;
 
-use crate::utils::{TestNodeBuilder, await_receipts, make_genesis_at};
+use crate::utils::{TestNodeBuilder, make_genesis_at};
 
 const USER_COUNT: usize = 16;
 
@@ -149,7 +149,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         pending.push(base.mint(account, mint_amount).send().await?);
         pending.push(quote.mint(account, mint_amount).send().await?);
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     for provider in providers.iter().skip(1) {
         approve(provider.clone(), base_addr, STABLECOIN_DEX_ADDRESS).await?;

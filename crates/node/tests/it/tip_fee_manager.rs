@@ -10,7 +10,8 @@ use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
 use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_e2e_test_utils::wallet::test_signer;
+use eyre::WrapErr;
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
@@ -78,8 +79,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         )
         .send()
         .await?;
-    let receipt = pending_tx.get_receipt().await?;
-    assert!(receipt.status());
+    let receipt = pending_tx.successful_receipt().await?;
 
     let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 
@@ -106,13 +106,12 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Validator receives all accumulated fees, not just from this tx
     assert!(validator_balance_after > validator_balance_before);
 
-    let set_receipt = fee_manager
+    fee_manager
         .setUserToken(*user_token.address())
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_receipt.status());
 
     let current_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(current_token, *user_token.address());
@@ -137,8 +136,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .send_transaction(TransactionRequest::default().to(Address::random()))
         .await?;
     let tx_hash = *pending_tx.tx_hash();
-    let receipt = pending_tx.get_receipt().await?;
-    assert!(receipt.status());
+    let receipt = pending_tx.successful_receipt().await?;
 
     // Verify fee was paid in user_token (max_fee deducted from user)
     let user_balance_after = user_token.balanceOf(user_address).call().await?;
@@ -170,13 +168,12 @@ async fn test_set_user_token() -> eyre::Result<()> {
     assert!(validator_balance_after > validator_balance_before);
 
     // Ensure that the user can set the fee token back to pathUSD
-    let set_receipt = fee_manager
+    fee_manager
         .setUserToken(PATH_USD_ADDRESS)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_receipt.status());
 
     let current_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(current_token, PATH_USD_ADDRESS);
@@ -204,13 +201,12 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .await?;
     assert_eq!(initial_token, PATH_USD_ADDRESS);
 
-    let set_receipt = fee_manager
+    fee_manager
         .setValidatorToken(*validator_token.address())
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_receipt.status());
 
     let current_token = fee_manager
         .validatorTokens(validator_address)
@@ -271,32 +267,26 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     );
 
     for signer in &signers {
-        assert!(
-            user_token
-                .mint(signer.address(), U256::from(1e18))
-                .send()
-                .await?
-                .get_receipt()
-                .await?
-                .status()
-        );
-    }
-
-    assert!(
-        fee_amm
-            .mint(
-                *user_token.address(),
-                PATH_USD_ADDRESS,
-                U256::from(1e18),
-                signers[1].address(),
-            )
-            .from(signers[1].address())
+        user_token
+            .mint(signer.address(), U256::from(1e18))
             .send()
             .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
+            .successful_receipt()
+            .await?;
+    }
+
+    fee_amm
+        .mint(
+            *user_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(1e18),
+            signers[1].address(),
+        )
+        .from(signers[1].address())
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
 
     let tx_hash = send_fee_token_tx().await?.watch().await?;
     let receipt = provider
@@ -486,26 +476,25 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
         .await?;
 
     let admin_token_contract = ITIP20::new(token_addr, &provider);
-    let receipt = admin_token_contract
+    admin_token_contract
         .changeTransferPolicyId(policy_id)
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "changeTransferPolicyId should succeed");
+        .successful_receipt()
+        .await
+        .wrap_err("changeTransferPolicyId should succeed")?;
 
     // TIP-1042 exempts the FeeManager recipient check during fee collection. The fee payer is
     // whitelisted as a sender, so the tx should go through even though FeeManager is not listed.
     let tx = TransactionRequest::default()
         .to(Address::ZERO)
         .value(U256::ZERO);
-    let receipt = fee_payer_provider
+    fee_payer_provider
         .send_transaction(tx)
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     Ok(())
 }

@@ -369,10 +369,20 @@ pub(crate) async fn setup_test_node(
 pub(crate) trait PendingTransactionBuilderExt {
     /// Poll the receipt using Tempo's AA-compatible receipt type.
     async fn get_tempo_receipt(self) -> eyre::Result<TempoTransactionReceipt>;
+
+    /// Moves the pending transaction onto [`TempoNetwork`], so its receipt is decoded as Tempo's
+    /// AA-compatible receipt type.
+    fn into_tempo(self) -> PendingTransactionBuilder<TempoNetwork>;
 }
 
 impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
     async fn get_tempo_receipt(self) -> eyre::Result<TempoTransactionReceipt> {
+        // get_receipt also polls independently of the heartbeat for one confirmation,
+        // so it can recover when the heartbeat misses the block containing the transaction.
+        Ok(self.into_tempo().get_receipt().await?)
+    }
+
+    fn into_tempo(self) -> PendingTransactionBuilder<TempoNetwork> {
         let (provider, config) = self.split();
         let client = RpcClient::new(
             provider.client().transport().clone(),
@@ -380,29 +390,8 @@ impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
         )
         .with_poll_interval(provider.client().poll_interval());
         let provider = RootProvider::<TempoNetwork>::new(client);
-        // get_receipt also polls independently of the heartbeat for one confirmation,
-        // so it can recover when the heartbeat misses the block containing the transaction.
-        Ok(PendingTransactionBuilder::from_config(provider, config)
-            .get_receipt()
-            .await?)
+        PendingTransactionBuilder::from_config(provider, config)
     }
-}
-
-pub(crate) async fn await_receipts(
-    pending_txs: &mut Vec<PendingTransactionBuilder<Ethereum>>,
-) -> eyre::Result<()> {
-    for (i, tx) in pending_txs.drain(..).enumerate() {
-        let receipt = tx.get_receipt().await?;
-        assert!(
-            receipt.status(),
-            "tx {} failed: hash={:?}, gas_used={}",
-            i,
-            receipt.transaction_hash,
-            receipt.gas_used
-        );
-    }
-
-    Ok(())
 }
 
 /// Result type for single node setup

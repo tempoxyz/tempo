@@ -13,7 +13,7 @@ use alloy_rpc_types_eth::{
     TransactionInput,
     state::{AccountOverride, StateOverride},
 };
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
@@ -427,10 +427,9 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let receipt = provider
         .send_transaction(tx.gas_limit(gas))
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
 
-    assert!(receipt.status());
     assert!(receipt.gas_used <= gas);
 
     Ok(())

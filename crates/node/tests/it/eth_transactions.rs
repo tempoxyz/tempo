@@ -7,7 +7,7 @@ use alloy::{
     signers::SignerSync,
 };
 use alloy_network::TransactionResponse;
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use reth_primitives_traits::SignerRecoverable;
 use reth_rpc_eth_api::helpers::{EthTransactions, LoadState};
 use reth_transaction_pool::{TransactionOrigin, TransactionPool, pool::AddedTransactionState};
@@ -40,8 +40,7 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
         .await?;
 
     let tx_hash = *pending_tx.tx_hash();
-    let receipt = pending_tx.get_receipt().await?;
-    assert!(receipt.status());
+    pending_tx.successful_receipt().await?;
 
     let nonce_after = provider.get_transaction_count(caller).await?;
     assert_eq!(nonce_after, nonce_before + 1);

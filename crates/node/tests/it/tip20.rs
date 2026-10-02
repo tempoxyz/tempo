@@ -4,8 +4,12 @@ use alloy::{
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
+use eyre::WrapErr;
 use futures::future::try_join_all;
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{
+    receipt::{PendingTransactionExt, await_successful_receipts},
+    wallet::test_signer,
+};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::{
@@ -14,7 +18,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 
-use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -698,7 +702,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending.drain(..)).await?;
 
     // Rewards are disabled. Distribution is a no-op and should not emit reward events.
     let distribute_receipt = token
@@ -728,7 +732,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     assert_eq!(token.balanceOf(alice).call().await?, U256::from(900e18));
     assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
@@ -835,18 +839,15 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .await?;
 
     // Verify user can transact before pause
-    let transfer_result = user_token
+    user_token
         .transfer(Address::random(), U256::from(100))
         .gas(gas)
         .gas_price(gas_price)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-    assert!(
-        transfer_result.status(),
-        "Transfer should succeed before pause"
-    );
+        .successful_receipt()
+        .await
+        .wrap_err("Transfer should succeed before pause")?;
 
     // ===== Test 1: User pauses the token in their transaction =====
     // This should succeed because:
@@ -856,19 +857,15 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 
     let balance_before_pause_tx = token.balanceOf(user).call().await?;
 
-    let pause_receipt = user_token
+    user_token
         .pause()
         .gas(gas)
         .gas_price(gas_price)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-
-    assert!(
-        pause_receipt.status(),
-        "Pause transaction should succeed - post_tx refund allowed even when paused"
-    );
+        .successful_receipt()
+        .await
+        .wrap_err("Pause transaction should succeed - post_tx refund allowed even when paused")?;
 
     // Verify token is now paused
     assert!(token.paused().call().await?, "Token should be paused");
@@ -957,9 +954,8 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
         .mint(virtual_addr, mint_amount)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(mint_receipt.status());
 
     assert_eq!(token.balanceOf(admin).call().await?, mint_amount);
     assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
@@ -1018,9 +1014,8 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
         .transfer(virtual_addr, amount)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
@@ -1089,9 +1084,8 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
         .transferFrom(sender, virtual_addr, amount)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
@@ -1155,9 +1149,8 @@ async fn test_tip20_virtual_transfer_with_memo() -> eyre::Result<()> {
         .transferWithMemo(virtual_addr, amount, memo)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
@@ -1244,9 +1237,8 @@ async fn test_tip20_virtual_transfer_from_with_memo() -> eyre::Result<()> {
         .transferFromWithMemo(sender, virtual_addr, amount, memo)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
