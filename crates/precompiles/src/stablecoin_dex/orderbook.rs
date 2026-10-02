@@ -883,10 +883,7 @@ mod tests {
         let result = price_to_tick(MIN_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MIN_TICK);
-        assert_eq!(
-            MIN_PRICE,
-            crate::stablecoin_dex::orderbook::tick_to_price(MIN_TICK)
-        );
+        assert_eq!(MIN_PRICE, tick_to_price(MIN_TICK));
     }
 
     #[test]
@@ -894,10 +891,7 @@ mod tests {
         let result = price_to_tick(MAX_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MAX_TICK);
-        assert_eq!(
-            MAX_PRICE,
-            crate::stablecoin_dex::orderbook::tick_to_price(MAX_TICK)
-        );
+        assert_eq!(MAX_PRICE, tick_to_price(MAX_TICK));
     }
 
     #[test]

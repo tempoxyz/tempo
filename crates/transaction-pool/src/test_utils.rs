@@ -9,7 +9,7 @@ use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
 use core::num::NonZeroU64;
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
-use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
+use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction, identifier::SenderId};
 use std::time::Instant;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
 use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
@@ -347,8 +347,7 @@ pub(crate) fn wrap_valid_tx(
     tx: TempoPooledTransaction,
     origin: TransactionOrigin,
 ) -> ValidPoolTransaction<TempoPooledTransaction> {
-    let tx_id =
-        reth_transaction_pool::identifier::SenderId::into_transaction_id(0u64.into(), tx.nonce());
+    let tx_id = SenderId::into_transaction_id(0u64.into(), tx.nonce());
     ValidPoolTransaction {
         transaction: tx,
         transaction_id: tx_id,

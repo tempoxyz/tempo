@@ -1,7 +1,9 @@
 use std::fmt::Debug;
 
 use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
-use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
+use alloy_consensus::{
+    ReceiptWithBloom, TxEip4844Variant, TxType, error::UnsupportedTransactionType,
+};
 
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_network::{
@@ -232,9 +234,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
                     return Err(UnbuiltTransactionError {
                         request: self,
                         error: TransactionBuilderError::Custom(Box::new(
-                            UnsupportedTransactionType::new(
-                                alloy_consensus::TxEip4844Variant::<()>::tx_type(),
-                            ),
+                            UnsupportedTransactionType::new(TxEip4844Variant::<()>::tx_type()),
                         )),
                     });
                 }

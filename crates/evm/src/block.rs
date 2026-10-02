@@ -712,6 +712,7 @@ mod tests {
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
     use rand::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
+    use reth_primitives_traits::SignedTransaction;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
         context::result::{ExecutionResult, ResultGas},
@@ -1077,8 +1078,7 @@ mod tests {
                 executor.validate_tx(&tx, 21_000).unwrap_err().to_string(),
                 "subblock transactions are not supported"
             );
-            let recovered =
-                reth_primitives_traits::SignedTransaction::with_signer(tx, Address::ZERO);
+            let recovered = SignedTransaction::with_signer(tx, Address::ZERO);
             let err = executor.execute_transaction(&recovered).unwrap_err();
             assert!(
                 matches!(&err, BlockExecutionError::Validation(_)),
@@ -1274,10 +1274,7 @@ mod tests {
                         execution_context: context,
                         ..Default::default()
                     };
-                    let recovered = reth_primitives_traits::SignedTransaction::with_signer(
-                        tx.clone(),
-                        Address::ZERO,
-                    );
+                    let recovered = SignedTransaction::with_signer(tx.clone(), Address::ZERO);
                     executor
                         .execute_transaction_with_actions(
                             (env, &recovered),

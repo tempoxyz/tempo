@@ -2194,8 +2194,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
 
     let mut nonce = env.provider().get_transaction_count(root_addr).await?;
     // Use a small fraction to leave room for gas across multiple operations
-    let transfer_amount =
-        rand_sub_amount(crate::tempo_transaction::helpers::rand_sub_amount(funded));
+    let transfer_amount = rand_sub_amount(rand_sub_amount(funded));
 
     // TEST 1: Never-expires key
     let never_auth = create_key_authorization(

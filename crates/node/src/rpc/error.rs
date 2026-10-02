@@ -195,7 +195,8 @@ mod tests {
         let error = TempoEthApiError::from(error);
         assert!(matches!(
             error,
-            TempoEthApiError::EthApiError(EthApiError::EvmCustom(message)) if message == "custom error"
+            TempoEthApiError::EthApiError(EthApiError::EvmCustom(message))
+                if message == "custom error"
         ));
     }
 

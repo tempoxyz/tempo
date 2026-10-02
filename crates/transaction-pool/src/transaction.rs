@@ -14,7 +14,7 @@ use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
 use reth_evm::execute::WithTxEnv;
-use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
+use reth_primitives_traits::{InMemorySize, Recovered, SignedTransaction, SignerRecoverable};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
     error::{PoolTransactionError, RawPoolTransactionError},
@@ -831,7 +831,7 @@ impl PoolTransaction for TempoPooledTransaction {
         };
 
         Ok(Self::new_with(
-            reth_primitives_traits::SignedTransaction::with_signer(transaction, signer),
+            SignedTransaction::with_signer(transaction, signer),
             expiring_nonce_hash,
             encoded_length,
         ))
@@ -1405,7 +1405,7 @@ mod tests {
         let signature = TempoSignature::from(Signature::test_signature());
         let aa_signed = aa_tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
-        let recovered = reth_primitives_traits::SignedTransaction::with_signer(envelope, sender);
+        let recovered = SignedTransaction::with_signer(envelope, sender);
 
         let pooled = TempoPooledTransaction::from_pooled(recovered);
         assert_eq!(pooled.sender(), sender);
@@ -1420,7 +1420,8 @@ mod tests {
             tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
             let (pooled, envelope, sender, encoded_length) = raw_pooled_transaction(tx);
             let expected = envelope.as_aa().unwrap().expiring_nonce_hash(sender);
-            let via_new = TempoPooledTransaction::new(reth_primitives_traits::SignedTransaction::with_signer(envelope, sender));
+            let via_new =
+                TempoPooledTransaction::new(SignedTransaction::with_signer(envelope, sender));
 
             prop_assert!(pooled.is_expiring_nonce());
             prop_assert_eq!(pooled.encoded_length(), encoded_length);
@@ -1436,7 +1437,8 @@ mod tests {
         ) {
             tx.nonce_key = U256::ZERO;
             let (pooled, envelope, sender, encoded_length) = raw_pooled_transaction(tx);
-            let via_new = TempoPooledTransaction::new(reth_primitives_traits::SignedTransaction::with_signer(envelope, sender));
+            let via_new =
+                TempoPooledTransaction::new(SignedTransaction::with_signer(envelope, sender));
 
             prop_assert!(!pooled.is_expiring_nonce());
             prop_assert_eq!(pooled.encoded_length(), encoded_length);

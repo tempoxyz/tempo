@@ -88,8 +88,7 @@ fn seed_dex_cache_db(
             )?;
 
             let mut quote = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            quote
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role())?;
+            quote.grant_role_internal(admin, TIP20Token::issuer_role())?;
 
             let base_token = TIP20Factory::new().create_token(
                 admin,
@@ -103,7 +102,7 @@ fn seed_dex_cache_db(
                 },
             )?;
             let mut base = TIP20Token::from_address(base_token)?;
-            base.grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role())?;
+            base.grant_role_internal(admin, TIP20Token::issuer_role())?;
 
             for participant in participants {
                 let mint = ITIP20::mintCall {

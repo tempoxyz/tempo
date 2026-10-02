@@ -886,7 +886,9 @@ mod tests {
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_revm::cached::CachedReads;
     use reth_storage_api::{AccountReader, BlockNumReader, BytecodeReader};
-    use reth_transaction_pool::{PoolTransaction, blobstore::InMemoryBlobStore};
+    use reth_transaction_pool::{
+        PoolTransaction, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
+    };
     use revm::{DatabaseRef, context::result::InvalidTransaction};
     use std::sync::{
         Arc,
@@ -1083,7 +1085,7 @@ mod tests {
             ]),
         );
 
-        let inner = reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
+        let inner = TransactionValidationTaskExecutor::eth_builder(
             provider.clone(),
             TempoEvmConfig::moderato(),
         )
@@ -1304,9 +1306,8 @@ mod tests {
             input: Default::default(),
         };
         let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
-        let transaction = TempoPooledTransaction::new(
-            reth_primitives_traits::SignedTransaction::with_signer(envelope, Address::ZERO),
-        );
+        let transaction =
+            TempoPooledTransaction::new(SignedTransaction::with_signer(envelope, Address::ZERO));
         let validator = setup_validator(&transaction, 0);
 
         let outcome = validator
@@ -1405,9 +1406,8 @@ mod tests {
         let signed = tx.into_signed(TempoSignature::from(Signature::test_signature()));
 
         let envelope: TempoTxEnvelope = signed.into();
-        let transaction = TempoPooledTransaction::new(
-            reth_primitives_traits::SignedTransaction::with_signer(envelope, sender),
-        );
+        let transaction =
+            TempoPooledTransaction::new(SignedTransaction::with_signer(envelope, sender));
         let validator = setup_validator(&transaction, u64::MAX);
 
         let outcome = validator

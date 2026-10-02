@@ -61,7 +61,9 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+use reth_ethereum::{
+    chainspec::EthChainSpec as _, cli::Commands, node::core::dirs::config_path_prefix,
+};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
@@ -223,9 +225,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             };
 
             if let Some(chain_spec) = cli.command.chain_spec() {
-                cli.logs.log_file_directory = cli.logs.log_file_directory.join(
-                    reth_ethereum::node::core::dirs::config_path_prefix(chain_spec.chain()),
-                );
+                cli.logs.log_file_directory = cli
+                    .logs
+                    .log_file_directory
+                    .join(config_path_prefix(chain_spec.chain()));
             }
 
             let mut tracing_app = cli.configure();

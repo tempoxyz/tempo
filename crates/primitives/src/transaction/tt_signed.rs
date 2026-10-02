@@ -200,7 +200,7 @@ impl AASigned {
         let payload_length =
             self.tx.rlp_encoded_fields_length(|_| 1, true) + self.signature.length();
 
-        out.put_u8(crate::transaction::tempo_transaction::TempoTransaction::tx_type());
+        out.put_u8(TempoTransaction::tx_type());
         alloy_rlp::Header {
             list: true,
             payload_length,
@@ -230,7 +230,7 @@ impl AASigned {
     /// EIP-2718 encode the signed transaction.
     pub fn eip2718_encode(&self, out: &mut dyn BufMut) {
         // Type byte
-        out.put_u8(crate::transaction::tempo_transaction::TempoTransaction::tx_type());
+        out.put_u8(TempoTransaction::tx_type());
         // RLP fields
         self.rlp_encode(out);
     }
@@ -274,7 +274,7 @@ impl TxHashRef for AASigned {
 
 impl Typed2718 for AASigned {
     fn ty(&self) -> u8 {
-        crate::transaction::tempo_transaction::TempoTransaction::tx_type()
+        TempoTransaction::tx_type()
     }
 }
 
@@ -428,7 +428,7 @@ impl Encodable2718 for AASigned {
 
 impl Decodable2718 for AASigned {
     fn typed_decode(ty: u8, buf: &mut &[u8]) -> Eip2718Result<Self> {
-        if ty != crate::transaction::tempo_transaction::TempoTransaction::tx_type() {
+        if ty != TempoTransaction::tx_type() {
             return Err(Eip2718Error::UnexpectedType(ty));
         }
         Self::rlp_decode(buf).map_err(Into::into)
@@ -719,16 +719,11 @@ pub(crate) mod tests {
         // EIP-2718 encode/decode
         let mut eip_buf = Vec::new();
         signed.eip2718_encode(&mut eip_buf);
-        assert_eq!(
-            eip_buf[0],
-            crate::transaction::tempo_transaction::TempoTransaction::tx_type()
-        );
+        assert_eq!(eip_buf[0], TempoTransaction::tx_type());
 
-        let decoded_2718 = AASigned::typed_decode(
-            crate::transaction::tempo_transaction::TempoTransaction::tx_type(),
-            &mut eip_buf[1..].as_ref(),
-        )
-        .unwrap();
+        let decoded_2718 =
+            AASigned::typed_decode(TempoTransaction::tx_type(), &mut eip_buf[1..].as_ref())
+                .unwrap();
         assert_eq!(decoded_2718.tx(), signed.tx());
 
         // trie_hash equals hash
@@ -963,7 +958,7 @@ pub(crate) mod tests {
             let mut payload = Vec::new();
             signed.tx().rlp_encode_fields_default(&mut payload);
             signed.signature().to_bytes().encode(&mut payload);
-            let mut expected = vec![crate::transaction::tempo_transaction::TempoTransaction::tx_type()];
+            let mut expected = vec![TempoTransaction::tx_type()];
             alloy_rlp::Header { list: true, payload_length: payload.len() }.encode(&mut expected);
             expected.extend_from_slice(&payload);
             prop_assert_eq!(&encoded, &expected);

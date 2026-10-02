@@ -11,6 +11,7 @@ use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TI
 use tempo_precompiles::{
     ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
+    tip20::TIP20Token,
 };
 use tempo_primitives::TempoAddressExt;
 
@@ -848,7 +849,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 
     // Grant PAUSE_ROLE to admin and user
     roles
-        .grantRole(tempo_precompiles::tip20::TIP20Token::pause_role(), admin)
+        .grantRole(TIP20Token::pause_role(), admin)
         .gas(gas)
         .gas_price(gas_price)
         .send()
@@ -856,7 +857,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .get_receipt()
         .await?;
     roles
-        .grantRole(tempo_precompiles::tip20::TIP20Token::pause_role(), user)
+        .grantRole(TIP20Token::pause_role(), user)
         .gas(gas)
         .gas_price(gas_price)
         .send()

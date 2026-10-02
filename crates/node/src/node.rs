@@ -29,7 +29,7 @@ use reth_node_builder::{
     },
 };
 use reth_primitives_traits::SealedHeader;
-use reth_provider::providers::ProviderFactoryBuilder;
+use reth_provider::{ProviderFactory, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
@@ -310,7 +310,7 @@ impl TempoNode {
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
-        reth_provider::ProviderFactory::builder()
+        ProviderFactory::builder()
     }
 
     /// Sets the transaction pool builder.

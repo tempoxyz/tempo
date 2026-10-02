@@ -1088,18 +1088,10 @@ mod tests {
             let registry = TIP403Registry::new();
 
             // Policy 0 should always reject
-            assert!(!registry.is_authorized_as(
-                0,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(0, user, AuthRole::transfer())?);
 
             // Policy 1 should always allow
-            assert!(registry.is_authorized_as(
-                1,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(registry.is_authorized_as(1, user, AuthRole::transfer())?);
             Ok(())
         })
     }
@@ -1121,7 +1113,7 @@ mod tests {
             assert!(!registry.is_authorized_as(
                 REJECT_ALL_POLICY_ID,
                 RECEIVE_POLICY_GUARD_ADDRESS,
-                crate::tip403_registry::AuthRole::transfer(),
+                AuthRole::transfer(),
             )?);
             Ok::<(), TempoPrecompileError>(())
         })?;
@@ -1163,14 +1155,8 @@ mod tests {
             )?;
             for (policy_id, roles) in [
                 (REJECT_ALL_POLICY_ID, ROLES),
-                (
-                    whitelist_id,
-                    &[crate::tip403_registry::AuthRole::transfer()][..],
-                ),
-                (
-                    blacklist_id,
-                    &[crate::tip403_registry::AuthRole::transfer()][..],
-                ),
+                (whitelist_id, &[AuthRole::transfer()][..]),
+                (blacklist_id, &[AuthRole::transfer()][..]),
                 (compound_id, ROLES),
             ] {
                 for role in roles {
@@ -1204,11 +1190,7 @@ mod tests {
             )?;
 
             // User should not be authorized initially
-            assert!(!registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(policy_id, user, AuthRole::transfer())?);
 
             // Add user to whitelist
             registry.modify_policy_whitelist(
@@ -1221,11 +1203,7 @@ mod tests {
             )?;
 
             // User should now be authorized
-            assert!(registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(registry.is_authorized_as(policy_id, user, AuthRole::transfer())?);
 
             Ok(())
         })
@@ -1249,11 +1227,7 @@ mod tests {
             )?;
 
             // User should be authorized initially (not in blacklist)
-            assert!(registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(registry.is_authorized_as(policy_id, user, AuthRole::transfer())?);
 
             // Add user to blacklist
             registry.modify_policy_blacklist(
@@ -1266,11 +1240,7 @@ mod tests {
             )?;
 
             // User should no longer be authorized
-            assert!(!registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(policy_id, user, AuthRole::transfer())?);
 
             Ok(())
         })
@@ -1897,11 +1867,7 @@ mod tests {
             assert!(!registry.is_authorized_as(compound_id, user, AuthRole::Recipient)?);
 
             // isAuthorized = sender && recipient = true && false = false
-            assert!(!registry.is_authorized_as(
-                compound_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(compound_id, user, AuthRole::transfer())?);
 
             // Now add user to recipient whitelist
             registry.modify_policy_whitelist(
@@ -1914,11 +1880,7 @@ mod tests {
             )?;
 
             // Now isAuthorized = sender && recipient = true && true = true
-            assert!(registry.is_authorized_as(
-                compound_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(registry.is_authorized_as(compound_id, user, AuthRole::transfer())?);
 
             Ok(())
         })
@@ -1971,11 +1933,7 @@ mod tests {
                         allowed: true,
                     },
                 )?;
-                assert!(!registry.is_authorized_as(
-                    compound_id,
-                    user,
-                    crate::tip403_registry::AuthRole::transfer()
-                )?);
+                assert!(!registry.is_authorized_as(compound_id, user, AuthRole::transfer())?);
 
                 // User in sender whitelist, not in recipient whitelist
                 registry.modify_policy_whitelist(
@@ -1994,11 +1952,7 @@ mod tests {
                         allowed: false,
                     },
                 )?;
-                assert!(!registry.is_authorized_as(
-                    compound_id,
-                    user,
-                    crate::tip403_registry::AuthRole::transfer()
-                )?);
+                assert!(!registry.is_authorized_as(compound_id, user, AuthRole::transfer())?);
 
                 // User in both whitelists
                 registry.modify_policy_whitelist(
@@ -2009,11 +1963,7 @@ mod tests {
                         allowed: true,
                     },
                 )?;
-                assert!(registry.is_authorized_as(
-                    compound_id,
-                    user,
-                    crate::tip403_registry::AuthRole::transfer()
-                )?);
+                assert!(registry.is_authorized_as(compound_id, user, AuthRole::transfer())?);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -2048,11 +1998,7 @@ mod tests {
             )?;
 
             // For simple policies, all four authorization functions should return the same result
-            let is_authorized = registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer(),
-            )?;
+            let is_authorized = registry.is_authorized_as(policy_id, user, AuthRole::transfer())?;
             let is_sender = registry.is_authorized_as(policy_id, user, AuthRole::Sender)?;
             let is_recipient = registry.is_authorized_as(policy_id, user, AuthRole::Recipient)?;
             let is_mint_recipient =
@@ -2098,11 +2044,7 @@ mod tests {
             assert!(registry.is_authorized_as(compound_id, user, AuthRole::MintRecipient)?);
 
             // isAuthorized = sender && recipient = true && false = false
-            assert!(!registry.is_authorized_as(
-                compound_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(compound_id, user, AuthRole::transfer())?);
 
             Ok(())
         })
@@ -2420,11 +2362,7 @@ mod tests {
             )?;
 
             // is_authorized should revert for policy_type >= 2 on pre-T1
-            let result = registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer(),
-            );
+            let result = registry.is_authorized_as(policy_id, user, AuthRole::transfer());
             assert!(result.is_err());
             assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
 
@@ -2466,11 +2404,7 @@ mod tests {
             );
 
             // is_authorized should also fail with InvalidPolicyType on T2
-            let result = registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer(),
-            );
+            let result = registry.is_authorized_as(policy_id, user, AuthRole::transfer());
             assert!(result.is_err());
             assert_eq!(
                 result.unwrap_err(),
@@ -2589,11 +2523,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
 
-            let result = registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer(),
-            );
+            let result = registry.is_authorized_as(policy_id, user, AuthRole::transfer());
             assert_eq!(
                 result.unwrap_err(),
                 TIP403RegistryError::invalid_policy_type().into()
@@ -2621,11 +2551,7 @@ mod tests {
             )?;
 
             // User not authorized initially
-            assert!(!registry.is_authorized_as(
-                whitelist_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(whitelist_id, user, AuthRole::transfer())?);
 
             // Add to whitelist
             registry.modify_policy_whitelist(
@@ -2638,11 +2564,7 @@ mod tests {
             )?;
 
             // Now authorized
-            assert!(registry.is_authorized_as(
-                whitelist_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(registry.is_authorized_as(whitelist_id, user, AuthRole::transfer())?);
 
             // Create and test blacklist on pre-T1
             let blacklist_id = registry.create_policy(
@@ -2654,11 +2576,7 @@ mod tests {
             )?;
 
             // User authorized initially (not in blacklist)
-            assert!(registry.is_authorized_as(
-                blacklist_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(registry.is_authorized_as(blacklist_id, user, AuthRole::transfer())?);
 
             // Add to blacklist
             registry.modify_policy_blacklist(
@@ -2671,11 +2589,7 @@ mod tests {
             )?;
 
             // Now not authorized
-            assert!(!registry.is_authorized_as(
-                blacklist_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(blacklist_id, user, AuthRole::transfer())?);
 
             Ok(())
         })
@@ -2867,11 +2781,7 @@ mod tests {
             });
             assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
 
-            let result = registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer(),
-            );
+            let result = registry.is_authorized_as(policy_id, user, AuthRole::transfer());
             assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
 
             Ok::<_, TempoPrecompileError>(())
@@ -2890,11 +2800,7 @@ mod tests {
                 TIP403RegistryError::invalid_policy_type().into()
             );
 
-            let result = registry.is_authorized_as(
-                policy_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer(),
-            );
+            let result = registry.is_authorized_as(policy_id, user, AuthRole::transfer());
             assert_eq!(
                 result.unwrap_err(),
                 TIP403RegistryError::invalid_policy_type().into()
@@ -2977,11 +2883,7 @@ mod tests {
             let registry = TIP403Registry::new();
             let data = registry.get_policy_data(nonexistent_id)?;
             assert!(data.is_default());
-            assert!(!registry.is_authorized_as(
-                nonexistent_id,
-                user,
-                crate::tip403_registry::AuthRole::transfer()
-            )?);
+            assert!(!registry.is_authorized_as(nonexistent_id, user, AuthRole::transfer())?);
             Ok(())
         })?;
 
@@ -2995,11 +2897,7 @@ mod tests {
             );
             assert_eq!(
                 registry
-                    .is_authorized_as(
-                        nonexistent_id,
-                        user,
-                        crate::tip403_registry::AuthRole::transfer()
-                    )
+                    .is_authorized_as(nonexistent_id, user, AuthRole::transfer())
                     .unwrap_err(),
                 TIP403RegistryError::policy_not_found().into()
             );

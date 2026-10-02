@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoTxEnv, evm::TempoEvm,
-    gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS, tx::TempoBatchCallEnv,
+    fee_manager::TempoFeeManager, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
+    tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use proptest::prelude::*;
@@ -21,7 +22,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
-    tip_fee_manager::TipFeeManager,
+    tip_fee_manager::TipFeeManager, tip20::TIP20Token,
 };
 use tempo_primitives::transaction::{
     Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
@@ -265,7 +266,7 @@ fn test_paused_fee_token_rejected() {
         StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
                 .with_issuer(admin)
-                .with_role(admin, tempo_precompiles::tip20::TIP20Token::pause_role())
+                .with_role(admin, TIP20Token::pause_role())
                 .with_mint(fee_payer, fee)
                 .apply()?;
             token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
@@ -517,7 +518,7 @@ fn test_get_fee_token() -> eyre::Result<()> {
         .unwrap();
 
     {
-        let fee_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
+        let fee_token = TempoFeeManager::new().resolve_fee_token(
             &mut ctx.journaled_state,
             &ctx.tx,
             user,
@@ -538,7 +539,7 @@ fn test_get_fee_token() -> eyre::Result<()> {
         .unwrap();
 
     {
-        let fee_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
+        let fee_token = TempoFeeManager::new().resolve_fee_token(
             &mut ctx.journaled_state,
             &ctx.tx,
             user,
@@ -550,7 +551,7 @@ fn test_get_fee_token() -> eyre::Result<()> {
 
     // Set tx fee token
     ctx.tx.fee_token = Some(tx_fee_token);
-    let fee_token = crate::fee_manager::TempoFeeManager::new().resolve_fee_token(
+    let fee_token = TempoFeeManager::new().resolve_fee_token(
         &mut ctx.journaled_state,
         &ctx.tx,
         user,

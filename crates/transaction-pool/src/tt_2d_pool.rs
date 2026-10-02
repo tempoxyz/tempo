@@ -2596,7 +2596,7 @@ mod tests {
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
-
+    use reth_primitives_traits::SignedTransaction;
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
@@ -7094,8 +7094,7 @@ mod tests {
             let signature = TempoSignature::from(Signature::test_signature());
             let aa_signed = tx.into_signed(signature);
             let envelope: TempoTxEnvelope = aa_signed.into();
-            let recovered =
-                reth_primitives_traits::SignedTransaction::with_signer(envelope, sender);
+            let recovered = SignedTransaction::with_signer(envelope, sender);
             TempoPooledTransaction::new(recovered)
         };
 
@@ -7179,7 +7178,7 @@ mod tests {
         let signature = TempoSignature::from(Signature::test_signature());
         let aa_signed = tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
-        let recovered = reth_primitives_traits::SignedTransaction::with_signer(envelope, sender);
+        let recovered = SignedTransaction::with_signer(envelope, sender);
         let pooled = TempoPooledTransaction::new(recovered);
 
         let tx_hash = *pooled.hash();

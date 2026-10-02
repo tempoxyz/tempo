@@ -503,9 +503,11 @@ mod tests {
     use alloy_consensus::{BlockHeader, Header, SignableTransaction as _, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
-    use reth_primitives_traits::{SealedHeader, transaction::error::InvalidTransactionError};
+    use reth_primitives_traits::{
+        SealedHeader, SignedTransaction, transaction::error::InvalidTransactionError,
+    };
     use reth_storage_api::noop::NoopProvider;
-    use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
+    use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction, identifier::SenderId};
     use std::{
         collections::VecDeque,
         num::NonZeroU64,
@@ -595,14 +597,9 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
-        let pooled = TempoPooledTransaction::new(
-            reth_primitives_traits::SignedTransaction::with_signer(envelope, sender),
-        );
+        let pooled = TempoPooledTransaction::new(SignedTransaction::with_signer(envelope, sender));
         Arc::new(ValidPoolTransaction {
-            transaction_id: reth_transaction_pool::identifier::SenderId::into_transaction_id(
-                0u64.into(),
-                nonce,
-            ),
+            transaction_id: SenderId::into_transaction_id(0u64.into(), nonce),
             transaction: pooled,
             propagate: true,
             timestamp: Instant::now(),
@@ -641,14 +638,9 @@ mod tests {
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
-        let pooled = TempoPooledTransaction::new(
-            reth_primitives_traits::SignedTransaction::with_signer(envelope, sender),
-        );
+        let pooled = TempoPooledTransaction::new(SignedTransaction::with_signer(envelope, sender));
         Arc::new(ValidPoolTransaction {
-            transaction_id: reth_transaction_pool::identifier::SenderId::into_transaction_id(
-                0u64.into(),
-                0,
-            ),
+            transaction_id: SenderId::into_transaction_id(0u64.into(), 0),
             transaction: pooled,
             propagate: true,
             timestamp: Instant::now(),

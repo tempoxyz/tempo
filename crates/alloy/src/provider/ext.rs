@@ -7,7 +7,7 @@ use alloy_provider::{
 };
 use alloy_rpc_client::{BuiltInConnectionString, ConnectionConfig};
 use alloy_transport::{
-    Authorization, BoxTransport, TransportConnect, TransportError, TransportErrorKind,
+    Authorization, BoxTransport, Transport, TransportConnect, TransportError, TransportErrorKind,
 };
 use std::str::FromStr;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -269,9 +269,7 @@ impl TransportConnect for ConfiguredBuiltInConnection {
             .connect_boxed_with(self.config.clone())
             .await?;
         Ok(match self.config.auth.clone() {
-            Some(auth) => {
-                alloy_transport::Transport::boxed(AuthHeaderTransport::new(transport, auth)?)
-            }
+            Some(auth) => Transport::boxed(AuthHeaderTransport::new(transport, auth)?),
             None => transport,
         })
     }

@@ -19,7 +19,7 @@ use tempo_contracts::precompiles::{
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out,
+    TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::TIP20Token,
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
@@ -103,10 +103,7 @@ where
 
     // Grant issuer role
     let roles = IRolesAuth::new(token_addr, provider.clone());
-    let grant_tx = roles.grantRole(
-        tempo_precompiles::tip20::TIP20Token::issuer_role(),
-        sender_address,
-    );
+    let grant_tx = roles.grantRole(TIP20Token::issuer_role(), sender_address);
     let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), nonce_start + 1).await?;
     node.rpc.inject_tx(grant_bytes).await?;
     node.advance_block().await?;

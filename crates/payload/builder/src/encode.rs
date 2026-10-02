@@ -748,7 +748,9 @@ mod tests {
             let expected_block = block.clone().seal_slow();
             let expected = full_block_encoding(&expected_block);
             let senders = vec![Address::ZERO; block.body.transactions.len()];
-            let recovered_block = Arc::new(reth_primitives_traits::Block::into_recovered_with_signers(block, senders));
+            let recovered_block = Arc::new(
+                reth_primitives_traits::Block::into_recovered_with_signers(block, senders),
+            );
             let encoder = ExecutionBlockEncoder::new(
                 recovered_block,
                 expected.len(),

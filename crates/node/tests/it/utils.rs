@@ -300,7 +300,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_node::node::TempoNode;
 use tempo_payload_types::TempoPayloadAttributes;
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
 pub(crate) async fn setup_test_token<P>(
@@ -334,7 +334,7 @@ where
     let roles = IRolesAuth::new(*token.address(), provider);
 
     roles
-        .grantRole(tempo_precompiles::tip20::TIP20Token::issuer_role(), caller)
+        .grantRole(TIP20Token::issuer_role(), caller)
         .from(caller)
         .gas(1_000_000)
         .send()

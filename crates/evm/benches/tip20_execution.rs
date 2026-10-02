@@ -121,8 +121,7 @@ fn seed_in_memory_cache_db(
             )?;
 
             let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role())?;
+            token.grant_role_internal(admin, TIP20Token::issuer_role())?;
             for participant in participants {
                 token.mint(
                     admin,

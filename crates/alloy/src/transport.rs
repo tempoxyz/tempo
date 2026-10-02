@@ -448,6 +448,7 @@ mod tests {
     use alloy_json_rpc::{Id, Request, Response, ResponsePayload, SerializedRequest};
     use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
     use alloy_signer::SignerSync;
+    use alloy_transport::Transport;
     use serde_json::value::RawValue;
     use std::{
         collections::VecDeque,
@@ -559,7 +560,7 @@ mod tests {
             true
         }
         async fn get_transport(&self) -> Result<BoxTransport, TransportError> {
-            Ok(alloy_transport::Transport::boxed(self.0.clone()))
+            Ok(Transport::boxed(self.0.clone()))
         }
     }
 
@@ -821,7 +822,7 @@ mod tests {
         let inner = RecordingTransport::default();
         inner.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc = AuthHeaderTransport::new(
-            alloy_transport::Transport::boxed(inner.clone()),
+            Transport::boxed(inner.clone()),
             Authorization::bearer("sponsor-token"),
         )
         .unwrap();

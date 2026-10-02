@@ -16,6 +16,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::TempoPrecompileError,
     stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, RoundingDirection, base_to_quote},
+    tip20::TIP20Token,
 };
 use test_case::test_case;
 
@@ -97,7 +98,7 @@ where
 
     let roles = IRolesAuth::new(*token.address(), provider);
     let receipt = roles
-        .grantRole(tempo_precompiles::tip20::TIP20Token::issuer_role(), caller)
+        .grantRole(TIP20Token::issuer_role(), caller)
         .gas(1_000_000)
         .send_sync()
         .await?;

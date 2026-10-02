@@ -14,8 +14,8 @@ use tempo_precompiles::{
     signature_verifier::SignatureVerifier,
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
-    tip20::ITIP20,
-    tip403_registry::{ITIP403Registry, TIP403Registry},
+    tip20::{ITIP20, TIP20Token},
+    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
     zone_factory::portal_address,
     zone_verifier::ZoneVerifier,
 };
@@ -183,8 +183,7 @@ fn tip20_metadata(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::issuer_role());
             token
                 .mint(
                     admin,
@@ -213,8 +212,7 @@ fn tip20_view(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::issuer_role());
             token
                 .mint(
                     admin,
@@ -320,8 +318,7 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::issuer_role());
 
             let amount = U256::from(100);
             b.iter(|| {
@@ -340,8 +337,7 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::issuer_role());
             // Pre-mint tokens for burning
             token
                 .mint(
@@ -393,8 +389,7 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::issuer_role());
             // Pre-mint tokens for transfers
             token
                 .mint(
@@ -427,8 +422,7 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::issuer_role());
             // Pre-mint tokens and set allowance
             token
                 .mint(
@@ -475,8 +469,7 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::issuer_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::issuer_role());
             // Pre-mint tokens for transfers
             token
                 .mint(
@@ -505,8 +498,7 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::pause_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::pause_role());
 
             b.iter(|| {
                 let token = black_box(&mut token);
@@ -524,8 +516,7 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let _ = token
-                .grant_role_internal(admin, tempo_precompiles::tip20::TIP20Token::unpause_role());
+            let _ = token.grant_role_internal(admin, TIP20Token::unpause_role());
 
             b.iter(|| {
                 let token = black_box(&mut token);
@@ -668,11 +659,7 @@ fn tip403_registry_view(c: &mut Criterion) {
                 let policy_id = black_box(policy_id);
                 let user = black_box(user);
                 let result = registry
-                    .is_authorized_as(
-                        policy_id,
-                        user,
-                        tempo_precompiles::tip403_registry::AuthRole::transfer(),
-                    )
+                    .is_authorized_as(policy_id, user, AuthRole::transfer())
                     .unwrap();
                 black_box(result);
             });

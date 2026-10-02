@@ -2092,7 +2092,7 @@ mod tests {
         let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
         for tick in test_ticks {
             let price = orderbook::tick_to_price(tick);
-            let expected_price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
+            let expected_price = tick_to_price(tick);
             assert_eq!(price, expected_price);
         }
     }
@@ -6348,7 +6348,7 @@ mod tests {
 
                 // Pause the base token
                 let mut base_tip20 = TIP20Token::from_address(base_token)?;
-                base_tip20.grant_role_internal(admin, crate::tip20::TIP20Token::pause_role())?;
+                base_tip20.grant_role_internal(admin, TIP20Token::pause_role())?;
                 base_tip20.pause(admin, ITIP20::pauseCall {})?;
 
                 let res_in =
@@ -6410,7 +6410,7 @@ mod tests {
                     non_escrow_token
                 };
                 let mut tip20 = TIP20Token::from_address(token_to_pause)?;
-                tip20.grant_role_internal(admin, crate::tip20::TIP20Token::pause_role())?;
+                tip20.grant_role_internal(admin, TIP20Token::pause_role())?;
                 tip20.pause(admin, ITIP20::pauseCall {})?;
 
                 let next_order_id_before = exchange.next_order_id()?;
@@ -6594,8 +6594,7 @@ mod tests {
 
                 // Pause pathUSD (the intermediate token)
                 let mut path_usd_tip20 = TIP20Token::from_address(path_usd.address())?;
-                path_usd_tip20
-                    .grant_role_internal(admin, crate::tip20::TIP20Token::pause_role())?;
+                path_usd_tip20.grant_role_internal(admin, TIP20Token::pause_role())?;
                 path_usd_tip20.pause(admin, ITIP20::pauseCall {})?;
 
                 // Bob tries multi-hop swap: USDC -> pathUSD -> EURC

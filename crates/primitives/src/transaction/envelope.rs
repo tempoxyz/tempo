@@ -5,8 +5,8 @@ use super::{
 };
 use crate::{TempoAddressExt, TempoTransaction};
 use alloy_consensus::{
-    EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
-    TxLegacy, TxType, TypedTransaction,
+    EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930,
+    TxEip4844Variant, TxEip7702, TxLegacy, TxType, TypedTransaction,
     crypto::RecoveryError,
     error::{UnsupportedTransactionType, ValueError},
     transaction::Either,
@@ -75,7 +75,7 @@ impl TryFrom<TxType> for TempoTxType {
             TxType::Eip1559 => Self::Eip1559,
             TxType::Eip4844 => {
                 return Err(UnsupportedTransactionType::new(
-                    alloy_consensus::TxEip4844Variant::<()>::tx_type(),
+                    TxEip4844Variant::<()>::tx_type(),
                 ));
             }
             TxType::Eip7702 => Self::Eip7702,
@@ -89,9 +89,9 @@ impl TryFrom<TempoTxType> for TxType {
     fn try_from(value: TempoTxType) -> Result<Self, Self::Error> {
         Ok(match value {
             TempoTxType::Legacy => Self::Legacy,
-            TempoTxType::Eip2930 => alloy_consensus::TxEip2930::tx_type(),
-            TempoTxType::Eip1559 => alloy_consensus::TxEip1559::tx_type(),
-            TempoTxType::Eip7702 => alloy_consensus::TxEip7702::tx_type(),
+            TempoTxType::Eip2930 => TxEip2930::tx_type(),
+            TempoTxType::Eip1559 => TxEip1559::tx_type(),
+            TempoTxType::Eip7702 => TxEip7702::tx_type(),
             TempoTxType::AA => {
                 return Err(UnsupportedTransactionType::new(TempoTxType::AA));
             }
@@ -543,7 +543,7 @@ impl TryFrom<TypedTransaction> for TempoTypedTransaction {
             TypedTransaction::Eip1559(tx) => Self::Eip1559(tx),
             TypedTransaction::Eip4844(..) => {
                 return Err(UnsupportedTransactionType::new(
-                    alloy_consensus::TxEip4844Variant::<()>::tx_type(),
+                    TxEip4844Variant::<()>::tx_type(),
                 ));
             }
             TypedTransaction::Eip7702(tx) => Self::Eip7702(tx),
@@ -714,9 +714,18 @@ mod tests {
     #[rustfmt::skip]
     fn payment_envelopes_with_access_list_to(to: Address, calldata: Bytes, access_list: AccessList) -> [TempoTxEnvelope; 4] {
         [
-            TempoTxEnvelope::Eip2930(TxEip2930 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }.into_signed(Signature::test_signature())),
-            TempoTxEnvelope::Eip1559(TxEip1559 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }.into_signed(Signature::test_signature())),
-            TempoTxEnvelope::Eip7702(TxEip7702 { to, input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }.into_signed(Signature::test_signature())),
+            TempoTxEnvelope::Eip2930(
+                TxEip2930 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }
+                    .into_signed(Signature::test_signature()),
+            ),
+            TempoTxEnvelope::Eip1559(
+                TxEip1559 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }
+                    .into_signed(Signature::test_signature()),
+            ),
+            TempoTxEnvelope::Eip7702(
+                TxEip7702 { to, input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }
+                    .into_signed(Signature::test_signature()),
+            ),
             TempoTxEnvelope::AA(TempoTransaction {
                 fee_token: Some(PAYMENT_TKN),
                 calls: vec![Call { to: TxKind::Call(to), value: U256::ZERO, input: calldata }],
@@ -1388,10 +1397,10 @@ mod tests {
     fn test_tx_type_conversions() {
         // TxType -> TempoTxType: EIP-4844 rejected
         assert!(TempoTxType::try_from(TxType::Legacy).is_ok());
-        assert!(TempoTxType::try_from(alloy_consensus::TxEip2930::tx_type()).is_ok());
-        assert!(TempoTxType::try_from(alloy_consensus::TxEip1559::tx_type()).is_ok());
-        assert!(TempoTxType::try_from(alloy_consensus::TxEip7702::tx_type()).is_ok());
-        assert!(TempoTxType::try_from(alloy_consensus::TxEip4844Variant::<()>::tx_type()).is_err());
+        assert!(TempoTxType::try_from(TxEip2930::tx_type()).is_ok());
+        assert!(TempoTxType::try_from(TxEip1559::tx_type()).is_ok());
+        assert!(TempoTxType::try_from(TxEip7702::tx_type()).is_ok());
+        assert!(TempoTxType::try_from(TxEip4844Variant::<()>::tx_type()).is_err());
 
         // TempoTxType -> TxType: AA rejected
         assert!(TxType::try_from(TempoTxType::Legacy).is_ok());

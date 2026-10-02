@@ -333,8 +333,8 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_role(pauser, crate::tip20::TIP20Token::pause_role())
-                .with_role(unpauser, crate::tip20::TIP20Token::unpause_role())
+                .with_role(pauser, TIP20Token::pause_role())
+                .with_role(unpauser, TIP20Token::unpause_role())
                 .apply()?;
             assert!(!token.paused()?);
 
@@ -366,7 +366,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(burner, crate::tip20::TIP20Token::issuer_role())
+                .with_role(burner, TIP20Token::issuer_role())
                 .with_mint(burner, initial_balance)
                 .apply()?;
 
@@ -492,11 +492,11 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(user1, crate::tip20::TIP20Token::issuer_role())
+                .with_role(user1, TIP20Token::issuer_role())
                 .apply()?;
 
             let has_role_call = IRolesAuth::hasRoleCall {
-                role: crate::tip20::TIP20Token::issuer_role(),
+                role: TIP20Token::issuer_role(),
                 account: user1,
             };
             let calldata = has_role_call.abi_encode();
@@ -506,7 +506,7 @@ mod tests {
             assert!(has_role);
 
             let has_role_call = IRolesAuth::hasRoleCall {
-                role: crate::tip20::TIP20Token::issuer_role(),
+                role: TIP20Token::issuer_role(),
                 account: user2,
             };
             let calldata = has_role_call.abi_encode();
